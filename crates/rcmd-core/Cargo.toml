@@ -6,6 +6,9 @@ license.workspace = true
 
 [dependencies]
 trash.workspace = true
+zip.workspace = true
+tar.workspace = true
+flate2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

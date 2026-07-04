@@ -16,3 +16,6 @@ trash = "5"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"

@@ -3,9 +3,12 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use crate::entry::{read_dir, Entry};
+use crate::archive::ArchiveFs;
+use crate::entry::Entry;
 use crate::glob::glob_match;
+use crate::vfs::{is_archive_name, FsProvider, LocalFs};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {
@@ -18,6 +21,12 @@ pub enum SortKey {
 /// One side of the two-panel view: a directory listing with a cursor and
 /// per-directory marks. Pure state + logic, no rendering concerns.
 pub struct Panel {
+    /// Filesystem behind this panel; [`LocalFs`] normally, an
+    /// [`ArchiveFs`] while browsing inside an archive.
+    pub fs: Arc<dyn FsProvider>,
+    /// Path of the archive file when `fs` is an archive VFS.
+    pub archive: Option<PathBuf>,
+    /// Local directory, or the path *inside* the archive ("" = its root).
     pub cwd: PathBuf,
     pub entries: Vec<Entry>,
     pub cursor: usize,
@@ -32,6 +41,8 @@ pub struct Panel {
 impl Panel {
     pub fn new(cwd: PathBuf) -> io::Result<Self> {
         let mut panel = Panel {
+            fs: Arc::new(LocalFs),
+            archive: None,
             cwd,
             entries: Vec::new(),
             cursor: 0,
@@ -45,12 +56,36 @@ impl Panel {
         Ok(panel)
     }
 
+    pub fn is_local(&self) -> bool {
+        self.archive.is_none()
+    }
+
+    /// Panel location for titles: `path` or `archive.zip://inside`.
+    pub fn display_path(&self) -> String {
+        match &self.archive {
+            Some(archive) => format!("{}://{}", archive.display(), self.cwd.display()),
+            None => self.cwd.display().to_string(),
+        }
+    }
+
+    /// The real directory to run commands in / resolve paths against:
+    /// inside an archive, that is the archive's parent directory.
+    pub fn local_cwd(&self) -> PathBuf {
+        match &self.archive {
+            Some(archive) => archive
+                .parent()
+                .unwrap_or_else(|| Path::new("/"))
+                .to_path_buf(),
+            None => self.cwd.clone(),
+        }
+    }
+
     /// Re-read the current directory, keeping the cursor on the same entry
     /// where possible and pruning marks for entries that no longer exist.
     /// On failure the previous listing is kept.
     pub fn reload(&mut self) -> io::Result<()> {
         let keep = self.selected().map(|e| e.name.clone());
-        let mut entries = read_dir(&self.cwd)?;
+        let mut entries = self.fs.read_dir(&self.cwd)?;
         if !self.show_hidden {
             entries.retain(|e| !e.is_hidden());
         }
@@ -58,7 +93,8 @@ impl Panel {
             entries.retain(|e| e.is_dir() || glob_match(pattern, &e.name.to_string_lossy()));
         }
         sort_entries(&mut entries, self.sort_key, self.sort_reverse);
-        if self.cwd.parent().is_some() {
+        // ".." also at an archive's root: it leads back out of the archive
+        if self.cwd.parent().is_some() || self.archive.is_some() {
             entries.insert(0, Entry::parent());
         }
         self.marked
@@ -100,27 +136,36 @@ impl Panel {
         self.cursor = (self.cursor + page).min(self.entries.len().saturating_sub(1));
     }
 
-    /// Enter the selected entry if it is a directory.
+    /// Enter the selected entry: a directory, or an archive file (which
+    /// switches the panel onto the archive's VFS).
     /// Returns true if the panel changed directory.
     pub fn enter(&mut self) -> io::Result<bool> {
         let Some(entry) = self.selected() else {
             return Ok(false);
         };
-        if !entry.is_dir() {
-            return Ok(false);
-        }
+        let name = entry.name.clone();
         if entry.is_parent() {
             return self.go_up();
         }
-        let target = self.cwd.join(&entry.name);
-        self.change_dir(target)?;
-        Ok(true)
+        if entry.is_dir() {
+            self.change_dir(self.cwd.join(&name))?;
+            return Ok(true);
+        }
+        if self.archive.is_none() && is_archive_name(&name) {
+            self.enter_archive(self.cwd.join(&name))?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Go to the parent directory, placing the cursor on the directory
-    /// we came from (MC behavior). Returns true if the panel moved.
+    /// we came from (MC behavior). At an archive's root this leaves the
+    /// archive. Returns true if the panel moved.
     pub fn go_up(&mut self) -> io::Result<bool> {
         let Some(parent) = self.cwd.parent().map(Path::to_path_buf) else {
+            if let Some(archive) = self.archive.clone() {
+                return self.exit_archive(&archive).map(|()| true);
+            }
             return Ok(false);
         };
         let came_from = self.cwd.file_name().map(|n| n.to_os_string());
@@ -133,9 +178,58 @@ impl Panel {
         Ok(true)
     }
 
-    /// Change to an arbitrary directory (command-line `cd`).
+    fn enter_archive(&mut self, path: PathBuf) -> io::Result<()> {
+        let archive_fs = Arc::new(ArchiveFs::open(&path)?);
+        let prev_fs = std::mem::replace(&mut self.fs, archive_fs);
+        let prev_archive = self.archive.replace(path);
+        match self.change_dir(PathBuf::new()) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.fs = prev_fs;
+                self.archive = prev_archive;
+                Err(err)
+            }
+        }
+    }
+
+    fn exit_archive(&mut self, archive: &Path) -> io::Result<()> {
+        let parent = archive
+            .parent()
+            .unwrap_or_else(|| Path::new("/"))
+            .to_path_buf();
+        let prev_fs = std::mem::replace(&mut self.fs, Arc::new(LocalFs));
+        let prev_archive = self.archive.take();
+        match self.change_dir(parent) {
+            Ok(()) => {
+                if let Some(name) = archive.file_name() {
+                    if let Some(pos) = self.entries.iter().position(|e| e.name == name) {
+                        self.cursor = pos;
+                    }
+                }
+                Ok(())
+            }
+            Err(err) => {
+                self.fs = prev_fs;
+                self.archive = prev_archive;
+                Err(err)
+            }
+        }
+    }
+
+    /// Change to an arbitrary local directory (command-line `cd`);
+    /// leaves any archive the panel was browsing.
     pub fn cd(&mut self, target: PathBuf) -> io::Result<()> {
-        self.change_dir(target)
+        let prev_fs = self.fs.clone();
+        let prev_archive = self.archive.take();
+        self.fs = Arc::new(LocalFs);
+        match self.change_dir(target) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.fs = prev_fs;
+                self.archive = prev_archive;
+                Err(err)
+            }
+        }
     }
 
     /// Switch to `target`, clearing marks (marks are per-directory); on
@@ -489,6 +583,73 @@ mod tests {
         panel.move_bottom();
         assert!(!panel.enter().unwrap());
         assert_eq!(panel.cwd, tree.path());
+    }
+
+    #[test]
+    fn enter_and_leave_archive() {
+        use std::io::Write as _;
+        let tree = make_tree();
+        let zip_path = tree.path().join("bundle.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&zip_path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("inner/file.txt", options).unwrap();
+        zip.write_all(b"zipped").unwrap();
+        zip.finish().unwrap();
+
+        let mut panel = Panel::new(tree.path().to_path_buf()).unwrap();
+        let pos = panel
+            .entries
+            .iter()
+            .position(|e| e.name == "bundle.zip")
+            .unwrap();
+        panel.cursor = pos;
+        assert!(panel.enter().unwrap());
+        assert!(!panel.is_local());
+        assert_eq!(panel.cwd, PathBuf::new());
+        assert!(panel.display_path().contains("bundle.zip://"));
+        assert_eq!(panel.local_cwd(), tree.path());
+        // root of the archive: "..", inner/
+        assert!(panel.entries[0].is_parent());
+        assert!(panel.entries.iter().any(|e| e.name == "inner"));
+
+        // descend, then climb all the way back out
+        let inner = panel
+            .entries
+            .iter()
+            .position(|e| e.name == "inner")
+            .unwrap();
+        panel.cursor = inner;
+        assert!(panel.enter().unwrap());
+        assert!(panel.entries.iter().any(|e| e.name == "file.txt"));
+        assert!(panel.go_up().unwrap()); // back to archive root
+        assert!(panel.go_up().unwrap()); // out of the archive
+        assert!(panel.is_local());
+        assert_eq!(panel.cwd, tree.path());
+        assert_eq!(panel.selected().unwrap().name, "bundle.zip");
+    }
+
+    #[test]
+    fn cd_leaves_archive() {
+        use std::io::Write as _;
+        let tree = make_tree();
+        let zip_path = tree.path().join("bundle.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&zip_path).unwrap());
+        zip.start_file("f", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"x").unwrap();
+        zip.finish().unwrap();
+
+        let mut panel = Panel::new(tree.path().to_path_buf()).unwrap();
+        panel.cursor = panel
+            .entries
+            .iter()
+            .position(|e| e.name == "bundle.zip")
+            .unwrap();
+        panel.enter().unwrap();
+        assert!(!panel.is_local());
+        panel.cd(tree.path().join("src")).unwrap();
+        assert!(panel.is_local());
+        assert_eq!(panel.cwd, tree.path().join("src"));
     }
 
     #[test]

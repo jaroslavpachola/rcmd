@@ -6,11 +6,11 @@ the roadmap.
 
 ## Status
 
-M4 — polish & config. Everything from M1–M3 (marking, F5–F8 operations
-with MC-style dialogs, command line + shell integration, F3 chunked
-viewer, F4 $EDITOR, F9 menu, F1 help) plus a config file, keymap presets
-and custom bindings, quick search, per-panel file filter, a directory
-hotlist, and themes.
+M5 — all milestones of the original plan shipped. Marking and F5–F8
+operations with MC-style dialogs, command line + shell integration, F3
+chunked viewer, F4 $EDITOR, F9 menu, F1 help, config file with keymap
+presets/custom bindings, quick search, filter, hotlist, themes, and
+read-only archive browsing (zip, tar, tar.gz) with extraction.
 
 ## Run
 
@@ -53,8 +53,8 @@ end
 |-----|--------|
 | Tab | Switch panel |
 | ↑ ↓ PgUp PgDn Home End | Move cursor |
-| Enter | Enter directory |
-| Backspace | Parent directory |
+| Enter | Enter directory or archive (.zip/.tar/.tar.gz/.tgz) |
+| Backspace | Parent directory / leave archive |
 | F1 | Help |
 | F3 | View file (internal viewer) |
 | F4 | Edit file in $VISUAL / $EDITOR (fallback vi) |
@@ -90,6 +90,12 @@ overwrite and error prompts also take hotkeys (o/a/s/S, r/s/S).
 F4 toggles hex mode, F7 or `/` searches (case-insensitive), `n` next
 match, F3/F10/Esc/q quit. Lines are indexed lazily, so huge files open
 instantly; very long lines are broken at 4096 columns.
+
+**Archives**: Enter on a `.zip`, `.tar`, `.tar.gz`/`.tgz` file browses it
+like a directory (read-only — the panel title shows `archive://path`).
+F5 copies members out with the usual progress/overwrite dialogs, F3
+views them; move, delete, and mkdir are disabled inside. The archive
+index loads once at open; each member read decodes only that member.
 
 ## Configuration
 

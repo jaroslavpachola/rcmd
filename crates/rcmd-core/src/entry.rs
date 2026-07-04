@@ -90,6 +90,21 @@ fn mode_of(_meta: &fs::Metadata) -> u32 {
     0
 }
 
+fn classify(meta: &fs::Metadata, path: &Path) -> (EntryKind, Option<PathBuf>) {
+    if meta.is_symlink() {
+        let kind = match fs::metadata(path) {
+            Ok(target) if target.is_dir() => EntryKind::SymlinkDir,
+            Ok(_) => EntryKind::SymlinkFile,
+            Err(_) => EntryKind::SymlinkBroken,
+        };
+        (kind, fs::read_link(path).ok())
+    } else if meta.is_dir() {
+        (EntryKind::Dir, None)
+    } else {
+        (EntryKind::File, None)
+    }
+}
+
 /// List a directory without following symlinks for the entries themselves;
 /// symlink targets are stat'ed only to classify the link as dir/file/broken.
 /// Entries that vanish between readdir and stat are skipped.
@@ -98,18 +113,7 @@ pub fn read_dir(path: &Path) -> io::Result<Vec<Entry>> {
     for dent in fs::read_dir(path)? {
         let dent = dent?;
         let Ok(meta) = dent.metadata() else { continue };
-        let (kind, link_target) = if meta.is_symlink() {
-            let kind = match fs::metadata(dent.path()) {
-                Ok(target) if target.is_dir() => EntryKind::SymlinkDir,
-                Ok(_) => EntryKind::SymlinkFile,
-                Err(_) => EntryKind::SymlinkBroken,
-            };
-            (kind, fs::read_link(dent.path()).ok())
-        } else if meta.is_dir() {
-            (EntryKind::Dir, None)
-        } else {
-            (EntryKind::File, None)
-        };
+        let (kind, link_target) = classify(&meta, &dent.path());
         out.push(Entry {
             name: dent.file_name(),
             kind,
@@ -120,4 +124,18 @@ pub fn read_dir(path: &Path) -> io::Result<Vec<Entry>> {
         });
     }
     Ok(out)
+}
+
+/// Entry for one path (lstat semantics), classified like [`read_dir`].
+pub fn stat(path: &Path) -> io::Result<Entry> {
+    let meta = fs::symlink_metadata(path)?;
+    let (kind, link_target) = classify(&meta, path);
+    Ok(Entry {
+        name: path.file_name().unwrap_or_default().to_os_string(),
+        kind,
+        size: meta.len(),
+        mtime: meta.modified().ok(),
+        mode: mode_of(&meta),
+        link_target,
+    })
 }

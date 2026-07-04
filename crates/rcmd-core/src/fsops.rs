@@ -14,6 +14,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
+use crate::entry::EntryKind;
+use crate::vfs::FsProvider;
+
 const CHUNK: usize = 256 * 1024;
 
 #[derive(Debug)]
@@ -114,6 +117,23 @@ pub fn spawn_delete(paths: Vec<PathBuf>, permanent: bool) -> JobHandle {
                     ctx.progress(path);
                 }
             }
+        }
+        Ok(())
+    })
+}
+
+/// Copy out of a read-only [`FsProvider`] (an archive) onto the local
+/// filesystem, with the same progress/overwrite/error protocol as copy.
+pub fn spawn_extract(fs: Arc<dyn FsProvider>, sources: Vec<PathBuf>, dest: PathBuf) -> JobHandle {
+    spawn(move |ctx| {
+        let (files, bytes) = scan_provider(&*fs, &sources);
+        let _ = ctx.tx.send(JobEvent::Total { files, bytes });
+        let into_dir = dest.is_dir() || sources.len() > 1;
+        for src in &sources {
+            if ctx.cancelled() {
+                return Err(Aborted);
+            }
+            extract_tree(ctx, &*fs, src, &target_for(src, &dest, into_dir))?;
         }
         Ok(())
     })
@@ -499,6 +519,143 @@ fn delete_tree(ctx: &mut Ctx, path: &Path) -> Result<(), Aborted> {
     Ok(())
 }
 
+fn scan_provider(fs: &dyn FsProvider, paths: &[PathBuf]) -> (u64, u64) {
+    fn walk(fs: &dyn FsProvider, path: &Path, files: &mut u64, bytes: &mut u64) {
+        let Ok(entry) = fs.stat(path) else { return };
+        if entry.kind == EntryKind::Dir {
+            if let Ok(children) = fs.read_dir(path) {
+                for child in children {
+                    walk(fs, &path.join(&child.name), files, bytes);
+                }
+            }
+        } else {
+            *files += 1;
+            *bytes += entry.size;
+        }
+    }
+    let (mut files, mut bytes) = (0, 0);
+    for path in paths {
+        walk(fs, path, &mut files, &mut bytes);
+    }
+    (files, bytes)
+}
+
+fn extract_tree(ctx: &mut Ctx, fs: &dyn FsProvider, src: &Path, dst: &Path) -> Result<(), Aborted> {
+    if ctx.cancelled() {
+        return Err(Aborted);
+    }
+    let Some(entry) = ctx.with_retry(src, || fs.stat(src))? else {
+        return Ok(());
+    };
+    match entry.kind {
+        EntryKind::Dir => {
+            let created = ctx.with_retry(dst, || match std::fs::create_dir(dst) {
+                Err(ref e) if e.kind() == io::ErrorKind::AlreadyExists && dst.is_dir() => Ok(()),
+                other => other,
+            })?;
+            if created.is_none() {
+                return Ok(());
+            }
+            let Some(children) = ctx.with_retry(src, || fs.read_dir(src))? else {
+                return Ok(());
+            };
+            for child in children {
+                extract_tree(ctx, fs, &src.join(&child.name), &dst.join(&child.name))?;
+            }
+            Ok(())
+        }
+        EntryKind::SymlinkDir | EntryKind::SymlinkFile | EntryKind::SymlinkBroken => {
+            ctx.progress(src);
+            if !ctx.may_overwrite(dst)? {
+                return Ok(());
+            }
+            let target = entry.link_target.clone().unwrap_or_default();
+            let done = ctx.with_retry(src, || {
+                let _ = fs::remove_file(dst); // overwrite was approved above
+                make_symlink(&target, dst)
+            })?;
+            if done.is_some() {
+                ctx.files_done += 1;
+                ctx.progress(src);
+            }
+            Ok(())
+        }
+        EntryKind::File => {
+            ctx.progress(src);
+            if !ctx.may_overwrite(dst)? {
+                return Ok(());
+            }
+            extract_file(ctx, fs, src, dst, entry.size, entry.mode)
+        }
+    }
+}
+
+fn extract_file(
+    ctx: &mut Ctx,
+    fs: &dyn FsProvider,
+    src: &Path,
+    dst: &Path,
+    size: u64,
+    mode: u32,
+) -> Result<(), Aborted> {
+    loop {
+        if ctx.cancelled() {
+            return Err(Aborted);
+        }
+        let start = ctx.bytes_done;
+        match try_extract_file(ctx, fs, src, dst, mode) {
+            Ok(()) => {
+                ctx.files_done += 1;
+                ctx.bytes_done = start + size;
+                ctx.progress(src);
+                return Ok(());
+            }
+            Err(CopyErr::Cancelled) => return Err(Aborted),
+            Err(CopyErr::Io(err)) => {
+                ctx.bytes_done = start;
+                match ctx.ask_error(src, err.to_string())? {
+                    Decision::Retry => continue,
+                    Decision::Skip => return Ok(()),
+                }
+            }
+        }
+    }
+}
+
+fn try_extract_file(
+    ctx: &mut Ctx,
+    fs: &dyn FsProvider,
+    src: &Path,
+    dst: &Path,
+    mode: u32,
+) -> Result<(), CopyErr> {
+    let mut input = fs.open_read(src).map_err(CopyErr::Io)?;
+    let mut output = std::fs::File::create(dst).map_err(CopyErr::Io)?;
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        if ctx.cancelled() {
+            drop(output);
+            let _ = std::fs::remove_file(dst);
+            return Err(CopyErr::Cancelled);
+        }
+        let n = input.read(&mut buf).map_err(CopyErr::Io)?;
+        if n == 0 {
+            break;
+        }
+        output.write_all(&buf[..n]).map_err(CopyErr::Io)?;
+        ctx.bytes_done += n as u64;
+        ctx.progress(src);
+    }
+    #[cfg(unix)]
+    if mode != 0 {
+        use std::os::unix::fs::PermissionsExt;
+        output
+            .set_permissions(std::fs::Permissions::from_mode(mode))
+            .map_err(CopyErr::Io)?;
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn make_symlink(target: &Path, dst: &Path) -> io::Result<()> {
     std::os::unix::fs::symlink(target, dst)
@@ -649,6 +806,49 @@ mod tests {
         assert!(!out.aborted);
         assert_eq!(out.files_done, 2);
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn extract_from_targz_recreates_tree() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let archive_path = tmp.path().join("a.tar.gz");
+        let gz = GzEncoder::new(
+            fs::File::create(&archive_path).unwrap(),
+            Compression::default(),
+        );
+        let mut tar = tar::Builder::new(gz);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(6);
+        header.set_mode(0o640);
+        header.set_cksum();
+        tar.append_data(&mut header, "sub/data.txt", &b"inside"[..])
+            .unwrap();
+        tar.into_inner().unwrap().finish().unwrap();
+
+        let afs = Arc::new(crate::archive::ArchiveFs::open(&archive_path).unwrap());
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+
+        let result = run(
+            spawn_extract(afs, vec![PathBuf::from("sub")], out.clone()),
+            vec![],
+        );
+
+        assert!(!result.aborted);
+        assert_eq!(result.files_done, 1);
+        assert_eq!(fs::read(out.join("sub/data.txt")).unwrap(), b"inside");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(out.join("sub/data.txt"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o640);
+        }
     }
 
     #[test]

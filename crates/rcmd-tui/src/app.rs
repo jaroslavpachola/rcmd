@@ -107,6 +107,9 @@ pub struct Viewer {
     /// Search prompt (value, cursor) when open.
     pub prompt: Option<(String, usize)>,
     pub note: Option<String>,
+    /// Extraction scratch file when viewing inside an archive;
+    /// deleted when the viewer closes.
+    pub temp: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -360,7 +363,7 @@ impl App {
         use std::io::Write as _;
         use std::os::unix::process::CommandExt as _;
 
-        let cwd = self.panels[self.active].cwd.clone();
+        let cwd = self.panels[self.active].local_cwd();
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         ratatui::restore();
         // The child must own Ctrl+C while it runs; restore our disposition after.
@@ -559,7 +562,11 @@ impl App {
         let page = rows.saturating_sub(1).max(1) as isize;
         match key.code {
             KeyCode::F(3) | KeyCode::F(10) | KeyCode::Esc | KeyCode::Char('q') => {
-                self.viewer = None;
+                if let Some(viewer) = self.viewer.take() {
+                    if let Some(temp) = viewer.temp {
+                        let _ = std::fs::remove_file(temp);
+                    }
+                }
             }
             KeyCode::F(4) => v.hex = !v.hex,
             KeyCode::Up => viewer_scroll(v, -1, rows),
@@ -663,12 +670,37 @@ impl App {
             self.status = Some(" cannot view a directory ".into());
             return;
         }
-        let path = panel.cwd.join(&entry.name);
-        match FileView::open(&path) {
+        let name = entry.name.clone();
+        let (open_path, title_path, temp) = if panel.is_local() {
+            let path = panel.cwd.join(&name);
+            (path.clone(), path, None)
+        } else {
+            // extract the archive member to a scratch file first
+            let vpath = panel.cwd.join(&name);
+            let temp = std::env::temp_dir().join(format!(
+                "rcmd-view-{}-{}",
+                std::process::id(),
+                name.to_string_lossy()
+            ));
+            let extracted = panel.fs.open_read(&vpath).and_then(|mut reader| {
+                let mut out = std::fs::File::create(&temp)?;
+                std::io::copy(&mut reader, &mut out)?;
+                Ok(())
+            });
+            if let Err(err) = extracted {
+                let _ = std::fs::remove_file(&temp);
+                self.status = Some(format!(" view: {err} "));
+                return;
+            }
+            let archive = panel.archive.clone().unwrap_or_default();
+            let title = PathBuf::from(format!("{}://{}", archive.display(), vpath.display()));
+            (temp.clone(), title, Some(temp))
+        };
+        match FileView::open(&open_path) {
             Ok(file) => {
                 self.viewer = Some(Viewer {
                     file,
-                    path,
+                    path: title_path,
                     hex: false,
                     top: 0,
                     left: 0,
@@ -678,9 +710,15 @@ impl App {
                     found: None,
                     prompt: None,
                     note: None,
+                    temp,
                 })
             }
-            Err(err) => self.status = Some(format!(" view: {err} ")),
+            Err(err) => {
+                if let Some(temp) = temp {
+                    let _ = std::fs::remove_file(temp);
+                }
+                self.status = Some(format!(" view: {err} "));
+            }
         }
     }
 
@@ -691,6 +729,10 @@ impl App {
         };
         if entry.is_dir() {
             self.status = Some(" cannot edit a directory ".into());
+            return;
+        }
+        if !panel.is_local() {
+            self.status = Some(" cannot edit inside an archive ".into());
             return;
         }
         let path = panel.cwd.join(&entry.name);
@@ -778,7 +820,7 @@ impl App {
                         }
                     }
                     KeyCode::Char('a') => {
-                        let cwd = self.panels[self.active].cwd.clone();
+                        let cwd = self.panels[self.active].local_cwd();
                         let path = cwd.display().to_string();
                         if !self.config.hotlist.iter().any(|h| h.path == path) {
                             let label = cwd
@@ -829,7 +871,11 @@ impl App {
         }
         match dialog.action {
             InputAction::CopyTo { sources } => {
-                self.start_transfer(sources, &value, fsops::spawn_copy, "copy")
+                if self.panels[self.active].is_local() {
+                    self.start_transfer(sources, &value, fsops::spawn_copy, "copy")
+                } else {
+                    self.start_extract(sources, &value)
+                }
             }
             InputAction::MoveTo { sources } => {
                 self.start_transfer(sources, &value, fsops::spawn_move, "move")
@@ -894,6 +940,23 @@ impl App {
         });
     }
 
+    fn start_extract(&mut self, sources: Vec<PathBuf>, dest: &str) {
+        let dest = self.resolve(dest);
+        let fs = self.panels[self.active].fs.clone();
+        self.job = Some(Job {
+            title: format!(" extract {} item(s) to {} ", sources.len(), dest.display()),
+            handle: fsops::spawn_extract(fs, sources, dest),
+            total_files: 0,
+            total_bytes: 0,
+            files_done: 0,
+            bytes_done: 0,
+            current: PathBuf::new(),
+            ask: None,
+            button: 0,
+            src_panel: self.active,
+        });
+    }
+
     fn start_delete(&mut self, paths: Vec<PathBuf>, permanent: bool) {
         let verb = if permanent { "delete" } else { "trash" };
         self.job = Some(Job {
@@ -927,7 +990,7 @@ impl App {
             if path.is_absolute() {
                 path
             } else {
-                self.panels[self.active].cwd.join(path)
+                self.panels[self.active].local_cwd().join(path)
             }
         };
         normalize(&raw)
@@ -1076,14 +1139,30 @@ impl App {
         }
     }
 
+    /// Operations that write to the panel's filesystem need a local one.
+    fn require_local(&mut self) -> bool {
+        if self.panels[self.active].is_local() {
+            true
+        } else {
+            self.status = Some(" archive is read-only ".into());
+            false
+        }
+    }
+
     fn open_transfer(&mut self, is_move: bool) {
+        if is_move && !self.require_local() {
+            return;
+        }
         let sources = self.panels[self.active].targets();
         if sources.is_empty() {
             self.status = Some(" nothing selected ".into());
             return;
         }
         let verb = if is_move { "Move" } else { "Copy" };
-        let mut dest = self.panels[self.active ^ 1].cwd.display().to_string();
+        let mut dest = self.panels[self.active ^ 1]
+            .local_cwd()
+            .display()
+            .to_string();
         if !dest.ends_with('/') {
             dest.push('/');
         }
@@ -1105,6 +1184,9 @@ impl App {
     }
 
     fn open_mkdir(&mut self) {
+        if !self.require_local() {
+            return;
+        }
         self.dialog = Some(Dialog::Input(InputDialog {
             title: " Create directory ".into(),
             value: String::new(),
@@ -1128,6 +1210,9 @@ impl App {
     }
 
     fn open_delete(&mut self, permanent: bool) {
+        if !self.require_local() {
+            return;
+        }
         let paths = self.panels[self.active].targets();
         if paths.is_empty() {
             self.status = Some(" nothing selected ".into());

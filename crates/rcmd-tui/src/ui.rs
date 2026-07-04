@@ -115,8 +115,8 @@ const HELP_TEXT: &[&str] = &[
     "# Panels",
     "  Tab             switch active panel",
     "  Up/Down, PgUp/PgDn, Home/End   move the cursor",
-    "  Enter           enter directory (with empty command line)",
-    "  Backspace       go to parent directory",
+    "  Enter           enter directory or archive (zip, tar, tar.gz)",
+    "  Backspace       go to parent directory / leave the archive",
     "  Ctrl+S          quick search (type to jump, Ctrl+S again = next)",
     "  Ctrl+F          filter shown files by glob ('*' clears)",
     "  Ctrl+\\          directory hotlist (Enter cd, a add, d delete)",
@@ -140,6 +140,10 @@ const HELP_TEXT: &[&str] = &[
     "  Esc             cancel a running operation",
     "  Overwrite prompt hotkeys: o=overwrite a=all s=skip S=skip all",
     "  Error prompt hotkeys:     r=retry s=skip S=skip all",
+    "",
+    "# Archives",
+    "  Enter on a .zip/.tar/.tar.gz browses it read-only; F5 copies",
+    "  out, F3 views members. Move/delete/mkdir are disabled inside.",
     "",
     "# Command line",
     "  (type)          compose a command; Enter runs it in the panel dir",
@@ -241,7 +245,7 @@ fn draw_panel(frame: &mut Frame, area: Rect, panel: &Panel, state: &mut TableSta
     let mut block = Block::bordered()
         .style(Style::new().fg(th().panel_fg).bg(th().panel_bg))
         .title(Span::styled(
-            format!(" {} ", panel.cwd.display()),
+            format!(" {} ", panel.display_path()),
             title_style,
         ));
     let (marked_count, marked_bytes) = panel.marked_stats();
@@ -384,7 +388,7 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
 
 fn draw_cmdline(frame: &mut Frame, area: Rect, app: &App) {
     let prompt = tail(
-        &format!("{}$ ", abbrev_home(&app.panels[app.active].cwd)),
+        &format!("{}$ ", abbrev_home(&app.panels[app.active].local_cwd())),
         (area.width / 2) as usize,
     );
     let prompt_len = prompt.chars().count();
