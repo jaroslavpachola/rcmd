@@ -21,6 +21,12 @@ pub struct Config {
     pub sort_reverse: bool,
     /// Auto-reload panels when their directory changes on disk.
     pub watch: bool,
+    /// Mouse support (click, double-click, wheel). Additive only —
+    /// hold Shift to select terminal text while it is on.
+    pub mouse: bool,
+    /// Git status column + branch in the panel title inside work trees
+    /// (needs the `git` build feature, on by default).
+    pub git: bool,
     /// "internal" (the built-in editor) or "external" ($VISUAL/$EDITOR).
     pub editor: String,
     /// Custom bindings on top of the preset, e.g. "ctrl+y" = "swap-panels".
@@ -43,6 +49,8 @@ impl Default for Config {
             sort_key: "name".into(),
             sort_reverse: false,
             watch: true,
+            mouse: true,
+            git: true,
             editor: "internal".into(),
             keys: BTreeMap::new(),
             hotlist: Vec::new(),

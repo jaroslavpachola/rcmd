@@ -293,6 +293,135 @@ def test_dirsize():
     shutil.rmtree(root)
 
 
+ALT_LEFT, ALT_RIGHT, ALT_UP = b"\x1b[1;3D", b"\x1b[1;3C", b"\x1b[1;3A"
+
+
+def click(col, row):
+    """SGR left-button press+release at 1-based (col, row)."""
+    return b"\x1b[<0;%d;%dM\x1b[<0;%d;%dm" % (col, row, col, row)
+
+
+def wheel(col, row, down=True):
+    return b"\x1b[<%d;%d;%dM" % (65 if down else 64, col, row)
+
+
+def test_history():
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "one"))
+    os.makedirs(os.path.join(play, "two"))
+    s = Session(play, home)
+    s.send(b"cd one\r")
+    s.send(b"cd ../two\r")
+    check("history: cd landed", play + "/two" in s.screen())
+    s.send(ALT_LEFT)
+    check("history: back", play + "/one" in s.screen())
+    s.send(ALT_LEFT)
+    scr = s.screen()
+    check(
+        "history: back to start",
+        play + "/one" not in scr and play + "/two" not in scr,
+    )
+    s.send(ALT_RIGHT)
+    check("history: forward", play + "/one" in s.screen())
+    s.send(ALT_UP)
+    check("history: alt+up opens hotlist", "Directory hotlist" in s.screen())
+    s.send(b"\x1b")
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_quickview():
+    root, play, home = sandbox()
+    open(os.path.join(play, "poem.txt"), "w").write("roses are red\nviolets too\n")
+    open(os.path.join(play, "prose.txt"), "w").write("second file content\n")
+    s = Session(play, home)
+    s.send(b"\x18")                     # Ctrl+X ...
+    s.send(b"q")                        # ... Q -> quick view
+    s.send(DOWN)                        # -> poem.txt
+    scr = s.screen()
+    check(
+        "quickview: preview follows cursor",
+        "Quick view" in scr and "roses are red" in scr,
+    )
+    s.send(DOWN)                        # -> prose.txt
+    check("quickview: switches file", "second file content" in s.screen())
+    s.send(b"\x18q")                    # toggle off
+    check("quickview: toggles off", "Quick view" not in s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_mouse():
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "subdir"))
+    open(os.path.join(play, "subdir", "inner.txt"), "w").write("x\n")
+    open(os.path.join(play, "file1.txt"), "w").write("alpha\nbeta\n")
+    s = Session(play, home, args=(play, os.path.join(play, "subdir")))
+
+    # wheel scrolls the hovered (left) panel's cursor: .. -> file1.txt
+    s.send(wheel(10, 4))
+    check("mouse: wheel moves cursor", "file1.txt" in status_line(s))
+    # click focuses the right panel and puts the cursor on the row
+    s.send(click(62, 4))
+    check("mouse: click focuses+selects", "inner.txt" in status_line(s))
+    # keybar: the "9 PullDn" button opens the menu
+    s.send(click(66, 30))
+    check("mouse: keybar opens menu", "Make directory..." in s.screen())
+    s.send(click(21, 1))                # menu bar: switch to Sort
+    check("mouse: menu bar switches", "By modify time" in s.screen())
+    s.send(click(100, 15))              # outside: closes the menu
+    check("mouse: click outside closes menu", "By modify time" not in s.screen())
+    # editor: a click places the cursor (line 2, past the end of "beta")
+    s.send(click(10, 5))                # focus left panel, cursor file1.txt
+    s.send(F4, wait=STEP * 2)
+    s.send(click(6, 3))
+    check("mouse: editor click sets cursor", "2:5" in s.screen())
+    s.send(F10, wait=STEP * 2)
+    # double-click enters a directory
+    s.send(click(10, 4) + click(10, 4))
+    check("mouse: double-click enters", play + "/subdir" in s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
+def status_line(s):
+    return s.screen().split("\n")[-3]
+
+
+def test_git():
+    if not shutil.which("git"):
+        print("SKIP git: no git binary")
+        return
+    root, play, home = sandbox()
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-C", play, "-c", "user.email=t@e2e", "-c", "user.name=t", *args],
+            capture_output=True,
+            check=True,
+        )
+
+    git("init", "-b", "main", ".")
+    open(os.path.join(play, "tracked.txt"), "w").write("one\n")
+    open(os.path.join(play, ".gitignore"), "w").write("*.log\n")
+    git("add", ".")
+    git("commit", "-m", "init")
+    open(os.path.join(play, "tracked.txt"), "w").write("two\n")   # M
+    open(os.path.join(play, "fresh.txt"), "w").write("x\n")       # ?
+    open(os.path.join(play, "build.log"), "w").write("x\n")       # !
+
+    s = Session(play, home)
+    connected = wait_for(s, "[main]", timeout=10)
+    scr = s.screen()
+    check("git: branch in the title", connected)
+    check("git: modified mark", "M tracked.txt" in scr)
+    check("git: untracked mark", "? fresh.txt" in scr)
+    check("git: ignored mark", "! build.log" in scr)
+    check("git: clean file unmarked", "M .gitignore" not in scr)
+    s.quit()
+    shutil.rmtree(root)
+
+
 F2, F4, F10 = b"\x1b[12~", b"\x1b[14~", b"\x1b[21~"
 
 
@@ -489,6 +618,10 @@ def main():
         test_compare,
         test_watch,
         test_dirsize,
+        test_history,
+        test_quickview,
+        test_mouse,
+        test_git,
         test_editor,
         test_sftp,
         test_scale,

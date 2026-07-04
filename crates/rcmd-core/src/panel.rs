@@ -67,6 +67,14 @@ pub struct Panel {
     /// normal listing.
     pub panelized: Option<String>,
     pending: Option<PendingLoad>,
+    /// Visited locations as display paths (`/dir` or `sftp://…/dir`);
+    /// `history[hist_pos]` is the current one. Archive stops are not
+    /// recorded — leaving the archive returns to its parent directory.
+    history: Vec<String>,
+    hist_pos: usize,
+    /// Target index of an in-flight Alt+←/→ navigation; committed by
+    /// [`Self::hist_note`] once the matching listing lands.
+    hist_pending: Option<usize>,
 }
 
 impl Panel {
@@ -85,6 +93,9 @@ impl Panel {
             filter: None,
             panelized: None,
             pending: None,
+            history: Vec::new(),
+            hist_pos: 0,
+            hist_pending: None,
         };
         panel.reload()?;
         Ok(panel)
@@ -206,6 +217,45 @@ impl Panel {
                 self.cursor = 0;
             }
         }
+        if self.archive.is_none() {
+            self.hist_note();
+        }
+    }
+
+    /// Record the current location in the history (dedup in place; a new
+    /// stop drops any forward entries, browser-style). An in-flight
+    /// back/forward target is committed instead when it matches.
+    fn hist_note(&mut self) {
+        let loc = self.display_path();
+        if let Some(pos) = self.hist_pending.take()
+            && self.history.get(pos) == Some(&loc)
+        {
+            self.hist_pos = pos;
+            return;
+        }
+        if self.history.get(self.hist_pos) == Some(&loc) {
+            return;
+        }
+        self.history.truncate(self.hist_pos + 1);
+        self.history.push(loc);
+        self.hist_pos = self.history.len() - 1;
+    }
+
+    /// Previous history location to navigate to, if any.
+    pub fn hist_back(&mut self) -> Option<String> {
+        let pos = self.hist_pos.checked_sub(1)?;
+        self.hist_pending = Some(pos);
+        Some(self.history[pos].clone())
+    }
+
+    /// Next history location to navigate to, if any.
+    pub fn hist_forward(&mut self) -> Option<String> {
+        let pos = self.hist_pos + 1;
+        if pos >= self.history.len() {
+            return None;
+        }
+        self.hist_pending = Some(pos);
+        Some(self.history[pos].clone())
     }
 
     pub fn is_local(&self) -> bool {
@@ -275,6 +325,7 @@ impl Panel {
         }
         self.entries = entries;
         self.cursor = 0;
+        self.hist_note();
     }
 
     /// Leave a remote connection (or an archive) for a local directory;
@@ -855,6 +906,61 @@ mod tests {
         panel.cursor = src_pos;
         panel.enter().unwrap();
         assert!(panel.marked.is_empty());
+    }
+
+    #[test]
+    fn history_walks_back_forward_and_truncates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for name in ["a", "b", "c"] {
+            fs::create_dir(root.join(name)).unwrap();
+        }
+        let mut panel = Panel::new(root.clone()).unwrap();
+        panel.cd(root.join("a")).unwrap();
+        panel.cd(root.join("b")).unwrap();
+        // reloads do not grow the history
+        panel.reload().unwrap();
+
+        let back = panel.hist_back().unwrap();
+        assert_eq!(back, root.join("a").display().to_string());
+        panel.cd(PathBuf::from(&back)).unwrap();
+        assert_eq!(panel.cwd, root.join("a"));
+
+        let back = panel.hist_back().unwrap();
+        assert_eq!(back, root.display().to_string());
+        panel.cd(PathBuf::from(&back)).unwrap();
+        assert!(panel.hist_back().is_none());
+
+        let fwd = panel.hist_forward().unwrap();
+        assert_eq!(fwd, root.join("a").display().to_string());
+        panel.cd(PathBuf::from(&fwd)).unwrap();
+
+        // a new stop from the middle drops the forward entries
+        panel.cd(root.join("c")).unwrap();
+        assert!(panel.hist_forward().is_none());
+        assert_eq!(
+            panel.hist_back().unwrap(),
+            root.join("a").display().to_string()
+        );
+    }
+
+    #[test]
+    fn abandoned_history_navigation_self_corrects() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for name in ["a", "b"] {
+            fs::create_dir(root.join(name)).unwrap();
+        }
+        let mut panel = Panel::new(root.clone()).unwrap();
+        panel.cd(root.join("a")).unwrap();
+        // start going back, but navigate somewhere else instead
+        let _ = panel.hist_back().unwrap();
+        panel.cd(root.join("b")).unwrap();
+        assert!(panel.hist_forward().is_none());
+        assert_eq!(
+            panel.hist_back().unwrap(),
+            root.join("a").display().to_string()
+        );
     }
 
     #[test]

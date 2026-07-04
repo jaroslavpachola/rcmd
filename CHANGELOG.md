@@ -2,8 +2,16 @@
 
 ## Unreleased
 
-2.0-roadmap phases P1–P4 (docs/PLAN2.md):
+2.0-roadmap phases P1–P5 (docs/PLAN2.md):
 
+- **UX depth** (P5): mouse support (click to focus/select, double-click
+  to enter, wheel scrolling everywhere, clickable keybar/menu, click
+  places the editor cursor; `mouse = false` disables), per-panel
+  directory history (Alt+←/→ back/forward incl. sftp:// stops, Alt+↑
+  hotlist), quick view (Ctrl+X q — the other panel live-previews the
+  cursor file via the chunked viewer), and git awareness (branch in the
+  panel title, M/A/?/! status column with ignored entries dimmed,
+  computed in the background; `git` cargo feature, on by default)
 - **Built-in editor** (P4): F4 opens an mcedit-style editor (new
   `rcmd-edit` crate) — unlimited grouped undo/redo, F3 marking and
   Shift+arrow selection with an internal clipboard, smartcase regex

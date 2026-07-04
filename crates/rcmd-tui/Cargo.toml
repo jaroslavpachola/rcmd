@@ -9,8 +9,9 @@ name = "rcmd"
 path = "src/main.rs"
 
 [features]
-default = ["syntax"]
+default = ["syntax", "git"]
 syntax = ["rcmd-edit/syntax"]
+git = ["dep:git2"]
 
 [dependencies]
 rcmd-core = { path = "../rcmd-core" }
@@ -22,3 +23,7 @@ libc.workspace = true
 serde.workspace = true
 toml.workspace = true
 notify.workspace = true
+git2 = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

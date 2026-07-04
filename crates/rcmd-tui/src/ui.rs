@@ -9,9 +9,10 @@ use rcmd_core::panel::Panel;
 
 use crate::app::{
     App, Ask, ConfirmDialog, ConnectAsk, Dialog, EditPrompt, FindDialog, InputDialog, Job, MENUS,
-    MenuState,
+    MenuState, QuickView,
 };
 use crate::config::HotEntry;
+use crate::git::GitStatus;
 
 /// All colors in one place; selected once at startup from config
 /// (`theme = "mc" | "dark"`), then read through [`th`].
@@ -136,6 +137,18 @@ const HELP_TEXT: &[&str] = &[
     "  background: old listing + spinner stay up, Esc cancels the load.",
     "  Alt+.           show/hide dotfiles",
     "  Alt+N/E/S/T     sort by name/extension/size/mtime (again = reverse)",
+    "  Alt+Left/Right  walk the panel's directory history (back/forward)",
+    "  Alt+Up          directory hotlist (same as Ctrl+\\)",
+    "  Ctrl+X q        quick view: the other panel previews the cursor",
+    "                  file live (Tab focuses it for scrolling; again = off)",
+    "  Inside a git work tree the title shows [branch] and entries get a",
+    "  status column: M modified, A added, ? untracked, ! ignored (dim).",
+    "",
+    "# Mouse  (mouse = false in config disables)",
+    "  Click focuses a panel and moves the cursor; double-click enters.",
+    "  The wheel scrolls the hovered panel, viewer, editor, or preview.",
+    "  The bottom keybar and the F9 menu are clickable. In the editor a",
+    "  click places the cursor. Hold Shift to select terminal text.",
     "",
     "# Marking",
     "  Insert, Ctrl+T  toggle mark and advance",
@@ -242,21 +255,29 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // 2 border rows + 1 column-header row.
     app.panel_rows = main.height.saturating_sub(3) as usize;
-
-    draw_panel(
-        frame,
+    app.areas = crate::app::Areas {
+        screen: frame.area(),
         left,
-        &app.panels[0],
-        &mut app.table_states[0],
-        app.active == 0,
-    );
-    draw_panel(
-        frame,
         right,
-        &app.panels[1],
-        &mut app.table_states[1],
-        app.active == 1,
-    );
+        keybar,
+    };
+
+    let qv_side = app.quick_view.as_ref().map(|q| q.side);
+    for (i, area) in [(0, left), (1, right)] {
+        if qv_side == Some(i) {
+            let qv = app.quick_view.as_mut().expect("side implies quick view");
+            draw_quick_view(frame, area, qv, app.active == i);
+        } else {
+            draw_panel(
+                frame,
+                area,
+                &app.panels[i],
+                &mut app.table_states[i],
+                app.active == i,
+                app.git_info[i].as_ref().map(|(_, s)| s),
+            );
+        }
+    }
     draw_status(frame, status, app);
     draw_cmdline(frame, cmdline, app);
     draw_keybar(frame, keybar);
@@ -285,7 +306,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 }
 
-fn draw_panel(frame: &mut Frame, area: Rect, panel: &Panel, state: &mut TableState, active: bool) {
+fn draw_panel(
+    frame: &mut Frame,
+    area: Rect,
+    panel: &Panel,
+    state: &mut TableState,
+    active: bool,
+    git: Option<&GitStatus>,
+) {
     let title_style = if active {
         Style::new().fg(th().select_fg).bg(th().select_bg)
     } else {
@@ -297,6 +325,15 @@ fn draw_panel(frame: &mut Frame, area: Rect, panel: &Panel, state: &mut TableSta
             format!(" {} ", panel.display_path()),
             title_style,
         ));
+    if let Some(branch) = git.map(|g| g.branch.as_str()).filter(|b| !b.is_empty()) {
+        block = block.title_top(
+            Line::from(Span::styled(
+                format!(" [{branch}] "),
+                Style::new().fg(th().header_fg).bg(th().panel_bg),
+            ))
+            .right_aligned(),
+        );
+    }
     let (marked_count, marked_bytes) = panel.marked_stats();
     if marked_count > 0 {
         block = block.title_bottom(
@@ -346,10 +383,15 @@ fn draw_panel(frame: &mut Frame, area: Rect, panel: &Panel, state: &mut TableSta
     ])
     .style(Style::new().fg(th().header_fg));
 
-    let rows =
-        panel.entries.iter().enumerate().map(|(i, entry)| {
-            entry_row(entry, panel.is_marked(entry), active && i == panel.cursor)
-        });
+    let rows = panel.entries.iter().enumerate().map(|(i, entry)| {
+        let git_mark = git.map(|g| g.marks.get(&entry.name).copied());
+        entry_row(
+            entry,
+            panel.is_marked(entry),
+            active && i == panel.cursor,
+            git_mark,
+        )
+    });
 
     let table = Table::new(
         rows,
@@ -368,7 +410,75 @@ fn draw_panel(frame: &mut Frame, area: Rect, panel: &Panel, state: &mut TableSta
     frame.render_stateful_widget(table, area, state);
 }
 
-fn entry_row(entry: &Entry, marked: bool, under_cursor: bool) -> Row<'_> {
+/// The Ctrl+X Q preview pane: renders the head of the file under the
+/// other panel's cursor through the viewer's chunked line access.
+fn draw_quick_view(frame: &mut Frame, area: Rect, qv: &mut QuickView, active: bool) {
+    let title_style = if active {
+        Style::new().fg(th().select_fg).bg(th().select_bg)
+    } else {
+        Style::new().fg(th().panel_fg).bg(th().panel_bg)
+    };
+    let title = match &qv.view {
+        Some((path, _)) => format!(
+            " Quick view: {} ",
+            tail(
+                &path.display().to_string(),
+                (area.width as usize).saturating_sub(16),
+            )
+        ),
+        None => " Quick view ".to_string(),
+    };
+    let block = Block::bordered()
+        .style(Style::new().fg(th().panel_fg).bg(th().panel_bg))
+        .title(Span::styled(title, title_style));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    qv.rows = inner.height as usize;
+
+    match qv.view.as_mut() {
+        Some((_, fv)) => {
+            for row in 0..inner.height {
+                let Ok(Some(line)) = fv.line(qv.top + row as usize) else {
+                    break;
+                };
+                let text: String = expand_line(&line)
+                    .chars()
+                    .take(inner.width as usize)
+                    .collect();
+                frame.render_widget(
+                    Line::from(text),
+                    Rect {
+                        y: inner.y + row,
+                        height: 1,
+                        ..inner
+                    },
+                );
+            }
+        }
+        None if !qv.note.is_empty() => {
+            frame.render_widget(
+                Line::from(qv.note.as_str())
+                    .style(Style::new().fg(th().header_fg))
+                    .centered(),
+                Rect {
+                    y: inner.y + inner.height / 2,
+                    height: 1,
+                    ..inner
+                },
+            );
+        }
+        None => {}
+    }
+}
+
+/// `git`: None = no git column at all; Some(mark) = the panel is inside
+/// a work tree, render a one-cell status column (mark or blank).
+fn entry_row(
+    entry: &Entry,
+    marked: bool,
+    under_cursor: bool,
+    git: Option<Option<char>>,
+) -> Row<'_> {
     let (marker, base) = match entry.kind {
         EntryKind::Dir => (
             "/",
@@ -403,8 +513,34 @@ fn entry_row(entry: &Entry, marked: bool, under_cursor: bool) -> Row<'_> {
         .map(|t| DateTime::<Local>::from(t).format("%b %e %H:%M").to_string())
         .unwrap_or_default();
 
+    let name_text = format!("{marker}{}", entry.name.to_string_lossy());
+    let name_cell = match git {
+        None => Cell::from(name_text),
+        Some(mark) => {
+            let mark_style = if under_cursor {
+                style
+            } else {
+                match mark {
+                    Some('M') => Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD),
+                    Some('A') => Style::new().fg(th().exec_fg).add_modifier(Modifier::BOLD),
+                    Some('?') => Style::new().fg(th().header_fg),
+                    _ => style,
+                }
+            };
+            // dim ignored entries so build output fades into the background
+            let name_style = if mark == Some('!') && !under_cursor && !marked {
+                style.add_modifier(Modifier::DIM)
+            } else {
+                style
+            };
+            Cell::from(Line::from(vec![
+                Span::styled(mark.unwrap_or(' ').to_string(), mark_style),
+                Span::styled(name_text, name_style),
+            ]))
+        }
+    };
     Row::new([
-        Cell::from(format!("{marker}{}", entry.name.to_string_lossy())),
+        name_cell,
         Cell::from(Line::from(size).right_aligned()),
         Cell::from(mtime),
     ])
@@ -993,24 +1129,55 @@ fn hex_row(offset: u64, bytes: &[u8]) -> String {
     format!("{offset:08X}  {hex} |{ascii}|")
 }
 
+/// Menu-bar geometry: (x, width) of every title in the top bar plus the
+/// dropdown rect of the open menu — shared by drawing and mouse clicks.
+pub fn menu_layout(menu: usize, area: Rect) -> (Vec<(u16, u16)>, Rect) {
+    let mut titles = Vec::new();
+    let mut x = 0u16;
+    for (title, _) in MENUS {
+        let width = format!("  {title}  ").chars().count() as u16;
+        titles.push((area.x + x, width));
+        x += width;
+    }
+    let entries = MENUS[menu].1;
+    let label_w = entries
+        .iter()
+        .flatten()
+        .map(|(l, ..)| l.chars().count())
+        .max()
+        .unwrap_or(0);
+    let keys_w = entries
+        .iter()
+        .flatten()
+        .map(|(_, k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0);
+    let width = (label_w + keys_w + 5) as u16;
+    let dropdown = Rect {
+        x: titles[menu].0.min(area.width.saturating_sub(width)),
+        y: area.y + 1,
+        width,
+        height: (entries.len() as u16 + 2).min(area.height.saturating_sub(1)),
+    };
+    (titles, dropdown)
+}
+
 fn draw_menu(frame: &mut Frame, ms: &MenuState) {
     let area = frame.area();
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let (titles, dropdown) = menu_layout(ms.menu, area);
 
     let bar = Rect { height: 1, ..area };
     frame.render_widget(Clear, bar);
     let mut spans = Vec::new();
-    let mut x_offsets = Vec::new();
-    let mut x = 0u16;
     for (i, (title, _)) in MENUS.iter().enumerate() {
         let text = format!("  {title}  ");
-        x_offsets.push(x);
-        x += text.chars().count() as u16;
         spans.push(Span::styled(text, if i == ms.menu { sel } else { base }));
     }
+    let used = titles.last().map(|(x, w)| x + w).unwrap_or(0);
     spans.push(Span::styled(
-        " ".repeat((bar.width as usize).saturating_sub(x as usize)),
+        " ".repeat((bar.width as usize).saturating_sub(used as usize)),
         base,
     ));
     frame.render_widget(Line::from(spans), bar);
@@ -1028,13 +1195,6 @@ fn draw_menu(frame: &mut Frame, ms: &MenuState) {
         .map(|(_, k, _)| k.chars().count())
         .max()
         .unwrap_or(0);
-    let width = (label_w + keys_w + 5) as u16;
-    let dropdown = Rect {
-        x: (area.x + x_offsets[ms.menu]).min(area.width.saturating_sub(width)),
-        y: area.y + 1,
-        width,
-        height: (entries.len() as u16 + 2).min(area.height.saturating_sub(1)),
-    };
     frame.render_widget(Clear, dropdown);
     let block = Block::bordered().style(base);
     let inner = block.inner(dropdown);

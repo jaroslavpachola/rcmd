@@ -16,8 +16,9 @@ themes, archive browsing (zip, tar, tar.gz, tar.xz, tar.bz2) with
 extraction, and copying into zip archives. From the 2.0 roadmap: find
 file / panelize / directory compare, non-blocking listings with
 filesystem watching, **SFTP remote panels** (browse, transfer, edit on
-servers), and a **built-in editor** with syntax highlighting — see
-below.
+servers), a **built-in editor** with syntax highlighting, and UX depth:
+mouse support, per-panel directory history, quick view, and git status
+in the panels — see below.
 
 ## Install & run
 
@@ -86,7 +87,10 @@ end
 | Ctrl+F | Filter shown files by glob (`*` or empty clears) |
 | Ctrl+\ | Directory hotlist (Enter cd, `a` add current, `d` delete) |
 | Alt+F7 | Find file (glob + optional content); results panelized |
+| Alt+← / Alt+→ | Directory history back / forward (per panel) |
+| Alt+↑ | Directory hotlist |
 | Ctrl+X d | Compare directories (marks differences in both panels) |
+| Ctrl+X q | Quick view: other panel previews the cursor file |
 | Ctrl+Space | Directory size (background scan into the Size column) |
 | Ctrl+R | Reload panel (also restores listing after find/panelize) |
 | Esc | Cancel dialog / running operation / clear command line |
@@ -122,6 +126,30 @@ dir), where marking and F5/F6/F8 work as usual. *Panelize command…*
 (`git ls-files -m`, `rg -l TODO`, …). *Compare directories* (Ctrl+X d)
 marks files that are missing on the other side or differ in size/mtime
 in both panels — then a plain F5 copies the marked differences across.
+
+**Mouse**: click focuses a panel and moves the cursor, double-click
+enters, the wheel scrolls whatever it hovers (panels, viewer, editor,
+quick view), the bottom keybar and the F9 menu are clickable, and a
+click in the editor places the cursor. All additive — every feature
+stays keyboard-reachable. Hold Shift to select terminal text as usual;
+`mouse = false` in the config turns capture off entirely.
+
+**Panel history**: each panel remembers where it has been —
+Alt+←/Alt+→ walk back and forward browser-style (sftp:// locations
+reconnect through the connection cache), Alt+↑ opens the hotlist.
+
+**Quick view** (Ctrl+X q): the other panel becomes a live preview of
+the file under the cursor, updating as you move. It uses the viewer's
+chunked reader, so previewing a multi-GB log is instant. Tab focuses
+the preview for scrolling (arrows/PgUp/PgDn); Ctrl+X q turns it off.
+
+**Git awareness**: inside a git work tree the panel title shows the
+branch (`[main]`) and each entry gets a one-cell status column —
+`M` modified, `A` added, `?` untracked, `!` ignored (ignored entries
+are dimmed); changes deep inside a subdirectory mark the subdirectory.
+Statuses are computed on a background thread so huge repositories never
+block the UI. Built behind the default-on `git` cargo feature;
+`git = false` in the config disables it at runtime.
 
 **Archives**: Enter on a `.zip`, `.tar`, `.tar.gz`/`.tgz`,
 `.tar.xz`/`.txz`, or `.tar.bz2`/`.tbz2` file browses it like a directory
@@ -173,6 +201,8 @@ mode, hidden-file setting, and the hotlist persist automatically):
 theme = "mc"        # or "dark" (truecolor); applied at startup
 keymap = "mc"       # or "modern": Left/Right = parent/enter (lynx style)
 watch = true        # auto-reload panels on external changes
+mouse = true        # click/double-click/wheel support
+git = true          # git status column + branch in panel titles
 editor = "internal" # or "external" ($VISUAL/$EDITOR for F4)
 show_hidden = true
 sort_key = "name"   # name | ext | size | mtime
@@ -184,7 +214,9 @@ sort_reverse = false
 # actions: help view edit copy move mkdir delete delete-perm select-group
 #   unselect-group invert-selection quit shell reload swap-panels
 #   toggle-hidden sort-name sort-ext sort-size sort-mtime sort-reverse
-#   menu mark quick-search hotlist filter up-dir enter
+#   menu mark quick-search hotlist filter up-dir enter history-back
+#   history-forward quick-view sftp-link find-file panelize compare-dirs
+#   dir-size
 
 [[hotlist]]
 label = "projects"

@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod git;
 mod keymap;
 mod ui;
 
@@ -16,8 +17,15 @@ fn main() -> Result<()> {
     let args = parse_args()?;
     let (cfg, load_warning) = config::load();
     let theme_warning = ui::init_theme(&cfg.theme);
+    let mouse = cfg.mouse;
     let mut terminal = ratatui::init();
+    if mouse {
+        app::set_mouse_capture(true);
+    }
     let result = run(&args, cfg, [load_warning, theme_warning], &mut terminal);
+    if mouse {
+        app::set_mouse_capture(false);
+    }
     ratatui::restore();
     result
 }

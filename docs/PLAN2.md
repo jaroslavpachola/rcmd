@@ -1,6 +1,6 @@
 # rcmd 2.0 — beyond Midnight Commander
 
-**Status:** in progress — P0–P4 shipped (2026-07-04); next: P5
+**Status:** in progress — P0–P5 shipped (2026-07-04); next: P6
 **Prerequisite:** PLAN.md complete (it is). Baseline: MC-parity dual-pane
 manager, ~43 tests, pty-verified, no async runtime, `FsProvider` seam.
 
@@ -136,6 +136,27 @@ literal (no $1 groups). No LSP, no splits, as decreed.
 - **Git awareness** (feature-gated on `git2`): a one-cell status column
   (M/A/?/ignored-dim) inside repos; branch name in the panel title.
 - Exit: each feature individually verified in the pty harness.
+
+**DONE (2026-07-04).** All four features shipped, each with its own pty
+scenario (suite now 65 checks). Mouse: SGR events from crossterm, layout
+rects recorded per draw for hit-testing (`Areas`), keybar clicks
+synthesize F-keys so every mode gets them for free, menu geometry shared
+between drawing and clicking (`ui::menu_layout`), editor clicks invert
+the tab-aware `screen_col`, capture released around Ctrl+O; `mouse`
+config key (default on). History: locations stored as display paths in
+`Panel` (archive-internal stops excluded), committed only when the
+matching listing lands so failed/abandoned navigations self-correct;
+sftp:// entries reconnect via the connection cache. Quick view: reuses
+`FileView`, refreshed per loop tick, reduced key set while the preview
+pane is focused (scroll/Tab/quit only — nothing acts on the hidden
+listing). Git: `git2` without default features (no openssl), scans on
+throwaway threads keyed by (side, cwd) with results dropped when stale;
+rescans on job-done/shell-return/editor-close/watcher-reload; deep
+changes collapse onto the subdirectory entry; branch resolution handles
+detached and unborn HEADs. Scope cuts: no drag-and-drop or mouse marking
+(Insert/glob do it), no click-to-sort column headers, preview is
+text-only (no hex), git column is per-directory status, not per-panel
+refresh on every keystroke.
 
 ### P6 — extensibility
 - **Openers first** (no scripting needed): `[open]` config section maps

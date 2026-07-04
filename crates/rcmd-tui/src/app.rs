@@ -1,11 +1,15 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use notify::Watcher as _;
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 use rcmd_core::entry;
 use rcmd_core::find::{self, FindEvent, FindHandle};
@@ -17,7 +21,7 @@ use rcmd_core::view::FileView;
 
 use crate::config::{Config, HotEntry};
 use crate::keymap::Keymap;
-use crate::{config, keymap, ui};
+use crate::{config, git, keymap, ui};
 
 pub enum InputAction {
     CopyTo {
@@ -208,6 +212,41 @@ pub enum EditPrompt {
     },
 }
 
+/// Where the main-screen regions landed in the last draw; filled by
+/// [`ui::draw`], read by the mouse hit-testing.
+#[derive(Default, Clone, Copy)]
+pub struct Areas {
+    pub screen: Rect,
+    pub left: Rect,
+    pub right: Rect,
+    pub keybar: Rect,
+}
+
+/// Turn terminal mouse reporting on or off (a no-op if the terminal
+/// ignores it). Kept here so the shell suspend can toggle it too.
+pub fn set_mouse_capture(on: bool) {
+    let mut out = std::io::stdout();
+    let _ = if on {
+        ratatui::crossterm::execute!(out, EnableMouseCapture)
+    } else {
+        ratatui::crossterm::execute!(out, DisableMouseCapture)
+    };
+}
+
+/// Ctrl+X Q: one panel becomes a live preview of the file under the
+/// other panel's cursor (chunked access via [`FileView`], so huge files
+/// preview instantly).
+pub struct QuickView {
+    /// Which panel renders the preview.
+    pub side: usize,
+    pub view: Option<(PathBuf, FileView)>,
+    /// Shown instead of content when there is nothing to preview.
+    pub note: String,
+    pub top: usize,
+    /// Content rows; updated on every draw, drives paging.
+    pub rows: usize,
+}
+
 /// Full-screen F3 viewer state; the chunked file access lives in
 /// [`FileView`], this is only presentation state.
 pub struct Viewer {
@@ -263,6 +302,9 @@ pub enum Action {
     Quit,
     Shell,
     SftpLink,
+    HistoryBack,
+    HistoryForward,
+    QuickView,
     Reload,
     SwapPanels,
     ToggleHidden,
@@ -402,6 +444,7 @@ pub struct App {
     pub job: Option<Job>,
     pub viewer: Option<Viewer>,
     pub editor: Option<EditorState>,
+    pub quick_view: Option<QuickView>,
     pub menu: Option<MenuState>,
     pub help: Option<HelpState>,
     pub cmdline: CmdLine,
@@ -417,6 +460,16 @@ pub struct App {
     watch: Option<WatchState>,
     /// Ctrl+X was pressed; the next key completes the chord.
     prefix_cx: bool,
+    pub areas: Areas,
+    /// Last left-button press, for double-click detection.
+    last_click: Option<(Instant, u16, u16)>,
+    /// Git status per panel side (dir it was computed for + result);
+    /// filled by background scans, cleared when a side leaves the repo.
+    pub git_info: [Option<(PathBuf, git::GitStatus)>; 2],
+    /// Directory a scan was already dispatched for; None forces a rescan.
+    git_seen: [Option<PathBuf>; 2],
+    git_tx: std::sync::mpsc::Sender<(usize, PathBuf, Option<git::GitStatus>)>,
+    git_rx: std::sync::mpsc::Receiver<(usize, PathBuf, Option<git::GitStatus>)>,
     pub config: Config,
     keymap: Keymap,
     pending_exec: Option<Exec>,
@@ -476,6 +529,7 @@ impl App {
         } else {
             Some(format!(" {} ", warnings.join(" · ")))
         };
+        let (git_tx, git_rx) = std::sync::mpsc::channel();
         Ok(App {
             panels: [left, right],
             table_states: [TableState::default(), TableState::default()],
@@ -486,6 +540,7 @@ impl App {
             job: None,
             viewer: None,
             editor: None,
+            quick_view: None,
             menu: None,
             help: None,
             cmdline: CmdLine::default(),
@@ -497,6 +552,12 @@ impl App {
             du: None,
             watch,
             prefix_cx: false,
+            areas: Areas::default(),
+            last_click: None,
+            git_info: [None, None],
+            git_seen: [None, None],
+            git_tx,
+            git_rx,
             config,
             keymap,
             pending_exec: None,
@@ -513,6 +574,8 @@ impl App {
             self.poll_loads();
             self.update_watches();
             self.tick_watch();
+            self.update_quick_view();
+            self.git_tick();
             terminal.draw(|frame| ui::draw(frame, self))?;
             let loading = self.panels.iter().any(Panel::is_loading);
             let watch_pending = self
@@ -530,11 +593,12 @@ impl App {
             } else {
                 Duration::from_millis(500)
             };
-            if event::poll(timeout)?
-                && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
-                self.on_key(key);
+            if event::poll(timeout)? {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
+                    Event::Mouse(mouse) => self.on_mouse(mouse),
+                    _ => {}
+                }
             }
             if let Some(exec) = self.pending_exec.take() {
                 self.execute(terminal, exec)?;
@@ -648,6 +712,7 @@ impl App {
                 watch.last[i] = None;
                 let cwd = self.panels[i].cwd.clone();
                 let _ = self.panels[i].request_dir(cwd, LoadKind::Reload);
+                self.git_seen[i] = None;
             }
         }
     }
@@ -850,6 +915,9 @@ impl App {
 
         let cwd = self.panels[self.active].local_cwd();
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        if self.config.mouse {
+            set_mouse_capture(false);
+        }
         ratatui::restore();
         // Shell-style job control: the child runs in its own foreground
         // process group, so Ctrl+C/Ctrl+Z hit it and never rcmd. We ignore
@@ -933,10 +1001,14 @@ impl App {
             libc::signal(libc::SIGTTOU, old_sigttou);
         }
         *terminal = ratatui::init();
+        if self.config.mouse {
+            set_mouse_capture(true);
+        }
         let _ = terminal.clear();
         for panel in &mut self.panels {
             let _ = panel.reload();
         }
+        self.git_refresh();
         Ok(())
     }
 
@@ -984,6 +1056,7 @@ impl App {
             for panel in &mut self.panels {
                 let _ = panel.reload();
             }
+            self.git_refresh();
             self.status = Some(match (aborted, skipped) {
                 (true, _) => format!(" aborted — {files_done} item(s) processed "),
                 (false, 0) => format!(" done — {files_done} item(s) processed "),
@@ -1014,6 +1087,186 @@ impl App {
             self.on_quick_search_key(key);
         } else {
             self.on_panel_key(key);
+        }
+    }
+
+    fn on_mouse(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let now = Instant::now();
+                let double = self.last_click.is_some_and(|(at, x, y)| {
+                    x == mouse.column
+                        && y == mouse.row
+                        && now.duration_since(at) < Duration::from_millis(500)
+                });
+                self.last_click = if double {
+                    None
+                } else {
+                    Some((now, mouse.column, mouse.row))
+                };
+                self.on_click(mouse.column, mouse.row, double);
+            }
+            MouseEventKind::ScrollUp => self.on_wheel(mouse.column, mouse.row, -3),
+            MouseEventKind::ScrollDown => self.on_wheel(mouse.column, mouse.row, 3),
+            _ => {}
+        }
+    }
+
+    fn on_click(&mut self, x: u16, y: u16, double: bool) {
+        // Dialogs and prompts stay keyboard-only; the menu is the exception.
+        if self.job.is_some()
+            || self.connect.is_some()
+            || self.find.is_some()
+            || self.dialog.is_some()
+            || self.help.is_some()
+            || self.viewer.is_some()
+        {
+            return;
+        }
+        if let Some(st) = self.editor.as_mut() {
+            if st.prompt.is_none() && y >= 1 && (y as usize) <= st.rows {
+                let line = (st.top + y as usize - 1).min(st.ed.line_count().saturating_sub(1));
+                let col = col_at_screen(&st.ed.line(line), st.left + x as usize);
+                st.ed.goto(rcmd_edit::Pos { line, col }, false);
+            }
+            return;
+        }
+        if self.menu.is_some() {
+            self.menu_click(x, y);
+            return;
+        }
+        self.quick_search = None;
+        self.prefix_cx = false;
+        let pos = Position { x, y };
+        if self.areas.keybar.contains(pos) {
+            // 10 buttons, 8 cells each ("nnLabel  ") → F1..F10
+            let n = ((x - self.areas.keybar.x) / 8 + 1).min(10) as u8;
+            self.on_key(KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE));
+            return;
+        }
+        for side in [0, 1] {
+            let area = if side == 0 {
+                self.areas.left
+            } else {
+                self.areas.right
+            };
+            if area.contains(pos) {
+                self.panel_click(side, area, y, double);
+                return;
+            }
+        }
+    }
+
+    fn panel_click(&mut self, side: usize, area: Rect, y: u16, double: bool) {
+        self.active = side;
+        if self.quick_view.as_ref().is_some_and(|q| q.side == side) {
+            return;
+        }
+        // 2 border+header rows on top, 1 border row at the bottom
+        let content_y = area.y + 2;
+        if y < content_y || y + 1 >= area.y + area.height {
+            return;
+        }
+        let index = self.table_states[side].offset() + (y - content_y) as usize;
+        if index < self.panels[side].entries.len() {
+            self.panels[side].cursor = index;
+            if double {
+                self.fallible(|p| p.enter());
+            }
+        }
+    }
+
+    fn menu_click(&mut self, x: u16, y: u16) {
+        let Some(ms) = self.menu.as_mut() else { return };
+        let (titles, dropdown) = crate::ui::menu_layout(ms.menu, self.areas.screen);
+        if y == self.areas.screen.y {
+            match titles.iter().position(|(tx, tw)| x >= *tx && x < tx + tw) {
+                Some(menu) => {
+                    ms.menu = menu;
+                    ms.item = first_menu_item(MENUS[menu].1);
+                }
+                None => self.menu = None,
+            }
+            return;
+        }
+        let inner = Rect {
+            x: dropdown.x + 1,
+            y: dropdown.y + 1,
+            width: dropdown.width.saturating_sub(2),
+            height: dropdown.height.saturating_sub(2),
+        };
+        if inner.contains(Position { x, y }) {
+            let idx = (y - inner.y) as usize;
+            // a separator click keeps the menu open
+            if let Some(Some((_, _, action))) = MENUS[ms.menu].1.get(idx) {
+                let action = *action;
+                self.menu = None;
+                self.run_action(action);
+            }
+            return;
+        }
+        self.menu = None;
+    }
+
+    fn on_wheel(&mut self, x: u16, y: u16, delta: isize) {
+        if self.job.is_some()
+            || self.connect.is_some()
+            || self.find.is_some()
+            || self.dialog.is_some()
+            || self.menu.is_some()
+        {
+            return;
+        }
+        if let Some(help) = self.help.as_mut() {
+            let rows = help.rows.max(1);
+            let max_top = crate::ui::help_lines().saturating_sub(rows);
+            help.top = help.top.saturating_add_signed(delta).min(max_top);
+            return;
+        }
+        if let Some(st) = self.editor.as_mut() {
+            if st.prompt.is_none() {
+                st.ed.move_vert(delta, false);
+                self.ensure_editor_visible();
+            }
+            return;
+        }
+        if let Some(v) = self.viewer.as_mut() {
+            let rows = v.rows.max(1);
+            viewer_scroll(v, delta, rows);
+            return;
+        }
+        let pos = Position { x, y };
+        for side in [0, 1] {
+            let area = if side == 0 {
+                self.areas.left
+            } else {
+                self.areas.right
+            };
+            if !area.contains(pos) {
+                continue;
+            }
+            if let Some(qv) = self.quick_view.as_mut()
+                && qv.side == side
+            {
+                if delta < 0 {
+                    qv.top = qv.top.saturating_sub(delta.unsigned_abs());
+                } else if let Some((_, fv)) = qv.view.as_mut() {
+                    let want = qv.top + delta as usize;
+                    let _ = fv.ensure_lines(want + 1);
+                    qv.top = want.min(fv.known_lines().saturating_sub(1));
+                }
+                return;
+            }
+            // scroll the hovered panel's cursor without stealing focus
+            let panel = &mut self.panels[side];
+            for _ in 0..delta.unsigned_abs() {
+                if delta < 0 {
+                    panel.move_up();
+                } else {
+                    panel.move_down();
+                }
+            }
+            return;
         }
     }
 
@@ -1200,10 +1453,18 @@ impl App {
                     action: InputAction::SftpConnect,
                 }));
             }
+            Action::HistoryBack => self.history_step(false),
+            Action::HistoryForward => self.history_step(true),
+            Action::QuickView => self.toggle_quick_view(),
             Action::Reload => self.fallible(|p| p.reload().map(|()| true)),
             Action::SwapPanels => {
                 self.panels.swap(0, 1);
                 self.table_states.swap(0, 1);
+                self.git_info.swap(0, 1);
+                self.git_seen.swap(0, 1);
+                if let Some(qv) = self.quick_view.as_mut() {
+                    qv.side ^= 1;
+                }
             }
             Action::ToggleHidden => self.fallible(|p| p.toggle_hidden().map(|()| true)),
             Action::Sort(key) => self.panel().set_sort(key),
@@ -1212,6 +1473,143 @@ impl App {
                 panel.sort_reverse = !panel.sort_reverse;
                 panel.resort();
             }
+        }
+    }
+
+    /// Collect finished git scans and dispatch new ones when a local
+    /// panel sits in a directory we have no (fresh) status for.
+    fn git_tick(&mut self) {
+        while let Ok((side, dir, status)) = self.git_rx.try_recv() {
+            let panel = &self.panels[side];
+            if panel.is_local() && panel.cwd == dir {
+                self.git_info[side] = status.map(|s| (dir, s));
+            }
+        }
+        if !git::ENABLED || !self.config.git {
+            return;
+        }
+        for side in [0, 1] {
+            let panel = &self.panels[side];
+            if !panel.is_local() {
+                self.git_info[side] = None;
+                self.git_seen[side] = None;
+                continue;
+            }
+            if panel.is_loading() || self.git_seen[side].as_ref() == Some(&panel.cwd) {
+                continue;
+            }
+            self.git_seen[side] = Some(panel.cwd.clone());
+            if self.git_info[side]
+                .as_ref()
+                .is_some_and(|(dir, _)| dir != &panel.cwd)
+            {
+                self.git_info[side] = None;
+            }
+            let tx = self.git_tx.clone();
+            let dir = panel.cwd.clone();
+            std::thread::spawn(move || {
+                let status = git::scan(&dir);
+                let _ = tx.send((side, dir, status));
+            });
+        }
+    }
+
+    /// Something may have changed repo state (job, shell, editor save):
+    /// rescan both sides on the next tick.
+    fn git_refresh(&mut self) {
+        self.git_seen = [None, None];
+    }
+
+    /// Ctrl+X Q: turn the other panel into a live file preview (again
+    /// turns it back into a listing).
+    fn toggle_quick_view(&mut self) {
+        if self.quick_view.take().is_some() {
+            return;
+        }
+        self.quick_view = Some(QuickView {
+            side: self.active ^ 1,
+            view: None,
+            note: String::new(),
+            top: 0,
+            rows: 1,
+        });
+        self.update_quick_view();
+    }
+
+    /// Keep the preview in sync with the cursor of the browsing panel;
+    /// called every loop iteration, reopens only when the file changes.
+    fn update_quick_view(&mut self) {
+        let Some(qv) = self.quick_view.as_mut() else {
+            return;
+        };
+        let browse = &self.panels[qv.side ^ 1];
+        let entry = browse.selected();
+        let name = match entry {
+            Some(e) if !e.is_parent() && !e.is_dir() => e.name.clone(),
+            _ => {
+                qv.view = None;
+                qv.note = String::new();
+                return;
+            }
+        };
+        if !browse.is_local() {
+            qv.view = None;
+            qv.note = "no preview here — F3 views remote/archive files".into();
+            return;
+        }
+        let path = browse.cwd.join(name);
+        if qv.view.as_ref().is_some_and(|(p, _)| p == &path) {
+            return;
+        }
+        match FileView::open(&path) {
+            Ok(fv) => {
+                qv.view = Some((path, fv));
+                qv.top = 0;
+                qv.note.clear();
+            }
+            Err(err) => {
+                qv.view = None;
+                qv.note = err.to_string();
+            }
+        }
+    }
+
+    /// Alt+←/→: walk the active panel's directory history.
+    fn history_step(&mut self, forward: bool) {
+        let panel = &mut self.panels[self.active];
+        let target = if forward {
+            panel.hist_forward()
+        } else {
+            panel.hist_back()
+        };
+        match target {
+            Some(loc) => self.navigate(&loc),
+            None => {
+                self.status = Some(if forward {
+                    " history: already at the newest entry ".into()
+                } else {
+                    " history: already at the oldest entry ".into()
+                });
+            }
+        }
+    }
+
+    /// Send the active panel to a history location: a local path or a
+    /// full sftp:// URL (routed through the connection cache).
+    fn navigate(&mut self, target: &str) {
+        if target.starts_with("sftp://") {
+            self.connect_sftp(target);
+            return;
+        }
+        let path = PathBuf::from(target);
+        let panel = &mut self.panels[self.active];
+        let result = if panel.is_local() {
+            panel.cd(path)
+        } else {
+            panel.to_local(path)
+        };
+        if let Err(err) = result {
+            self.status = Some(format!(" {err} "));
         }
     }
 
@@ -1386,6 +1784,7 @@ impl App {
         for panel in &mut self.panels {
             let _ = panel.reload();
         }
+        self.git_refresh();
     }
 
     /// Save (used by F2 and the quit confirm); returns success.
@@ -2456,14 +2855,52 @@ impl App {
         // Ctrl+X chord: the next key selects the command.
         if self.prefix_cx {
             self.prefix_cx = false;
-            if let KeyCode::Char('d' | 'D') = key.code {
-                self.run_action(Action::CompareDirs);
+            match key.code {
+                KeyCode::Char('d' | 'D') => self.run_action(Action::CompareDirs),
+                KeyCode::Char('q' | 'Q') => self.run_action(Action::QuickView),
+                _ => {}
             }
             return;
         }
         if ctrl && key.code == KeyCode::Char('x') {
             self.prefix_cx = true;
-            self.status = Some(" C-x  (d = compare directories) ".into());
+            self.status = Some(" C-x  (d = compare directories, q = quick view) ".into());
+            return;
+        }
+        // Focused preview pane: a reduced key set (scrolling, Tab back,
+        // quit); everything else is ignored rather than acting on the
+        // hidden listing underneath.
+        if let Some(qv) = self.quick_view.as_mut()
+            && qv.side == self.active
+        {
+            let rows = qv.rows.max(1);
+            let page = rows.saturating_sub(1).max(1);
+            match key.code {
+                KeyCode::Tab | KeyCode::BackTab => self.active ^= 1,
+                KeyCode::Up => qv.top = qv.top.saturating_sub(1),
+                KeyCode::PageUp => qv.top = qv.top.saturating_sub(page),
+                KeyCode::Home => qv.top = 0,
+                KeyCode::Down | KeyCode::PageDown | KeyCode::End => {
+                    if let Some((_, fv)) = qv.view.as_mut() {
+                        let want = match key.code {
+                            KeyCode::Down => qv.top + 1,
+                            KeyCode::PageDown => qv.top + page,
+                            _ => usize::MAX,
+                        };
+                        let known = if want == usize::MAX {
+                            fv.total_lines().unwrap_or(0)
+                        } else {
+                            let _ = fv.ensure_lines(want + 1);
+                            fv.known_lines()
+                        };
+                        let max_top =
+                            known.saturating_sub(if want == usize::MAX { rows } else { 1 });
+                        qv.top = want.min(max_top);
+                    }
+                }
+                KeyCode::F(10) => self.quit = true,
+                _ => {}
+            }
             return;
         }
         // Structural keys: navigation and command-line plumbing.
@@ -2472,11 +2909,11 @@ impl App {
                 self.active ^= 1;
                 return;
             }
-            KeyCode::Up => {
+            KeyCode::Up if !alt => {
                 self.panel().move_up();
                 return;
             }
-            KeyCode::Down => {
+            KeyCode::Down if !alt => {
                 self.panel().move_down();
                 return;
             }
@@ -2539,7 +2976,7 @@ impl App {
         // text present they belong to line editing.
         let eligible = match key.code {
             KeyCode::Char(_) if !ctrl && !alt => cmd_empty,
-            KeyCode::Left | KeyCode::Right => cmd_empty,
+            KeyCode::Left | KeyCode::Right => cmd_empty || alt,
             _ => true,
         };
         if eligible {
@@ -2883,6 +3320,20 @@ fn select_match(ed: &mut rcmd_edit::Editor, m: rcmd_edit::Match) {
     if m.len > 0 {
         ed.goto(end, true);
     }
+}
+
+/// Inverse of [`ui::screen_col`]: the character index whose cell covers
+/// screen column `target` (8-wide tab stops), for mouse clicks.
+fn col_at_screen(text: &str, target: usize) -> usize {
+    let mut screen = 0;
+    for (i, ch) in text.chars().enumerate() {
+        let width = if ch == '\t' { 8 - screen % 8 } else { 1 };
+        if screen + width > target {
+            return i;
+        }
+        screen += width;
+    }
+    text.chars().count()
 }
 
 fn home_dir() -> PathBuf {
