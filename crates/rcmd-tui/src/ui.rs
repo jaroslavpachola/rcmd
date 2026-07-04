@@ -522,11 +522,7 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
     } else {
         v.file.offset_of_line(v.top).unwrap_or(0)
     };
-    let percent = if v.file.size == 0 {
-        100
-    } else {
-        offset * 100 / v.file.size
-    };
+    let percent = (offset * 100).checked_div(v.file.size).unwrap_or(100);
     let mode = if v.hex {
         "hex"
     } else if v.wrap {

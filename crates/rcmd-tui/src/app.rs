@@ -642,11 +642,9 @@ impl App {
             KeyCode::F(7) | KeyCode::Char('/') => {
                 v.prompt = Some((v.search.clone(), v.search.chars().count()));
             }
-            KeyCode::Char('n') => {
-                if !v.search.is_empty() {
-                    let from = v.found.map(|f| f + 1).unwrap_or(v.top);
-                    viewer_search(v, from, true);
-                }
+            KeyCode::Char('n') if !v.search.is_empty() => {
+                let from = v.found.map(|f| f + 1).unwrap_or(v.top);
+                viewer_search(v, from, true);
             }
             _ => {}
         }
