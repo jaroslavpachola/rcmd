@@ -15,8 +15,9 @@ file with keymap presets/custom bindings, quick search, filter, hotlist,
 themes, archive browsing (zip, tar, tar.gz, tar.xz, tar.bz2) with
 extraction, and copying into zip archives. From the 2.0 roadmap: find
 file / panelize / directory compare, non-blocking listings with
-filesystem watching, and **SFTP remote panels** (browse, transfer, edit
-on servers — see below).
+filesystem watching, **SFTP remote panels** (browse, transfer, edit on
+servers), and a **built-in editor** with syntax highlighting — see
+below.
 
 ## Install & run
 
@@ -69,7 +70,7 @@ end
 | Backspace | Parent directory / leave archive |
 | F1 | Help |
 | F3 | View file (internal viewer) |
-| F4 | Edit file in $VISUAL / $EDITOR (fallback vi) |
+| F4 | Edit file (built-in editor; `editor = "external"` for $EDITOR) |
 | F9 | Pulldown menu |
 | Insert, Ctrl+T | Mark entry and advance |
 | `+` / `-` (or `\`) | Select / unselect by glob |
@@ -132,6 +133,19 @@ F5 with the destination panel inside a zip, or any destination written
 as `path/to/archive.zip://dir`. The archive index loads once at open;
 each member read decodes only that member.
 
+**Editor** (F4): a built-in mcedit-style editor. F2 saves (atomically,
+preserving permissions and CRLF line endings), F3 starts marking
+(Shift+arrows also select), Ctrl+C/X/V copy/cut/paste, Ctrl+Z/Ctrl+Y
+undo/redo (unlimited, with typing bursts grouped), F7 searches with a
+smartcase regex and Shift+F7 repeats, F4 replaces interactively
+(Replace / Skip / All / Quit), F8 deletes the selection or line, Enter
+auto-indents, Ctrl+arrows hop words, and F10/Esc quits (asking
+Save/Discard/Cancel when modified). Known file types get syntect syntax
+colors (skipped for files over 2 MB — a 50 MB log still opens in about
+0.2 s). On an SFTP panel F4 edits a local scratch copy and uploads it
+back when you close the editor. Set `editor = "external"` in the config
+to keep using $VISUAL/$EDITOR.
+
 **Remote filesystems (SFTP)**: `cd sftp://[user@]host[:port][/path]`
 (or F9 → Command → SFTP link) connects a panel to a server — user
 defaults to your login, path to the remote home. Authentication tries
@@ -159,6 +173,7 @@ mode, hidden-file setting, and the hotlist persist automatically):
 theme = "mc"        # or "dark" (truecolor); applied at startup
 keymap = "mc"       # or "modern": Left/Right = parent/enter (lynx style)
 watch = true        # auto-reload panels on external changes
+editor = "internal" # or "external" ($VISUAL/$EDITOR for F4)
 show_hidden = true
 sort_key = "name"   # name | ext | size | mtime
 sort_reverse = false
@@ -189,6 +204,8 @@ The e2e suite includes an SFTP scenario that spins up a local paramiko
 server (`pip install paramiko`; skipped when unavailable).
 
 Workspace layout: `crates/rcmd-core` (panel/fs logic, no TUI deps),
-`crates/rcmd-tui` (ratatui frontend, binary `rcmd`). CI runs fmt,
+`crates/rcmd-edit` (editor buffer/undo/search, TUI-free; syntect behind
+the `syntax` feature), `crates/rcmd-tui` (ratatui frontend, binary
+`rcmd`). CI runs fmt,
 clippy, unit tests, and the pty e2e suite on Linux (macOS temporarily
 suspended). Licensed MIT.

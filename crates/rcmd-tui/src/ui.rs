@@ -8,7 +8,8 @@ use rcmd_core::entry::{Entry, EntryKind};
 use rcmd_core::panel::Panel;
 
 use crate::app::{
-    App, Ask, ConfirmDialog, ConnectAsk, Dialog, FindDialog, InputDialog, Job, MENUS, MenuState,
+    App, Ask, ConfirmDialog, ConnectAsk, Dialog, EditPrompt, FindDialog, InputDialog, Job, MENUS,
+    MenuState,
 };
 use crate::config::HotEntry;
 
@@ -187,9 +188,20 @@ const HELP_TEXT: &[&str] = &[
     "  Left/Right      horizontal scroll",
     "  F3/F10/Esc/q    close the viewer",
     "",
+    "# Editor (F4, built-in)",
+    "  F2 save (atomic, keeps permissions and CRLF)   F10/Esc quit",
+    "  F3 mark (select; Shift+arrows also select)     F8 delete line",
+    "  Ctrl+C/X/V copy/cut/paste   Ctrl+Z undo   Ctrl+Y redo",
+    "  Ctrl+A select all   Ctrl+arrows word hop   Tab inserts a tab",
+    "  F7 search (regex, smartcase), Shift+F7 next match",
+    "  F4 replace: pattern, replacement, then Replace/Skip/All/Quit",
+    "  Enter auto-indents. Syntax colors appear for known file types.",
+    "  On sftp panels F4 edits a local copy, uploaded back on quit.",
+    "  editor = \"external\" in the config restores $VISUAL/$EDITOR.",
+    "",
     "# Other",
     "  F1              this help",
-    "  F4              edit in $VISUAL / $EDITOR",
+    "  F4              edit (built-in editor, see above)",
     "  F9              pulldown menu",
     "  F10             quit",
     "  rcmd -P FILE    write last directory to FILE on exit",
@@ -207,6 +219,10 @@ pub fn help_lines() -> usize {
 pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.help.is_some() {
         draw_help(frame, app);
+        return;
+    }
+    if app.editor.is_some() {
+        draw_editor(frame, app);
         return;
     }
     if app.viewer.is_some() {
@@ -555,6 +571,254 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
         .style(base),
         bottom,
     );
+}
+
+/// Screen column of character `col` in `text`, with 8-wide tab stops —
+/// must match how [`draw_editor`] expands lines.
+pub fn screen_col(text: &str, col: usize) -> usize {
+    let mut scol = 0usize;
+    for c in text.chars().take(col) {
+        scol += match c {
+            '\t' => 8 - scol % 8,
+            _ => 1,
+        };
+    }
+    scol
+}
+
+/// One editor line as styled spans: syntax colors, selection overlay,
+/// tab expansion and horizontal clipping in a single pass.
+#[allow(clippy::too_many_arguments)]
+fn editor_line(
+    text: &str,
+    spans: &[(usize, usize, [u8; 3])],
+    sel: Option<(usize, usize)>,
+    left: usize,
+    cols: usize,
+    base: Style,
+    sel_style: Style,
+) -> Line<'static> {
+    let mut out: Vec<Span> = Vec::new();
+    let mut run = String::new();
+    let mut run_style = base;
+    let mut span_i = 0usize;
+    let mut scol = 0usize;
+    let flush = |run: &mut String, style: Style, out: &mut Vec<Span>| {
+        if !run.is_empty() {
+            out.push(Span::styled(std::mem::take(run), style));
+        }
+    };
+    for (idx, c) in text.chars().chain(std::iter::once(' ')).enumerate() {
+        // the trailing space stands in for the newline cell so a
+        // selection that spans lines shows on the line end
+        if scol >= left + cols {
+            break;
+        }
+        while span_i < spans.len() && spans[span_i].1 <= idx {
+            span_i += 1;
+        }
+        let mut style = base;
+        if let Some(&(a, b, rgb)) = spans.get(span_i)
+            && idx >= a
+            && idx < b
+        {
+            style = base.fg(Color::Rgb(rgb[0], rgb[1], rgb[2]));
+        }
+        if let Some((a, b)) = sel
+            && idx >= a
+            && idx < b
+        {
+            style = sel_style;
+        }
+        if style != run_style {
+            flush(&mut run, run_style, &mut out);
+            run_style = style;
+        }
+        let width = match c {
+            '\t' => 8 - scol % 8,
+            _ => 1,
+        };
+        for k in 0..width {
+            if scol + k >= left && scol + k < left + cols {
+                run.push(match c {
+                    '\t' => ' ',
+                    c if (c as u32) < 0x20 => '\u{b7}',
+                    c => c,
+                });
+                if c != '\t' && (c as u32) >= 0x20 {
+                    break; // normal chars occupy one cell
+                }
+            }
+        }
+        scol += width;
+    }
+    flush(&mut run, run_style, &mut out);
+    Line::from(out)
+}
+
+fn draw_editor(frame: &mut Frame, app: &mut App) {
+    let Some(st) = app.editor.as_mut() else {
+        return;
+    };
+    let [title_area, content, bottom] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
+    st.rows = content.height as usize;
+    st.cols = content.width as usize;
+
+    let base = Style::new().fg(th().panel_fg).bg(th().panel_bg);
+    let bar = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let sel_style = Style::new().fg(th().select_fg).bg(th().select_bg);
+
+    let modified = if st.ed.modified() { " [+]" } else { "" };
+    let pos = format!(
+        " {}:{}  {} lines ",
+        st.ed.cursor.line + 1,
+        st.ed.cursor.col + 1,
+        st.ed.line_count(),
+    );
+    let title = format!(" {}{modified}", st.title);
+    frame.render_widget(
+        Line::from(format!(
+            "{title}{pos:>w$}",
+            w = (title_area.width as usize).saturating_sub(title.chars().count())
+        ))
+        .style(bar),
+        title_area,
+    );
+
+    frame.render_widget(ratatui::widgets::Block::new().style(base), content);
+    let rows = st.rows;
+    let all_spans = match st.hl.as_mut() {
+        Some(hl) => hl.range_spans(&st.ed, st.top, rows),
+        None => vec![Vec::new(); rows],
+    };
+    for (row, spans) in all_spans.iter().enumerate().take(rows) {
+        let idx = st.top + row;
+        if idx >= st.ed.line_count() {
+            break;
+        }
+        let row_area = Rect {
+            y: content.y + row as u16,
+            height: 1,
+            ..content
+        };
+        let text = st.ed.line(idx);
+        let line = editor_line(
+            &text,
+            spans,
+            st.ed.sel_on_line(idx),
+            st.left,
+            st.cols,
+            base,
+            sel_style,
+        );
+        frame.render_widget(line, row_area);
+    }
+    // hardware cursor on the edit position
+    let cur_line = st.ed.line(st.ed.cursor.line);
+    let scol = screen_col(&cur_line, st.ed.cursor.col);
+    if st.ed.cursor.line >= st.top
+        && st.ed.cursor.line < st.top + rows
+        && scol >= st.left
+        && scol < st.left + st.cols
+    {
+        frame.set_cursor_position((
+            content.x + (scol - st.left) as u16,
+            content.y + (st.ed.cursor.line - st.top) as u16,
+        ));
+    }
+
+    let help = " F2 Save  F3 Mark  F4 Replace  F7 Search  F8 DelLine  ^Z Undo  ^C/^X/^V  F10 Quit ";
+    let note = st.note.clone().unwrap_or_default();
+    frame.render_widget(
+        Line::from(format!(
+            "{help}{note:>w$}",
+            w = (bottom.width as usize).saturating_sub(help.chars().count())
+        ))
+        .style(bar),
+        bottom,
+    );
+
+    match &st.prompt {
+        None => {}
+        Some(EditPrompt::Search { value, cursor }) => {
+            let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+            let inner = popup(
+                frame,
+                centered(50, 5, frame.area()),
+                " Search (regex) ",
+                style,
+            );
+            draw_field(frame, inner, value, *cursor);
+        }
+        Some(EditPrompt::ReplaceFind { value, cursor }) => {
+            let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+            let inner = popup(
+                frame,
+                centered(50, 5, frame.area()),
+                " Replace (regex) ",
+                style,
+            );
+            draw_field(frame, inner, value, *cursor);
+        }
+        Some(EditPrompt::ReplaceWith { value, cursor, .. }) => {
+            let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+            let inner = popup(
+                frame,
+                centered(50, 5, frame.area()),
+                " Replace with ",
+                style,
+            );
+            draw_field(frame, inner, value, *cursor);
+        }
+        Some(EditPrompt::ConfirmReplace { count, button, .. }) => {
+            let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+            let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+            let inner = popup(frame, centered(56, 6, frame.area()), " Replace? ", style);
+            let row = |offset: u16| Rect {
+                x: inner.x + 1,
+                y: inner.y + offset,
+                width: inner.width.saturating_sub(2),
+                height: 1,
+            };
+            frame.render_widget(
+                Line::from(format!("{count} replaced so far")).centered(),
+                row(1),
+            );
+            frame.render_widget(
+                buttons_line(&["Replace", "Skip", "All", "Quit"], *button, style, sel),
+                row(3),
+            );
+        }
+        Some(EditPrompt::ConfirmQuit { button }) => {
+            let style = Style::new().fg(th().error_fg).bg(th().error_bg);
+            let sel = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+            let inner = popup(
+                frame,
+                centered(56, 6, frame.area()),
+                " Unsaved changes ",
+                style,
+            );
+            let row = |offset: u16| Rect {
+                x: inner.x + 1,
+                y: inner.y + offset,
+                width: inner.width.saturating_sub(2),
+                height: 1,
+            };
+            frame.render_widget(
+                Line::from("The file was modified. Save it?").centered(),
+                row(1),
+            );
+            frame.render_widget(
+                buttons_line(&["Save", "Discard", "Cancel"], *button, style, sel),
+                row(3),
+            );
+        }
+    }
 }
 
 fn draw_viewer(frame: &mut Frame, app: &mut App) {

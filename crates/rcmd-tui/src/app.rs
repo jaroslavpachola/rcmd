@@ -163,6 +163,51 @@ enum Exec {
     Shell,
 }
 
+/// Full-screen F4 internal editor: buffer logic lives in `rcmd_edit`,
+/// this is viewport + prompt presentation state.
+pub struct EditorState {
+    pub ed: rcmd_edit::Editor,
+    pub hl: Option<rcmd_edit::Highlighter>,
+    /// Shown in the title bar (the sftp URL for remote scratch edits).
+    pub title: String,
+    pub top: usize,
+    /// Horizontal scroll in screen columns.
+    pub left: usize,
+    /// Text area size; updated on every draw.
+    pub rows: usize,
+    pub cols: usize,
+    pub prompt: Option<EditPrompt>,
+    pub note: Option<String>,
+}
+
+pub enum EditPrompt {
+    Search {
+        value: String,
+        cursor: usize,
+    },
+    ReplaceFind {
+        value: String,
+        cursor: usize,
+    },
+    ReplaceWith {
+        pattern: String,
+        value: String,
+        cursor: usize,
+    },
+    /// Per-match decision: Replace / Skip / All / Quit.
+    ConfirmReplace {
+        pattern: String,
+        replacement: String,
+        m: rcmd_edit::Match,
+        count: usize,
+        button: usize,
+    },
+    /// Quit with unsaved changes: Save / Discard / Cancel.
+    ConfirmQuit {
+        button: usize,
+    },
+}
+
 /// Full-screen F3 viewer state; the chunked file access lives in
 /// [`FileView`], this is only presentation state.
 pub struct Viewer {
@@ -356,6 +401,7 @@ pub struct App {
     pub dialog: Option<Dialog>,
     pub job: Option<Job>,
     pub viewer: Option<Viewer>,
+    pub editor: Option<EditorState>,
     pub menu: Option<MenuState>,
     pub help: Option<HelpState>,
     pub cmdline: CmdLine,
@@ -439,6 +485,7 @@ impl App {
             dialog: None,
             job: None,
             viewer: None,
+            editor: None,
             menu: None,
             help: None,
             cmdline: CmdLine::default(),
@@ -957,6 +1004,8 @@ impl App {
             self.on_dialog_key(key);
         } else if self.help.is_some() {
             self.on_help_key(key);
+        } else if self.editor.is_some() {
+            self.on_editor_key(key);
         } else if self.viewer.is_some() {
             self.on_viewer_key(key);
         } else if self.menu.is_some() {
@@ -1243,6 +1292,7 @@ impl App {
             self.status = Some(" cannot edit a directory ".into());
             return;
         }
+        let external = self.config.editor == "external";
         let editor = std::env::var("VISUAL")
             .or_else(|_| std::env::var("EDITOR"))
             .unwrap_or_else(|_| "vi".to_string());
@@ -1250,6 +1300,11 @@ impl App {
             // edit a scratch copy; upload it back if the editor saved
             let name = entry.name.clone();
             let remote_path = panel.cwd.join(&name);
+            let title = format!(
+                "{}{}",
+                panel.remote.clone().unwrap_or_default(),
+                remote_path.display()
+            );
             let temp = std::env::temp_dir().join(format!(
                 "rcmd-edit-{}-{}",
                 std::process::id(),
@@ -1271,10 +1326,16 @@ impl App {
                 mtime_before: std::fs::metadata(&temp).and_then(|m| m.modified()).ok(),
                 temp: temp.clone(),
             });
-            self.pending_exec = Some(Exec::Editor(format!(
-                "{editor} {}",
-                shell_quote(&temp.to_string_lossy())
-            )));
+            if external {
+                self.pending_exec = Some(Exec::Editor(format!(
+                    "{editor} {}",
+                    shell_quote(&temp.to_string_lossy())
+                )));
+            } else if !self.open_internal_editor(&temp, title) {
+                // failed to open: don't leave a stale upload hook behind
+                self.remote_edit = None;
+                let _ = std::fs::remove_file(&temp);
+            }
             return;
         }
         if !panel.is_local() {
@@ -1282,10 +1343,504 @@ impl App {
             return;
         }
         let path = panel.cwd.join(&entry.name);
-        self.pending_exec = Some(Exec::Editor(format!(
-            "{editor} {}",
-            shell_quote(&path.to_string_lossy())
-        )));
+        if external {
+            self.pending_exec = Some(Exec::Editor(format!(
+                "{editor} {}",
+                shell_quote(&path.to_string_lossy())
+            )));
+        } else {
+            let title = path.display().to_string();
+            self.open_internal_editor(&path, title);
+        }
+    }
+
+    fn open_internal_editor(&mut self, path: &Path, title: String) -> bool {
+        match rcmd_edit::Editor::open(path) {
+            Ok(ed) => {
+                let len = std::fs::metadata(path)
+                    .map(|m| m.len() as usize)
+                    .unwrap_or(0);
+                self.editor = Some(EditorState {
+                    hl: rcmd_edit::Highlighter::new(path, len),
+                    ed,
+                    title,
+                    top: 0,
+                    left: 0,
+                    rows: 1,
+                    cols: 1,
+                    prompt: None,
+                    note: None,
+                });
+                true
+            }
+            Err(err) => {
+                self.status = Some(format!(" edit: {err} "));
+                false
+            }
+        }
+    }
+
+    fn close_editor(&mut self) {
+        self.editor = None;
+        self.finish_remote_edit();
+        for panel in &mut self.panels {
+            let _ = panel.reload();
+        }
+    }
+
+    /// Save (used by F2 and the quit confirm); returns success.
+    fn editor_save(&mut self) -> bool {
+        let Some(st) = self.editor.as_mut() else {
+            return false;
+        };
+        match st.ed.save() {
+            Ok(()) => {
+                st.note = Some(" saved ".into());
+                true
+            }
+            Err(err) => {
+                st.note = Some(format!(" save failed: {err} "));
+                false
+            }
+        }
+    }
+
+    fn editor_quit(&mut self) {
+        let Some(st) = self.editor.as_mut() else {
+            return;
+        };
+        if st.ed.modified() {
+            st.prompt = Some(EditPrompt::ConfirmQuit { button: 0 });
+        } else {
+            self.close_editor();
+        }
+    }
+
+    /// Search from just after `from`; select the match so it is visible.
+    fn editor_find(&mut self, pattern: &str, from: rcmd_edit::Pos) {
+        let Some(st) = self.editor.as_mut() else {
+            return;
+        };
+        let re = match rcmd_edit::Editor::compile(pattern) {
+            Ok(re) => re,
+            Err(err) => {
+                let first = err.to_string();
+                st.note = Some(format!(
+                    " {} ",
+                    first.lines().last().unwrap_or("bad pattern")
+                ));
+                return;
+            }
+        };
+        st.ed.search = pattern.to_string();
+        match st.ed.find_from(from, &re) {
+            Some(m) => select_match(&mut st.ed, m),
+            None => st.note = Some(" not found ".into()),
+        }
+        self.ensure_editor_visible();
+    }
+
+    fn on_editor_key(&mut self, key: KeyEvent) {
+        if self.editor.as_ref().is_some_and(|st| st.prompt.is_some()) {
+            self.on_editor_prompt_key(key);
+            self.ensure_editor_visible();
+            return;
+        }
+        let Some(st) = self.editor.as_mut() else {
+            return;
+        };
+        st.note = None;
+        let mods = key.modifiers;
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
+        let alt = mods.contains(KeyModifiers::ALT);
+        let select = mods.contains(KeyModifiers::SHIFT);
+        let page = st.rows.saturating_sub(1).max(1) as isize;
+        // for highlight invalidation: lowest line this key might touch
+        let lo = st
+            .ed
+            .sel_line_range()
+            .map(|(a, _)| a)
+            .unwrap_or(usize::MAX)
+            .min(st.ed.cursor.line);
+        let mut edited = true; // most arms below edit; movement resets it
+        match key.code {
+            KeyCode::Left if ctrl => {
+                st.ed.move_word(false, select);
+                edited = false;
+            }
+            KeyCode::Right if ctrl => {
+                st.ed.move_word(true, select);
+                edited = false;
+            }
+            KeyCode::Left => {
+                st.ed.move_left(select);
+                edited = false;
+            }
+            KeyCode::Right => {
+                st.ed.move_right(select);
+                edited = false;
+            }
+            KeyCode::Up => {
+                st.ed.move_vert(-1, select);
+                edited = false;
+            }
+            KeyCode::Down => {
+                st.ed.move_vert(1, select);
+                edited = false;
+            }
+            KeyCode::PageUp => {
+                st.ed.move_vert(-page, select);
+                edited = false;
+            }
+            KeyCode::PageDown => {
+                st.ed.move_vert(page, select);
+                edited = false;
+            }
+            KeyCode::Home if ctrl => {
+                st.ed.move_top(select);
+                edited = false;
+            }
+            KeyCode::End if ctrl => {
+                st.ed.move_bottom(select);
+                edited = false;
+            }
+            KeyCode::Home => {
+                st.ed.move_home(select);
+                edited = false;
+            }
+            KeyCode::End => {
+                st.ed.move_end(select);
+                edited = false;
+            }
+            KeyCode::Enter => st.ed.newline(),
+            KeyCode::Tab => st.ed.insert("\t"),
+            KeyCode::Backspace => st.ed.backspace(),
+            KeyCode::Delete => st.ed.delete_forward(),
+            KeyCode::F(2) => {
+                self.editor_save();
+                return;
+            }
+            KeyCode::F(3) => {
+                st.ed.toggle_mark();
+                edited = false;
+            }
+            KeyCode::F(4) => {
+                let value = st.ed.search.clone();
+                st.prompt = Some(EditPrompt::ReplaceFind {
+                    cursor: value.chars().count(),
+                    value,
+                });
+                return;
+            }
+            KeyCode::F(7) if !select => {
+                let value = st.ed.search.clone();
+                st.prompt = Some(EditPrompt::Search {
+                    cursor: value.chars().count(),
+                    value,
+                });
+                return;
+            }
+            // Shift+F7 (legacy terminals send F19): repeat last search
+            KeyCode::F(7) | KeyCode::F(19) => {
+                let pattern = st.ed.search.clone();
+                let from = next_pos(&st.ed);
+                if pattern.is_empty() {
+                    st.prompt = Some(EditPrompt::Search {
+                        value: String::new(),
+                        cursor: 0,
+                    });
+                } else {
+                    self.editor_find(&pattern, from);
+                }
+                return;
+            }
+            KeyCode::F(8) => st.ed.delete_selection_or_line(),
+            KeyCode::F(10) => {
+                self.editor_quit();
+                return;
+            }
+            KeyCode::Esc => {
+                edited = false;
+                if st.ed.has_selection() {
+                    st.ed.clear_selection();
+                } else {
+                    self.editor_quit();
+                    return;
+                }
+            }
+            KeyCode::Char(c) if ctrl => {
+                edited = false;
+                match c.to_ascii_lowercase() {
+                    'z' => {
+                        edited = true;
+                        if !st.ed.undo() {
+                            st.note = Some(" nothing to undo ".into());
+                        }
+                    }
+                    'y' => {
+                        edited = true;
+                        if !st.ed.redo() {
+                            st.note = Some(" nothing to redo ".into());
+                        }
+                    }
+                    'c' => st.ed.copy(),
+                    'x' => {
+                        edited = true;
+                        st.ed.cut();
+                    }
+                    'v' => {
+                        edited = true;
+                        st.ed.paste();
+                    }
+                    'a' => st.ed.select_all(),
+                    's' => {
+                        self.editor_save();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            KeyCode::Char(c) if !alt => st.ed.insert(&c.to_string()),
+            _ => edited = false,
+        }
+        if edited && let Some(hl) = st.hl.as_mut() {
+            hl.invalidate_from(lo.min(st.ed.cursor.line));
+        }
+        self.ensure_editor_visible();
+    }
+
+    fn on_editor_prompt_key(&mut self, key: KeyEvent) {
+        let Some(st) = self.editor.as_mut() else {
+            return;
+        };
+        let Some(prompt) = st.prompt.take() else {
+            return;
+        };
+        match prompt {
+            EditPrompt::Search {
+                mut value,
+                mut cursor,
+            } => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => {
+                    let pattern = value.trim().to_string();
+                    if !pattern.is_empty() {
+                        let from = next_pos(&st.ed);
+                        self.editor_find(&pattern, from);
+                    }
+                }
+                code => {
+                    edit_line(&mut value, &mut cursor, code, key.modifiers);
+                    st.prompt = Some(EditPrompt::Search { value, cursor });
+                }
+            },
+            EditPrompt::ReplaceFind {
+                mut value,
+                mut cursor,
+            } => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => {
+                    let pattern = value.trim().to_string();
+                    if !pattern.is_empty() {
+                        st.ed.search = pattern.clone();
+                        st.prompt = Some(EditPrompt::ReplaceWith {
+                            pattern,
+                            value: String::new(),
+                            cursor: 0,
+                        });
+                    }
+                }
+                code => {
+                    edit_line(&mut value, &mut cursor, code, key.modifiers);
+                    st.prompt = Some(EditPrompt::ReplaceFind { value, cursor });
+                }
+            },
+            EditPrompt::ReplaceWith {
+                pattern,
+                mut value,
+                mut cursor,
+            } => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => {
+                    let re = match rcmd_edit::Editor::compile(&pattern) {
+                        Ok(re) => re,
+                        Err(_) => {
+                            st.note = Some(" bad pattern ".into());
+                            return;
+                        }
+                    };
+                    match st.ed.find_from(st.ed.cursor, &re) {
+                        Some(m) => {
+                            select_match(&mut st.ed, m);
+                            st.prompt = Some(EditPrompt::ConfirmReplace {
+                                pattern,
+                                replacement: value,
+                                m,
+                                count: 0,
+                                button: 0,
+                            });
+                        }
+                        None => st.note = Some(" not found ".into()),
+                    }
+                }
+                code => {
+                    edit_line(&mut value, &mut cursor, code, key.modifiers);
+                    st.prompt = Some(EditPrompt::ReplaceWith {
+                        pattern,
+                        value,
+                        cursor,
+                    });
+                }
+            },
+            EditPrompt::ConfirmReplace {
+                pattern,
+                replacement,
+                m,
+                mut count,
+                mut button,
+            } => {
+                enum Act {
+                    Replace,
+                    Skip,
+                    All,
+                    Quit,
+                    None,
+                }
+                let act = match key.code {
+                    KeyCode::Left => {
+                        button = button.checked_sub(1).unwrap_or(3);
+                        Act::None
+                    }
+                    KeyCode::Right | KeyCode::Tab => {
+                        button = (button + 1) % 4;
+                        Act::None
+                    }
+                    KeyCode::Enter => [Act::Replace, Act::Skip, Act::All, Act::Quit]
+                        .into_iter()
+                        .nth(button)
+                        .unwrap_or(Act::None),
+                    KeyCode::Char('y' | 'r') => Act::Replace,
+                    KeyCode::Char('n' | 's') => Act::Skip,
+                    KeyCode::Char('a') => Act::All,
+                    KeyCode::Char('q') | KeyCode::Esc => Act::Quit,
+                    _ => Act::None,
+                };
+                let re = match rcmd_edit::Editor::compile(&pattern) {
+                    Ok(re) => re,
+                    Err(_) => return,
+                };
+                let finish = |st: &mut EditorState, count: usize| {
+                    st.ed.clear_selection();
+                    st.note = Some(format!(" {count} replaced "));
+                };
+                match act {
+                    Act::None => {
+                        st.prompt = Some(EditPrompt::ConfirmReplace {
+                            pattern,
+                            replacement,
+                            m,
+                            count,
+                            button,
+                        });
+                    }
+                    Act::Quit => finish(st, count),
+                    Act::Replace | Act::Skip => {
+                        let from = match act {
+                            Act::Replace => {
+                                if let Some(hl) = st.hl.as_mut() {
+                                    hl.invalidate_from(m.pos.line);
+                                }
+                                st.ed.replace_match(m, &replacement);
+                                count += 1;
+                                st.ed.cursor
+                            }
+                            _ => st.ed.after_match(m),
+                        };
+                        match st.ed.find_from(from, &re) {
+                            // stop when the search wraps back around
+                            Some(next) if next.pos >= from => {
+                                select_match(&mut st.ed, next);
+                                st.prompt = Some(EditPrompt::ConfirmReplace {
+                                    pattern,
+                                    replacement,
+                                    m: next,
+                                    count,
+                                    button,
+                                });
+                            }
+                            _ => finish(st, count),
+                        }
+                    }
+                    Act::All => {
+                        let mut m = m;
+                        loop {
+                            if let Some(hl) = st.hl.as_mut() {
+                                hl.invalidate_from(m.pos.line);
+                            }
+                            st.ed.replace_match(m, &replacement);
+                            count += 1;
+                            if count > 1_000_000 {
+                                break;
+                            }
+                            match st.ed.find_from(st.ed.cursor, &re) {
+                                Some(next) if next.pos >= st.ed.cursor => m = next,
+                                _ => break,
+                            }
+                        }
+                        finish(st, count);
+                    }
+                }
+            }
+            EditPrompt::ConfirmQuit { mut button } => match key.code {
+                KeyCode::Esc | KeyCode::Char('c') => {}
+                KeyCode::Char('s') => {
+                    if self.editor_save() {
+                        self.close_editor();
+                    }
+                }
+                KeyCode::Char('d') => self.close_editor(),
+                KeyCode::Enter => match button {
+                    0 => {
+                        if self.editor_save() {
+                            self.close_editor();
+                        }
+                    }
+                    1 => self.close_editor(),
+                    _ => {}
+                },
+                KeyCode::Left => {
+                    button = button.checked_sub(1).unwrap_or(2);
+                    st.prompt = Some(EditPrompt::ConfirmQuit { button });
+                }
+                KeyCode::Right | KeyCode::Tab => {
+                    button = (button + 1) % 3;
+                    st.prompt = Some(EditPrompt::ConfirmQuit { button });
+                }
+                _ => st.prompt = Some(EditPrompt::ConfirmQuit { button }),
+            },
+        }
+    }
+
+    /// Scroll the editor viewport so the cursor stays on screen.
+    fn ensure_editor_visible(&mut self) {
+        let Some(st) = self.editor.as_mut() else {
+            return;
+        };
+        let rows = st.rows.max(1);
+        let cols = st.cols.max(1);
+        if st.ed.cursor.line < st.top {
+            st.top = st.ed.cursor.line;
+        }
+        if st.ed.cursor.line >= st.top + rows {
+            st.top = st.ed.cursor.line + 1 - rows;
+        }
+        let scol = ui::screen_col(&st.ed.line(st.ed.cursor.line), st.ed.cursor.col);
+        if scol < st.left {
+            st.left = scol;
+        }
+        if scol >= st.left + cols {
+            st.left = scol + 1 - cols;
+        }
     }
 
     /// While a find streams: Esc cancels, navigation browses the results
@@ -2300,6 +2855,33 @@ fn viewer_search(v: &mut Viewer, from: usize, is_next: bool) {
             );
         }
         Err(err) => v.note = Some(format!(" {err} ")),
+    }
+}
+
+/// One position past the cursor, so "search next" skips the current hit.
+fn next_pos(ed: &rcmd_edit::Editor) -> rcmd_edit::Pos {
+    let c = ed.cursor;
+    if c.col < ed.line_len(c.line) {
+        rcmd_edit::Pos {
+            line: c.line,
+            col: c.col + 1,
+        }
+    } else if c.line + 1 < ed.line_count() {
+        rcmd_edit::Pos {
+            line: c.line + 1,
+            col: 0,
+        }
+    } else {
+        rcmd_edit::Pos { line: 0, col: 0 }
+    }
+}
+
+/// Jump to a match and select it so the hit is visible.
+fn select_match(ed: &mut rcmd_edit::Editor, m: rcmd_edit::Match) {
+    let end = ed.after_match(m);
+    ed.goto(m.pos, false);
+    if m.len > 0 {
+        ed.goto(end, true);
     }
 }
 

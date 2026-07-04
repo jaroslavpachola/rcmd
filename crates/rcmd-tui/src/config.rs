@@ -21,6 +21,8 @@ pub struct Config {
     pub sort_reverse: bool,
     /// Auto-reload panels when their directory changes on disk.
     pub watch: bool,
+    /// "internal" (the built-in editor) or "external" ($VISUAL/$EDITOR).
+    pub editor: String,
     /// Custom bindings on top of the preset, e.g. "ctrl+y" = "swap-panels".
     pub keys: BTreeMap<String, String>,
     pub hotlist: Vec<HotEntry>,
@@ -41,6 +43,7 @@ impl Default for Config {
             sort_key: "name".into(),
             sort_reverse: false,
             watch: true,
+            editor: "internal".into(),
             keys: BTreeMap::new(),
             hotlist: Vec::new(),
         }

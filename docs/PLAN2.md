@@ -1,6 +1,6 @@
 # rcmd 2.0 — beyond Midnight Commander
 
-**Status:** in progress — P0, P1, P2 and P3 shipped (2026-07-04); next: P4/P5
+**Status:** in progress — P0–P4 shipped (2026-07-04); next: P5
 **Prerequisite:** PLAN.md complete (it is). Baseline: MC-parity dual-pane
 manager, ~43 tests, pty-verified, no async runtime, `FsProvider` seam.
 
@@ -106,6 +106,25 @@ last, with the most caution, behind its own crate:
   configs and quick fixes, not for replacing your IDE.
 - Exit: month of config edits without leaving rcmd; sub-100 ms open on a
   50 MB log (ropey makes this feasible).
+
+**DONE (2026-07-04).** `rcmd-edit` crate: ropey buffer, single mutation
+primitive (`splice`) recording coalesced undo groups with revision-id
+modified tracking, mcedit-style sticky mark (F3) + Shift+arrow
+selection, internal clipboard (^C/^X/^V), smartcase regex search (F7)
+and interactive replace (F4: Replace/Skip/All/Quit), auto-indent Enter,
+atomic save preserving permissions and CRLF, binary files refused.
+Syntect highlighting behind the `syntax` feature (default on): parse
+states checkpointed every 32 lines, invalidated from the edited line,
+skipped for files >2 MB or lines >2000 chars. F4 opens it everywhere —
+including sftp panels via the scratch-copy/upload-on-close path;
+`editor = "external"` restores $VISUAL/$EDITOR.
+Measured (release, through a pty): 50 MB log opens in ~215 ms
+(the 100 ms goal was optimistic for full rope construction — accepted),
+Ctrl+End and typing at EOF ~60 ms, dominated by poll granularity.
+Scope cuts vs the sketch: soft-wrap deferred (horizontal scroll, like
+mcedit's default) and "block selection" delivered as mcedit-style
+stream marking, not rectangular columns; replacement strings are
+literal (no $1 groups). No LSP, no splits, as decreed.
 
 ### P5 — UX depth
 - **Mouse**: click to focus/move cursor, double-click Enter, wheel

@@ -293,6 +293,48 @@ def test_dirsize():
     shutil.rmtree(root)
 
 
+F2, F4, F10 = b"\x1b[12~", b"\x1b[14~", b"\x1b[21~"
+
+
+def test_editor():
+    root, play, home = sandbox()
+    path = os.path.join(play, "notes.txt")
+    open(path, "w").write("alpha\nbeta\n")
+    s = Session(play, home)
+    s.send(DOWN)                        # -> notes.txt
+    s.send(F4, wait=STEP * 2)           # internal editor
+    scr = s.screen()
+    check("editor: opens with content", "alpha" in scr and "notes.txt" in scr)
+    s.send(b"\x1b[1;5F")                # Ctrl+End -> end of buffer
+    s.send(b"gamma")
+    check("editor: modified flag", "[+]" in s.screen())
+    s.send(F2, wait=STEP * 2)           # save
+    check("editor: saved note", "saved" in s.screen())
+    s.send(F10, wait=STEP * 2)          # quit (no confirm — just saved)
+    check("editor: file written", open(path).read() == "alpha\nbeta\ngamma")
+
+    # replace all via F4-in-editor, then quit-confirm discard path
+    s.send(F4, wait=STEP * 2)
+    s.send(F4)                          # replace prompt
+    s.send(b"beta\r")                   # pattern
+    s.send(b"BETA\r")                   # replacement -> confirm dialog
+    check("editor: replace asks", "Replace?" in s.screen())
+    s.send(b"a", wait=STEP)             # All
+    check("editor: replaced note", "1 replaced" in s.screen())
+    s.send(F2)                          # save the replacement
+    s.send(F10, wait=STEP * 2)
+    check("editor: replace-all wrote", "BETA" in open(path).read())
+
+    s.send(F4, wait=STEP * 2)           # reopen
+    s.send(b"junk")                     # modify
+    s.send(F10)                         # quit -> unsaved-changes dialog
+    check("editor: quit confirms", "Unsaved changes" in s.screen())
+    s.send(b"d", wait=STEP * 2)         # discard
+    check("editor: discard kept file", "junk" not in open(path).read())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def wait_for(s, needle, timeout=10):
     deadline = time.time() + timeout
     while time.time() < deadline and needle not in s.screen():
@@ -371,6 +413,18 @@ def test_sftp():
         )
 
         s.send(b"\t")                       # -> remote panel
+        s.send(HOME_K + DOWN)               # .. -> server.txt
+        s.send(F4, wait=STEP * 2)           # edit a scratch copy internally
+        check("sftp: remote edit opens", "from the server" in s.screen())
+        s.send(b"X")                        # prepend a byte
+        s.send(F2, wait=STEP)               # save the scratch copy
+        s.send(F10, wait=STEP * 3)          # close -> upload back
+        deadline = time.time() + 8
+        remote_file = os.path.join(remote, "server.txt")
+        while time.time() < deadline and open(remote_file).read() != "Xfrom the server\n":
+            s.drain(0.3)
+        check("sftp: edit uploaded back", open(remote_file).read() == "Xfrom the server\n")
+
         s.send(F7)
         s.send(b"made-remotely\r", wait=STEP * 3)
         check("sftp: remote mkdir", os.path.isdir(os.path.join(remote, "made-remotely")))
@@ -435,6 +489,7 @@ def main():
         test_compare,
         test_watch,
         test_dirsize,
+        test_editor,
         test_sftp,
         test_scale,
     ):

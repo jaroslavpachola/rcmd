@@ -8,8 +8,13 @@ license.workspace = true
 name = "rcmd"
 path = "src/main.rs"
 
+[features]
+default = ["syntax"]
+syntax = ["rcmd-edit/syntax"]
+
 [dependencies]
 rcmd-core = { path = "../rcmd-core" }
+rcmd-edit = { path = "../rcmd-edit" }
 anyhow.workspace = true
 ratatui.workspace = true
 chrono.workspace = true

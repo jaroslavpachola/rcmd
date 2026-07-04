@@ -2,8 +2,16 @@
 
 ## Unreleased
 
-2.0-roadmap phases P1–P3 (docs/PLAN2.md):
+2.0-roadmap phases P1–P4 (docs/PLAN2.md):
 
+- **Built-in editor** (P4): F4 opens an mcedit-style editor (new
+  `rcmd-edit` crate) — unlimited grouped undo/redo, F3 marking and
+  Shift+arrow selection with an internal clipboard, smartcase regex
+  search (F7) and interactive replace (F4), auto-indent, atomic save
+  preserving permissions and CRLF, syntect syntax highlighting for
+  known file types (`syntax` feature, on by default), instant on huge
+  files (50 MB log ≈ 0.2 s). Works on SFTP panels via scratch-copy
+  upload. `editor = "external"` restores $VISUAL/$EDITOR.
 - **SFTP remote panels** (P3): `cd sftp://[user@]host[:port][/path]` or
   F9 → Command → SFTP link; agent/key/password auth with known_hosts
   checking and a fingerprint dialog for unknown hosts; upload, download

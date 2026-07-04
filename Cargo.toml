@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rcmd-core", "crates/rcmd-tui"]
+members = ["crates/rcmd-core", "crates/rcmd-edit", "crates/rcmd-tui"]
 
 [workspace.package]
 version = "1.0.0"
@@ -23,3 +23,8 @@ xz2 = { version = "0.1", features = ["static"] }
 bzip2 = { version = "0.4", features = ["static"] }
 notify = "8"
 ssh2 = "0.9"
+ropey = "1"
+regex = "1"
+syntect = { version = "5", default-features = false, features = [
+    "default-fancy",
+] }

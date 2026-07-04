@@ -1,0 +1,18 @@
+[package]
+name = "rcmd-edit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Syntax highlighting; without it lines render plain.
+syntax = ["dep:syntect"]
+
+[dependencies]
+ropey.workspace = true
+regex.workspace = true
+syntect = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
