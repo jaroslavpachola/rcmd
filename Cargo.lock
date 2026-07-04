@@ -657,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bzip2",
  "flate2",
@@ -670,7 +670,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-tui"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",

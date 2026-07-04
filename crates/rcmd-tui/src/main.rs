@@ -66,6 +66,10 @@ fn parse_args() -> Result<Args> {
                 );
                 std::process::exit(0);
             }
+            Some("-V") | Some("--version") => {
+                println!("rcmd {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             Some(flag) if flag.starts_with('-') => anyhow::bail!("unknown option: {flag}"),
             _ => dirs.push(PathBuf::from(arg)),
         }

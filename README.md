@@ -15,14 +15,19 @@ file with keymap presets/custom bindings, quick search, filter, hotlist,
 themes, archive browsing (zip, tar, tar.gz, tar.xz, tar.bz2) with
 extraction, and copying into zip archives.
 
-## Run
+## Install & run
 
 ```sh
-cargo run -p rcmd-tui     # or: just run
+cargo install --path crates/rcmd-tui   # installs the `rcmd` binary
+# or during development:
+cargo run -p rcmd-tui                  # or: just run
 ```
 
+Release binaries for Linux and macOS are attached to GitHub releases
+(built by `.github/workflows/release.yml` on `v*` tags).
+
 ```
-usage: rcmd [-P FILE] [DIR1 [DIR2]]
+usage: rcmd [-P FILE] [DIR1 [DIR2]]   (-V version, -h help)
 ```
 
 To make your shell follow rcmd's last directory on exit (the mc-wrapper
@@ -133,9 +138,13 @@ path = "/home/you/git"
 ## Development
 
 ```sh
-cargo test --workspace                              # tests (rcmd-core is TUI-free)
+cargo test --workspace                              # unit tests (rcmd-core is TUI-free)
 cargo clippy --workspace --all-targets -- -D warnings
+python3 tests/e2e/run.py                            # drives the real binary in a pty
+just check                                          # all of the above
 ```
 
 Workspace layout: `crates/rcmd-core` (panel/fs logic, no TUI deps),
-`crates/rcmd-tui` (ratatui frontend, binary `rcmd`).
+`crates/rcmd-tui` (ratatui frontend, binary `rcmd`). CI runs fmt,
+clippy, unit tests on Linux+macOS, and the pty e2e suite on Linux.
+Licensed MIT.
