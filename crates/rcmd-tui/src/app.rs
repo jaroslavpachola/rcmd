@@ -2,9 +2,9 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
-use ratatui::DefaultTerminal;
 use rcmd_core::fsops::{self, JobEvent, JobHandle, Reply};
 use rcmd_core::panel::{Panel, SortKey};
 use rcmd_core::view::FileView;
@@ -346,12 +346,11 @@ impl App {
             } else {
                 Duration::from_millis(500)
             };
-            if event::poll(timeout)? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        self.on_key(key);
-                    }
-                }
+            if event::poll(timeout)?
+                && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+            {
+                self.on_key(key);
             }
             if let Some(exec) = self.pending_exec.take() {
                 self.execute(terminal, exec)?;
@@ -615,10 +614,10 @@ impl App {
         let page = rows.saturating_sub(1).max(1) as isize;
         match key.code {
             KeyCode::F(3) | KeyCode::F(10) | KeyCode::Esc | KeyCode::Char('q') => {
-                if let Some(viewer) = self.viewer.take() {
-                    if let Some(temp) = viewer.temp {
-                        let _ = std::fs::remove_file(temp);
-                    }
+                if let Some(viewer) = self.viewer.take()
+                    && let Some(temp) = viewer.temp
+                {
+                    let _ = std::fs::remove_file(temp);
                 }
             }
             KeyCode::F(2) => {
@@ -957,13 +956,11 @@ impl App {
                             let _ = panel.reload();
                         }
                         let panel = &mut self.panels[self.active];
-                        if path.parent() == Some(panel.cwd.as_path()) {
-                            if let Some(name) = path.file_name() {
-                                if let Some(pos) = panel.entries.iter().position(|e| e.name == name)
-                                {
-                                    panel.cursor = pos;
-                                }
-                            }
+                        if path.parent() == Some(panel.cwd.as_path())
+                            && let Some(name) = path.file_name()
+                            && let Some(pos) = panel.entries.iter().position(|e| e.name == name)
+                        {
+                            panel.cursor = pos;
                         }
                     }
                     Err(err) => self.status = Some(format!(" mkdir: {err} ")),

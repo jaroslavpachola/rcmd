@@ -213,7 +213,7 @@ mod tests {
             Some(Action::SwapPanels)
         ));
         assert_eq!(warnings.len(), 2); // bad key + bad action
-                                       // f5 keeps its default because the override failed to parse
+        // f5 keeps its default because the override failed to parse
         assert!(matches!(
             map.get(&(KeyCode::F(5), KeyModifiers::NONE)),
             Some(Action::Copy)

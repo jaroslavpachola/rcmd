@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::archive::ArchiveFs;
 use crate::entry::Entry;
 use crate::glob::glob_match;
-use crate::vfs::{is_archive_name, FsProvider, LocalFs};
+use crate::vfs::{FsProvider, LocalFs, is_archive_name};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {
@@ -174,10 +174,10 @@ impl Panel {
         };
         let came_from = self.cwd.file_name().map(|n| n.to_os_string());
         self.change_dir(parent)?;
-        if let Some(name) = came_from {
-            if let Some(pos) = self.entries.iter().position(|e| e.name == name) {
-                self.cursor = pos;
-            }
+        if let Some(name) = came_from
+            && let Some(pos) = self.entries.iter().position(|e| e.name == name)
+        {
+            self.cursor = pos;
         }
         Ok(true)
     }
@@ -205,10 +205,10 @@ impl Panel {
         let prev_archive = self.archive.take();
         match self.change_dir(parent) {
             Ok(()) => {
-                if let Some(name) = archive.file_name() {
-                    if let Some(pos) = self.entries.iter().position(|e| e.name == name) {
-                        self.cursor = pos;
-                    }
+                if let Some(name) = archive.file_name()
+                    && let Some(pos) = self.entries.iter().position(|e| e.name == name)
+                {
+                    self.cursor = pos;
                 }
                 Ok(())
             }
@@ -270,10 +270,10 @@ impl Panel {
         let keep = self.selected().map(|e| e.name.clone());
         let start = usize::from(self.entries.first().is_some_and(Entry::is_parent));
         sort_entries(&mut self.entries[start..], self.sort_key, self.sort_reverse);
-        if let Some(name) = keep {
-            if let Some(pos) = self.entries.iter().position(|e| e.name == name) {
-                self.cursor = pos;
-            }
+        if let Some(name) = keep
+            && let Some(pos) = self.entries.iter().position(|e| e.name == name)
+        {
+            self.cursor = pos;
         }
     }
 
@@ -288,12 +288,12 @@ impl Panel {
 
     /// Toggle the mark on the cursor entry and advance, like MC's Insert.
     pub fn toggle_mark(&mut self) {
-        if let Some(entry) = self.selected() {
-            if !entry.is_parent() {
-                let name = entry.name.clone();
-                if !self.marked.remove(&name) {
-                    self.marked.insert(name);
-                }
+        if let Some(entry) = self.selected()
+            && !entry.is_parent()
+        {
+            let name = entry.name.clone();
+            if !self.marked.remove(&name) {
+                self.marked.insert(name);
             }
         }
         self.move_down();
@@ -388,11 +388,7 @@ fn sort_entries(entries: &mut [Entry], key: SortKey, reverse: bool) {
             SortKey::Size => a.size.cmp(&b.size).then_with(|| name_cmp(a, b)),
             SortKey::Mtime => a.mtime.cmp(&b.mtime).then_with(|| name_cmp(a, b)),
         };
-        if reverse {
-            ord.reverse()
-        } else {
-            ord
-        }
+        if reverse { ord.reverse() } else { ord }
     });
 }
 
@@ -498,13 +494,15 @@ mod tests {
         assert_eq!(panel.marked_stats().0, 1);
 
         panel.mark_glob("*.md", true);
-        assert!(panel.is_marked(
-            panel
-                .entries
-                .iter()
-                .find(|e| e.name == "README.md")
-                .unwrap()
-        ));
+        assert!(
+            panel.is_marked(
+                panel
+                    .entries
+                    .iter()
+                    .find(|e| e.name == "README.md")
+                    .unwrap()
+            )
+        );
 
         panel.invert_marks();
         let (count, _) = panel.marked_stats();

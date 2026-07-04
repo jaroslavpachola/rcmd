@@ -9,9 +9,9 @@
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use crate::entry::EntryKind;
@@ -383,10 +383,10 @@ fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
             copy_tree(ctx, &src.join(&name), &dst.join(&name))?;
         }
         // after the children, so their creation doesn't bump it again
-        if let Ok(modified) = meta.modified() {
-            if let Ok(dir) = fs::File::open(dst) {
-                let _ = dir.set_times(fs::FileTimes::new().set_modified(modified));
-            }
+        if let Ok(modified) = meta.modified()
+            && let Ok(dir) = fs::File::open(dst)
+        {
+            let _ = dir.set_times(fs::FileTimes::new().set_modified(modified));
         }
         Ok(())
     } else if meta.is_symlink() {
@@ -583,10 +583,10 @@ fn extract_tree(ctx: &mut Ctx, fs: &dyn FsProvider, src: &Path, dst: &Path) -> R
             for child in children {
                 extract_tree(ctx, fs, &src.join(&child.name), &dst.join(&child.name))?;
             }
-            if let Some(modified) = entry.mtime {
-                if let Ok(dir) = fs::File::open(dst) {
-                    let _ = dir.set_times(fs::FileTimes::new().set_modified(modified));
-                }
+            if let Some(modified) = entry.mtime
+                && let Ok(dir) = fs::File::open(dst)
+            {
+                let _ = dir.set_times(fs::FileTimes::new().set_modified(modified));
             }
             Ok(())
         }
@@ -873,7 +873,7 @@ mod tests {
                         skipped,
                         aborted,
                         asks,
-                    }
+                    };
                 }
                 _ => {}
             }
@@ -979,8 +979,8 @@ mod tests {
 
     #[test]
     fn extract_from_targz_recreates_tree() {
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
 
         let tmp = tempfile::tempdir().unwrap();
         let archive_path = tmp.path().join("a.tar.gz");

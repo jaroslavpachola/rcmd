@@ -1,13 +1,13 @@
 use chrono::{DateTime, Local};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Clear, Gauge, Row, Table, TableState};
-use ratatui::Frame;
 use rcmd_core::entry::{Entry, EntryKind};
 use rcmd_core::panel::Panel;
 
-use crate::app::{App, Ask, ConfirmDialog, Dialog, InputDialog, Job, MenuState, MENUS};
+use crate::app::{App, Ask, ConfirmDialog, Dialog, InputDialog, Job, MENUS, MenuState};
 use crate::config::HotEntry;
 
 /// All colors in one place; selected once at startup from config
@@ -415,14 +415,14 @@ fn draw_cmdline(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn abbrev_home(path: &std::path::Path) -> String {
-    if let Some(home) = std::env::var_os("HOME") {
-        if let Ok(rest) = path.strip_prefix(&home) {
-            return if rest.as_os_str().is_empty() {
-                "~".to_string()
-            } else {
-                format!("~/{}", rest.display())
-            };
-        }
+    if let Some(home) = std::env::var_os("HOME")
+        && let Ok(rest) = path.strip_prefix(&home)
+    {
+        return if rest.as_os_str().is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{}", rest.display())
+        };
     }
     path.display().to_string()
 }

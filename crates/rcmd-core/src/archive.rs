@@ -266,8 +266,8 @@ fn zip_err(err: zip::result::ZipError) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
     use std::io::Write;
 
     fn make_targz(dir: &Path) -> PathBuf {
