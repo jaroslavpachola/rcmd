@@ -1,0 +1,15 @@
+[package]
+name = "rcmd-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rcmd"
+path = "src/main.rs"
+
+[dependencies]
+rcmd-core = { path = "../rcmd-core" }
+anyhow.workspace = true
+ratatui.workspace = true
+chrono.workspace = true

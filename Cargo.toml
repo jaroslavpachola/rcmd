@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/rcmd-core", "crates/rcmd-tui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+ratatui = "0.29"
+chrono = "0.4"
+tempfile = "3"
