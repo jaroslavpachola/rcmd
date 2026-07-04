@@ -142,6 +142,17 @@ pub fn spawn_extract(fs: Arc<dyn FsProvider>, sources: Vec<PathBuf>, dest: PathB
     })
 }
 
+/// Recursive size of one tree (files, bytes) for Ctrl+Space; one message
+/// on completion, receiver-drop cancels nothing but the result is cheap.
+pub fn spawn_dir_size(path: PathBuf) -> Receiver<(u64, u64)> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let totals = scan(std::slice::from_ref(&path));
+        let _ = tx.send(totals);
+    });
+    rx
+}
+
 struct Aborted;
 
 enum Decision {

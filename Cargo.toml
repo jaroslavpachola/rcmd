@@ -21,3 +21,4 @@ tar = "0.4"
 flate2 = "1"
 xz2 = { version = "0.1", features = ["static"] }
 bzip2 = { version = "0.4", features = ["static"] }
+notify = "8"

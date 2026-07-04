@@ -2,13 +2,14 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use notify::Watcher as _;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
 use rcmd_core::entry;
 use rcmd_core::find::{self, FindEvent, FindHandle};
 use rcmd_core::fsops::{self, JobEvent, JobHandle, Reply};
-use rcmd_core::panel::{Panel, SortKey};
+use rcmd_core::panel::{LoadKind, Panel, SortKey};
 use rcmd_core::view::FileView;
 
 use crate::config::{Config, HotEntry};
@@ -39,6 +40,24 @@ pub struct FindState {
     pub handle: FindHandle,
     pub panel: usize,
     pub count: usize,
+}
+
+/// A running Ctrl+Space directory-size scan.
+struct DuJob {
+    rx: std::sync::mpsc::Receiver<(u64, u64)>,
+    panel: usize,
+    cwd: PathBuf,
+    name: std::ffi::OsString,
+}
+
+/// Filesystem watcher: auto-reload panels on external changes, debounced.
+struct WatchState {
+    watcher: notify::RecommendedWatcher,
+    rx: std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
+    watched: [Option<PathBuf>; 2],
+    /// When the first / most recent unprocessed event arrived.
+    dirty: [Option<std::time::Instant>; 2],
+    last: [Option<std::time::Instant>; 2],
 }
 
 pub struct InputDialog {
@@ -152,6 +171,7 @@ pub enum Action {
     FindFile,
     Panelize,
     CompareDirs,
+    DirSize,
     View,
     Edit,
     Copy,
@@ -190,6 +210,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Unselect group...", "-", Action::UnselectGroup)),
             Some(("Invert selection", "*", Action::InvertSelection)),
             None,
+            Some(("Directory size", "C-spc", Action::DirSize)),
             Some(("Filter files...", "C-f", Action::Filter)),
             None,
             Some(("Quit", "F10", Action::Quit)),
@@ -306,6 +327,8 @@ pub struct App {
     /// Quick-search prefix while Ctrl+S type-ahead is active.
     pub quick_search: Option<String>,
     pub find: Option<FindState>,
+    du: Option<DuJob>,
+    watch: Option<WatchState>,
     /// Ctrl+X was pressed; the next key completes the chord.
     prefix_cx: bool,
     pub config: Config,
@@ -342,6 +365,26 @@ impl App {
         }
         let (keymap, keymap_warnings) = keymap::build(&config.keymap, &config.keys);
         warnings.extend(keymap_warnings);
+        let watch = if config.watch {
+            let (tx, rx) = std::sync::mpsc::channel();
+            match notify::recommended_watcher(move |event| {
+                let _ = tx.send(event);
+            }) {
+                Ok(watcher) => Some(WatchState {
+                    watcher,
+                    rx,
+                    watched: [None, None],
+                    dirty: [None, None],
+                    last: [None, None],
+                }),
+                Err(err) => {
+                    warnings.push(format!("watch disabled: {err}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let status = if warnings.is_empty() {
             None
         } else {
@@ -361,6 +404,8 @@ impl App {
             cmdline: CmdLine::default(),
             quick_search: None,
             find: None,
+            du: None,
+            watch,
             prefix_cx: false,
             config,
             keymap,
@@ -373,8 +418,22 @@ impl App {
         while !self.quit {
             self.drain_job();
             self.drain_find();
+            self.drain_du();
+            self.poll_loads();
+            self.update_watches();
+            self.tick_watch();
             terminal.draw(|frame| ui::draw(frame, self))?;
-            let timeout = if self.job.is_some() || self.find.is_some() {
+            let loading = self.panels.iter().any(Panel::is_loading);
+            let watch_pending = self
+                .watch
+                .as_ref()
+                .is_some_and(|w| w.dirty.iter().any(Option::is_some));
+            let timeout = if self.job.is_some()
+                || self.find.is_some()
+                || self.du.is_some()
+                || loading
+                || watch_pending
+            {
                 Duration::from_millis(50)
             } else {
                 Duration::from_millis(500)
@@ -396,6 +455,108 @@ impl App {
             find.handle.cancel();
         }
         Ok(())
+    }
+
+    fn poll_loads(&mut self) {
+        for panel in &mut self.panels {
+            if let Some(Err(err)) = panel.poll_pending() {
+                self.status = Some(format!(" {err} "));
+            }
+        }
+    }
+
+    fn drain_du(&mut self) {
+        let Some(du) = self.du.as_ref() else { return };
+        match du.rx.try_recv() {
+            Ok((files, bytes)) => {
+                let du = self.du.take().expect("du present");
+                let panel = &mut self.panels[du.panel];
+                if panel.cwd == du.cwd
+                    && let Some(entry) = panel.entries.iter_mut().find(|e| e.name == du.name)
+                {
+                    entry.size = bytes;
+                }
+                self.status = Some(format!(
+                    " {}: {bytes} bytes in {files} file(s) ",
+                    du.name.to_string_lossy()
+                ));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.status = Some(" sizing… ".into());
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.du = None,
+        }
+    }
+
+    /// Watch the panels' current directories; rewire on cd.
+    fn update_watches(&mut self) {
+        let Some(watch) = self.watch.as_mut() else {
+            return;
+        };
+        for i in 0..2 {
+            let desired = {
+                let panel = &self.panels[i];
+                (panel.is_local() && panel.panelized.is_none()).then(|| panel.cwd.clone())
+            };
+            if desired != watch.watched[i] {
+                if let Some(old) = &watch.watched[i] {
+                    let _ = watch.watcher.unwatch(old);
+                }
+                if let Some(new) = &desired {
+                    let _ = watch
+                        .watcher
+                        .watch(new, notify::RecursiveMode::NonRecursive);
+                }
+                watch.watched[i] = desired;
+                watch.dirty[i] = None;
+                watch.last[i] = None;
+            }
+        }
+    }
+
+    /// Debounced auto-reload: fire after 250 ms of quiet, or at the
+    /// latest 2 s after the first event of a burst.
+    fn tick_watch(&mut self) {
+        use std::time::Instant;
+        let Some(watch) = self.watch.as_mut() else {
+            return;
+        };
+        while let Ok(Ok(event)) = watch.rx.try_recv() {
+            for i in 0..2 {
+                if let Some(dir) = &watch.watched[i]
+                    && event
+                        .paths
+                        .iter()
+                        .any(|p| p.parent() == Some(dir) || p == dir)
+                {
+                    let now = Instant::now();
+                    watch.dirty[i].get_or_insert(now);
+                    watch.last[i] = Some(now);
+                }
+            }
+        }
+        if self.job.is_some()
+            || self.find.is_some()
+            || self.dialog.is_some()
+            || self.quick_search.is_some()
+        {
+            return;
+        }
+        for i in 0..2 {
+            let fire = match (watch.dirty[i], watch.last[i]) {
+                (Some(first), Some(last)) => {
+                    last.elapsed() >= Duration::from_millis(250)
+                        || first.elapsed() >= Duration::from_secs(2)
+                }
+                _ => false,
+            };
+            if fire && !self.panels[i].is_loading() {
+                watch.dirty[i] = None;
+                watch.last[i] = None;
+                let cwd = self.panels[i].cwd.clone();
+                let _ = self.panels[i].request_dir(cwd, LoadKind::Reload);
+            }
+        }
     }
 
     fn drain_find(&mut self) {
@@ -761,6 +922,7 @@ impl App {
             Action::FindFile => self.open_find(),
             Action::Panelize => self.open_panelize(),
             Action::CompareDirs => self.compare_dirs(),
+            Action::DirSize => self.dir_size(),
             Action::View => self.open_viewer(),
             Action::Edit => self.open_editor(),
             Action::Copy => self.open_transfer(false),
@@ -1043,6 +1205,35 @@ impl App {
             panel: panel_idx,
             count: 0,
         });
+    }
+
+    /// Ctrl+Space: recursive size of the selected directory, computed in
+    /// the background and written into the Size column when done.
+    fn dir_size(&mut self) {
+        if self.du.is_some() {
+            self.status = Some(" a size scan is already running ".into());
+            return;
+        }
+        if !self.require_local() {
+            return;
+        }
+        let panel = &self.panels[self.active];
+        let Some(entry) = panel.selected() else {
+            return;
+        };
+        if !entry.is_dir() || entry.is_parent() {
+            self.status = Some(" not a directory ".into());
+            return;
+        }
+        let name = entry.name.clone();
+        let cwd = panel.cwd.clone();
+        self.du = Some(DuJob {
+            rx: fsops::spawn_dir_size(cwd.join(&name)),
+            panel: self.active,
+            cwd,
+            name,
+        });
+        self.panel().move_down();
     }
 
     fn open_find(&mut self) {
@@ -1393,6 +1584,11 @@ impl App {
             }
             KeyCode::Enter => {
                 self.submit_command();
+                return;
+            }
+            KeyCode::Esc if self.panels[self.active].is_loading() => {
+                self.panels[self.active].cancel_pending();
+                self.status = Some(" load cancelled ".into());
                 return;
             }
             KeyCode::Esc if !cmd_empty => {

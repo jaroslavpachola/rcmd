@@ -19,6 +19,8 @@ pub struct Config {
     pub show_hidden: bool,
     pub sort_key: String,
     pub sort_reverse: bool,
+    /// Auto-reload panels when their directory changes on disk.
+    pub watch: bool,
     /// Custom bindings on top of the preset, e.g. "ctrl+y" = "swap-panels".
     pub keys: BTreeMap<String, String>,
     pub hotlist: Vec<HotEntry>,
@@ -38,6 +40,7 @@ impl Default for Config {
             show_hidden: true,
             sort_key: "name".into(),
             sort_reverse: false,
+            watch: true,
             keys: BTreeMap::new(),
             hotlist: Vec::new(),
         }

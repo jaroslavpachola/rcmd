@@ -83,6 +83,7 @@ end
 | Ctrl+\ | Directory hotlist (Enter cd, `a` add current, `d` delete) |
 | Alt+F7 | Find file (glob + optional content); results panelized |
 | Ctrl+X d | Compare directories (marks differences in both panels) |
+| Ctrl+Space | Directory size (background scan into the Size column) |
 | Ctrl+R | Reload panel (also restores listing after find/panelize) |
 | Esc | Cancel dialog / running operation / clear command line |
 | F10 | Quit |
@@ -102,6 +103,12 @@ F2 toggles soft-wrap, F4 toggles hex mode, F7 or `/` searches
 (case-insensitive), `n` next match, F3/F10/Esc/q quit. Lines are indexed
 lazily, so huge files open instantly; very long lines are broken at 4096
 columns.
+
+**Responsiveness**: directory listings that take longer than ~100 ms
+(huge directories, cold network mounts) load in the background — the old
+listing stays up with a spinner, typing never blocks, Esc cancels.
+Panels also auto-reload when their directory changes on disk (debounced;
+`watch = false` in the config disables it).
 
 **Power tools**: Alt+F7 opens find file — a filename glob plus an
 optional case-insensitive content substring; matches stream live into
@@ -130,6 +137,7 @@ mode, hidden-file setting, and the hotlist persist automatically):
 ```toml
 theme = "mc"        # or "dark" (truecolor); applied at startup
 keymap = "mc"       # or "modern": Left/Right = parent/enter (lynx style)
+watch = true        # auto-reload panels on external changes
 show_hidden = true
 sort_key = "name"   # name | ext | size | mtime
 sort_reverse = false

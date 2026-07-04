@@ -30,6 +30,7 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+s", "quick-search"),
     ("ctrl+f", "filter"),
     ("alt+f7", "find-file"),
+    ("ctrl+space", "dir-size"),
     ("ctrl+\\", "hotlist"),
     ("ctrl+4", "hotlist"), // Ctrl+\ (0x1C) on legacy terminals arrives as Ctrl+4
     ("alt+.", "toggle-hidden"),
@@ -159,6 +160,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "find-file" => Action::FindFile,
         "panelize" => Action::Panelize,
         "compare-dirs" => Action::CompareDirs,
+        "dir-size" => Action::DirSize,
         "up-dir" => Action::UpDir,
         "enter" => Action::Enter,
         _ => return None,

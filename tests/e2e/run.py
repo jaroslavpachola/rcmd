@@ -30,7 +30,7 @@ FAILURES = []
 # generous waits: CI runners are slow
 STEP = float(os.environ.get("RCMD_E2E_STEP", "0.5"))
 
-signal.alarm(300)  # hard cap for the whole suite
+signal.alarm(900)  # hard cap for the whole suite (the scale test is slow)
 
 
 class Session:
@@ -260,6 +260,61 @@ def test_compare():
     shutil.rmtree(root)
 
 
+def test_watch():
+    root, play, home = sandbox()
+    open(os.path.join(play, "first.txt"), "w").write("x\n")
+    s = Session(play, home)
+    check("watch: baseline renders", "first.txt" in s.screen())
+    open(os.path.join(play, "appeared.txt"), "w").write("y\n")
+    deadline = time.time() + 8
+    while time.time() < deadline and "appeared.txt" not in s.screen():
+        s.drain(0.5)
+    check("watch: external create auto-reloads", "appeared.txt" in s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_dirsize():
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "sub"))
+    open(os.path.join(play, "sub", "a"), "w").write("12345")
+    open(os.path.join(play, "sub", "b"), "w").write("1234567")
+    s = Session(play, home)
+    s.send(DOWN)                        # -> sub
+    s.send(b"\x00", wait=STEP * 2)      # Ctrl+Space
+    deadline = time.time() + 8
+    while time.time() < deadline and "12 bytes in 2 file(s)" not in s.screen():
+        s.drain(0.5)
+    check("dirsize: recursive size reported", "12 bytes in 2 file(s)" in s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_scale():
+    if os.environ.get("RCMD_E2E_SCALE") == "0":
+        print("SKIP scale (RCMD_E2E_SCALE=0)")
+        return
+    root, play, home = sandbox()
+    big = os.path.join(play, "big")
+    os.makedirs(big)
+    for i in range(100_000):
+        os.close(os.open(os.path.join(big, f"f{i:06}.dat"), os.O_CREAT | os.O_WRONLY, 0o644))
+    t_start = time.time()
+    s = Session(big, home)
+    deadline = time.time() + 90
+    while time.time() < deadline and "f000000.dat" not in s.screen():
+        s.drain(1.0)
+    check("scale: 100k listing loads", "f000000.dat" in s.screen())
+    print(f"     (100k load visible after {time.time() - t_start:.1f}s)")
+    s.send(END, wait=1.0)
+    deadline = time.time() + 15
+    while time.time() < deadline and "f099999.dat" not in s.screen():
+        s.drain(0.5)
+    check("scale: End reaches last of 100k", "f099999.dat" in s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def main():
     if not os.path.isfile(BIN):
         print(f"FAIL binary not found: {BIN} (run `cargo build` first)")
@@ -272,6 +327,9 @@ def main():
         test_archive,
         test_find,
         test_compare,
+        test_watch,
+        test_dirsize,
+        test_scale,
     ):
         test()
     if FAILURES:

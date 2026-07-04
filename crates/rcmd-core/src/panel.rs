@@ -4,11 +4,34 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use crate::archive::ArchiveFs;
 use crate::entry::Entry;
 use crate::glob::glob_match;
 use crate::vfs::{FsProvider, LocalFs, is_archive_name};
+
+/// How long a directory listing may take before the panel switches to a
+/// non-blocking pending load (spinner, old listing stays visible).
+const LOAD_GRACE: Duration = Duration::from_millis(100);
+
+/// What triggered a listing request — decides where the cursor lands.
+pub enum LoadKind {
+    Reload,
+    Enter,
+    GoUp,
+    Cd,
+}
+
+struct PendingLoad {
+    target: PathBuf,
+    kind: LoadKind,
+    rx: mpsc::Receiver<io::Result<Vec<Entry>>>,
+    cancel: Arc<AtomicBool>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {
@@ -40,6 +63,7 @@ pub struct Panel {
     /// command output) instead of the directory; any reload restores the
     /// normal listing.
     pub panelized: Option<String>,
+    pending: Option<PendingLoad>,
 }
 
 impl Panel {
@@ -56,9 +80,128 @@ impl Panel {
             show_hidden: true,
             filter: None,
             panelized: None,
+            pending: None,
         };
         panel.reload()?;
         Ok(panel)
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub fn cancel_pending(&mut self) {
+        if let Some(pending) = self.pending.take() {
+            pending.cancel.store(true, AtomicOrdering::Relaxed);
+        }
+    }
+
+    /// List `target` on a worker thread. Fast results (within the grace
+    /// window) apply before returning — Ok(true) — so ordinary local
+    /// navigation feels synchronous. Slow filesystems leave the panel
+    /// untouched with a pending load (Ok(false)), resolved later by
+    /// [`poll_pending`]; typing never blocks.
+    pub fn request_dir(&mut self, target: PathBuf, kind: LoadKind) -> io::Result<bool> {
+        self.cancel_pending();
+        let fs = self.fs.clone();
+        let dir = target.clone();
+        let show_hidden = self.show_hidden;
+        let filter = self.filter.clone();
+        let (sort_key, sort_reverse) = (self.sort_key, self.sort_reverse);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = prepare_listing(
+                &*fs,
+                &dir,
+                show_hidden,
+                filter.as_deref(),
+                sort_key,
+                sort_reverse,
+            );
+            if !flag.load(AtomicOrdering::Relaxed) {
+                let _ = tx.send(result);
+            }
+        });
+        match rx.recv_timeout(LOAD_GRACE) {
+            Ok(Ok(entries)) => {
+                self.finish_load(target, entries, &kind);
+                Ok(true)
+            }
+            Ok(Err(err)) => Err(err),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.pending = Some(PendingLoad {
+                    target,
+                    kind,
+                    rx,
+                    cancel,
+                });
+                Ok(false)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(io::Error::other("listing worker died"))
+            }
+        }
+    }
+
+    /// Applies a finished pending load. None = still loading or idle.
+    pub fn poll_pending(&mut self) -> Option<io::Result<()>> {
+        let pending = self.pending.as_ref()?;
+        match pending.rx.try_recv() {
+            Ok(Ok(entries)) => {
+                let pending = self.pending.take().expect("pending load");
+                self.finish_load(pending.target, entries, &pending.kind);
+                Some(Ok(()))
+            }
+            Ok(Err(err)) => {
+                self.pending = None;
+                Some(Err(err))
+            }
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.pending = None;
+                Some(Err(io::Error::other("listing worker died")))
+            }
+        }
+    }
+
+    fn finish_load(&mut self, target: PathBuf, mut entries: Vec<Entry>, kind: &LoadKind) {
+        let came_from = match kind {
+            LoadKind::GoUp => self.cwd.file_name().map(|n| n.to_os_string()),
+            _ => None,
+        };
+        let keep = match kind {
+            LoadKind::Reload => self.selected().map(|e| e.name.clone()),
+            _ => None,
+        };
+        self.panelized = None;
+        self.cwd = target;
+        if self.cwd.parent().is_some() || self.archive.is_some() {
+            entries.insert(0, Entry::parent());
+        }
+        match kind {
+            LoadKind::Reload => {
+                self.marked
+                    .retain(|name| entries.iter().any(|e| &e.name == name));
+                self.entries = entries;
+                self.cursor = keep
+                    .and_then(|name| self.entries.iter().position(|e| e.name == name))
+                    .unwrap_or_else(|| self.cursor.min(self.entries.len().saturating_sub(1)));
+            }
+            LoadKind::GoUp => {
+                self.marked.clear();
+                self.entries = entries;
+                self.cursor = came_from
+                    .and_then(|name| self.entries.iter().position(|e| e.name == name))
+                    .unwrap_or(0);
+            }
+            LoadKind::Enter | LoadKind::Cd => {
+                self.marked.clear();
+                self.entries = entries;
+                self.cursor = 0;
+            }
+        }
     }
 
     pub fn is_local(&self) -> bool {
@@ -87,26 +230,31 @@ impl Panel {
 
     /// Re-read the current directory, keeping the cursor on the same entry
     /// where possible and pruning marks for entries that no longer exist.
-    /// On failure the previous listing is kept.
+    /// On failure the previous listing is kept. Local reloads go through
+    /// the non-blocking loader; archives re-index synchronously (fast,
+    /// local file).
     pub fn reload(&mut self) -> io::Result<()> {
+        if self.archive.is_none() {
+            return self
+                .request_dir(self.cwd.clone(), LoadKind::Reload)
+                .map(|_| ());
+        }
         self.panelized = None;
         let keep = self.selected().map(|e| e.name.clone());
         // re-index the archive so appended members (F5 into a zip) appear
         if let Some(archive) = &self.archive {
             self.fs = Arc::new(ArchiveFs::open(archive)?);
         }
-        let mut entries = self.fs.read_dir(&self.cwd)?;
-        if !self.show_hidden {
-            entries.retain(|e| !e.is_hidden());
-        }
-        if let Some(pattern) = &self.filter {
-            entries.retain(|e| e.is_dir() || glob_match(pattern, &e.name.to_string_lossy()));
-        }
-        sort_entries(&mut entries, self.sort_key, self.sort_reverse);
+        let mut entries = prepare_listing(
+            &*self.fs,
+            &self.cwd,
+            self.show_hidden,
+            self.filter.as_deref(),
+            self.sort_key,
+            self.sort_reverse,
+        )?;
         // ".." also at an archive's root: it leads back out of the archive
-        if self.cwd.parent().is_some() || self.archive.is_some() {
-            entries.insert(0, Entry::parent());
-        }
+        entries.insert(0, Entry::parent());
         self.marked
             .retain(|name| entries.iter().any(|e| &e.name == name));
         self.entries = entries;
@@ -158,7 +306,11 @@ impl Panel {
             return self.go_up();
         }
         if entry.is_dir() {
-            self.change_dir(self.cwd.join(&name))?;
+            if self.is_local() {
+                self.request_dir(self.cwd.join(&name), LoadKind::Enter)?;
+            } else {
+                self.change_dir(self.cwd.join(&name))?;
+            }
             return Ok(true);
         }
         if self.archive.is_none() && is_archive_name(&name) {
@@ -178,6 +330,10 @@ impl Panel {
             }
             return Ok(false);
         };
+        if self.is_local() {
+            self.request_dir(parent, LoadKind::GoUp)?;
+            return Ok(true);
+        }
         let came_from = self.cwd.file_name().map(|n| n.to_os_string());
         self.change_dir(parent)?;
         if let Some(name) = came_from
@@ -229,6 +385,9 @@ impl Panel {
     /// Change to an arbitrary local directory (command-line `cd`);
     /// leaves any archive the panel was browsing.
     pub fn cd(&mut self, target: PathBuf) -> io::Result<()> {
+        if self.is_local() {
+            return self.request_dir(target, LoadKind::Cd).map(|_| ());
+        }
         let prev_fs = self.fs.clone();
         let prev_archive = self.archive.take();
         self.fs = Arc::new(LocalFs);
@@ -274,8 +433,15 @@ impl Panel {
     /// same entry.
     pub fn resort(&mut self) {
         let keep = self.selected().map(|e| e.name.clone());
-        let start = usize::from(self.entries.first().is_some_and(Entry::is_parent));
-        sort_entries(&mut self.entries[start..], self.sort_key, self.sort_reverse);
+        let parent = self
+            .entries
+            .first()
+            .is_some_and(Entry::is_parent)
+            .then(|| self.entries.remove(0));
+        sort_entries(&mut self.entries, self.sort_key, self.sort_reverse);
+        if let Some(parent) = parent {
+            self.entries.insert(0, parent);
+        }
         if let Some(name) = keep
             && let Some(pos) = self.entries.iter().position(|e| e.name == name)
         {
@@ -390,30 +556,53 @@ impl Panel {
     }
 }
 
+/// Listing + filtering + sorting, without touching panel state — safe to
+/// run on a worker thread.
+fn prepare_listing(
+    fs: &dyn FsProvider,
+    dir: &Path,
+    show_hidden: bool,
+    filter: Option<&str>,
+    key: SortKey,
+    reverse: bool,
+) -> io::Result<Vec<Entry>> {
+    let mut entries = fs.read_dir(dir)?;
+    if !show_hidden {
+        entries.retain(|e| !e.is_hidden());
+    }
+    if let Some(pattern) = filter {
+        entries.retain(|e| e.is_dir() || glob_match(pattern, &e.name.to_string_lossy()));
+    }
+    sort_entries(&mut entries, key, reverse);
+    Ok(entries)
+}
+
 /// Directories always group first (even reversed); ties broken bytewise so
-/// ordering is total even for names differing only in case.
-fn sort_entries(entries: &mut [Entry], key: SortKey, reverse: bool) {
-    entries.sort_by(|a, b| {
-        let dirs_first = b.is_dir().cmp(&a.is_dir());
+/// ordering is total even for names differing only in case. The lowercase
+/// sort key is computed once per entry, which matters at 100k entries.
+fn sort_entries(entries: &mut Vec<Entry>, key: SortKey, reverse: bool) {
+    let mut decorated: Vec<(bool, String, Entry)> = std::mem::take(entries)
+        .into_iter()
+        .map(|e| (!e.is_dir(), e.name.to_string_lossy().to_lowercase(), e))
+        .collect();
+    decorated.sort_by(|a, b| {
+        let dirs_first = a.0.cmp(&b.0);
         if dirs_first != Ordering::Equal {
             return dirs_first;
         }
         let ord = match key {
             SortKey::Name => name_cmp(a, b),
-            SortKey::Ext => a.ext().cmp(&b.ext()).then_with(|| name_cmp(a, b)),
-            SortKey::Size => a.size.cmp(&b.size).then_with(|| name_cmp(a, b)),
-            SortKey::Mtime => a.mtime.cmp(&b.mtime).then_with(|| name_cmp(a, b)),
+            SortKey::Ext => a.2.ext().cmp(&b.2.ext()).then_with(|| name_cmp(a, b)),
+            SortKey::Size => a.2.size.cmp(&b.2.size).then_with(|| name_cmp(a, b)),
+            SortKey::Mtime => a.2.mtime.cmp(&b.2.mtime).then_with(|| name_cmp(a, b)),
         };
         if reverse { ord.reverse() } else { ord }
     });
+    *entries = decorated.into_iter().map(|(_, _, e)| e).collect();
 }
 
-fn name_cmp(a: &Entry, b: &Entry) -> Ordering {
-    a.name
-        .to_string_lossy()
-        .to_lowercase()
-        .cmp(&b.name.to_string_lossy().to_lowercase())
-        .then_with(|| a.name.cmp(&b.name))
+fn name_cmp(a: &(bool, String, Entry), b: &(bool, String, Entry)) -> Ordering {
+    a.1.cmp(&b.1).then_with(|| a.2.name.cmp(&b.2.name))
 }
 
 #[cfg(test)]
@@ -668,6 +857,76 @@ mod tests {
         panel.cd(tree.path().join("src")).unwrap();
         assert!(panel.is_local());
         assert_eq!(panel.cwd, tree.path().join("src"));
+    }
+
+    struct SlowFs {
+        delay: Duration,
+    }
+
+    impl FsProvider for SlowFs {
+        fn read_dir(&self, _dir: &Path) -> io::Result<Vec<Entry>> {
+            std::thread::sleep(self.delay);
+            Ok(vec![Entry {
+                name: OsString::from("slow-file.txt"),
+                kind: crate::entry::EntryKind::File,
+                size: 1,
+                mtime: None,
+                mode: 0o644,
+                link_target: None,
+            }])
+        }
+        fn stat(&self, _path: &Path) -> io::Result<Entry> {
+            Err(io::Error::other("unused"))
+        }
+        fn open_read(&self, _path: &Path) -> io::Result<Box<dyn std::io::Read + Send>> {
+            Err(io::Error::other("unused"))
+        }
+    }
+
+    #[test]
+    fn slow_listing_goes_pending_then_applies() {
+        let tree = make_tree();
+        let mut panel = Panel::new(tree.path().to_path_buf()).unwrap();
+        panel.fs = Arc::new(SlowFs {
+            delay: Duration::from_millis(300),
+        });
+        let target = tree.path().join("src");
+        let done = panel.request_dir(target.clone(), LoadKind::Enter).unwrap();
+        assert!(!done);
+        assert!(panel.is_loading());
+        assert_eq!(panel.cwd, tree.path()); // untouched while pending
+
+        let mut applied = None;
+        for _ in 0..100 {
+            if let Some(result) = panel.poll_pending() {
+                applied = Some(result);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        applied.expect("load finished").unwrap();
+        assert!(!panel.is_loading());
+        assert_eq!(panel.cwd, target);
+        assert!(panel.entries.iter().any(|e| e.name == "slow-file.txt"));
+    }
+
+    #[test]
+    fn cancelled_pending_load_never_applies() {
+        let tree = make_tree();
+        let mut panel = Panel::new(tree.path().to_path_buf()).unwrap();
+        panel.fs = Arc::new(SlowFs {
+            delay: Duration::from_millis(250),
+        });
+        let done = panel
+            .request_dir(tree.path().join("src"), LoadKind::Enter)
+            .unwrap();
+        assert!(!done);
+        panel.cancel_pending();
+        assert!(!panel.is_loading());
+        std::thread::sleep(Duration::from_millis(350));
+        assert!(panel.poll_pending().is_none());
+        assert_eq!(panel.cwd, tree.path());
+        assert!(!panel.entries.iter().any(|e| e.name == "slow-file.txt"));
     }
 
     #[test]

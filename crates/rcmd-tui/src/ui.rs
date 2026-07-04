@@ -126,7 +126,11 @@ const HELP_TEXT: &[&str] = &[
     "                  other side or differing in size/mtime (F5 syncs)",
     "  F9>Cmd>Panelize command output becomes the panel listing",
     "  (Ctrl+R restores a normal listing after find/panelize)",
+    "  Ctrl+Space      directory size (background scan, fills Size column)",
     "  Ctrl+R          reload both panels",
+    "  Panels auto-reload when their directory changes on disk",
+    "  (watch = false in config disables). Slow directories load in the",
+    "  background: old listing + spinner stay up, Esc cancels the load.",
     "  Alt+.           show/hide dotfiles",
     "  Alt+N/E/S/T     sort by name/extension/size/mtime (again = reverse)",
     "",
@@ -282,6 +286,22 @@ fn draw_panel(frame: &mut Frame, area: Rect, panel: &Panel, state: &mut TableSta
             format!(" {} ", tail(label, 40)),
             Style::new().fg(th().header_fg).add_modifier(Modifier::BOLD),
         ));
+    }
+    if panel.is_loading() {
+        const FRAMES: [char; 4] = ['|', '/', '-', '\\'];
+        let tick = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            / 150;
+        let frame_ch = FRAMES[(tick % FRAMES.len() as u128) as usize];
+        block = block.title_bottom(
+            Line::from(Span::styled(
+                format!(" {frame_ch} loading — Esc cancels "),
+                Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD),
+            ))
+            .centered(),
+        );
     }
 
     let header = Row::new([
