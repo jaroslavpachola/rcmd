@@ -1,8 +1,9 @@
 # rcmd
 
 A Midnight Commander replacement in Rust: orthodox dual-pane file manager
-with MC keybindings, built on ratatui. See [docs/PLAN.md](docs/PLAN.md) for
-the roadmap.
+with MC keybindings, built on ratatui. The original roadmap
+([docs/PLAN.md](docs/PLAN.md)) is complete; the 2.0 roadmap is
+[docs/PLAN2.md](docs/PLAN2.md).
 
 ## Status
 

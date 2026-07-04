@@ -1,7 +1,35 @@
 # rcmd — a Midnight Commander replacement in Rust
 
-**Status:** planning (2026-07-04)
-**Project location (when started):** `~/git/rcmd`
+**Status:** ✅ COMPLETED (2026-07-04) — all milestones M0–M5 shipped, plus
+the debt list. Kept as a historical record; the follow-up roadmap is
+[PLAN2.md](PLAN2.md).
+
+## Retrospective (written on completion)
+
+All six milestones and every tracked debt landed in seven commits on the
+day the plan was written: dual-pane navigation (M0), marks + F5–F8 job
+engine with MC-style dialogs (M1), command line/Ctrl+O/exit-to-cwd (M2),
+F3 chunked viewer + F4 $EDITOR + F9 menu + F1 help (M3), config/keymaps/
+quick-search/filter/hotlist/themes (M4), archives as VFS (M5), then
+mtime preservation, viewer wrap, xz/bz2, copy-into-zip, and job-control-
+safe command execution. ~43 tests, clippy-clean throughout.
+
+What the plan got right: the no-async decision cost nothing through M5
+(worker threads + mpsc handled every job, including archive extraction);
+the core/TUI split kept all logic unit-testable; virtual line breaks in
+the viewer and OsString-everywhere prevented the classic bugs on day one.
+
+What deviated: the FsProvider seam was carved in M5, not "from day one" —
+retrofitting it took under an hour precisely because panel logic was
+already thin over `read_dir`, so the early-seam advice mattered less than
+keeping the call surface small. Copy-INTO-zip (planned as post-M5
+stretch) turned out cheap thanks to zip's append mode. The unplanned
+winner was the pty test harness: every milestone was verified by driving
+the real binary in a pseudo-terminal, which caught keymap and terminal-
+protocol issues (Shift+F8 → F20, Ctrl+\ → Ctrl+4) no unit test would.
+
+The one open item is behavioral: the M1 exit criterion — *stop launching
+mc for a week* — is decided in daily use, not in CI.
 
 ## Vision
 
