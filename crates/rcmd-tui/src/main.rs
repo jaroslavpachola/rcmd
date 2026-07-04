@@ -1,4 +1,6 @@
 mod app;
+mod config;
+mod keymap;
 mod ui;
 
 use std::path::PathBuf;
@@ -12,15 +14,33 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = parse_args()?;
+    let (cfg, load_warning) = config::load();
+    let theme_warning = ui::init_theme(&cfg.theme);
     let mut terminal = ratatui::init();
-    let result = run(&args, &mut terminal);
+    let result = run(&args, cfg, [load_warning, theme_warning], &mut terminal);
     ratatui::restore();
     result
 }
 
-fn run(args: &Args, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
-    let mut app = app::App::new(&args.dirs)?;
+fn run(
+    args: &Args,
+    cfg: config::Config,
+    warnings: [Option<String>; 2],
+    terminal: &mut ratatui::DefaultTerminal,
+) -> Result<()> {
+    let warnings = warnings.into_iter().flatten().collect();
+    let mut app = app::App::new(&args.dirs, cfg, warnings)?;
     let result = app.run(terminal);
+
+    // Persist panel settings and the hotlist for the next session.
+    let panel = &app.panels[app.active];
+    app.config.show_hidden = panel.show_hidden;
+    app.config.sort_key = config::sort_key_name(panel.sort_key).to_string();
+    app.config.sort_reverse = panel.sort_reverse;
+    if let Err(err) = config::save(&app.config) {
+        eprintln!("rcmd: could not save config: {err}");
+    }
+
     if let Some(path) = &args.printwd {
         let cwd = &app.panels[app.active].cwd;
         let _ = std::fs::write(path, cwd.as_os_str().as_encoded_bytes());

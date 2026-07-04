@@ -6,11 +6,11 @@ the roadmap.
 
 ## Status
 
-M3 — view & edit. The M1 daily-driver cut (marking, copy/move/mkdir/delete
-with MC-style dialogs, sort modes), M2 shell integration (command line,
-Ctrl+O, exit-to-cwd), plus the F3 viewer (chunked — opens multi-GB files
-instantly; text and hex modes, search), F4 editing via $EDITOR, and the
-F9 pulldown menu.
+M4 — polish & config. Everything from M1–M3 (marking, F5–F8 operations
+with MC-style dialogs, command line + shell integration, F3 chunked
+viewer, F4 $EDITOR, F9 menu, F1 help) plus a config file, keymap presets
+and custom bindings, quick search, per-panel file filter, a directory
+hotlist, and themes.
 
 ## Run
 
@@ -69,6 +69,9 @@ end
 | Shift+F8 | Delete permanently |
 | Alt+N / E / S / T | Sort by name / ext / size / mtime (again = reverse) |
 | Alt+. | Toggle hidden files |
+| Ctrl+S | Quick search (type-ahead; Ctrl+S again = next match) |
+| Ctrl+F | Filter shown files by glob (`*` or empty clears) |
+| Ctrl+\ | Directory hotlist (Enter cd, `a` add current, `d` delete) |
 | Ctrl+R | Reload panel |
 | Esc | Cancel dialog / running operation / clear command line |
 | F10 | Quit |
@@ -87,6 +90,31 @@ overwrite and error prompts also take hotkeys (o/a/s/S, r/s/S).
 F4 toggles hex mode, F7 or `/` searches (case-insensitive), `n` next
 match, F3/F10/Esc/q quit. Lines are indexed lazily, so huge files open
 instantly; very long lines are broken at 4096 columns.
+
+## Configuration
+
+`~/.config/rcmd/config.toml` (created/rewritten on exit — panel sort
+mode, hidden-file setting, and the hotlist persist automatically):
+
+```toml
+theme = "mc"        # or "dark" (truecolor); applied at startup
+keymap = "mc"       # or "modern": Left/Right = parent/enter (lynx style)
+show_hidden = true
+sort_key = "name"   # name | ext | size | mtime
+sort_reverse = false
+
+[keys]              # custom bindings on top of the preset
+"ctrl+y" = "swap-panels"
+# key syntax:  [ctrl+][alt+][shift+]<key>  (f1..f20, letters, +, -, etc.)
+# actions: help view edit copy move mkdir delete delete-perm select-group
+#   unselect-group invert-selection quit shell reload swap-panels
+#   toggle-hidden sort-name sort-ext sort-size sort-mtime sort-reverse
+#   menu mark quick-search hotlist filter up-dir enter
+
+[[hotlist]]
+label = "projects"
+path = "/home/you/git"
+```
 
 ## Development
 

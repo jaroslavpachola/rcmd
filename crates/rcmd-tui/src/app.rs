@@ -9,13 +9,16 @@ use rcmd_core::fsops::{self, JobEvent, JobHandle, Reply};
 use rcmd_core::panel::{Panel, SortKey};
 use rcmd_core::view::FileView;
 
-use crate::ui;
+use crate::config::{Config, HotEntry};
+use crate::keymap::Keymap;
+use crate::{config, keymap, ui};
 
 pub enum InputAction {
     CopyTo { sources: Vec<PathBuf> },
     MoveTo { sources: Vec<PathBuf> },
     Mkdir,
     SelectGlob { mark: bool },
+    Filter,
 }
 
 pub struct InputDialog {
@@ -37,6 +40,8 @@ pub struct ConfirmDialog {
 pub enum Dialog {
     Input(InputDialog),
     Confirm(ConfirmDialog),
+    /// Directory hotlist; the payload is the selected row.
+    Hotlist(usize),
 }
 
 pub enum Ask {
@@ -105,8 +110,15 @@ pub struct Viewer {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum MenuAction {
+pub enum Action {
     Help,
+    Menu,
+    Mark,
+    QuickSearch,
+    Hotlist,
+    Filter,
+    UpDir,
+    Enter,
     View,
     Edit,
     Copy,
@@ -127,46 +139,50 @@ pub enum MenuAction {
 }
 
 /// None = separator line.
-pub type MenuEntry = Option<(&'static str, &'static str, MenuAction)>;
+pub type MenuEntry = Option<(&'static str, &'static str, Action)>;
 
 pub const MENUS: &[(&str, &[MenuEntry])] = &[
     (
         "File",
         &[
-            Some(("View", "F3", MenuAction::View)),
-            Some(("Edit", "F4", MenuAction::Edit)),
-            Some(("Copy...", "F5", MenuAction::Copy)),
-            Some(("Move/rename...", "F6", MenuAction::Move)),
-            Some(("Make directory...", "F7", MenuAction::Mkdir)),
-            Some(("Delete (trash)", "F8", MenuAction::Delete)),
-            Some(("Delete permanently", "S-F8", MenuAction::DeletePerm)),
+            Some(("View", "F3", Action::View)),
+            Some(("Edit", "F4", Action::Edit)),
+            Some(("Copy...", "F5", Action::Copy)),
+            Some(("Move/rename...", "F6", Action::Move)),
+            Some(("Make directory...", "F7", Action::Mkdir)),
+            Some(("Delete (trash)", "F8", Action::Delete)),
+            Some(("Delete permanently", "S-F8", Action::DeletePerm)),
             None,
-            Some(("Select group...", "+", MenuAction::SelectGroup)),
-            Some(("Unselect group...", "-", MenuAction::UnselectGroup)),
-            Some(("Invert selection", "*", MenuAction::InvertSelection)),
+            Some(("Select group...", "+", Action::SelectGroup)),
+            Some(("Unselect group...", "-", Action::UnselectGroup)),
+            Some(("Invert selection", "*", Action::InvertSelection)),
             None,
-            Some(("Quit", "F10", MenuAction::Quit)),
+            Some(("Filter files...", "C-f", Action::Filter)),
+            None,
+            Some(("Quit", "F10", Action::Quit)),
         ],
     ),
     (
         "Command",
         &[
-            Some(("Help", "F1", MenuAction::Help)),
-            Some(("Open shell", "C-o", MenuAction::Shell)),
-            Some(("Reload panel", "C-r", MenuAction::Reload)),
-            Some(("Swap panels", "", MenuAction::SwapPanels)),
-            Some(("Toggle hidden files", "M-.", MenuAction::ToggleHidden)),
+            Some(("Help", "F1", Action::Help)),
+            Some(("Quick search", "C-s", Action::QuickSearch)),
+            Some(("Directory hotlist...", "C-\\", Action::Hotlist)),
+            Some(("Open shell", "C-o", Action::Shell)),
+            Some(("Reload panel", "C-r", Action::Reload)),
+            Some(("Swap panels", "", Action::SwapPanels)),
+            Some(("Toggle hidden files", "M-.", Action::ToggleHidden)),
         ],
     ),
     (
         "Sort",
         &[
-            Some(("By name", "M-n", MenuAction::Sort(SortKey::Name))),
-            Some(("By extension", "M-e", MenuAction::Sort(SortKey::Ext))),
-            Some(("By size", "M-s", MenuAction::Sort(SortKey::Size))),
-            Some(("By modify time", "M-t", MenuAction::Sort(SortKey::Mtime))),
+            Some(("By name", "M-n", Action::Sort(SortKey::Name))),
+            Some(("By extension", "M-e", Action::Sort(SortKey::Ext))),
+            Some(("By size", "M-s", Action::Sort(SortKey::Size))),
+            Some(("By modify time", "M-t", Action::Sort(SortKey::Mtime))),
             None,
-            Some(("Toggle reverse", "", MenuAction::SortReverse)),
+            Some(("Toggle reverse", "", Action::SortReverse)),
         ],
     ),
 ];
@@ -251,12 +267,16 @@ pub struct App {
     pub menu: Option<MenuState>,
     pub help: Option<HelpState>,
     pub cmdline: CmdLine,
+    /// Quick-search prefix while Ctrl+S type-ahead is active.
+    pub quick_search: Option<String>,
+    pub config: Config,
+    keymap: Keymap,
     pending_exec: Option<Exec>,
     pub quit: bool,
 }
 
 impl App {
-    pub fn new(dirs: &[PathBuf]) -> Result<Self> {
+    pub fn new(dirs: &[PathBuf], config: Config, mut warnings: Vec<String>) -> Result<Self> {
         let cwd = std::env::current_dir().context("cannot determine current directory")?;
         let dir_at = |i: usize| -> Result<PathBuf> {
             match dirs.get(i) {
@@ -271,15 +291,28 @@ impl App {
         } else {
             left_dir.clone()
         };
-        let left = Panel::new(left_dir.clone())
+        let mut left = Panel::new(left_dir.clone())
             .with_context(|| format!("cannot read directory {}", left_dir.display()))?;
-        let right = Panel::new(right_dir.clone())
+        let mut right = Panel::new(right_dir.clone())
             .with_context(|| format!("cannot read directory {}", right_dir.display()))?;
+        for panel in [&mut left, &mut right] {
+            panel.show_hidden = config.show_hidden;
+            panel.sort_key = config::sort_key_from_name(&config.sort_key);
+            panel.sort_reverse = config.sort_reverse;
+            let _ = panel.reload();
+        }
+        let (keymap, keymap_warnings) = keymap::build(&config.keymap, &config.keys);
+        warnings.extend(keymap_warnings);
+        let status = if warnings.is_empty() {
+            None
+        } else {
+            Some(format!(" {} ", warnings.join(" · ")))
+        };
         Ok(App {
             panels: [left, right],
             table_states: [TableState::default(), TableState::default()],
             active: 0,
-            status: None,
+            status,
             panel_rows: 1,
             dialog: None,
             job: None,
@@ -287,6 +320,9 @@ impl App {
             menu: None,
             help: None,
             cmdline: CmdLine::default(),
+            quick_search: None,
+            config,
+            keymap,
             pending_exec: None,
             quit: false,
         })
@@ -433,8 +469,47 @@ impl App {
             self.on_viewer_key(key);
         } else if self.menu.is_some() {
             self.on_menu_key(key);
+        } else if self.quick_search.is_some() {
+            self.on_quick_search_key(key);
         } else {
             self.on_panel_key(key);
+        }
+    }
+
+    /// Ctrl+S type-ahead: printable keys refine the prefix, Ctrl+S jumps
+    /// to the next match, anything else leaves the mode (and is handled
+    /// normally).
+    fn on_quick_search_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => self.quick_search = None,
+            KeyCode::Char('s') if ctrl => {
+                let prefix = self.quick_search.clone().unwrap_or_default();
+                let panel = self.panel();
+                if let Some(pos) = panel.find_prefix(&prefix, panel.cursor + 1) {
+                    panel.cursor = pos;
+                }
+            }
+            KeyCode::Char(c) if !ctrl && !alt => {
+                let mut prefix = self.quick_search.clone().unwrap_or_default();
+                prefix.push(c);
+                let panel = self.panel();
+                // reject characters that match nothing, like MC
+                if let Some(pos) = panel.find_prefix(&prefix, panel.cursor) {
+                    panel.cursor = pos;
+                    self.quick_search = Some(prefix);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(prefix) = self.quick_search.as_mut() {
+                    prefix.pop();
+                }
+            }
+            _ => {
+                self.quick_search = None;
+                self.on_panel_key(key);
+            }
         }
     }
 
@@ -530,36 +605,48 @@ impl App {
             KeyCode::Enter => {
                 if let Some((_, _, action)) = MENUS[ms.menu].1[ms.item] {
                     self.menu = None;
-                    self.run_menu_action(action);
+                    self.run_action(action);
                 }
             }
             _ => {}
         }
     }
 
-    fn run_menu_action(&mut self, action: MenuAction) {
+    fn run_action(&mut self, action: Action) {
         match action {
-            MenuAction::Help => self.help = Some(HelpState { top: 0, rows: 1 }),
-            MenuAction::View => self.open_viewer(),
-            MenuAction::Edit => self.open_editor(),
-            MenuAction::Copy => self.open_transfer(false),
-            MenuAction::Move => self.open_transfer(true),
-            MenuAction::Mkdir => self.open_mkdir(),
-            MenuAction::Delete => self.open_delete(false),
-            MenuAction::DeletePerm => self.open_delete(true),
-            MenuAction::SelectGroup => self.open_select(true),
-            MenuAction::UnselectGroup => self.open_select(false),
-            MenuAction::InvertSelection => self.panel().invert_marks(),
-            MenuAction::Quit => self.quit = true,
-            MenuAction::Shell => self.pending_exec = Some(Exec::Shell),
-            MenuAction::Reload => self.fallible(|p| p.reload().map(|()| true)),
-            MenuAction::SwapPanels => {
+            Action::Help => self.help = Some(HelpState { top: 0, rows: 1 }),
+            Action::Menu => {
+                self.menu = Some(MenuState {
+                    menu: 0,
+                    item: first_menu_item(MENUS[0].1),
+                })
+            }
+            Action::Mark => self.panel().toggle_mark(),
+            Action::QuickSearch => self.quick_search = Some(String::new()),
+            Action::Hotlist => self.dialog = Some(Dialog::Hotlist(0)),
+            Action::Filter => self.open_filter(),
+            Action::UpDir => self.fallible(|p| p.go_up()),
+            Action::Enter => self.fallible(|p| p.enter()),
+            Action::View => self.open_viewer(),
+            Action::Edit => self.open_editor(),
+            Action::Copy => self.open_transfer(false),
+            Action::Move => self.open_transfer(true),
+            Action::Mkdir => self.open_mkdir(),
+            Action::Delete => self.open_delete(false),
+            Action::DeletePerm => self.open_delete(true),
+            Action::SelectGroup => self.open_select(true),
+            Action::UnselectGroup => self.open_select(false),
+            Action::InvertSelection => self.panel().invert_marks(),
+            Action::Quit => self.quit = true,
+            Action::Shell => self.pending_exec = Some(Exec::Shell),
+            Action::Reload => self.fallible(|p| p.reload().map(|()| true)),
+            Action::SwapPanels => {
                 self.panels.swap(0, 1);
                 self.table_states.swap(0, 1);
             }
-            MenuAction::ToggleHidden => self.fallible(|p| p.toggle_hidden().map(|()| true)),
-            MenuAction::Sort(key) => self.panel().set_sort(key),
-            MenuAction::SortReverse => {
+            Action::ToggleHidden => self.fallible(|p| p.toggle_hidden().map(|()| true)),
+            Action::Sort(key) => self.panel().set_sort(key),
+            Action::SortReverse => {
                 let panel = self.panel();
                 panel.sort_reverse = !panel.sort_reverse;
                 panel.resort();
@@ -678,11 +765,65 @@ impl App {
                 }
                 _ => self.dialog = Some(Dialog::Confirm(d)),
             },
+            Dialog::Hotlist(mut selected) => {
+                let len = self.config.hotlist.len();
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => {
+                        if let Some(entry) = self.config.hotlist.get(selected).cloned() {
+                            let target = self.resolve(&entry.path);
+                            if let Err(err) = self.panels[self.active].cd(target) {
+                                self.status = Some(format!(" hotlist: {err} "));
+                            }
+                        }
+                    }
+                    KeyCode::Char('a') => {
+                        let cwd = self.panels[self.active].cwd.clone();
+                        let path = cwd.display().to_string();
+                        if !self.config.hotlist.iter().any(|h| h.path == path) {
+                            let label = cwd
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "/".into());
+                            self.config.hotlist.push(HotEntry { label, path });
+                        }
+                        self.dialog = Some(Dialog::Hotlist(selected));
+                    }
+                    KeyCode::Char('d') => {
+                        if selected < len {
+                            self.config.hotlist.remove(selected);
+                        }
+                        let len = self.config.hotlist.len();
+                        self.dialog = Some(Dialog::Hotlist(selected.min(len.saturating_sub(1))));
+                    }
+                    KeyCode::Up => {
+                        selected = selected.saturating_sub(1);
+                        self.dialog = Some(Dialog::Hotlist(selected));
+                    }
+                    KeyCode::Down => {
+                        if selected + 1 < len {
+                            selected += 1;
+                        }
+                        self.dialog = Some(Dialog::Hotlist(selected));
+                    }
+                    _ => self.dialog = Some(Dialog::Hotlist(selected)),
+                }
+            }
         }
     }
 
     fn submit_input(&mut self, dialog: InputDialog) {
         let value = dialog.value.trim().to_string();
+        if let InputAction::Filter = dialog.action {
+            let panel = &mut self.panels[self.active];
+            panel.filter = if value.is_empty() || value == "*" {
+                None
+            } else {
+                Some(value)
+            };
+            self.fallible(|p| p.reload().map(|()| true));
+            return;
+        }
         if value.is_empty() {
             return;
         }
@@ -714,7 +855,21 @@ impl App {
                 }
             }
             InputAction::SelectGlob { mark } => self.panels[self.active].mark_glob(&value, mark),
+            InputAction::Filter => unreachable!("handled above"),
         }
+    }
+
+    fn open_filter(&mut self) {
+        let current = self.panels[self.active]
+            .filter
+            .clone()
+            .unwrap_or_else(|| "*".into());
+        self.dialog = Some(Dialog::Input(InputDialog {
+            title: " Filter (files matching) ".into(),
+            cursor: current.chars().count(),
+            value: current,
+            action: InputAction::Filter,
+        }));
     }
 
     fn start_transfer(
@@ -784,63 +939,95 @@ impl App {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         let page = self.panel_rows.saturating_sub(1).max(1);
         let cmd_empty = self.cmdline.value.is_empty();
+        // Structural keys: navigation and command-line plumbing.
         match key.code {
-            KeyCode::F(10) => self.quit = true,
-            KeyCode::Tab | KeyCode::BackTab => self.active ^= 1,
-            KeyCode::Up => self.panel().move_up(),
-            KeyCode::Down => self.panel().move_down(),
-            KeyCode::PageUp => self.panel().page_up(page),
-            KeyCode::PageDown => self.panel().page_down(page),
-            KeyCode::Enter if alt => self.insert_selected_name(),
-            KeyCode::Enter if cmd_empty => self.fallible(|p| p.enter()),
-            KeyCode::Enter => self.submit_command(),
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.active ^= 1;
+                return;
+            }
+            KeyCode::Up => {
+                self.panel().move_up();
+                return;
+            }
+            KeyCode::Down => {
+                self.panel().move_down();
+                return;
+            }
+            KeyCode::PageUp => {
+                self.panel().page_up(page);
+                return;
+            }
+            KeyCode::PageDown => {
+                self.panel().page_down(page);
+                return;
+            }
+            KeyCode::Home if cmd_empty => {
+                self.panel().move_top();
+                return;
+            }
+            KeyCode::End if cmd_empty => {
+                self.panel().move_bottom();
+                return;
+            }
+            KeyCode::Enter if alt => {
+                self.insert_selected_name();
+                return;
+            }
+            KeyCode::Enter if cmd_empty => {
+                self.fallible(|p| p.enter());
+                return;
+            }
+            KeyCode::Enter => {
+                self.submit_command();
+                return;
+            }
             KeyCode::Esc if !cmd_empty => {
                 self.cmdline.value.clear();
                 self.cmdline.cursor = 0;
                 self.cmdline.hist_pos = None;
+                return;
             }
-            KeyCode::Insert => self.panel().toggle_mark(),
-            KeyCode::Char('o') if ctrl => self.pending_exec = Some(Exec::Shell),
-            KeyCode::Char('t') if ctrl => self.panel().toggle_mark(),
-            KeyCode::Char('r') if ctrl => self.fallible(|p| p.reload().map(|()| true)),
-            KeyCode::Char('p') if ctrl => self.cmdline.hist_prev(),
-            KeyCode::Char('n') if ctrl => self.cmdline.hist_next(),
-            KeyCode::Char('.') if alt => self.fallible(|p| p.toggle_hidden().map(|()| true)),
-            KeyCode::Char('n') if alt => self.panel().set_sort(SortKey::Name),
-            KeyCode::Char('e') if alt => self.panel().set_sort(SortKey::Ext),
-            KeyCode::Char('s') if alt => self.panel().set_sort(SortKey::Size),
-            KeyCode::Char('t') if alt => self.panel().set_sort(SortKey::Mtime),
-            KeyCode::Char('+') if cmd_empty && !ctrl && !alt => self.open_select(true),
-            KeyCode::Char('-') if cmd_empty && !ctrl && !alt => self.open_select(false),
-            KeyCode::Char('\\') if cmd_empty && !ctrl && !alt => self.open_select(false),
-            KeyCode::Char('*') if cmd_empty && !ctrl && !alt => self.panel().invert_marks(),
-            KeyCode::Home if cmd_empty => self.panel().move_top(),
-            KeyCode::End if cmd_empty => self.panel().move_bottom(),
-            KeyCode::Backspace if cmd_empty => self.fallible(|p| p.go_up()),
-            KeyCode::F(1) => self.help = Some(HelpState { top: 0, rows: 1 }),
-            KeyCode::F(3) => self.open_viewer(),
-            KeyCode::F(4) => self.open_editor(),
-            KeyCode::F(9) => {
-                self.menu = Some(MenuState {
-                    menu: 0,
-                    item: first_menu_item(MENUS[0].1),
-                })
+            KeyCode::Backspace if cmd_empty => {
+                self.fallible(|p| p.go_up());
+                return;
             }
-            KeyCode::F(5) => self.open_transfer(false),
-            KeyCode::F(6) => self.open_transfer(true),
-            KeyCode::F(7) => self.open_mkdir(),
-            KeyCode::F(8) => self.open_delete(mods.contains(KeyModifiers::SHIFT)),
-            KeyCode::F(20) => self.open_delete(true), // Shift+F8 on legacy terminals
-            code => {
-                if edit_line(
-                    &mut self.cmdline.value,
-                    &mut self.cmdline.cursor,
-                    code,
-                    mods,
-                ) {
-                    self.cmdline.hist_pos = None;
-                }
+            KeyCode::Char('p') if ctrl => {
+                self.cmdline.hist_prev();
+                return;
             }
+            KeyCode::Char('n') if ctrl => {
+                self.cmdline.hist_next();
+                return;
+            }
+            _ => {}
+        }
+
+        // Action keys via the (config-driven) keymap. Plain characters and
+        // Left/Right only qualify while the command line is empty — with
+        // text present they belong to line editing.
+        let eligible = match key.code {
+            KeyCode::Char(_) if !ctrl && !alt => cmd_empty,
+            KeyCode::Left | KeyCode::Right => cmd_empty,
+            _ => true,
+        };
+        if eligible {
+            let lookup_mods = match key.code {
+                KeyCode::Char(_) => mods.difference(KeyModifiers::SHIFT),
+                _ => mods,
+            };
+            if let Some(action) = self.keymap.get(&(key.code, lookup_mods)).copied() {
+                self.run_action(action);
+                return;
+            }
+        }
+
+        if edit_line(
+            &mut self.cmdline.value,
+            &mut self.cmdline.cursor,
+            key.code,
+            mods,
+        ) {
+            self.cmdline.hist_pos = None;
         }
     }
 

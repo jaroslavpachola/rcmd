@@ -25,6 +25,8 @@ pub struct Panel {
     pub sort_key: SortKey,
     pub sort_reverse: bool,
     pub show_hidden: bool,
+    /// Glob applied to files (directories always show), MC's "filter".
+    pub filter: Option<String>,
 }
 
 impl Panel {
@@ -37,6 +39,7 @@ impl Panel {
             sort_key: SortKey::Name,
             sort_reverse: false,
             show_hidden: true,
+            filter: None,
         };
         panel.reload()?;
         Ok(panel)
@@ -50,6 +53,9 @@ impl Panel {
         let mut entries = read_dir(&self.cwd)?;
         if !self.show_hidden {
             entries.retain(|e| !e.is_hidden());
+        }
+        if let Some(pattern) = &self.filter {
+            entries.retain(|e| e.is_dir() || glob_match(pattern, &e.name.to_string_lossy()));
         }
         sort_entries(&mut entries, self.sort_key, self.sort_reverse);
         if self.cwd.parent().is_some() {
@@ -233,6 +239,25 @@ impl Panel {
         (count, bytes)
     }
 
+    /// Quick search: first entry whose name starts with `prefix`
+    /// (case-insensitive), scanning from `from` and wrapping around.
+    pub fn find_prefix(&self, prefix: &str, from: usize) -> Option<usize> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        let prefix = prefix.to_lowercase();
+        let n = self.entries.len();
+        (0..n).map(|i| (from + i) % n).find(|&i| {
+            let entry = &self.entries[i];
+            !entry.is_parent()
+                && entry
+                    .name
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .starts_with(&prefix)
+        })
+    }
+
     /// Paths the next file operation applies to: the marked entries if any,
     /// otherwise the cursor entry (".." is never a target).
     pub fn targets(&self) -> Vec<PathBuf> {
@@ -399,6 +424,37 @@ mod tests {
         assert!(panel.targets().is_empty()); // ".." is never a target
         panel.move_down();
         assert_eq!(panel.targets().len(), 1);
+    }
+
+    #[test]
+    fn filter_hides_files_but_not_dirs() {
+        let tree = make_tree();
+        let mut panel = Panel::new(tree.path().to_path_buf()).unwrap();
+        panel.filter = Some("*.md".into());
+        panel.reload().unwrap();
+        let listed = names(&panel);
+        assert!(listed.contains(&"README.md".to_string()));
+        assert!(!listed.contains(&"cargo.lock".to_string()));
+        assert!(listed.contains(&"src".to_string())); // dirs always show
+        panel.filter = None;
+        panel.reload().unwrap();
+        assert!(names(&panel).contains(&"cargo.lock".to_string()));
+    }
+
+    #[test]
+    fn find_prefix_is_case_insensitive_and_wraps() {
+        let tree = make_tree();
+        let panel = Panel::new(tree.path().to_path_buf()).unwrap();
+        // entries: .., Docs, src, .hidden, cargo.lock, README.md
+        let readme = panel.find_prefix("read", 0).unwrap();
+        assert_eq!(panel.entries[readme].name, "README.md");
+        // wraps: searching for "docs" starting past its position
+        let docs = panel.find_prefix("docs", readme).unwrap();
+        assert_eq!(panel.entries[docs].name, "Docs");
+        assert_eq!(panel.find_prefix("nope", 0), None);
+        // "." matches ".hidden" but never the ".." pseudo-entry
+        let hidden = panel.find_prefix(".", 0).unwrap();
+        assert_eq!(panel.entries[hidden].name, ".hidden");
     }
 
     #[test]
