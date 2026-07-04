@@ -6,8 +6,9 @@ the roadmap.
 
 ## Status
 
-M0 — walking skeleton. Two panels, MC colors, keyboard navigation.
-No file operations yet.
+M1 — daily-driver cut. Marking/selection, copy/move/mkdir/delete with
+MC-style dialogs (progress, cancel, overwrite and Skip/Retry/Abort
+prompts), sort modes, hidden-file toggle.
 
 ## Run
 
@@ -15,7 +16,7 @@ No file operations yet.
 cargo run -p rcmd-tui     # or: just run
 ```
 
-## Keys (so far)
+## Keys
 
 | Key | Action |
 |-----|--------|
@@ -23,8 +24,22 @@ cargo run -p rcmd-tui     # or: just run
 | ↑ ↓ PgUp PgDn Home End | Move cursor |
 | Enter | Enter directory |
 | Backspace | Parent directory |
+| Insert, Ctrl+T | Mark entry and advance |
+| `+` / `-` (or `\`) | Select / unselect by glob |
+| `*` | Invert marks |
+| F5 | Copy marked (or cursor) entry |
+| F6 | Move / rename |
+| F7 | Make directory |
+| F8 | Delete to trash |
+| Shift+F8 | Delete permanently |
+| Alt+N / E / S / T | Sort by name / ext / size / mtime (again = reverse) |
+| Alt+. | Toggle hidden files |
 | Ctrl+R | Reload panel |
+| Esc | Cancel dialog / running operation |
 | F10, q | Quit |
+
+In dialogs: arrows/Tab move between buttons, Enter confirms, Esc cancels;
+overwrite and error prompts also take hotkeys (o/a/s/S, r/s/S).
 
 ## Development
 

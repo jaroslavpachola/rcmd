@@ -1,0 +1,668 @@
+//! Long-running file operations, executed on a worker thread.
+//!
+//! The worker streams [`JobEvent`]s to the UI over a channel. When it hits
+//! a decision point (existing target, I/O error) it sends an `Ask*` event
+//! and blocks until the UI answers with a [`Reply`]. Cancellation is a
+//! shared flag checked between chunks and files; dropping the [`JobHandle`]
+//! also unblocks a waiting worker because the reply channel closes.
+
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+
+const CHUNK: usize = 256 * 1024;
+
+#[derive(Debug)]
+pub enum JobEvent {
+    /// Totals from the pre-scan (bytes is 0 for move/delete jobs).
+    Total { files: u64, bytes: u64 },
+    Progress {
+        files_done: u64,
+        bytes_done: u64,
+        current: PathBuf,
+    },
+    /// Target exists; answer with Overwrite/OverwriteAll/Skip/SkipAll/Abort.
+    AskOverwrite { path: PathBuf },
+    /// Operation failed; answer with Retry/Skip/SkipAll/Abort.
+    AskError { path: PathBuf, message: String },
+    Done {
+        files_done: u64,
+        skipped: u64,
+        aborted: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reply {
+    Overwrite,
+    OverwriteAll,
+    Skip,
+    SkipAll,
+    Retry,
+    Abort,
+}
+
+pub struct JobHandle {
+    pub events: Receiver<JobEvent>,
+    pub replies: Sender<Reply>,
+    cancel: Arc<AtomicBool>,
+    pub thread: Option<JoinHandle<()>>,
+}
+
+impl JobHandle {
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+pub fn spawn_copy(sources: Vec<PathBuf>, dest: PathBuf) -> JobHandle {
+    spawn(move |ctx| {
+        let (files, bytes) = scan(&sources);
+        let _ = ctx.tx.send(JobEvent::Total { files, bytes });
+        let into_dir = dest.is_dir() || sources.len() > 1;
+        for src in &sources {
+            if ctx.cancelled() {
+                return Err(Aborted);
+            }
+            copy_tree(ctx, src, &target_for(src, &dest, into_dir))?;
+        }
+        Ok(())
+    })
+}
+
+pub fn spawn_move(sources: Vec<PathBuf>, dest: PathBuf) -> JobHandle {
+    spawn(move |ctx| {
+        let _ = ctx.tx.send(JobEvent::Total {
+            files: sources.len() as u64,
+            bytes: 0,
+        });
+        let into_dir = dest.is_dir() || sources.len() > 1;
+        for src in &sources {
+            if ctx.cancelled() {
+                return Err(Aborted);
+            }
+            move_one(ctx, src, &target_for(src, &dest, into_dir))?;
+        }
+        Ok(())
+    })
+}
+
+pub fn spawn_delete(paths: Vec<PathBuf>, permanent: bool) -> JobHandle {
+    spawn(move |ctx| {
+        if permanent {
+            let (files, _) = scan(&paths);
+            let _ = ctx.tx.send(JobEvent::Total { files, bytes: 0 });
+            for path in &paths {
+                delete_tree(ctx, path)?;
+            }
+        } else {
+            let _ = ctx.tx.send(JobEvent::Total {
+                files: paths.len() as u64,
+                bytes: 0,
+            });
+            for path in &paths {
+                if ctx.cancelled() {
+                    return Err(Aborted);
+                }
+                ctx.progress(path);
+                if ctx.with_retry(path, || trash::delete(path))?.is_some() {
+                    ctx.files_done += 1;
+                    ctx.progress(path);
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+struct Aborted;
+
+enum Decision {
+    Retry,
+    Skip,
+}
+
+enum CopyErr {
+    Io(io::Error),
+    Cancelled,
+}
+
+struct Ctx {
+    tx: Sender<JobEvent>,
+    rx: Receiver<Reply>,
+    cancel: Arc<AtomicBool>,
+    files_done: u64,
+    bytes_done: u64,
+    skipped: u64,
+    overwrite_all: bool,
+    skip_all_overwrites: bool,
+    skip_all_errors: bool,
+}
+
+impl Ctx {
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    fn progress(&self, current: &Path) {
+        let _ = self.tx.send(JobEvent::Progress {
+            files_done: self.files_done,
+            bytes_done: self.bytes_done,
+            current: current.to_path_buf(),
+        });
+    }
+
+    fn ask_error(&mut self, path: &Path, message: String) -> Result<Decision, Aborted> {
+        if self.skip_all_errors {
+            self.skipped += 1;
+            return Ok(Decision::Skip);
+        }
+        if self
+            .tx
+            .send(JobEvent::AskError {
+                path: path.to_path_buf(),
+                message,
+            })
+            .is_err()
+        {
+            return Err(Aborted);
+        }
+        match self.rx.recv() {
+            Ok(Reply::Retry) => Ok(Decision::Retry),
+            Ok(Reply::Skip) => {
+                self.skipped += 1;
+                Ok(Decision::Skip)
+            }
+            Ok(Reply::SkipAll) => {
+                self.skip_all_errors = true;
+                self.skipped += 1;
+                Ok(Decision::Skip)
+            }
+            _ => Err(Aborted),
+        }
+    }
+
+    /// Run `op`, letting the user retry/skip/abort on failure.
+    /// Ok(Some(v)) on success, Ok(None) if the item was skipped.
+    fn with_retry<T, E: std::fmt::Display>(
+        &mut self,
+        path: &Path,
+        mut op: impl FnMut() -> Result<T, E>,
+    ) -> Result<Option<T>, Aborted> {
+        loop {
+            if self.cancelled() {
+                return Err(Aborted);
+            }
+            match op() {
+                Ok(v) => return Ok(Some(v)),
+                Err(err) => match self.ask_error(path, err.to_string())? {
+                    Decision::Retry => continue,
+                    Decision::Skip => return Ok(None),
+                },
+            }
+        }
+    }
+
+    /// Present a permanent error; only Skip/SkipAll/Abort make progress.
+    fn error(&mut self, path: &Path, message: &str) -> Result<(), Aborted> {
+        loop {
+            match self.ask_error(path, message.to_string())? {
+                Decision::Retry => continue,
+                Decision::Skip => return Ok(()),
+            }
+        }
+    }
+
+    /// Whether we may write over `dst`. Ok(false) means skip this item.
+    fn may_overwrite(&mut self, dst: &Path) -> Result<bool, Aborted> {
+        if dst.symlink_metadata().is_err() {
+            return Ok(true); // nothing there
+        }
+        if self.overwrite_all {
+            return Ok(true);
+        }
+        if self.skip_all_overwrites {
+            self.skipped += 1;
+            return Ok(false);
+        }
+        if self
+            .tx
+            .send(JobEvent::AskOverwrite {
+                path: dst.to_path_buf(),
+            })
+            .is_err()
+        {
+            return Err(Aborted);
+        }
+        match self.rx.recv() {
+            Ok(Reply::Overwrite) => Ok(true),
+            Ok(Reply::OverwriteAll) => {
+                self.overwrite_all = true;
+                Ok(true)
+            }
+            Ok(Reply::Skip) => {
+                self.skipped += 1;
+                Ok(false)
+            }
+            Ok(Reply::SkipAll) => {
+                self.skip_all_overwrites = true;
+                self.skipped += 1;
+                Ok(false)
+            }
+            _ => Err(Aborted),
+        }
+    }
+}
+
+fn spawn(work: impl FnOnce(&mut Ctx) -> Result<(), Aborted> + Send + 'static) -> JobHandle {
+    let (event_tx, event_rx) = mpsc::channel();
+    let (reply_tx, reply_rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+    let thread = thread::spawn(move || {
+        let mut ctx = Ctx {
+            tx: event_tx,
+            rx: reply_rx,
+            cancel: worker_cancel,
+            files_done: 0,
+            bytes_done: 0,
+            skipped: 0,
+            overwrite_all: false,
+            skip_all_overwrites: false,
+            skip_all_errors: false,
+        };
+        let aborted = work(&mut ctx).is_err();
+        let _ = ctx.tx.send(JobEvent::Done {
+            files_done: ctx.files_done,
+            skipped: ctx.skipped,
+            aborted,
+        });
+    });
+    JobHandle {
+        events: event_rx,
+        replies: reply_tx,
+        cancel,
+        thread: Some(thread),
+    }
+}
+
+/// Count files and bytes ahead of a copy/delete; errors here are ignored,
+/// they will surface as dialogs during the real operation.
+fn scan(paths: &[PathBuf]) -> (u64, u64) {
+    fn walk(path: &Path, files: &mut u64, bytes: &mut u64) {
+        let Ok(meta) = path.symlink_metadata() else {
+            return;
+        };
+        if meta.is_dir() {
+            if let Ok(rd) = fs::read_dir(path) {
+                for dent in rd.flatten() {
+                    walk(&dent.path(), files, bytes);
+                }
+            }
+        } else {
+            *files += 1;
+            if meta.is_file() {
+                *bytes += meta.len();
+            }
+        }
+    }
+    let (mut files, mut bytes) = (0, 0);
+    for path in paths {
+        walk(path, &mut files, &mut bytes);
+    }
+    (files, bytes)
+}
+
+fn target_for(src: &Path, dest: &Path, into_dir: bool) -> PathBuf {
+    if into_dir {
+        dest.join(src.file_name().unwrap_or_default())
+    } else {
+        dest.to_path_buf()
+    }
+}
+
+fn read_names(ctx: &mut Ctx, dir: &Path) -> Result<Option<Vec<std::ffi::OsString>>, Aborted> {
+    ctx.with_retry(dir, || -> io::Result<Vec<std::ffi::OsString>> {
+        let mut names = Vec::new();
+        for dent in fs::read_dir(dir)? {
+            names.push(dent?.file_name());
+        }
+        Ok(names)
+    })
+}
+
+fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
+    if ctx.cancelled() {
+        return Err(Aborted);
+    }
+    let Some(meta) = ctx.with_retry(src, || src.symlink_metadata())? else {
+        return Ok(());
+    };
+    if meta.is_dir() {
+        if dst.starts_with(src) {
+            return ctx.error(src, "cannot copy a directory into itself");
+        }
+        let created = ctx.with_retry(dst, || match fs::create_dir(dst) {
+            Err(ref e) if e.kind() == io::ErrorKind::AlreadyExists && dst.is_dir() => Ok(()),
+            other => other,
+        })?;
+        if created.is_none() {
+            return Ok(());
+        }
+        let Some(names) = read_names(ctx, src)? else {
+            return Ok(());
+        };
+        for name in names {
+            copy_tree(ctx, &src.join(&name), &dst.join(&name))?;
+        }
+        Ok(())
+    } else if meta.is_symlink() {
+        ctx.progress(src);
+        if src == dst {
+            return ctx.error(src, "source and destination are the same file");
+        }
+        if !ctx.may_overwrite(dst)? {
+            return Ok(());
+        }
+        let done = ctx.with_retry(src, || {
+            let target = fs::read_link(src)?;
+            let _ = fs::remove_file(dst); // overwrite was approved above
+            make_symlink(&target, dst)
+        })?;
+        if done.is_some() {
+            ctx.files_done += 1;
+            ctx.progress(src);
+        }
+        Ok(())
+    } else {
+        ctx.progress(src);
+        if src == dst {
+            return ctx.error(src, "source and destination are the same file");
+        }
+        if !ctx.may_overwrite(dst)? {
+            return Ok(());
+        }
+        copy_file(ctx, src, dst, meta.len())
+    }
+}
+
+fn copy_file(ctx: &mut Ctx, src: &Path, dst: &Path, size: u64) -> Result<(), Aborted> {
+    loop {
+        if ctx.cancelled() {
+            return Err(Aborted);
+        }
+        let start = ctx.bytes_done;
+        match try_copy_file(ctx, src, dst) {
+            Ok(()) => {
+                ctx.files_done += 1;
+                ctx.bytes_done = start + size; // keep totals consistent with the scan
+                ctx.progress(src);
+                return Ok(());
+            }
+            Err(CopyErr::Cancelled) => return Err(Aborted),
+            Err(CopyErr::Io(err)) => {
+                ctx.bytes_done = start; // roll back partial progress
+                match ctx.ask_error(src, err.to_string())? {
+                    Decision::Retry => continue,
+                    Decision::Skip => return Ok(()),
+                }
+            }
+        }
+    }
+}
+
+fn try_copy_file(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), CopyErr> {
+    let mut input = fs::File::open(src).map_err(CopyErr::Io)?;
+    let meta = input.metadata().map_err(CopyErr::Io)?;
+    let mut output = fs::File::create(dst).map_err(CopyErr::Io)?;
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        if ctx.cancelled() {
+            drop(output);
+            let _ = fs::remove_file(dst); // don't leave a torso behind
+            return Err(CopyErr::Cancelled);
+        }
+        let n = input.read(&mut buf).map_err(CopyErr::Io)?;
+        if n == 0 {
+            break;
+        }
+        output.write_all(&buf[..n]).map_err(CopyErr::Io)?;
+        ctx.bytes_done += n as u64;
+        ctx.progress(src);
+    }
+    output
+        .set_permissions(meta.permissions())
+        .map_err(CopyErr::Io)?;
+    Ok(())
+}
+
+fn move_one(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
+    ctx.progress(src);
+    if src == dst {
+        return ctx.error(src, "source and destination are the same file");
+    }
+    if dst.starts_with(src) {
+        return ctx.error(src, "cannot move a directory into itself");
+    }
+    if !ctx.may_overwrite(dst)? {
+        return Ok(());
+    }
+    loop {
+        if ctx.cancelled() {
+            return Err(Aborted);
+        }
+        match fs::rename(src, dst) {
+            Ok(()) => {
+                ctx.files_done += 1;
+                ctx.progress(src);
+                return Ok(());
+            }
+            Err(err) if err.kind() == io::ErrorKind::CrossesDevices => {
+                copy_tree(ctx, src, dst)?;
+                delete_tree(ctx, src)?;
+                ctx.progress(src);
+                return Ok(());
+            }
+            Err(err) => match ctx.ask_error(src, err.to_string())? {
+                Decision::Retry => continue,
+                Decision::Skip => return Ok(()),
+            },
+        }
+    }
+}
+
+fn delete_tree(ctx: &mut Ctx, path: &Path) -> Result<(), Aborted> {
+    if ctx.cancelled() {
+        return Err(Aborted);
+    }
+    let Some(meta) = ctx.with_retry(path, || path.symlink_metadata())? else {
+        return Ok(());
+    };
+    if meta.is_dir() {
+        let Some(names) = read_names(ctx, path)? else {
+            return Ok(());
+        };
+        for name in names {
+            delete_tree(ctx, &path.join(&name))?;
+        }
+        ctx.with_retry(path, || fs::remove_dir(path))?;
+    } else {
+        ctx.progress(path);
+        if ctx.with_retry(path, || fs::remove_file(path))?.is_some() {
+            ctx.files_done += 1;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn make_symlink(target: &Path, dst: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, dst)
+}
+
+#[cfg(not(unix))]
+fn make_symlink(_target: &Path, _dst: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "symlinks are not supported on this platform",
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    struct Outcome {
+        files_done: u64,
+        skipped: u64,
+        aborted: bool,
+        asks: Vec<String>,
+    }
+
+    /// Drive a job to completion, answering Ask* events from `replies`.
+    fn run(handle: JobHandle, mut replies: Vec<Reply>) -> Outcome {
+        let mut asks = Vec::new();
+        loop {
+            match handle.events.recv().expect("job died without Done") {
+                JobEvent::AskOverwrite { path } => {
+                    asks.push(format!("overwrite:{}", path.display()));
+                    handle.replies.send(replies.remove(0)).unwrap();
+                }
+                JobEvent::AskError { path, message } => {
+                    asks.push(format!("error:{}:{message}", path.display()));
+                    handle.replies.send(replies.remove(0)).unwrap();
+                }
+                JobEvent::Done {
+                    files_done,
+                    skipped,
+                    aborted,
+                } => {
+                    return Outcome {
+                        files_done,
+                        skipped,
+                        aborted,
+                        asks,
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn copy_recursive_tree_with_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("tree");
+        fs::create_dir_all(src.join("nested")).unwrap();
+        fs::write(src.join("a.txt"), b"hello").unwrap();
+        fs::write(src.join("nested/b.txt"), b"world").unwrap();
+        std::os::unix::fs::symlink("a.txt", src.join("link")).unwrap();
+        let dst = tmp.path().join("dst");
+        fs::create_dir(&dst).unwrap();
+
+        let out = run(spawn_copy(vec![src.clone()], dst.clone()), vec![]);
+
+        assert!(!out.aborted);
+        assert!(out.asks.is_empty());
+        assert_eq!(out.files_done, 3);
+        assert_eq!(fs::read(dst.join("tree/a.txt")).unwrap(), b"hello");
+        assert_eq!(fs::read(dst.join("tree/nested/b.txt")).unwrap(), b"world");
+        assert_eq!(
+            fs::read_link(dst.join("tree/link")).unwrap(),
+            PathBuf::from("a.txt")
+        );
+    }
+
+    #[test]
+    fn overwrite_asks_and_honors_skip_then_overwrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("new.txt");
+        fs::write(&src, b"new").unwrap();
+        let dst_dir = tmp.path().join("out");
+        fs::create_dir(&dst_dir).unwrap();
+        fs::write(dst_dir.join("new.txt"), b"old").unwrap();
+
+        let out = run(
+            spawn_copy(vec![src.clone()], dst_dir.clone()),
+            vec![Reply::Skip],
+        );
+        assert_eq!(out.asks.len(), 1);
+        assert_eq!(out.skipped, 1);
+        assert_eq!(fs::read(dst_dir.join("new.txt")).unwrap(), b"old");
+
+        let out = run(
+            spawn_copy(vec![src], dst_dir.clone()),
+            vec![Reply::Overwrite],
+        );
+        assert_eq!(out.files_done, 1);
+        assert_eq!(fs::read(dst_dir.join("new.txt")).unwrap(), b"new");
+    }
+
+    #[test]
+    fn copy_dir_into_itself_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("d");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("f"), b"x").unwrap();
+
+        let out = run(
+            spawn_copy(vec![dir.clone()], dir.clone()),
+            vec![Reply::Skip],
+        );
+
+        assert!(!out.aborted);
+        assert_eq!(out.asks.len(), 1);
+        assert!(out.asks[0].contains("into itself"));
+        assert!(!dir.join("d").exists());
+    }
+
+    #[test]
+    fn move_renames_within_filesystem() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("a.txt");
+        fs::write(&src, b"payload").unwrap();
+        let dst_dir = tmp.path().join("out");
+        fs::create_dir(&dst_dir).unwrap();
+
+        let out = run(spawn_move(vec![src.clone()], dst_dir.clone()), vec![]);
+
+        assert!(!out.aborted);
+        assert!(!src.exists());
+        assert_eq!(fs::read(dst_dir.join("a.txt")).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn permanent_delete_removes_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("gone");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/f"), b"x").unwrap();
+        fs::write(dir.join("g"), b"y").unwrap();
+
+        let out = run(spawn_delete(vec![dir.clone()], true), vec![]);
+
+        assert!(!out.aborted);
+        assert_eq!(out.files_done, 2);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn abort_reply_stops_the_job() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("a");
+        fs::write(&src, b"1").unwrap();
+        let dst_dir = tmp.path().join("out");
+        fs::create_dir(&dst_dir).unwrap();
+        fs::write(dst_dir.join("a"), b"old").unwrap();
+
+        let out = run(spawn_copy(vec![src], dst_dir.clone()), vec![Reply::Abort]);
+
+        assert!(out.aborted);
+        assert_eq!(fs::read(dst_dir.join("a")).unwrap(), b"old");
+    }
+}
