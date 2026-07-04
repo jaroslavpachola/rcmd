@@ -23,8 +23,9 @@ cargo install --path crates/rcmd-tui   # installs the `rcmd` binary
 cargo run -p rcmd-tui                  # or: just run
 ```
 
-Release binaries for Linux and macOS are attached to GitHub releases
-(built by `.github/workflows/release.yml` on `v*` tags).
+Release binaries for Linux are attached to GitHub releases (built by
+`.github/workflows/release.yml` on `v*` tags; macOS builds are
+temporarily suspended).
 
 ```
 usage: rcmd [-P FILE] [DIR1 [DIR2]]   (-V version, -h help)

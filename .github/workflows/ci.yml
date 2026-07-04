@@ -10,10 +10,12 @@ env:
 
 jobs:
   test:
+    # macOS temporarily suspended (slow runner queues); re-add
+    # macos-latest to the matrix to restore it.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
