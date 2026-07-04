@@ -13,7 +13,10 @@ command line + shell integration with real job control, F3 chunked
 viewer with wrap and hex modes, F4 $EDITOR, F9 menu, F1 help, config
 file with keymap presets/custom bindings, quick search, filter, hotlist,
 themes, archive browsing (zip, tar, tar.gz, tar.xz, tar.bz2) with
-extraction, and copying into zip archives.
+extraction, and copying into zip archives. From the 2.0 roadmap: find
+file / panelize / directory compare, non-blocking listings with
+filesystem watching, and **SFTP remote panels** (browse, transfer, edit
+on servers — see below).
 
 ## Install & run
 
@@ -129,6 +132,24 @@ F5 with the destination panel inside a zip, or any destination written
 as `path/to/archive.zip://dir`. The archive index loads once at open;
 each member read decodes only that member.
 
+**Remote filesystems (SFTP)**: `cd sftp://[user@]host[:port][/path]`
+(or F9 → Command → SFTP link) connects a panel to a server — user
+defaults to your login, path to the remote home. Authentication tries
+your ssh-agent, then the default `~/.ssh/id_*` keys, then asks for a
+password; host keys are checked against `~/.ssh/known_hosts`, and
+unknown hosts show a fingerprint dialog before being saved. The panel
+title shows the URL. Everything works panel-normally: F5/F6 transfer
+between local and remote (or between two remote directories) with the
+usual progress/overwrite dialogs, F7 creates server directories, F8
+deletes on the server (permanently — there is no remote trash), F3
+views, and F4 edits a local scratch copy that is uploaded back when the
+editor saved it. `cd path` stays on the server; plain `cd` (or any `~`
+path) returns the panel to the local filesystem, and closing the last
+remote panel closes the connection. Both panels can share one
+connection — put the same host on both sides, or compare a local tree
+against a remote one with Ctrl+X d and F5 the differences across. The
+hotlist stores sftp:// entries, so `Ctrl+\` + Enter reconnects.
+
 ## Configuration
 
 `~/.config/rcmd/config.toml` (created/rewritten on exit — panel sort
@@ -164,7 +185,10 @@ python3 tests/e2e/run.py                            # drives the real binary in 
 just check                                          # all of the above
 ```
 
+The e2e suite includes an SFTP scenario that spins up a local paramiko
+server (`pip install paramiko`; skipped when unavailable).
+
 Workspace layout: `crates/rcmd-core` (panel/fs logic, no TUI deps),
 `crates/rcmd-tui` (ratatui frontend, binary `rcmd`). CI runs fmt,
-clippy, unit tests on Linux+macOS, and the pty e2e suite on Linux.
-Licensed MIT.
+clippy, unit tests, and the pty e2e suite on Linux (macOS temporarily
+suspended). Licensed MIT.

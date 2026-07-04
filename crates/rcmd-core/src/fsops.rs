@@ -153,6 +153,306 @@ pub fn spawn_dir_size(path: PathBuf) -> Receiver<(u64, u64)> {
     rx
 }
 
+/// Copy or move across providers: upload (local→remote), download
+/// (remote→local) and remote↔remote all stream through the same chunk
+/// loop; the dialogs protocol is identical to the local jobs. A move on
+/// one provider tries `rename` first and degrades to copy+delete.
+pub fn spawn_transfer(
+    src_fs: Arc<dyn FsProvider>,
+    sources: Vec<PathBuf>,
+    dst_fs: Arc<dyn FsProvider>,
+    dest: PathBuf,
+    move_mode: bool,
+) -> JobHandle {
+    spawn(move |ctx| {
+        if dst_fs.writer().is_none() {
+            return ctx.error(&dest, "destination is read-only");
+        }
+        if move_mode && src_fs.writer().is_none() {
+            return ctx.error(&dest, "source is read-only — copy instead");
+        }
+        let same_fs = Arc::ptr_eq(&src_fs, &dst_fs);
+        let into_dir = sources.len() > 1 || dst_fs.stat(&dest).map(|e| e.is_dir()).unwrap_or(false);
+        if move_mode && same_fs {
+            // rename-first, like the local move job: totals are items,
+            // a copy fallback re-announces real numbers for its subtree
+            let mut totals = (sources.len() as u64, 0u64);
+            let _ = ctx.tx.send(JobEvent::Total {
+                files: totals.0,
+                bytes: totals.1,
+            });
+            for src in &sources {
+                if ctx.cancelled() {
+                    return Err(Aborted);
+                }
+                transfer_move_one(
+                    ctx,
+                    &*src_fs,
+                    src,
+                    &target_for(src, &dest, into_dir),
+                    &mut totals,
+                )?;
+            }
+        } else {
+            let (files, bytes) = scan_provider(&*src_fs, &sources);
+            let _ = ctx.tx.send(JobEvent::Total { files, bytes });
+            for src in &sources {
+                if ctx.cancelled() {
+                    return Err(Aborted);
+                }
+                transfer_tree(
+                    ctx,
+                    &*src_fs,
+                    &*dst_fs,
+                    src,
+                    &target_for(src, &dest, into_dir),
+                    same_fs,
+                    move_mode,
+                )?;
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Delete through a provider's write half (always permanent — there is
+/// no remote trash).
+pub fn spawn_delete_fs(fs: Arc<dyn FsProvider>, paths: Vec<PathBuf>) -> JobHandle {
+    spawn(move |ctx| {
+        if fs.writer().is_none() {
+            let first = paths.first().cloned().unwrap_or_default();
+            return ctx.error(&first, "filesystem is read-only");
+        }
+        let (files, _) = scan_provider(&*fs, &paths);
+        let _ = ctx.tx.send(JobEvent::Total { files, bytes: 0 });
+        for path in &paths {
+            delete_tree_fs(ctx, &*fs, path)?;
+        }
+        Ok(())
+    })
+}
+
+fn transfer_move_one(
+    ctx: &mut Ctx,
+    fs: &dyn FsProvider,
+    src: &Path,
+    dst: &Path,
+    totals: &mut (u64, u64),
+) -> Result<(), Aborted> {
+    ctx.progress(src);
+    if src == dst {
+        return ctx.error(src, "source and destination are the same file");
+    }
+    if dst.starts_with(src) {
+        return ctx.error(src, "cannot move a directory into itself");
+    }
+    if !ctx.may_overwrite_fs(fs, dst)? {
+        return Ok(());
+    }
+    let writer = fs.writer().expect("checked in spawn_transfer");
+    match writer.rename(src, dst) {
+        Ok(()) => {
+            ctx.files_done += 1;
+            ctx.progress(src);
+            Ok(())
+        }
+        Err(_) => {
+            // fall back to copy + delete, with honest totals for it
+            let (files, bytes) = scan_provider(fs, std::slice::from_ref(&src.to_path_buf()));
+            totals.0 = totals.0.saturating_sub(1) + files;
+            totals.1 += bytes;
+            let _ = ctx.tx.send(JobEvent::Total {
+                files: totals.0,
+                bytes: totals.1,
+            });
+            transfer_tree(ctx, fs, fs, src, dst, true, true)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transfer_tree(
+    ctx: &mut Ctx,
+    src_fs: &dyn FsProvider,
+    dst_fs: &dyn FsProvider,
+    src: &Path,
+    dst: &Path,
+    same_fs: bool,
+    move_mode: bool,
+) -> Result<(), Aborted> {
+    if ctx.cancelled() {
+        return Err(Aborted);
+    }
+    let Some(entry) = ctx.with_retry(src, || src_fs.stat(src))? else {
+        return Ok(());
+    };
+    let writer = dst_fs.writer().expect("checked in spawn_transfer");
+    match entry.kind {
+        EntryKind::Dir => {
+            if same_fs && dst.starts_with(src) {
+                return ctx.error(src, "cannot copy a directory into itself");
+            }
+            let created = ctx.with_retry(dst, || match writer.mkdir(dst) {
+                Err(_) if dst_fs.stat(dst).map(|e| e.is_dir()).unwrap_or(false) => Ok(()),
+                other => other,
+            })?;
+            if created.is_none() {
+                return Ok(());
+            }
+            let Some(children) = ctx.with_retry(src, || src_fs.read_dir(src))? else {
+                return Ok(());
+            };
+            for child in children {
+                transfer_tree(
+                    ctx,
+                    src_fs,
+                    dst_fs,
+                    &src.join(&child.name),
+                    &dst.join(&child.name),
+                    same_fs,
+                    move_mode,
+                )?;
+            }
+            if let Some(modified) = entry.mtime {
+                let _ = writer.set_mtime(dst, modified);
+            }
+            if move_mode && let Some(sw) = src_fs.writer() {
+                let _ = ctx.with_retry(src, || sw.remove_dir(src))?;
+            }
+            Ok(())
+        }
+        EntryKind::SymlinkDir | EntryKind::SymlinkFile | EntryKind::SymlinkBroken => {
+            ctx.progress(src);
+            if !ctx.may_overwrite_fs(dst_fs, dst)? {
+                return Ok(());
+            }
+            let target = entry.link_target.clone().unwrap_or_default();
+            let done = ctx.with_retry(src, || {
+                let _ = writer.remove_file(dst); // overwrite was approved above
+                writer.symlink(&target, dst)
+            })?;
+            if done.is_some() {
+                ctx.files_done += 1;
+                ctx.progress(src);
+                if move_mode && let Some(sw) = src_fs.writer() {
+                    let _ = ctx.with_retry(src, || sw.remove_file(src))?;
+                }
+            }
+            Ok(())
+        }
+        EntryKind::File => {
+            ctx.progress(src);
+            if same_fs && src == dst {
+                return ctx.error(src, "source and destination are the same file");
+            }
+            if !ctx.may_overwrite_fs(dst_fs, dst)? {
+                return Ok(());
+            }
+            transfer_file(ctx, src_fs, dst_fs, src, dst, &entry, move_mode)?;
+            Ok(())
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transfer_file(
+    ctx: &mut Ctx,
+    src_fs: &dyn FsProvider,
+    dst_fs: &dyn FsProvider,
+    src: &Path,
+    dst: &Path,
+    entry: &crate::entry::Entry,
+    move_mode: bool,
+) -> Result<(), Aborted> {
+    loop {
+        if ctx.cancelled() {
+            return Err(Aborted);
+        }
+        let start = ctx.bytes_done;
+        match try_transfer_file(ctx, src_fs, dst_fs, src, dst, entry) {
+            Ok(()) => {
+                ctx.files_done += 1;
+                ctx.bytes_done = start + entry.size;
+                ctx.progress(src);
+                if move_mode && let Some(sw) = src_fs.writer() {
+                    let _ = ctx.with_retry(src, || sw.remove_file(src))?;
+                }
+                return Ok(());
+            }
+            Err(CopyErr::Cancelled) => return Err(Aborted),
+            Err(CopyErr::Io(err)) => {
+                ctx.bytes_done = start;
+                match ctx.ask_error(src, err.to_string())? {
+                    Decision::Retry => continue,
+                    Decision::Skip => return Ok(()),
+                }
+            }
+        }
+    }
+}
+
+fn try_transfer_file(
+    ctx: &mut Ctx,
+    src_fs: &dyn FsProvider,
+    dst_fs: &dyn FsProvider,
+    src: &Path,
+    dst: &Path,
+    entry: &crate::entry::Entry,
+) -> Result<(), CopyErr> {
+    let writer = dst_fs.writer().expect("checked in spawn_transfer");
+    let mut input = src_fs.open_read(src).map_err(CopyErr::Io)?;
+    let mut output = writer.open_write(dst).map_err(CopyErr::Io)?;
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        if ctx.cancelled() {
+            drop(output);
+            let _ = writer.remove_file(dst); // don't leave a torso behind
+            return Err(CopyErr::Cancelled);
+        }
+        let n = input.read(&mut buf).map_err(CopyErr::Io)?;
+        if n == 0 {
+            break;
+        }
+        output.write_all(&buf[..n]).map_err(CopyErr::Io)?;
+        ctx.bytes_done += n as u64;
+        ctx.progress(src);
+    }
+    output.flush().map_err(CopyErr::Io)?;
+    drop(output); // remote handles must close before setstat
+    if entry.mode != 0 {
+        let _ = writer.set_mode(dst, entry.mode);
+    }
+    if let Some(modified) = entry.mtime {
+        let _ = writer.set_mtime(dst, modified);
+    }
+    Ok(())
+}
+
+fn delete_tree_fs(ctx: &mut Ctx, fs: &dyn FsProvider, path: &Path) -> Result<(), Aborted> {
+    if ctx.cancelled() {
+        return Err(Aborted);
+    }
+    let Some(entry) = ctx.with_retry(path, || fs.stat(path))? else {
+        return Ok(());
+    };
+    let writer = fs.writer().expect("checked in spawn_delete_fs");
+    if entry.kind == EntryKind::Dir {
+        let Some(children) = ctx.with_retry(path, || fs.read_dir(path))? else {
+            return Ok(());
+        };
+        for child in children {
+            delete_tree_fs(ctx, fs, &path.join(&child.name))?;
+        }
+        ctx.with_retry(path, || writer.remove_dir(path))?;
+    } else {
+        ctx.progress(path);
+        if ctx.with_retry(path, || writer.remove_file(path))?.is_some() {
+            ctx.files_done += 1;
+        }
+    }
+    Ok(())
+}
+
 struct Aborted;
 
 enum Decision {
@@ -253,7 +553,18 @@ impl Ctx {
 
     /// Whether we may write over `dst`. Ok(false) means skip this item.
     fn may_overwrite(&mut self, dst: &Path) -> Result<bool, Aborted> {
-        if dst.symlink_metadata().is_err() {
+        let exists = dst.symlink_metadata().is_ok();
+        self.may_overwrite_existing(exists, dst)
+    }
+
+    /// Provider-aware variant: existence is checked through `fs`.
+    fn may_overwrite_fs(&mut self, fs: &dyn FsProvider, dst: &Path) -> Result<bool, Aborted> {
+        let exists = fs.stat(dst).is_ok();
+        self.may_overwrite_existing(exists, dst)
+    }
+
+    fn may_overwrite_existing(&mut self, exists: bool, dst: &Path) -> Result<bool, Aborted> {
+        if !exists {
             return Ok(true); // nothing there
         }
         if self.overwrite_all {
@@ -1094,6 +1405,170 @@ mod tests {
             .read_to_string(&mut content)
             .unwrap();
         assert_eq!(content, "was here");
+    }
+
+    #[test]
+    fn transfer_across_providers_copies_tree_with_metadata() {
+        use crate::vfs::LocalFs;
+        use std::time::{Duration, UNIX_EPOCH};
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("tree");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("sub/f.txt"), b"payload").unwrap();
+        std::os::unix::fs::symlink("f.txt", src.join("sub/link")).unwrap();
+        let stamp = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        fs::File::open(src.join("sub/f.txt"))
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(stamp))
+            .unwrap();
+        let dst = tmp.path().join("dst");
+        fs::create_dir(&dst).unwrap();
+
+        // two distinct Arcs → the cross-provider streaming path
+        let out = run(
+            spawn_transfer(
+                Arc::new(LocalFs),
+                vec![src.clone()],
+                Arc::new(LocalFs),
+                dst.clone(),
+                false,
+            ),
+            vec![],
+        );
+
+        assert!(!out.aborted, "asks: {:?}", out.asks);
+        assert_eq!(out.files_done, 2);
+        assert_eq!(fs::read(dst.join("tree/sub/f.txt")).unwrap(), b"payload");
+        assert_eq!(
+            fs::read_link(dst.join("tree/sub/link")).unwrap(),
+            PathBuf::from("f.txt")
+        );
+        let copied = fs::metadata(dst.join("tree/sub/f.txt"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        let diff = copied
+            .duration_since(stamp)
+            .unwrap_or_else(|e| e.duration());
+        assert!(diff < Duration::from_secs(2), "mtime drifted by {diff:?}");
+        assert!(src.exists(), "copy must not remove the source");
+    }
+
+    #[test]
+    fn transfer_move_same_provider_renames_and_removes_source() {
+        use crate::vfs::LocalFs;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("a.txt");
+        fs::write(&src, b"gone").unwrap();
+        let dst = tmp.path().join("out");
+        fs::create_dir(&dst).unwrap();
+        let fs_arc: Arc<dyn FsProvider> = Arc::new(LocalFs);
+
+        let out = run(
+            spawn_transfer(fs_arc.clone(), vec![src.clone()], fs_arc, dst.clone(), true),
+            vec![],
+        );
+
+        assert!(!out.aborted);
+        assert!(!src.exists());
+        assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"gone");
+    }
+
+    #[test]
+    fn transfer_move_across_providers_copies_then_deletes() {
+        use crate::vfs::LocalFs;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("tree");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("f"), b"x").unwrap();
+        let dst = tmp.path().join("dst");
+        fs::create_dir(&dst).unwrap();
+
+        let out = run(
+            spawn_transfer(
+                Arc::new(LocalFs),
+                vec![src.clone()],
+                Arc::new(LocalFs),
+                dst.clone(),
+                true,
+            ),
+            vec![],
+        );
+
+        assert!(!out.aborted, "asks: {:?}", out.asks);
+        assert_eq!(fs::read(dst.join("tree/f")).unwrap(), b"x");
+        assert!(!src.exists(), "move must remove the source tree");
+    }
+
+    #[test]
+    fn transfer_overwrite_asks_through_provider() {
+        use crate::vfs::LocalFs;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("f.txt");
+        fs::write(&src, b"new").unwrap();
+        let dst = tmp.path().join("out");
+        fs::create_dir(&dst).unwrap();
+        fs::write(dst.join("f.txt"), b"old").unwrap();
+
+        let out = run(
+            spawn_transfer(
+                Arc::new(LocalFs),
+                vec![src],
+                Arc::new(LocalFs),
+                dst.clone(),
+                false,
+            ),
+            vec![Reply::Skip],
+        );
+
+        assert_eq!(out.skipped, 1);
+        assert_eq!(fs::read(dst.join("f.txt")).unwrap(), b"old");
+    }
+
+    #[test]
+    fn delete_fs_removes_tree_through_provider() {
+        use crate::vfs::LocalFs;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("gone");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/f"), b"x").unwrap();
+
+        let out = run(
+            spawn_delete_fs(Arc::new(LocalFs), vec![dir.clone()]),
+            vec![],
+        );
+
+        assert!(!out.aborted);
+        assert_eq!(out.files_done, 1);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn transfer_into_readonly_provider_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive_path = tmp.path().join("a.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&archive_path).unwrap());
+        zip.start_file("x", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.finish().unwrap();
+        let afs: Arc<dyn FsProvider> =
+            Arc::new(crate::archive::ArchiveFs::open(&archive_path).unwrap());
+        let src = tmp.path().join("f");
+        fs::write(&src, b"x").unwrap();
+
+        let out = run(
+            spawn_transfer(
+                Arc::new(crate::vfs::LocalFs),
+                vec![src],
+                afs,
+                PathBuf::from("/"),
+                false,
+            ),
+            vec![Reply::Skip],
+        );
+
+        assert_eq!(out.asks.len(), 1);
+        assert!(out.asks[0].contains("read-only"));
     }
 
     #[test]

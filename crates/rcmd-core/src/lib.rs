@@ -4,5 +4,6 @@ pub mod find;
 pub mod fsops;
 pub mod glob;
 pub mod panel;
+pub mod sftp;
 pub mod vfs;
 pub mod view;

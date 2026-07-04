@@ -14,7 +14,9 @@ import re
 import select
 import shutil
 import signal
+import socket
 import struct
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -41,6 +43,7 @@ class Session:
             os.chdir(cwd)
             os.environ["HOME"] = home
             os.environ.pop("XDG_CONFIG_HOME", None)
+            os.environ.pop("SSH_AUTH_SOCK", None)  # keep sftp auth deterministic
             os.environ["SHELL"] = "/bin/sh"
             os.environ["TERM"] = "xterm-256color"
             os.execv(BIN, [BIN, *args])
@@ -290,6 +293,109 @@ def test_dirsize():
     shutil.rmtree(root)
 
 
+def wait_for(s, needle, timeout=10):
+    deadline = time.time() + timeout
+    while time.time() < deadline and needle not in s.screen():
+        s.drain(0.3)
+    return needle in s.screen()
+
+
+def sftp_python():
+    """An interpreter that can run the paramiko test server, if any."""
+    for py in ("python3.12", "python3.11", "python3", sys.executable):
+        path = shutil.which(py)
+        if path and subprocess.run(
+            [path, "-c", "import paramiko"], capture_output=True
+        ).returncode == 0:
+            return path
+    return None
+
+
+def test_sftp():
+    if os.environ.get("RCMD_E2E_SFTP") == "0":
+        print("SKIP sftp (RCMD_E2E_SFTP=0)")
+        return
+    py = sftp_python()
+    if py is None:
+        print("SKIP sftp (no python with paramiko — pip install paramiko)")
+        return
+    root, play, home = sandbox()
+    remote = os.path.join(root, "remote")
+    os.makedirs(remote)
+    open(os.path.join(remote, "server.txt"), "w").write("from the server\n")
+    open(os.path.join(play, "upload.txt"), "w").write("to the server\n")
+
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    server = subprocess.Popen(
+        [py, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sftp_server.py"),
+         str(port)],
+        env={**os.environ, "RCMD_SFTP_PASSWORD": "secret"},
+        stdout=subprocess.PIPE,
+    )
+    try:
+        assert server.stdout.readline().strip() == b"READY", "sftp server failed to start"
+
+        s = Session(play, home)
+        s.send(f"cd sftp://tester@127.0.0.1:{port}{remote}\r".encode(), wait=STEP * 2)
+        check("sftp: host key dialog", wait_for(s, "Unknown host"))
+        s.send(b"y")                        # trust & save
+        check("sftp: password prompt", wait_for(s, "SSH authentication"))
+        s.send(b"secret\r", wait=STEP * 2)
+        connected = wait_for(s, "server.txt", timeout=15)
+        check("sftp: connected and listed", connected and "sftp://tester@" in s.screen())
+
+        s.send(END)                         # -> server.txt
+        s.send(F5)
+        s.send(b"\r", wait=STEP * 4)        # download into local panel dir
+        downloaded = os.path.join(play, "server.txt")
+        check(
+            "sftp: download via F5",
+            wait_for(s, "done —")
+            and os.path.isfile(downloaded)
+            and open(downloaded).read() == "from the server\n",
+        )
+
+        s.send(b"\t")                       # -> local panel
+        s.send(END)                         # -> upload.txt
+        s.send(F5)                          # dest prefilled with the sftp URL
+        s.send(b"\r", wait=STEP * 4)
+        uploaded = os.path.join(remote, "upload.txt")
+        check(
+            "sftp: upload via F5",
+            wait_for(s, "done —")
+            and os.path.isfile(uploaded)
+            and open(uploaded).read() == "to the server\n",
+        )
+
+        s.send(b"\t")                       # -> remote panel
+        s.send(F7)
+        s.send(b"made-remotely\r", wait=STEP * 3)
+        check("sftp: remote mkdir", os.path.isdir(os.path.join(remote, "made-remotely")))
+
+        s.send(END)                         # -> upload.txt on the server
+        s.send(F8)
+        check("sftp: delete asks server-side", wait_for(s, "from the server?"))
+        s.send(b"y", wait=STEP * 4)
+        deadline = time.time() + 8
+        while time.time() < deadline and os.path.exists(uploaded):
+            s.drain(0.3)
+        check("sftp: remote delete", not os.path.exists(uploaded))
+
+        khfile = os.path.join(home, ".ssh", "known_hosts")
+        check(
+            "sftp: host key saved",
+            os.path.isfile(khfile) and "127.0.0.1" in open(khfile).read(),
+        )
+        s.quit()
+    finally:
+        server.terminate()
+        server.wait()
+    shutil.rmtree(root)
+
+
 def test_scale():
     if os.environ.get("RCMD_E2E_SCALE") == "0":
         print("SKIP scale (RCMD_E2E_SCALE=0)")
@@ -329,6 +435,7 @@ def main():
         test_compare,
         test_watch,
         test_dirsize,
+        test_sftp,
         test_scale,
     ):
         test()

@@ -45,10 +45,13 @@ pub enum SortKey {
 /// per-directory marks. Pure state + logic, no rendering concerns.
 pub struct Panel {
     /// Filesystem behind this panel; [`LocalFs`] normally, an
-    /// [`ArchiveFs`] while browsing inside an archive.
+    /// [`ArchiveFs`] while browsing inside an archive, an `SftpFs`
+    /// while connected to a remote host.
     pub fs: Arc<dyn FsProvider>,
     /// Path of the archive file when `fs` is an archive VFS.
     pub archive: Option<PathBuf>,
+    /// `sftp://user@host[:port]` when `fs` is a remote filesystem.
+    pub remote: Option<String>,
     /// Local directory, or the path *inside* the archive ("" = its root).
     pub cwd: PathBuf,
     pub entries: Vec<Entry>,
@@ -71,6 +74,7 @@ impl Panel {
         let mut panel = Panel {
             fs: Arc::new(LocalFs),
             archive: None,
+            remote: None,
             cwd,
             entries: Vec::new(),
             cursor: 0,
@@ -205,11 +209,19 @@ impl Panel {
     }
 
     pub fn is_local(&self) -> bool {
-        self.archive.is_none()
+        self.archive.is_none() && self.remote.is_none()
     }
 
-    /// Panel location for titles: `path` or `archive.zip://inside`.
+    pub fn is_remote(&self) -> bool {
+        self.remote.is_some()
+    }
+
+    /// Panel location for titles: `path`, `archive.zip://inside` or
+    /// `sftp://user@host/path`.
     pub fn display_path(&self) -> String {
+        if let Some(prefix) = &self.remote {
+            return format!("{prefix}{}", self.cwd.display());
+        }
         match &self.archive {
             Some(archive) => format!("{}://{}", archive.display(), self.cwd.display()),
             None => self.cwd.display().to_string(),
@@ -217,14 +229,68 @@ impl Panel {
     }
 
     /// The real directory to run commands in / resolve paths against:
-    /// inside an archive, that is the archive's parent directory.
+    /// inside an archive, that is the archive's parent directory; on a
+    /// remote panel there is no meaningful local directory, use home.
     pub fn local_cwd(&self) -> PathBuf {
+        if self.remote.is_some() {
+            return std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/"));
+        }
         match &self.archive {
             Some(archive) => archive
                 .parent()
                 .unwrap_or_else(|| Path::new("/"))
                 .to_path_buf(),
             None => self.cwd.clone(),
+        }
+    }
+
+    /// Switch the panel onto an established remote connection. The first
+    /// listing was fetched by the connect worker, so this never blocks
+    /// and never fails.
+    pub fn adopt_remote(
+        &mut self,
+        fs: Arc<dyn FsProvider>,
+        prefix: String,
+        start: PathBuf,
+        raw: Vec<Entry>,
+    ) {
+        self.cancel_pending();
+        self.fs = fs;
+        self.archive = None;
+        self.remote = Some(prefix);
+        self.panelized = None;
+        self.marked.clear();
+        let mut entries = shape_listing(
+            raw,
+            self.show_hidden,
+            self.filter.as_deref(),
+            self.sort_key,
+            self.sort_reverse,
+        );
+        self.cwd = start;
+        if self.cwd.parent().is_some() {
+            entries.insert(0, Entry::parent());
+        }
+        self.entries = entries;
+        self.cursor = 0;
+    }
+
+    /// Leave a remote connection (or an archive) for a local directory;
+    /// on failure the panel stays where it was.
+    pub fn to_local(&mut self, target: PathBuf) -> io::Result<()> {
+        let prev_fs = std::mem::replace(&mut self.fs, Arc::new(LocalFs));
+        let prev_archive = self.archive.take();
+        let prev_remote = self.remote.take();
+        match self.change_dir(target) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                self.fs = prev_fs;
+                self.archive = prev_archive;
+                self.remote = prev_remote;
+                Err(err)
+            }
         }
     }
 
@@ -306,14 +372,14 @@ impl Panel {
             return self.go_up();
         }
         if entry.is_dir() {
-            if self.is_local() {
+            if self.archive.is_none() {
                 self.request_dir(self.cwd.join(&name), LoadKind::Enter)?;
             } else {
                 self.change_dir(self.cwd.join(&name))?;
             }
             return Ok(true);
         }
-        if self.archive.is_none() && is_archive_name(&name) {
+        if self.is_local() && is_archive_name(&name) {
             self.enter_archive(self.cwd.join(&name))?;
             return Ok(true);
         }
@@ -330,7 +396,7 @@ impl Panel {
             }
             return Ok(false);
         };
-        if self.is_local() {
+        if self.archive.is_none() {
             self.request_dir(parent, LoadKind::GoUp)?;
             return Ok(true);
         }
@@ -382,23 +448,14 @@ impl Panel {
         }
     }
 
-    /// Change to an arbitrary local directory (command-line `cd`);
-    /// leaves any archive the panel was browsing.
+    /// Change directory on the panel's current filesystem (command-line
+    /// `cd`): local panels and remote panels stay on their filesystem;
+    /// a panel inside an archive leaves it (cd targets are local paths).
     pub fn cd(&mut self, target: PathBuf) -> io::Result<()> {
-        if self.is_local() {
+        if self.archive.is_none() {
             return self.request_dir(target, LoadKind::Cd).map(|_| ());
         }
-        let prev_fs = self.fs.clone();
-        let prev_archive = self.archive.take();
-        self.fs = Arc::new(LocalFs);
-        match self.change_dir(target) {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                self.fs = prev_fs;
-                self.archive = prev_archive;
-                Err(err)
-            }
-        }
+        self.to_local(target)
     }
 
     /// Switch to `target`, clearing marks (marks are per-directory); on
@@ -566,7 +623,24 @@ fn prepare_listing(
     key: SortKey,
     reverse: bool,
 ) -> io::Result<Vec<Entry>> {
-    let mut entries = fs.read_dir(dir)?;
+    Ok(shape_listing(
+        fs.read_dir(dir)?,
+        show_hidden,
+        filter,
+        key,
+        reverse,
+    ))
+}
+
+/// The filter/sort half of [`prepare_listing`], for entries that were
+/// fetched elsewhere (e.g. by the SFTP connect worker).
+fn shape_listing(
+    mut entries: Vec<Entry>,
+    show_hidden: bool,
+    filter: Option<&str>,
+    key: SortKey,
+    reverse: bool,
+) -> Vec<Entry> {
     if !show_hidden {
         entries.retain(|e| !e.is_hidden());
     }
@@ -574,7 +648,7 @@ fn prepare_listing(
         entries.retain(|e| e.is_dir() || glob_match(pattern, &e.name.to_string_lossy()));
     }
     sort_entries(&mut entries, key, reverse);
-    Ok(entries)
+    entries
 }
 
 /// Directories always group first (even reversed); ties broken bytewise so
@@ -927,6 +1001,57 @@ mod tests {
         assert!(panel.poll_pending().is_none());
         assert_eq!(panel.cwd, tree.path());
         assert!(!panel.entries.iter().any(|e| e.name == "slow-file.txt"));
+    }
+
+    #[test]
+    fn adopt_remote_and_return_to_local() {
+        let tree = make_tree();
+        let mut panel = Panel::new(tree.path().to_path_buf()).unwrap();
+        panel.mark_glob("*", true);
+
+        let raw = vec![
+            Entry {
+                name: OsString::from("etc"),
+                kind: crate::entry::EntryKind::Dir,
+                size: 0,
+                mtime: None,
+                mode: 0o755,
+                link_target: None,
+            },
+            Entry {
+                name: OsString::from("motd"),
+                kind: crate::entry::EntryKind::File,
+                size: 5,
+                mtime: None,
+                mode: 0o644,
+                link_target: None,
+            },
+        ];
+        panel.adopt_remote(
+            Arc::new(SlowFs {
+                delay: Duration::from_millis(0),
+            }),
+            "sftp://bob@box".into(),
+            PathBuf::from("/srv"),
+            raw,
+        );
+
+        assert!(panel.is_remote());
+        assert!(!panel.is_local());
+        assert_eq!(panel.display_path(), "sftp://bob@box/srv");
+        assert!(panel.marked.is_empty());
+        // "..", then dirs first
+        assert!(panel.entries[0].is_parent());
+        assert_eq!(panel.entries[1].name, "etc");
+        assert_eq!(panel.entries[2].name, "motd");
+        // remote targets resolve against the remote cwd
+        panel.cursor = 2;
+        assert_eq!(panel.targets(), vec![PathBuf::from("/srv/motd")]);
+
+        panel.to_local(tree.path().to_path_buf()).unwrap();
+        assert!(panel.is_local());
+        assert_eq!(panel.cwd, tree.path());
+        assert!(panel.entries.iter().any(|e| e.name == "README.md"));
     }
 
     #[test]

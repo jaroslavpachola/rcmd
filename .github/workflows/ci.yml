@@ -31,6 +31,9 @@ jobs:
         run: cargo test --workspace
       - name: Build
         run: cargo build
+      - name: Install paramiko (sftp e2e server)
+        if: runner.os == 'Linux'
+        run: pip3 install --user paramiko
       - name: End-to-end (pty)
         if: runner.os == 'Linux'
         run: RCMD_E2E_STEP=0.8 python3 tests/e2e/run.py

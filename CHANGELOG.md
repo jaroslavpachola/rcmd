@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+2.0-roadmap phases P1–P3 (docs/PLAN2.md):
+
+- **SFTP remote panels** (P3): `cd sftp://[user@]host[:port][/path]` or
+  F9 → Command → SFTP link; agent/key/password auth with known_hosts
+  checking and a fingerprint dialog for unknown hosts; upload, download
+  and remote↔remote F5/F6 through the usual job dialogs; F7 mkdir and
+  F8 delete on the server; F3 view; F4 edits a scratch copy and uploads
+  it back on save; hotlist remembers sftp:// entries; both panels can
+  share a connection. Threads-not-async confirmed (decision D1).
+- Find file (Alt+F7) with streamed results, panelize command output,
+  quick directory compare (Ctrl+X d) + F5 sync (P1)
+- Non-blocking directory loads with spinner and Esc cancel, Ctrl+Space
+  directory size, notify-based auto-reload, 100k-entry benchmark (P2)
+
 ## 1.0.0 — 2026-07-04
 
 First release. Complete MC-workflow parity per the original plan

@@ -1,6 +1,6 @@
 # rcmd 2.0 — beyond Midnight Commander
 
-**Status:** proposed (2026-07-04)
+**Status:** in progress — P0, P1, P2 and P3 shipped (2026-07-04); next: P4/P5
 **Prerequisite:** PLAN.md complete (it is). Baseline: MC-parity dual-pane
 manager, ~43 tests, pty-verified, no async runtime, `FsProvider` seam.
 
@@ -76,6 +76,23 @@ The project graduates from "a repo on one laptop".
   to introduce async — confined to the VFS layer, never the UI loop.
 - Exit: a week of real server work (edit remote configs via F4-to-temp,
   push release artifacts) without typing `scp` or `sftp`.
+
+**DONE (2026-07-04).** Shipped as designed: `FsWrite` write-half with
+`FsProvider::writer()` capability discovery, `SftpFs` on blocking `ssh2`
+(agent → key files → password; known_hosts checked, unknown keys get a
+fingerprint dialog and are saved), `cd sftp://…` + F9 → Command → SFTP
+link, `spawn_transfer` for upload/download/remote↔remote with
+rename-first moves, remote F3/F4 (scratch copy, auto-upload on save),
+F7/F8, local-vs-remote compare, hotlist remote entries, connection
+sharing between panels via a weak cache. E2e drives a real SFTP server
+(paramiko) through the full flow.
+
+**Decision D1 — resolved: threads win, permanently.** Blocking libssh2
+calls on worker threads compose cleanly with P2's pending loads, and the
+connect worker prefetches the first listing, so the UI never blocks. One
+mutex-serialized session per host is imperceptible next to network RTT,
+and jobs/panels share it safely. No async runtime enters the codebase;
+the question is closed for 2.0.
 
 ### P4 — the internal editor (the deferred beast, now on purpose)
 1.0 proved $EDITOR is a fine crutch; 2.0 builds the mcedit successor —

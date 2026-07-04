@@ -1,4 +1,5 @@
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -10,6 +11,8 @@ use rcmd_core::entry;
 use rcmd_core::find::{self, FindEvent, FindHandle};
 use rcmd_core::fsops::{self, JobEvent, JobHandle, Reply};
 use rcmd_core::panel::{LoadKind, Panel, SortKey};
+use rcmd_core::sftp::{self, ConnectEvent, ConnectReply, SftpFs, SftpUrl};
+use rcmd_core::vfs::{FsProvider, LocalFs};
 use rcmd_core::view::FileView;
 
 use crate::config::{Config, HotEntry};
@@ -17,12 +20,42 @@ use crate::keymap::Keymap;
 use crate::{config, keymap, ui};
 
 pub enum InputAction {
-    CopyTo { sources: Vec<PathBuf> },
-    MoveTo { sources: Vec<PathBuf> },
+    CopyTo {
+        sources: Vec<PathBuf>,
+    },
+    MoveTo {
+        sources: Vec<PathBuf>,
+    },
     Mkdir,
-    SelectGlob { mark: bool },
+    SelectGlob {
+        mark: bool,
+    },
     Filter,
     Panelize,
+    /// F9 → Command → SFTP link: the value is an sftp:// URL.
+    SftpConnect,
+}
+
+/// An SFTP connection attempt on its worker thread; `ask` is the
+/// interactive question currently shown (host key / password).
+pub struct ConnectState {
+    handle: sftp::ConnectHandle,
+    panel: usize,
+    pub ask: Option<ConnectAsk>,
+}
+
+pub enum ConnectAsk {
+    HostKey { fingerprint: String, yes: bool },
+    Password { prompt: String, value: String },
+}
+
+/// A remote file being edited via a local scratch copy (F4 on an SFTP
+/// panel): uploaded back if the editor changed it.
+struct RemoteEdit {
+    fs: Arc<dyn FsProvider>,
+    remote_path: PathBuf,
+    temp: PathBuf,
+    mtime_before: Option<std::time::SystemTime>,
 }
 
 /// Alt+F7 find dialog: filename glob + optional content substring.
@@ -184,6 +217,7 @@ pub enum Action {
     InvertSelection,
     Quit,
     Shell,
+    SftpLink,
     Reload,
     SwapPanels,
     ToggleHidden,
@@ -225,6 +259,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Find file...", "M-F7", Action::FindFile)),
             Some(("Panelize command...", "", Action::Panelize)),
             Some(("Compare directories", "C-x d", Action::CompareDirs)),
+            Some(("SFTP link...", "", Action::SftpLink)),
             Some(("Open shell", "C-o", Action::Shell)),
             Some(("Reload panel", "C-r", Action::Reload)),
             Some(("Swap panels", "", Action::SwapPanels)),
@@ -327,6 +362,11 @@ pub struct App {
     /// Quick-search prefix while Ctrl+S type-ahead is active.
     pub quick_search: Option<String>,
     pub find: Option<FindState>,
+    pub connect: Option<ConnectState>,
+    /// Live SFTP connections by URL prefix; weak so that leaving a
+    /// remote directory on both panels closes the connection.
+    connections: Vec<(String, Weak<SftpFs>)>,
+    remote_edit: Option<RemoteEdit>,
     du: Option<DuJob>,
     watch: Option<WatchState>,
     /// Ctrl+X was pressed; the next key completes the chord.
@@ -404,6 +444,9 @@ impl App {
             cmdline: CmdLine::default(),
             quick_search: None,
             find: None,
+            connect: None,
+            connections: Vec::new(),
+            remote_edit: None,
             du: None,
             watch,
             prefix_cx: false,
@@ -418,6 +461,7 @@ impl App {
         while !self.quit {
             self.drain_job();
             self.drain_find();
+            self.drain_connect();
             self.drain_du();
             self.poll_loads();
             self.update_watches();
@@ -430,6 +474,7 @@ impl App {
                 .is_some_and(|w| w.dirty.iter().any(Option::is_some));
             let timeout = if self.job.is_some()
                 || self.find.is_some()
+                || self.connect.is_some()
                 || self.du.is_some()
                 || loading
                 || watch_pending
@@ -446,6 +491,7 @@ impl App {
             }
             if let Some(exec) = self.pending_exec.take() {
                 self.execute(terminal, exec)?;
+                self.finish_remote_edit();
             }
         }
         if let Some(job) = &self.job {
@@ -587,6 +633,166 @@ impl App {
                 self.status = Some(format!(" searching… {} found — Esc cancels ", find.count));
             }
         }
+    }
+
+    /// Start (or resume) an SFTP connection for the active panel.
+    fn connect_sftp(&mut self, input: &str) {
+        if self.connect.is_some() {
+            self.status = Some(" a connection attempt is already running ".into());
+            return;
+        }
+        let Some(url) = SftpUrl::parse(input) else {
+            self.status = Some(" bad URL — sftp://[user@]host[:port][/path] ".into());
+            return;
+        };
+        let handle = match self.connection(&url.prefix()) {
+            Some(fs) => sftp::spawn_reuse(fs, url),
+            None => sftp::spawn_connect(url),
+        };
+        self.status = Some(format!(
+            " connecting to {}… — Esc cancels ",
+            handle.url.host
+        ));
+        self.connect = Some(ConnectState {
+            handle,
+            panel: self.active,
+            ask: None,
+        });
+    }
+
+    /// Look up a live connection by URL prefix, dropping dead ones.
+    fn connection(&mut self, prefix: &str) -> Option<Arc<SftpFs>> {
+        self.connections.retain(|(_, weak)| weak.strong_count() > 0);
+        self.connections
+            .iter()
+            .find(|(p, _)| p == prefix)
+            .and_then(|(_, weak)| weak.upgrade())
+    }
+
+    fn drain_connect(&mut self) {
+        let Some(connect) = self.connect.as_mut() else {
+            return;
+        };
+        while let Ok(event) = connect.handle.events.try_recv() {
+            match event {
+                ConnectEvent::Info(msg) => self.status = Some(format!(" {msg} ")),
+                ConnectEvent::AskHostKey { fingerprint } => {
+                    connect.ask = Some(ConnectAsk::HostKey {
+                        fingerprint,
+                        yes: false, // safe default
+                    });
+                }
+                ConnectEvent::AskPassword { prompt } => {
+                    connect.ask = Some(ConnectAsk::Password {
+                        prompt,
+                        value: String::new(),
+                    });
+                }
+                ConnectEvent::Ok { fs, start, entries } => {
+                    let connect = self.connect.take().expect("connect present");
+                    let prefix = fs.prefix().to_string();
+                    self.connections.retain(|(p, _)| p != &prefix);
+                    self.connections.push((prefix.clone(), Arc::downgrade(&fs)));
+                    self.panels[connect.panel].adopt_remote(fs, prefix.clone(), start, entries);
+                    self.status = Some(format!(" connected to {prefix} "));
+                    return;
+                }
+                ConnectEvent::Err(msg) => {
+                    self.connect = None;
+                    self.status = Some(format!(" sftp: {msg} "));
+                    return;
+                }
+            }
+        }
+    }
+
+    fn on_connect_key(&mut self, key: KeyEvent) {
+        let Some(connect) = self.connect.as_mut() else {
+            return;
+        };
+        match connect.ask.as_mut() {
+            None => {
+                if key.code == KeyCode::Esc {
+                    // dropping the handle closes the reply channel; the
+                    // worker unblocks and gives up
+                    self.connect = None;
+                    self.status = Some(" connection cancelled ".into());
+                }
+            }
+            Some(ConnectAsk::HostKey { yes, .. }) => {
+                let reply = match key.code {
+                    KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                        *yes = !*yes;
+                        None
+                    }
+                    KeyCode::Enter => Some(*yes),
+                    KeyCode::Char('y' | 'Y') => Some(true),
+                    KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(false),
+                    _ => None,
+                };
+                if let Some(accept) = reply {
+                    let _ = connect.handle.replies.send(ConnectReply::Accept(accept));
+                    connect.ask = None;
+                    if !accept {
+                        self.connect = None;
+                        self.status = Some(" host key rejected ".into());
+                    }
+                }
+            }
+            Some(ConnectAsk::Password { value, .. }) => match key.code {
+                KeyCode::Esc => {
+                    let _ = connect.handle.replies.send(ConnectReply::Cancel);
+                    self.connect = None;
+                    self.status = Some(" connection cancelled ".into());
+                }
+                KeyCode::Enter => {
+                    let password = std::mem::take(value);
+                    let _ = connect
+                        .handle
+                        .replies
+                        .send(ConnectReply::Password(password));
+                    connect.ask = None;
+                }
+                code => {
+                    let mut cursor = value.chars().count();
+                    edit_line(value, &mut cursor, code, key.modifiers);
+                }
+            },
+        }
+    }
+
+    /// After F4 on a remote file: upload the scratch copy back if the
+    /// editor modified it, then clean up.
+    fn finish_remote_edit(&mut self) {
+        let Some(edit) = self.remote_edit.take() else {
+            return;
+        };
+        let mtime_now = std::fs::metadata(&edit.temp)
+            .and_then(|m| m.modified())
+            .ok();
+        if mtime_now != edit.mtime_before {
+            let uploaded = (|| -> std::io::Result<()> {
+                let writer = edit
+                    .fs
+                    .writer()
+                    .ok_or_else(|| std::io::Error::other("read-only filesystem"))?;
+                let mut input = std::fs::File::open(&edit.temp)?;
+                let mut output = writer.open_write(&edit.remote_path)?;
+                std::io::copy(&mut input, &mut output)?;
+                Ok(())
+            })();
+            self.status = Some(match &uploaded {
+                Ok(()) => format!(" uploaded {} ", edit.remote_path.display()),
+                Err(err) => format!(
+                    " upload failed: {err} — local copy kept at {} ",
+                    edit.temp.display()
+                ),
+            });
+            if uploaded.is_err() {
+                return; // keep the scratch file for rescue
+            }
+        }
+        let _ = std::fs::remove_file(&edit.temp);
     }
 
     /// Leave the TUI, run a command or an interactive shell in the active
@@ -743,6 +949,8 @@ impl App {
         self.status = None;
         if self.job.is_some() {
             self.on_job_key(key);
+        } else if self.connect.is_some() {
+            self.on_connect_key(key);
         } else if self.find.is_some() {
             self.on_find_key(key);
         } else if self.dialog.is_some() {
@@ -935,6 +1143,14 @@ impl App {
             Action::InvertSelection => self.panel().invert_marks(),
             Action::Quit => self.quit = true,
             Action::Shell => self.pending_exec = Some(Exec::Shell),
+            Action::SftpLink => {
+                self.dialog = Some(Dialog::Input(InputDialog {
+                    title: " SFTP link (sftp://[user@]host[:port][/path]) ".into(),
+                    value: "sftp://".into(),
+                    cursor: 7,
+                    action: InputAction::SftpConnect,
+                }));
+            }
             Action::Reload => self.fallible(|p| p.reload().map(|()| true)),
             Action::SwapPanels => {
                 self.panels.swap(0, 1);
@@ -964,25 +1180,29 @@ impl App {
             let path = panel.cwd.join(&name);
             (path.clone(), path, None)
         } else {
-            // extract the archive member to a scratch file first
+            // fetch the archive member / remote file to a scratch file
             let vpath = panel.cwd.join(&name);
             let temp = std::env::temp_dir().join(format!(
                 "rcmd-view-{}-{}",
                 std::process::id(),
                 name.to_string_lossy()
             ));
-            let extracted = panel.fs.open_read(&vpath).and_then(|mut reader| {
+            let fetched = panel.fs.open_read(&vpath).and_then(|mut reader| {
                 let mut out = std::fs::File::create(&temp)?;
                 std::io::copy(&mut reader, &mut out)?;
                 Ok(())
             });
-            if let Err(err) = extracted {
+            if let Err(err) = fetched {
                 let _ = std::fs::remove_file(&temp);
                 self.status = Some(format!(" view: {err} "));
                 return;
             }
-            let archive = panel.archive.clone().unwrap_or_default();
-            let title = PathBuf::from(format!("{}://{}", archive.display(), vpath.display()));
+            let title = if let Some(prefix) = &panel.remote {
+                PathBuf::from(format!("{prefix}{}", vpath.display()))
+            } else {
+                let archive = panel.archive.clone().unwrap_or_default();
+                PathBuf::from(format!("{}://{}", archive.display(), vpath.display()))
+            };
             (temp.clone(), title, Some(temp))
         };
         match FileView::open(&open_path) {
@@ -1023,14 +1243,45 @@ impl App {
             self.status = Some(" cannot edit a directory ".into());
             return;
         }
+        let editor = std::env::var("VISUAL")
+            .or_else(|_| std::env::var("EDITOR"))
+            .unwrap_or_else(|_| "vi".to_string());
+        if panel.is_remote() {
+            // edit a scratch copy; upload it back if the editor saved
+            let name = entry.name.clone();
+            let remote_path = panel.cwd.join(&name);
+            let temp = std::env::temp_dir().join(format!(
+                "rcmd-edit-{}-{}",
+                std::process::id(),
+                name.to_string_lossy()
+            ));
+            let fetched = panel.fs.open_read(&remote_path).and_then(|mut reader| {
+                let mut out = std::fs::File::create(&temp)?;
+                std::io::copy(&mut reader, &mut out)?;
+                Ok(())
+            });
+            if let Err(err) = fetched {
+                let _ = std::fs::remove_file(&temp);
+                self.status = Some(format!(" edit: {err} "));
+                return;
+            }
+            self.remote_edit = Some(RemoteEdit {
+                fs: panel.fs.clone(),
+                remote_path,
+                mtime_before: std::fs::metadata(&temp).and_then(|m| m.modified()).ok(),
+                temp: temp.clone(),
+            });
+            self.pending_exec = Some(Exec::Editor(format!(
+                "{editor} {}",
+                shell_quote(&temp.to_string_lossy())
+            )));
+            return;
+        }
         if !panel.is_local() {
             self.status = Some(" cannot edit inside an archive ".into());
             return;
         }
         let path = panel.cwd.join(&entry.name);
-        let editor = std::env::var("VISUAL")
-            .or_else(|_| std::env::var("EDITOR"))
-            .unwrap_or_else(|_| "vi".to_string());
         self.pending_exec = Some(Exec::Editor(format!(
             "{editor} {}",
             shell_quote(&path.to_string_lossy())
@@ -1125,20 +1376,34 @@ impl App {
                     KeyCode::Esc => {}
                     KeyCode::Enter => {
                         if let Some(entry) = self.config.hotlist.get(selected).cloned() {
-                            let target = self.resolve(&entry.path);
-                            if let Err(err) = self.panels[self.active].cd(target) {
-                                self.status = Some(format!(" hotlist: {err} "));
+                            if entry.path.starts_with("sftp://") {
+                                self.connect_sftp(&entry.path);
+                            } else {
+                                let target = self.resolve(&entry.path);
+                                let panel = &mut self.panels[self.active];
+                                let moved = if panel.is_remote() {
+                                    panel.to_local(target)
+                                } else {
+                                    panel.cd(target)
+                                };
+                                if let Err(err) = moved {
+                                    self.status = Some(format!(" hotlist: {err} "));
+                                }
                             }
                         }
                     }
                     KeyCode::Char('a') => {
-                        let cwd = self.panels[self.active].local_cwd();
-                        let path = cwd.display().to_string();
+                        let panel = &self.panels[self.active];
+                        let path = if panel.is_remote() {
+                            panel.display_path()
+                        } else {
+                            panel.local_cwd().display().to_string()
+                        };
                         if !self.config.hotlist.iter().any(|h| h.path == path) {
-                            let label = cwd
+                            let label = Path::new(&path)
                                 .file_name()
                                 .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| "/".into());
+                                .unwrap_or_else(|| path.clone());
                             self.config.hotlist.push(HotEntry { label, path });
                         }
                         self.dialog = Some(Dialog::Hotlist(selected));
@@ -1268,8 +1533,9 @@ impl App {
         use std::ffi::OsString;
         use std::time::SystemTime;
 
-        if !self.panels[0].is_local() || !self.panels[1].is_local() {
-            self.status = Some(" both panels must be local ".into());
+        // works on local and remote listings alike; only archives are out
+        if self.panels[0].archive.is_some() || self.panels[1].archive.is_some() {
+            self.status = Some(" cannot compare inside an archive ".into());
             return;
         }
         let files = |panel: &Panel| -> HashMap<OsString, (u64, Option<SystemTime>)> {
@@ -1330,24 +1596,13 @@ impl App {
             return;
         }
         match dialog.action {
-            InputAction::CopyTo { sources } => {
-                match (split_vfs_dest(&value), self.panels[self.active].is_local()) {
-                    (Some(_), false) => {
-                        self.status = Some(" cannot copy from archive to archive ".into())
-                    }
-                    (Some((archive, inside)), true) => self.start_pack(sources, archive, inside),
-                    (None, true) => self.start_transfer(sources, &value, fsops::spawn_copy, "copy"),
-                    (None, false) => self.start_extract(sources, &value),
-                }
-            }
-            InputAction::MoveTo { sources } => {
-                if split_vfs_dest(&value).is_some() {
-                    self.status = Some(" cannot move into an archive ".into());
-                } else {
-                    self.start_transfer(sources, &value, fsops::spawn_move, "move")
-                }
-            }
+            InputAction::CopyTo { sources } => self.route_transfer(sources, &value, false),
+            InputAction::MoveTo { sources } => self.route_transfer(sources, &value, true),
             InputAction::Mkdir => {
+                if self.panels[self.active].is_remote() {
+                    self.remote_mkdir(&value);
+                    return;
+                }
                 let path = self.resolve(&value);
                 match std::fs::create_dir_all(&path) {
                     Ok(()) => {
@@ -1368,6 +1623,112 @@ impl App {
             InputAction::SelectGlob { mark } => self.panels[self.active].mark_glob(&value, mark),
             InputAction::Filter => unreachable!("handled above"),
             InputAction::Panelize => self.run_panelize(&value),
+            InputAction::SftpConnect => self.connect_sftp(&value),
+        }
+    }
+
+    /// Send F5/F6 to the right job for the source panel and the typed
+    /// destination: plain copy/move, archive pack/extract, or a
+    /// cross-provider transfer when SFTP is on either side.
+    fn route_transfer(&mut self, sources: Vec<PathBuf>, value: &str, is_move: bool) {
+        let src_panel = &self.panels[self.active];
+        let src_archive = src_panel.archive.is_some();
+        // sftp:// destination (must match before the zip:// syntax —
+        // a URL also contains "://")
+        if value.starts_with("sftp://") {
+            let Some(url) = SftpUrl::parse(value) else {
+                self.status = Some(" bad URL — sftp://[user@]host[:port]/path ".into());
+                return;
+            };
+            if url.path.as_os_str().is_empty() {
+                self.status = Some(" destination URL needs a path ".into());
+                return;
+            }
+            if is_move && src_archive {
+                self.status = Some(" archive is read-only ".into());
+                return;
+            }
+            let Some(dst_fs) = self.connection(&url.prefix()) else {
+                self.status = Some(format!(" not connected — cd {} first ", url.prefix()));
+                return;
+            };
+            let src_fs = self.panels[self.active].fs.clone();
+            let label = url.display();
+            self.start_vfs_transfer(src_fs, sources, dst_fs, url.path, is_move, label);
+            return;
+        }
+        if src_panel.is_remote() {
+            if split_vfs_dest(value).is_some() {
+                self.status = Some(" cannot copy from remote into an archive ".into());
+                return;
+            }
+            let dest = self.resolve(value);
+            let src_fs = self.panels[self.active].fs.clone();
+            let label = dest.display().to_string();
+            self.start_vfs_transfer(src_fs, sources, Arc::new(LocalFs), dest, is_move, label);
+            return;
+        }
+        // local or archive source, local or zip:// destination
+        if is_move {
+            if src_archive {
+                self.status = Some(" archive is read-only ".into());
+            } else if split_vfs_dest(value).is_some() {
+                self.status = Some(" cannot move into an archive ".into());
+            } else {
+                self.start_transfer(sources, value, fsops::spawn_move, "move");
+            }
+            return;
+        }
+        match (split_vfs_dest(value), !src_archive) {
+            (Some(_), false) => self.status = Some(" cannot copy from archive to archive ".into()),
+            (Some((archive, inside)), true) => self.start_pack(sources, archive, inside),
+            (None, true) => self.start_transfer(sources, value, fsops::spawn_copy, "copy"),
+            (None, false) => self.start_extract(sources, value),
+        }
+    }
+
+    fn start_vfs_transfer(
+        &mut self,
+        src_fs: Arc<dyn FsProvider>,
+        sources: Vec<PathBuf>,
+        dst_fs: Arc<dyn FsProvider>,
+        dest: PathBuf,
+        is_move: bool,
+        dest_label: String,
+    ) {
+        let verb = if is_move { "move" } else { "copy" };
+        self.job = Some(Job {
+            title: format!(" {verb} {} item(s) to {} ", sources.len(), dest_label),
+            handle: fsops::spawn_transfer(src_fs, sources, dst_fs, dest, is_move),
+            total_files: 0,
+            total_bytes: 0,
+            files_done: 0,
+            bytes_done: 0,
+            current: PathBuf::new(),
+            ask: None,
+            button: 0,
+            src_panel: self.active,
+        });
+    }
+
+    fn remote_mkdir(&mut self, value: &str) {
+        let panel = &mut self.panels[self.active];
+        let path = {
+            let raw = Path::new(value);
+            if raw.is_absolute() {
+                raw.to_path_buf()
+            } else {
+                panel.cwd.join(raw)
+            }
+        };
+        let made = panel
+            .fs
+            .writer()
+            .ok_or_else(|| std::io::Error::other("read-only filesystem"))
+            .and_then(|w| w.mkdir(&normalize(&path)));
+        match made {
+            Ok(()) => self.fallible(|p| p.reload().map(|()| true)),
+            Err(err) => self.status = Some(format!(" mkdir: {err} ")),
         }
     }
 
@@ -1488,9 +1849,15 @@ impl App {
 
     fn start_delete(&mut self, paths: Vec<PathBuf>, permanent: bool) {
         let verb = if permanent { "delete" } else { "trash" };
+        let count = paths.len();
+        let handle = if self.panels[self.active].is_remote() {
+            fsops::spawn_delete_fs(self.panels[self.active].fs.clone(), paths)
+        } else {
+            fsops::spawn_delete(paths, permanent)
+        };
         self.job = Some(Job {
-            title: format!(" {verb} {} item(s) ", paths.len()),
-            handle: fsops::spawn_delete(paths, permanent),
+            title: format!(" {verb} {count} item(s) "),
+            handle,
             total_files: 0,
             total_bytes: 0,
             files_done: 0,
@@ -1648,10 +2015,38 @@ impl App {
         }
         self.cmdline.push_history(&cmd);
         if let Some(dir) = parse_cd(&cmd) {
+            if dir.starts_with("sftp://") {
+                let dir = dir.to_string();
+                self.connect_sftp(&dir);
+                return;
+            }
+            let panel = &mut self.panels[self.active];
+            if panel.is_remote() {
+                // relative/absolute stays on the server; bare `cd` or a
+                // `~` path returns to the local filesystem
+                if !dir.is_empty() && !dir.starts_with('~') {
+                    let raw = if Path::new(dir).is_absolute() {
+                        PathBuf::from(dir)
+                    } else {
+                        panel.cwd.join(dir)
+                    };
+                    if let Err(err) = panel.cd(normalize(&raw)) {
+                        self.status = Some(format!(" cd: {err} "));
+                    }
+                    return;
+                }
+                let target = if dir.is_empty() {
+                    home_dir()
+                } else {
+                    self.resolve(dir)
+                };
+                if let Err(err) = self.panels[self.active].to_local(target) {
+                    self.status = Some(format!(" cd: {err} "));
+                }
+                return;
+            }
             let target = if dir.is_empty() {
-                std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from("/"))
+                home_dir()
             } else {
                 self.resolve(dir)
             };
@@ -1686,18 +2081,24 @@ impl App {
         }
     }
 
-    /// Operations that write to the panel's filesystem need a local one.
+    /// Operations that only make sense on a local directory.
     fn require_local(&mut self) -> bool {
-        if self.panels[self.active].is_local() {
+        let panel = &self.panels[self.active];
+        if panel.is_local() {
             true
         } else {
-            self.status = Some(" archive is read-only ".into());
+            self.status = Some(if panel.is_remote() {
+                " not available on a remote panel ".into()
+            } else {
+                " archive is read-only ".into()
+            });
             false
         }
     }
 
     fn open_transfer(&mut self, is_move: bool) {
-        if is_move && !self.require_local() {
+        if is_move && self.panels[self.active].archive.is_some() {
+            self.status = Some(" archive is read-only ".into());
             return;
         }
         let sources = self.panels[self.active].targets();
@@ -1707,9 +2108,11 @@ impl App {
         }
         let verb = if is_move { "Move" } else { "Copy" };
         let other = &self.panels[self.active ^ 1];
-        // an archive on the other side prefills its virtual path — accepting
-        // it packs into the zip (copy only)
-        let mut dest = if other.is_local() || is_move {
+        // a remote or archive panel on the other side prefills its
+        // virtual path — accepting it uploads / packs into the zip
+        let mut dest = if other.is_remote() {
+            other.display_path()
+        } else if other.is_local() || is_move {
             other.local_cwd().display().to_string()
         } else {
             other.display_path()
@@ -1735,7 +2138,8 @@ impl App {
     }
 
     fn open_mkdir(&mut self) {
-        if !self.require_local() {
+        if self.panels[self.active].archive.is_some() {
+            self.status = Some(" archive is read-only ".into());
             return;
         }
         self.dialog = Some(Dialog::Input(InputDialog {
@@ -1761,16 +2165,22 @@ impl App {
     }
 
     fn open_delete(&mut self, permanent: bool) {
-        if !self.require_local() {
+        let panel = &self.panels[self.active];
+        if panel.archive.is_some() {
+            self.status = Some(" archive is read-only ".into());
             return;
         }
-        let paths = self.panels[self.active].targets();
+        // no remote trash: F8 on an SFTP panel deletes permanently
+        let permanent = permanent || panel.is_remote();
+        let paths = panel.targets();
         if paths.is_empty() {
             self.status = Some(" nothing selected ".into());
             return;
         }
         let what = Self::describe(&paths);
-        let message = if permanent {
+        let message = if self.panels[self.active].is_remote() {
+            format!("Permanently delete {what} from the server?")
+        } else if permanent {
             format!("Permanently delete {what}?")
         } else {
             format!("Move {what} to trash?")
@@ -1891,6 +2301,12 @@ fn viewer_search(v: &mut Viewer, from: usize, is_next: bool) {
         }
         Err(err) => v.note = Some(format!(" {err} ")),
     }
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 fn first_menu_item(entries: &[MenuEntry]) -> usize {

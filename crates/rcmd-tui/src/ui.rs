@@ -7,7 +7,9 @@ use ratatui::widgets::{Block, Cell, Clear, Gauge, Row, Table, TableState};
 use rcmd_core::entry::{Entry, EntryKind};
 use rcmd_core::panel::Panel;
 
-use crate::app::{App, Ask, ConfirmDialog, Dialog, FindDialog, InputDialog, Job, MENUS, MenuState};
+use crate::app::{
+    App, Ask, ConfirmDialog, ConnectAsk, Dialog, FindDialog, InputDialog, Job, MENUS, MenuState,
+};
 use crate::config::HotEntry;
 
 /// All colors in one place; selected once at startup from config
@@ -157,6 +159,18 @@ const HELP_TEXT: &[&str] = &[
     "  Copy INTO a zip: F5 with the other panel inside the zip, or a",
     "  destination written as archive.zip://dir  (zip only).",
     "",
+    "# SFTP (remote panels)",
+    "  cd sftp://[user@]host[:port][/path]   connect (or F9>Cmd>SFTP link)",
+    "  Auth: ssh-agent, then ~/.ssh/id_* keys, then password prompts.",
+    "  Unknown host keys show a fingerprint dialog; accepted keys are",
+    "  saved to ~/.ssh/known_hosts. The panel title shows the URL.",
+    "  F5/F6 up/download between panels (progress dialogs as usual),",
+    "  F7 mkdir, F8 deletes on the server (no remote trash!), F3 views,",
+    "  F4 edits a local scratch copy and uploads it back on save.",
+    "  cd PATH stays on the server; plain cd or cd ~ returns local.",
+    "  Both panels may share one connection; Ctrl+X d compares",
+    "  local vs remote, then F5 syncs the marked differences.",
+    "",
     "# Command line",
     "  (type)          compose a command; Enter runs it in the panel dir",
     "  cd PATH         changes the active panel instead",
@@ -247,6 +261,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         if let Some(ask) = &job.ask {
             draw_ask(frame, ask, job.button);
         }
+    }
+    if let Some(connect) = &app.connect
+        && let Some(ask) = &connect.ask
+    {
+        draw_connect_ask(frame, ask);
     }
 }
 
@@ -963,6 +982,61 @@ fn draw_confirm(frame: &mut Frame, d: &ConfirmDialog) {
     };
     let selected = usize::from(!d.yes);
     frame.render_widget(buttons_line(&["Yes", "No"], selected, style, sel), buttons);
+}
+
+/// Host-key confirmation / password prompt during an SFTP connect.
+fn draw_connect_ask(frame: &mut Frame, ask: &ConnectAsk) {
+    match ask {
+        ConnectAsk::HostKey { fingerprint, yes } => {
+            let style = Style::new().fg(th().error_fg).bg(th().error_bg);
+            let sel = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+            let area = centered(68, 8, frame.area());
+            let inner = popup(frame, area, " Unknown host ", style);
+            let row = |offset: u16| Rect {
+                x: inner.x + 1,
+                y: inner.y + offset,
+                width: inner.width.saturating_sub(2),
+                height: 1,
+            };
+            frame.render_widget(
+                Line::from("The authenticity of this host can't be established.").centered(),
+                row(1),
+            );
+            frame.render_widget(
+                Line::from(tail(fingerprint, inner.width.saturating_sub(2) as usize)).centered(),
+                row(2),
+            );
+            frame.render_widget(
+                Line::from("Trust it and save to known_hosts?").centered(),
+                row(3),
+            );
+            let selected = usize::from(!*yes);
+            frame.render_widget(buttons_line(&["Yes", "No"], selected, style, sel), row(5));
+        }
+        ConnectAsk::Password { prompt, value } => {
+            let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+            let area = centered(56, 6, frame.area());
+            let inner = popup(frame, area, " SSH authentication ", style);
+            let row = |offset: u16| Rect {
+                x: inner.x + 1,
+                y: inner.y + offset,
+                width: inner.width.saturating_sub(2),
+                height: 1,
+            };
+            frame.render_widget(
+                Line::from(tail(prompt, inner.width.saturating_sub(2) as usize)),
+                row(0),
+            );
+            let masked = "*".repeat(value.chars().count());
+            field_row(frame, row(1), &masked, Some(masked.chars().count()));
+            frame.render_widget(
+                Line::from("Enter — send   Esc — cancel")
+                    .centered()
+                    .style(style),
+                row(3),
+            );
+        }
+    }
 }
 
 fn draw_job(frame: &mut Frame, job: &Job) {

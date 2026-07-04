@@ -144,6 +144,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "invert-selection" => Action::InvertSelection,
         "quit" => Action::Quit,
         "shell" => Action::Shell,
+        "sftp-link" => Action::SftpLink,
         "reload" => Action::Reload,
         "swap-panels" => Action::SwapPanels,
         "toggle-hidden" => Action::ToggleHidden,
