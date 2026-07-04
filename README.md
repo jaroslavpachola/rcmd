@@ -6,10 +6,11 @@ the roadmap.
 
 ## Status
 
-M2 — shell integration. Everything from the M1 daily-driver cut (marking,
-copy/move/mkdir/delete with MC-style dialogs, sort modes) plus a bottom
-command line with history, `cd` handling, Ctrl+O shell suspend, and
-exit-to-cwd support.
+M3 — view & edit. The M1 daily-driver cut (marking, copy/move/mkdir/delete
+with MC-style dialogs, sort modes), M2 shell integration (command line,
+Ctrl+O, exit-to-cwd), plus the F3 viewer (chunked — opens multi-GB files
+instantly; text and hex modes, search), F4 editing via $EDITOR, and the
+F9 pulldown menu.
 
 ## Run
 
@@ -54,6 +55,9 @@ end
 | ↑ ↓ PgUp PgDn Home End | Move cursor |
 | Enter | Enter directory |
 | Backspace | Parent directory |
+| F3 | View file (internal viewer) |
+| F4 | Edit file in $VISUAL / $EDITOR (fallback vi) |
+| F9 | Pulldown menu |
 | Insert, Ctrl+T | Mark entry and advance |
 | `+` / `-` (or `\`) | Select / unselect by glob |
 | `*` | Invert marks |
@@ -77,6 +81,11 @@ empty.
 
 In dialogs: arrows/Tab move between buttons, Enter confirms, Esc cancels;
 overwrite and error prompts also take hotkeys (o/a/s/S, r/s/S).
+
+**Viewer** (F3): arrows/PgUp/PgDn/Home/End scroll, ←→ horizontal scroll,
+F4 toggles hex mode, F7 or `/` searches (case-insensitive), `n` next
+match, F3/F10/Esc/q quit. Lines are indexed lazily, so huge files open
+instantly; very long lines are broken at 4096 columns.
 
 ## Development
 

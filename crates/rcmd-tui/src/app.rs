@@ -7,6 +7,7 @@ use ratatui::widgets::TableState;
 use ratatui::DefaultTerminal;
 use rcmd_core::fsops::{self, JobEvent, JobHandle, Reply};
 use rcmd_core::panel::{Panel, SortKey};
+use rcmd_core::view::FileView;
 
 use crate::ui;
 
@@ -80,7 +81,97 @@ pub struct Job {
 
 enum Exec {
     Command(String),
+    Editor(String),
     Shell,
+}
+
+/// Full-screen F3 viewer state; the chunked file access lives in
+/// [`FileView`], this is only presentation state.
+pub struct Viewer {
+    pub file: FileView,
+    pub path: PathBuf,
+    pub hex: bool,
+    pub top: usize,
+    pub left: usize,
+    /// Top row of the hex view (16 bytes per row).
+    pub hex_top: u64,
+    /// Content rows; updated on every draw, drives paging.
+    pub rows: usize,
+    pub search: String,
+    pub found: Option<usize>,
+    /// Search prompt (value, cursor) when open.
+    pub prompt: Option<(String, usize)>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MenuAction {
+    View,
+    Edit,
+    Copy,
+    Move,
+    Mkdir,
+    Delete,
+    DeletePerm,
+    SelectGroup,
+    UnselectGroup,
+    InvertSelection,
+    Quit,
+    Shell,
+    Reload,
+    SwapPanels,
+    ToggleHidden,
+    Sort(SortKey),
+    SortReverse,
+}
+
+/// None = separator line.
+pub type MenuEntry = Option<(&'static str, &'static str, MenuAction)>;
+
+pub const MENUS: &[(&str, &[MenuEntry])] = &[
+    (
+        "File",
+        &[
+            Some(("View", "F3", MenuAction::View)),
+            Some(("Edit", "F4", MenuAction::Edit)),
+            Some(("Copy...", "F5", MenuAction::Copy)),
+            Some(("Move/rename...", "F6", MenuAction::Move)),
+            Some(("Make directory...", "F7", MenuAction::Mkdir)),
+            Some(("Delete (trash)", "F8", MenuAction::Delete)),
+            Some(("Delete permanently", "S-F8", MenuAction::DeletePerm)),
+            None,
+            Some(("Select group...", "+", MenuAction::SelectGroup)),
+            Some(("Unselect group...", "-", MenuAction::UnselectGroup)),
+            Some(("Invert selection", "*", MenuAction::InvertSelection)),
+            None,
+            Some(("Quit", "F10", MenuAction::Quit)),
+        ],
+    ),
+    (
+        "Command",
+        &[
+            Some(("Open shell", "C-o", MenuAction::Shell)),
+            Some(("Reload panel", "C-r", MenuAction::Reload)),
+            Some(("Swap panels", "", MenuAction::SwapPanels)),
+            Some(("Toggle hidden files", "M-.", MenuAction::ToggleHidden)),
+        ],
+    ),
+    (
+        "Sort",
+        &[
+            Some(("By name", "M-n", MenuAction::Sort(SortKey::Name))),
+            Some(("By extension", "M-e", MenuAction::Sort(SortKey::Ext))),
+            Some(("By size", "M-s", MenuAction::Sort(SortKey::Size))),
+            Some(("By modify time", "M-t", MenuAction::Sort(SortKey::Mtime))),
+            None,
+            Some(("Toggle reverse", "", MenuAction::SortReverse)),
+        ],
+    ),
+];
+
+pub struct MenuState {
+    pub menu: usize,
+    pub item: usize,
 }
 
 /// The MC-style command line at the bottom of the screen.
@@ -147,6 +238,8 @@ pub struct App {
     pub panel_rows: usize,
     pub dialog: Option<Dialog>,
     pub job: Option<Job>,
+    pub viewer: Option<Viewer>,
+    pub menu: Option<MenuState>,
     pub cmdline: CmdLine,
     pending_exec: Option<Exec>,
     pub quit: bool,
@@ -180,6 +273,8 @@ impl App {
             panel_rows: 1,
             dialog: None,
             job: None,
+            viewer: None,
+            menu: None,
             cmdline: CmdLine::default(),
             pending_exec: None,
             quit: false,
@@ -227,6 +322,9 @@ impl App {
         match &exec {
             Exec::Command(cmd) => {
                 println!("{}$ {cmd}", cwd.display());
+                command.arg("-c").arg(cmd);
+            }
+            Exec::Editor(cmd) => {
                 command.arg("-c").arg(cmd);
             }
             Exec::Shell => {}
@@ -318,9 +416,170 @@ impl App {
             self.on_job_key(key);
         } else if self.dialog.is_some() {
             self.on_dialog_key(key);
+        } else if self.viewer.is_some() {
+            self.on_viewer_key(key);
+        } else if self.menu.is_some() {
+            self.on_menu_key(key);
         } else {
             self.on_panel_key(key);
         }
+    }
+
+    fn on_viewer_key(&mut self, key: KeyEvent) {
+        let Some(v) = self.viewer.as_mut() else {
+            return;
+        };
+        v.note = None;
+        if let Some((value, cursor)) = v.prompt.as_mut() {
+            match key.code {
+                KeyCode::Esc => v.prompt = None,
+                KeyCode::Enter => {
+                    let needle = value.trim().to_string();
+                    v.prompt = None;
+                    if !needle.is_empty() {
+                        v.search = needle;
+                        viewer_search(v, v.top, false);
+                    }
+                }
+                code => {
+                    edit_line(value, cursor, code, key.modifiers);
+                }
+            }
+            return;
+        }
+        let rows = v.rows.max(1);
+        let page = rows.saturating_sub(1).max(1) as isize;
+        match key.code {
+            KeyCode::F(3) | KeyCode::F(10) | KeyCode::Esc | KeyCode::Char('q') => {
+                self.viewer = None;
+            }
+            KeyCode::F(4) => v.hex = !v.hex,
+            KeyCode::Up => viewer_scroll(v, -1, rows),
+            KeyCode::Down => viewer_scroll(v, 1, rows),
+            KeyCode::PageUp => viewer_scroll(v, -page, rows),
+            KeyCode::PageDown => viewer_scroll(v, page, rows),
+            KeyCode::Home => {
+                v.top = 0;
+                v.left = 0;
+                v.hex_top = 0;
+            }
+            KeyCode::End => viewer_end(v, rows),
+            KeyCode::Left => v.left = v.left.saturating_sub(8),
+            KeyCode::Right => v.left += 8,
+            KeyCode::F(7) | KeyCode::Char('/') => {
+                v.prompt = Some((v.search.clone(), v.search.chars().count()));
+            }
+            KeyCode::Char('n') => {
+                if !v.search.is_empty() {
+                    let from = v.found.map(|f| f + 1).unwrap_or(v.top);
+                    viewer_search(v, from, true);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_menu_key(&mut self, key: KeyEvent) {
+        let Some(ms) = self.menu.as_mut() else { return };
+        match key.code {
+            KeyCode::Esc | KeyCode::F(9) | KeyCode::F(10) => self.menu = None,
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                let len = MENUS.len();
+                ms.menu = if key.code == KeyCode::Left {
+                    (ms.menu + len - 1) % len
+                } else {
+                    (ms.menu + 1) % len
+                };
+                ms.item = first_menu_item(MENUS[ms.menu].1);
+            }
+            KeyCode::Up => ms.item = menu_step(MENUS[ms.menu].1, ms.item, -1),
+            KeyCode::Down => ms.item = menu_step(MENUS[ms.menu].1, ms.item, 1),
+            KeyCode::Enter => {
+                if let Some((_, _, action)) = MENUS[ms.menu].1[ms.item] {
+                    self.menu = None;
+                    self.run_menu_action(action);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn run_menu_action(&mut self, action: MenuAction) {
+        match action {
+            MenuAction::View => self.open_viewer(),
+            MenuAction::Edit => self.open_editor(),
+            MenuAction::Copy => self.open_transfer(false),
+            MenuAction::Move => self.open_transfer(true),
+            MenuAction::Mkdir => self.open_mkdir(),
+            MenuAction::Delete => self.open_delete(false),
+            MenuAction::DeletePerm => self.open_delete(true),
+            MenuAction::SelectGroup => self.open_select(true),
+            MenuAction::UnselectGroup => self.open_select(false),
+            MenuAction::InvertSelection => self.panel().invert_marks(),
+            MenuAction::Quit => self.quit = true,
+            MenuAction::Shell => self.pending_exec = Some(Exec::Shell),
+            MenuAction::Reload => self.fallible(|p| p.reload().map(|()| true)),
+            MenuAction::SwapPanels => {
+                self.panels.swap(0, 1);
+                self.table_states.swap(0, 1);
+            }
+            MenuAction::ToggleHidden => self.fallible(|p| p.toggle_hidden().map(|()| true)),
+            MenuAction::Sort(key) => self.panel().set_sort(key),
+            MenuAction::SortReverse => {
+                let panel = self.panel();
+                panel.sort_reverse = !panel.sort_reverse;
+                panel.resort();
+            }
+        }
+    }
+
+    fn open_viewer(&mut self) {
+        let panel = &self.panels[self.active];
+        let Some(entry) = panel.selected() else {
+            return;
+        };
+        if entry.is_dir() {
+            self.status = Some(" cannot view a directory ".into());
+            return;
+        }
+        let path = panel.cwd.join(&entry.name);
+        match FileView::open(&path) {
+            Ok(file) => {
+                self.viewer = Some(Viewer {
+                    file,
+                    path,
+                    hex: false,
+                    top: 0,
+                    left: 0,
+                    hex_top: 0,
+                    rows: 1,
+                    search: String::new(),
+                    found: None,
+                    prompt: None,
+                    note: None,
+                })
+            }
+            Err(err) => self.status = Some(format!(" view: {err} ")),
+        }
+    }
+
+    fn open_editor(&mut self) {
+        let panel = &self.panels[self.active];
+        let Some(entry) = panel.selected() else {
+            return;
+        };
+        if entry.is_dir() {
+            self.status = Some(" cannot edit a directory ".into());
+            return;
+        }
+        let path = panel.cwd.join(&entry.name);
+        let editor = std::env::var("VISUAL")
+            .or_else(|_| std::env::var("EDITOR"))
+            .unwrap_or_else(|_| "vi".to_string());
+        self.pending_exec = Some(Exec::Editor(format!(
+            "{editor} {}",
+            shell_quote(&path.to_string_lossy())
+        )));
     }
 
     fn on_job_key(&mut self, key: KeyEvent) {
@@ -524,6 +783,14 @@ impl App {
             KeyCode::Home if cmd_empty => self.panel().move_top(),
             KeyCode::End if cmd_empty => self.panel().move_bottom(),
             KeyCode::Backspace if cmd_empty => self.fallible(|p| p.go_up()),
+            KeyCode::F(3) => self.open_viewer(),
+            KeyCode::F(4) => self.open_editor(),
+            KeyCode::F(9) => {
+                self.menu = Some(MenuState {
+                    menu: 0,
+                    item: first_menu_item(MENUS[0].1),
+                })
+            }
             KeyCode::F(5) => self.open_transfer(false),
             KeyCode::F(6) => self.open_transfer(true),
             KeyCode::F(7) => self.open_mkdir(),
@@ -666,6 +933,78 @@ impl App {
     fn fallible(&mut self, op: impl FnOnce(&mut Panel) -> std::io::Result<bool>) {
         if let Err(err) = op(self.panel()) {
             self.status = Some(format!(" {err} "));
+        }
+    }
+}
+
+fn viewer_scroll(v: &mut Viewer, delta: isize, rows: usize) {
+    if v.hex {
+        let total_rows = v.file.size.div_ceil(16);
+        let cap = total_rows.saturating_sub(rows as u64);
+        v.hex_top = if delta < 0 {
+            v.hex_top.saturating_sub(delta.unsigned_abs() as u64)
+        } else {
+            (v.hex_top + delta as u64).min(cap)
+        };
+    } else if delta < 0 {
+        v.top = v.top.saturating_sub(delta.unsigned_abs());
+    } else {
+        let want = v.top + delta as usize;
+        let _ = v.file.ensure_lines(want + rows + 1);
+        let cap = v.file.known_lines().saturating_sub(rows);
+        v.top = want.min(cap);
+    }
+}
+
+fn viewer_end(v: &mut Viewer, rows: usize) {
+    if v.hex {
+        v.hex_top = v.file.size.div_ceil(16).saturating_sub(rows as u64);
+    } else if let Ok(total) = v.file.total_lines() {
+        v.top = total.saturating_sub(rows);
+    }
+}
+
+fn viewer_search(v: &mut Viewer, from: usize, is_next: bool) {
+    match v.file.search_from(from, &v.search) {
+        Ok(Some(idx)) => {
+            v.found = Some(idx);
+            v.top = idx.saturating_sub(2);
+            v.hex = false;
+        }
+        Ok(None) => {
+            v.found = None;
+            v.note = Some(
+                if is_next {
+                    " no more matches "
+                } else {
+                    " not found "
+                }
+                .into(),
+            );
+        }
+        Err(err) => v.note = Some(format!(" {err} ")),
+    }
+}
+
+fn first_menu_item(entries: &[MenuEntry]) -> usize {
+    entries.iter().position(Option::is_some).unwrap_or(0)
+}
+
+fn menu_step(entries: &[MenuEntry], current: usize, delta: isize) -> usize {
+    let len = entries.len() as isize;
+    let mut i = current as isize;
+    loop {
+        i += delta;
+        if i < 0 {
+            i = len - 1;
+        } else if i >= len {
+            i = 0;
+        }
+        if entries[i as usize].is_some() {
+            return i as usize;
+        }
+        if i as usize == current {
+            return current;
         }
     }
 }

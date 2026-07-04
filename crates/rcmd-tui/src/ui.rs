@@ -7,7 +7,7 @@ use ratatui::Frame;
 use rcmd_core::entry::{Entry, EntryKind};
 use rcmd_core::panel::Panel;
 
-use crate::app::{App, Ask, ConfirmDialog, Dialog, InputDialog, Job};
+use crate::app::{App, Ask, ConfirmDialog, Dialog, InputDialog, Job, MenuState, MENUS};
 
 const PANEL_BG: Color = Color::Blue;
 const PANEL_FG: Color = Color::Gray;
@@ -24,6 +24,10 @@ const ERROR_BG: Color = Color::Red;
 const ERROR_FG: Color = Color::White;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    if app.viewer.is_some() {
+        draw_viewer(frame, app);
+        return;
+    }
     let [main, status, cmdline, keybar] = Layout::vertical([
         Constraint::Min(3),
         Constraint::Length(1),
@@ -56,6 +60,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_cmdline(frame, cmdline, app);
     draw_keybar(frame, keybar);
 
+    if let Some(menu) = &app.menu {
+        draw_menu(frame, menu);
+    }
     if let Some(dialog) = &app.dialog {
         match dialog {
             Dialog::Input(d) => draw_input(frame, d),
@@ -268,6 +275,210 @@ fn draw_keybar(frame: &mut Frame, area: Rect) {
     frame.render_widget(Line::from(spans), area);
 }
 
+fn draw_viewer(frame: &mut Frame, app: &mut App) {
+    let Some(v) = app.viewer.as_mut() else { return };
+    let [title_area, content, bottom] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
+    v.rows = content.height as usize;
+    let width = content.width as usize;
+
+    let offset = if v.hex {
+        v.hex_top * 16
+    } else {
+        v.file.offset_of_line(v.top).unwrap_or(0)
+    };
+    let percent = if v.file.size == 0 {
+        100
+    } else {
+        offset * 100 / v.file.size
+    };
+    let title = format!(
+        " {}  {} bytes  {percent}%  [{}]",
+        v.path.display(),
+        v.file.size,
+        if v.hex { "hex" } else { "text" },
+    );
+    frame.render_widget(
+        Line::from(format!("{:<w$}", tail(&title, width), w = width))
+            .style(Style::new().fg(SELECT_FG).bg(SELECT_BG)),
+        title_area,
+    );
+
+    for row in 0..content.height {
+        let row_area = Rect {
+            y: content.y + row,
+            height: 1,
+            ..content
+        };
+        if v.hex {
+            let row_offset = (v.hex_top + row as u64) * 16;
+            if row_offset >= v.file.size {
+                break;
+            }
+            let bytes = v.file.read_at(row_offset, 16).unwrap_or_default();
+            frame.render_widget(Line::from(hex_row(row_offset, &bytes)), row_area);
+        } else {
+            let idx = v.top + row as usize;
+            match v.file.line(idx) {
+                Ok(Some(text)) => {
+                    let display: String = expand_line(&text)
+                        .chars()
+                        .skip(v.left)
+                        .take(width)
+                        .collect();
+                    let style = if v.found == Some(idx) {
+                        Style::new().fg(MARK_FG).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new()
+                    };
+                    frame.render_widget(Line::from(display).style(style), row_area);
+                }
+                _ => break,
+            }
+        }
+    }
+
+    let help = " F3/q Quit  F4 Hex  F7|/ Search  n Next  ←→ Scroll ";
+    let note = v.note.clone().unwrap_or_default();
+    frame.render_widget(
+        Line::from(format!(
+            "{help}{:>w$}",
+            note,
+            w = (bottom.width as usize).saturating_sub(help.chars().count())
+        ))
+        .style(Style::new().fg(SELECT_FG).bg(SELECT_BG)),
+        bottom,
+    );
+
+    if let Some((value, cursor)) = &v.prompt {
+        let style = Style::new().fg(DIALOG_FG).bg(DIALOG_BG);
+        let area = centered(50, 5, frame.area());
+        let inner = popup(frame, area, " Search ", style);
+        draw_field(frame, inner, value, *cursor);
+    }
+}
+
+/// Expand tabs to 8-column stops and hide control characters.
+fn expand_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut col = 0usize;
+    for c in text.chars() {
+        match c {
+            '\t' => {
+                let pad = 8 - col % 8;
+                out.extend(std::iter::repeat_n(' ', pad));
+                col += pad;
+            }
+            c if (c as u32) < 0x20 => {
+                out.push('·');
+                col += 1;
+            }
+            c => {
+                out.push(c);
+                col += 1;
+            }
+        }
+    }
+    out
+}
+
+fn hex_row(offset: u64, bytes: &[u8]) -> String {
+    let mut hex = String::with_capacity(50);
+    for i in 0..16 {
+        if i == 8 {
+            hex.push(' ');
+        }
+        match bytes.get(i) {
+            Some(b) => hex.push_str(&format!("{b:02X} ")),
+            None => hex.push_str("   "),
+        }
+    }
+    let ascii: String = bytes
+        .iter()
+        .map(|&b| {
+            if (0x20..0x7F).contains(&b) {
+                b as char
+            } else {
+                '.'
+            }
+        })
+        .collect();
+    format!("{offset:08X}  {hex} |{ascii}|")
+}
+
+fn draw_menu(frame: &mut Frame, ms: &MenuState) {
+    let area = frame.area();
+    let base = Style::new().fg(DIALOG_FG).bg(DIALOG_BG);
+    let sel = Style::new().fg(SELECT_FG).bg(SELECT_BG);
+
+    let bar = Rect { height: 1, ..area };
+    frame.render_widget(Clear, bar);
+    let mut spans = Vec::new();
+    let mut x_offsets = Vec::new();
+    let mut x = 0u16;
+    for (i, (title, _)) in MENUS.iter().enumerate() {
+        let text = format!("  {title}  ");
+        x_offsets.push(x);
+        x += text.chars().count() as u16;
+        spans.push(Span::styled(text, if i == ms.menu { sel } else { base }));
+    }
+    spans.push(Span::styled(
+        " ".repeat((bar.width as usize).saturating_sub(x as usize)),
+        base,
+    ));
+    frame.render_widget(Line::from(spans), bar);
+
+    let entries = MENUS[ms.menu].1;
+    let label_w = entries
+        .iter()
+        .flatten()
+        .map(|(l, ..)| l.chars().count())
+        .max()
+        .unwrap_or(0);
+    let keys_w = entries
+        .iter()
+        .flatten()
+        .map(|(_, k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0);
+    let width = (label_w + keys_w + 5) as u16;
+    let dropdown = Rect {
+        x: (area.x + x_offsets[ms.menu]).min(area.width.saturating_sub(width)),
+        y: area.y + 1,
+        width,
+        height: (entries.len() as u16 + 2).min(area.height.saturating_sub(1)),
+    };
+    frame.render_widget(Clear, dropdown);
+    let block = Block::bordered().style(base);
+    let inner = block.inner(dropdown);
+    frame.render_widget(block, dropdown);
+    for (i, entry) in entries.iter().enumerate() {
+        if i as u16 >= inner.height {
+            break;
+        }
+        let row = Rect {
+            y: inner.y + i as u16,
+            height: 1,
+            ..inner
+        };
+        match entry {
+            None => frame.render_widget(
+                Line::from("─".repeat(inner.width as usize)).style(base),
+                row,
+            ),
+            Some((label, keys, _)) => {
+                let text = format!(" {label:<label_w$} {keys:>keys_w$} ");
+                let style = if i == ms.item { sel } else { base };
+                frame.render_widget(Line::from(text).style(style), row);
+            }
+        }
+    }
+}
+
 fn centered(width: u16, height: u16, area: Rect) -> Rect {
     let w = width.min(area.width);
     let h = height.min(area.height);
@@ -316,7 +527,11 @@ fn draw_input(frame: &mut Frame, d: &InputDialog) {
     let style = Style::new().fg(DIALOG_FG).bg(DIALOG_BG);
     let area = centered(64, 5, frame.area());
     let inner = popup(frame, area, &d.title, style);
+    draw_field(frame, inner, &d.value, d.cursor);
+}
 
+/// Editable text field on the first inner row of a dialog.
+fn draw_field(frame: &mut Frame, inner: Rect, value: &str, cursor: usize) {
     let field = Rect {
         x: inner.x + 1,
         y: inner.y + 1,
@@ -324,14 +539,14 @@ fn draw_input(frame: &mut Frame, d: &InputDialog) {
         height: 1,
     };
     let width = field.width as usize;
-    let chars: Vec<char> = d.value.chars().collect();
-    let start = d.cursor.saturating_sub(width.saturating_sub(1));
+    let chars: Vec<char> = value.chars().collect();
+    let start = cursor.saturating_sub(width.saturating_sub(1));
     let visible: String = chars[start..].iter().take(width).collect();
     frame.render_widget(
         Line::from(format!("{visible:<width$}")).style(Style::new().fg(SELECT_FG).bg(SELECT_BG)),
         field,
     );
-    frame.set_cursor_position((field.x + (d.cursor - start) as u16, field.y));
+    frame.set_cursor_position((field.x + (cursor - start) as u16, field.y));
 }
 
 fn draw_confirm(frame: &mut Frame, d: &ConfirmDialog) {
