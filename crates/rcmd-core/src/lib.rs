@@ -1,5 +1,6 @@
 pub mod archive;
 pub mod entry;
+pub mod find;
 pub mod fsops;
 pub mod glob;
 pub mod panel;

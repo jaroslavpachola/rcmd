@@ -5,6 +5,8 @@ use anyhow::{Context, Result};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
+use rcmd_core::entry;
+use rcmd_core::find::{self, FindEvent, FindHandle};
 use rcmd_core::fsops::{self, JobEvent, JobHandle, Reply};
 use rcmd_core::panel::{Panel, SortKey};
 use rcmd_core::view::FileView;
@@ -19,6 +21,24 @@ pub enum InputAction {
     Mkdir,
     SelectGlob { mark: bool },
     Filter,
+    Panelize,
+}
+
+/// Alt+F7 find dialog: filename glob + optional content substring.
+pub struct FindDialog {
+    pub name: String,
+    pub name_cursor: usize,
+    pub content: String,
+    pub content_cursor: usize,
+    /// 0 = name field, 1 = content field.
+    pub field: usize,
+}
+
+/// A running find, streaming matches into `panel`'s panelized listing.
+pub struct FindState {
+    pub handle: FindHandle,
+    pub panel: usize,
+    pub count: usize,
 }
 
 pub struct InputDialog {
@@ -42,6 +62,7 @@ pub enum Dialog {
     Confirm(ConfirmDialog),
     /// Directory hotlist; the payload is the selected row.
     Hotlist(usize),
+    Find(FindDialog),
 }
 
 pub enum Ask {
@@ -128,6 +149,9 @@ pub enum Action {
     Filter,
     UpDir,
     Enter,
+    FindFile,
+    Panelize,
+    CompareDirs,
     View,
     Edit,
     Copy,
@@ -177,6 +201,9 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Help", "F1", Action::Help)),
             Some(("Quick search", "C-s", Action::QuickSearch)),
             Some(("Directory hotlist...", "C-\\", Action::Hotlist)),
+            Some(("Find file...", "M-F7", Action::FindFile)),
+            Some(("Panelize command...", "", Action::Panelize)),
+            Some(("Compare directories", "C-x d", Action::CompareDirs)),
             Some(("Open shell", "C-o", Action::Shell)),
             Some(("Reload panel", "C-r", Action::Reload)),
             Some(("Swap panels", "", Action::SwapPanels)),
@@ -278,6 +305,9 @@ pub struct App {
     pub cmdline: CmdLine,
     /// Quick-search prefix while Ctrl+S type-ahead is active.
     pub quick_search: Option<String>,
+    pub find: Option<FindState>,
+    /// Ctrl+X was pressed; the next key completes the chord.
+    prefix_cx: bool,
     pub config: Config,
     keymap: Keymap,
     pending_exec: Option<Exec>,
@@ -330,6 +360,8 @@ impl App {
             help: None,
             cmdline: CmdLine::default(),
             quick_search: None,
+            find: None,
+            prefix_cx: false,
             config,
             keymap,
             pending_exec: None,
@@ -340,8 +372,9 @@ impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.quit {
             self.drain_job();
+            self.drain_find();
             terminal.draw(|frame| ui::draw(frame, self))?;
-            let timeout = if self.job.is_some() {
+            let timeout = if self.job.is_some() || self.find.is_some() {
                 Duration::from_millis(50)
             } else {
                 Duration::from_millis(500)
@@ -359,7 +392,40 @@ impl App {
         if let Some(job) = &self.job {
             job.handle.cancel();
         }
+        if let Some(find) = &self.find {
+            find.handle.cancel();
+        }
         Ok(())
+    }
+
+    fn drain_find(&mut self) {
+        let Some(find) = self.find.as_mut() else {
+            return;
+        };
+        let mut done = None;
+        while let Ok(event) = find.handle.events.try_recv() {
+            match event {
+                FindEvent::Match(entry) => {
+                    self.panels[find.panel].entries.push(*entry);
+                    find.count += 1;
+                }
+                FindEvent::Done { matches, scanned } => done = Some((matches, scanned)),
+            }
+        }
+        match done {
+            Some((matches, scanned)) => {
+                let mut find = self.find.take().expect("find present");
+                if let Some(thread) = find.handle.thread.take() {
+                    let _ = thread.join();
+                }
+                self.status = Some(format!(
+                    " find: {matches} match(es), {scanned} entries scanned "
+                ));
+            }
+            None => {
+                self.status = Some(format!(" searching… {} found — Esc cancels ", find.count));
+            }
+        }
     }
 
     /// Leave the TUI, run a command or an interactive shell in the active
@@ -516,6 +582,8 @@ impl App {
         self.status = None;
         if self.job.is_some() {
             self.on_job_key(key);
+        } else if self.find.is_some() {
+            self.on_find_key(key);
         } else if self.dialog.is_some() {
             self.on_dialog_key(key);
         } else if self.help.is_some() {
@@ -690,6 +758,9 @@ impl App {
             Action::Filter => self.open_filter(),
             Action::UpDir => self.fallible(|p| p.go_up()),
             Action::Enter => self.fallible(|p| p.enter()),
+            Action::FindFile => self.open_find(),
+            Action::Panelize => self.open_panelize(),
+            Action::CompareDirs => self.compare_dirs(),
             Action::View => self.open_viewer(),
             Action::Edit => self.open_editor(),
             Action::Copy => self.open_transfer(false),
@@ -804,6 +875,26 @@ impl App {
         )));
     }
 
+    /// While a find streams: Esc cancels, navigation browses the results
+    /// as they arrive, everything else waits.
+    fn on_find_key(&mut self, key: KeyEvent) {
+        let page = self.panel_rows.saturating_sub(1).max(1);
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(find) = &self.find {
+                    find.handle.cancel();
+                }
+            }
+            KeyCode::Up => self.panel().move_up(),
+            KeyCode::Down => self.panel().move_down(),
+            KeyCode::PageUp => self.panel().page_up(page),
+            KeyCode::PageDown => self.panel().page_down(page),
+            KeyCode::Home => self.panel().move_top(),
+            KeyCode::End => self.panel().move_bottom(),
+            _ => {}
+        }
+    }
+
     fn on_job_key(&mut self, key: KeyEvent) {
         let Some(job) = self.job.as_mut() else { return };
         let Some(ask) = &job.ask else {
@@ -910,7 +1001,126 @@ impl App {
                     _ => self.dialog = Some(Dialog::Hotlist(selected)),
                 }
             }
+            Dialog::Find(mut d) => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => self.submit_find(d),
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => {
+                    d.field ^= 1;
+                    self.dialog = Some(Dialog::Find(d));
+                }
+                code => {
+                    let (value, cursor) = if d.field == 0 {
+                        (&mut d.name, &mut d.name_cursor)
+                    } else {
+                        (&mut d.content, &mut d.content_cursor)
+                    };
+                    edit_line(value, cursor, code, key.modifiers);
+                    self.dialog = Some(Dialog::Find(d));
+                }
+            },
         }
+    }
+
+    fn submit_find(&mut self, dialog: FindDialog) {
+        let panel_idx = self.active;
+        let panel = &mut self.panels[panel_idx];
+        let pattern = {
+            let name = dialog.name.trim();
+            if name.is_empty() { "*" } else { name }.to_string()
+        };
+        let content = {
+            let text = dialog.content.trim();
+            (!text.is_empty()).then(|| text.to_string())
+        };
+        let root = panel.cwd.clone();
+        let label = match &content {
+            Some(text) => format!("find: {pattern} ~ \"{text}\""),
+            None => format!("find: {pattern}"),
+        };
+        panel.panelize(Vec::new(), label);
+        self.find = Some(FindState {
+            handle: find::spawn_find(root, pattern, content),
+            panel: panel_idx,
+            count: 0,
+        });
+    }
+
+    fn open_find(&mut self) {
+        if !self.require_local() {
+            return;
+        }
+        self.dialog = Some(Dialog::Find(FindDialog {
+            name: "*".into(),
+            name_cursor: 1,
+            content: String::new(),
+            content_cursor: 0,
+            field: 0,
+        }));
+    }
+
+    fn open_panelize(&mut self) {
+        if !self.require_local() {
+            return;
+        }
+        self.dialog = Some(Dialog::Input(InputDialog {
+            title: " Panelize (command output as listing) ".into(),
+            value: String::new(),
+            cursor: 0,
+            action: InputAction::Panelize,
+        }));
+    }
+
+    /// Quick compare of both panel listings: marks files that are missing
+    /// on the other side or differ in size/mtime.
+    fn compare_dirs(&mut self) {
+        use std::collections::HashMap;
+        use std::ffi::OsString;
+        use std::time::SystemTime;
+
+        if !self.panels[0].is_local() || !self.panels[1].is_local() {
+            self.status = Some(" both panels must be local ".into());
+            return;
+        }
+        let files = |panel: &Panel| -> HashMap<OsString, (u64, Option<SystemTime>)> {
+            panel
+                .entries
+                .iter()
+                .filter(|e| !e.is_dir() && !e.is_parent())
+                .map(|e| (e.name.clone(), (e.size, e.mtime)))
+                .collect()
+        };
+        let close = |a: Option<SystemTime>, b: Option<SystemTime>| match (a, b) {
+            (Some(a), Some(b)) => {
+                a.duration_since(b).unwrap_or_else(|e| e.duration()) <= Duration::from_secs(2)
+            }
+            _ => true, // unknown mtimes never count as a difference
+        };
+        let left = files(&self.panels[0]);
+        let right = files(&self.panels[1]);
+        self.panels[0].marked.clear();
+        self.panels[1].marked.clear();
+        let mut differ = 0usize;
+        for (name, (size, mtime)) in &left {
+            match right.get(name) {
+                None => {
+                    self.panels[0].marked.insert(name.clone());
+                    differ += 1;
+                }
+                Some((rsize, rmtime)) if size != rsize || !close(*mtime, *rmtime) => {
+                    self.panels[0].marked.insert(name.clone());
+                    self.panels[1].marked.insert(name.clone());
+                    differ += 1;
+                }
+                Some(_) => {}
+            }
+        }
+        for name in right.keys() {
+            if !left.contains_key(name) {
+                self.panels[1].marked.insert(name.clone());
+                differ += 1;
+            }
+        }
+        self.status = Some(format!(" {differ} difference(s) marked "));
     }
 
     fn submit_input(&mut self, dialog: InputDialog) {
@@ -966,6 +1176,44 @@ impl App {
             }
             InputAction::SelectGlob { mark } => self.panels[self.active].mark_glob(&value, mark),
             InputAction::Filter => unreachable!("handled above"),
+            InputAction::Panelize => self.run_panelize(&value),
+        }
+    }
+
+    /// Run a command, its stdout lines become the panel listing.
+    /// Synchronous: meant for fast listers (git ls-files, rg -l, …).
+    fn run_panelize(&mut self, command: &str) {
+        let cwd = self.panels[self.active].local_cwd();
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let output = std::process::Command::new(&shell)
+            .arg("-c")
+            .arg(command)
+            .current_dir(&cwd)
+            .output();
+        match output {
+            Ok(out) => {
+                let mut entries = Vec::new();
+                for line in String::from_utf8_lossy(&out.stdout).lines() {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if let Ok(mut entry) = entry::stat(&cwd.join(line)) {
+                        entry.name = std::ffi::OsString::from(line);
+                        entries.push(entry);
+                    }
+                }
+                if entries.is_empty() && !out.status.success() {
+                    let err = String::from_utf8_lossy(&out.stderr);
+                    let first = err.lines().next().unwrap_or("command failed");
+                    self.status = Some(format!(" panelize: {first} "));
+                    return;
+                }
+                let count = entries.len();
+                self.panels[self.active].panelize(entries, format!("cmd: {command}"));
+                self.status = Some(format!(" panelized {count} item(s) "));
+            }
+            Err(err) => self.status = Some(format!(" panelize: {err} ")),
         }
     }
 
@@ -1092,6 +1340,19 @@ impl App {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         let page = self.panel_rows.saturating_sub(1).max(1);
         let cmd_empty = self.cmdline.value.is_empty();
+        // Ctrl+X chord: the next key selects the command.
+        if self.prefix_cx {
+            self.prefix_cx = false;
+            if let KeyCode::Char('d' | 'D') = key.code {
+                self.run_action(Action::CompareDirs);
+            }
+            return;
+        }
+        if ctrl && key.code == KeyCode::Char('x') {
+            self.prefix_cx = true;
+            self.status = Some(" C-x  (d = compare directories) ".into());
+            return;
+        }
         // Structural keys: navigation and command-line plumbing.
         match key.code {
             KeyCode::Tab | KeyCode::BackTab => {

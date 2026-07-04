@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Cell, Clear, Gauge, Row, Table, TableState};
 use rcmd_core::entry::{Entry, EntryKind};
 use rcmd_core::panel::Panel;
 
-use crate::app::{App, Ask, ConfirmDialog, Dialog, InputDialog, Job, MENUS, MenuState};
+use crate::app::{App, Ask, ConfirmDialog, Dialog, FindDialog, InputDialog, Job, MENUS, MenuState};
 use crate::config::HotEntry;
 
 /// All colors in one place; selected once at startup from config
@@ -120,6 +120,12 @@ const HELP_TEXT: &[&str] = &[
     "  Ctrl+S          quick search (type to jump, Ctrl+S again = next)",
     "  Ctrl+F          filter shown files by glob ('*' clears)",
     "  Ctrl+\\          directory hotlist (Enter cd, a add, d delete)",
+    "  Alt+F7          find file (glob + optional content substring);",
+    "                  results stream into the panel, Esc cancels",
+    "  Ctrl+X d        compare directories: marks files missing on the",
+    "                  other side or differing in size/mtime (F5 syncs)",
+    "  F9>Cmd>Panelize command output becomes the panel listing",
+    "  (Ctrl+R restores a normal listing after find/panelize)",
     "  Ctrl+R          reload both panels",
     "  Alt+.           show/hide dotfiles",
     "  Alt+N/E/S/T     sort by name/extension/size/mtime (again = reverse)",
@@ -229,6 +235,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Input(d) => draw_input(frame, d),
             Dialog::Confirm(d) => draw_confirm(frame, d),
             Dialog::Hotlist(selected) => draw_hotlist(frame, &app.config.hotlist, *selected),
+            Dialog::Find(d) => draw_find(frame, d),
         }
     }
     if let Some(job) = &app.job {
@@ -269,6 +276,12 @@ fn draw_panel(frame: &mut Frame, area: Rect, panel: &Panel, state: &mut TableSta
             ))
             .right_aligned(),
         );
+    }
+    if let Some(label) = &panel.panelized {
+        block = block.title_bottom(Span::styled(
+            format!(" {} ", tail(label, 40)),
+            Style::new().fg(th().header_fg).add_modifier(Modifier::BOLD),
+        ));
     }
 
     let header = Row::new([
@@ -805,16 +818,56 @@ fn draw_field(frame: &mut Frame, inner: Rect, value: &str, cursor: usize) {
         width: inner.width.saturating_sub(2),
         height: 1,
     };
+    field_row(frame, field, value, Some(cursor));
+}
+
+/// One editable line; the terminal cursor is placed only when focused.
+fn field_row(frame: &mut Frame, field: Rect, value: &str, cursor: Option<usize>) {
     let width = field.width as usize;
+    let cur = cursor.unwrap_or(0);
     let chars: Vec<char> = value.chars().collect();
-    let start = cursor.saturating_sub(width.saturating_sub(1));
+    let start = cur.saturating_sub(width.saturating_sub(1));
     let visible: String = chars[start..].iter().take(width).collect();
     frame.render_widget(
         Line::from(format!("{visible:<width$}"))
             .style(Style::new().fg(th().select_fg).bg(th().select_bg)),
         field,
     );
-    frame.set_cursor_position((field.x + (cursor - start) as u16, field.y));
+    if let Some(cur) = cursor {
+        frame.set_cursor_position((field.x + (cur - start) as u16, field.y));
+    }
+}
+
+fn draw_find(frame: &mut Frame, d: &FindDialog) {
+    let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let area = centered(64, 8, frame.area());
+    let inner = popup(frame, area, " Find file ", style);
+    let row = |offset: u16| Rect {
+        x: inner.x + 1,
+        y: inner.y + offset,
+        width: inner.width.saturating_sub(2),
+        height: 1,
+    };
+    frame.render_widget(Line::from("Filename glob:"), row(0));
+    field_row(
+        frame,
+        row(1),
+        &d.name,
+        (d.field == 0).then_some(d.name_cursor),
+    );
+    frame.render_widget(Line::from("Containing text (optional):"), row(3));
+    field_row(
+        frame,
+        row(4),
+        &d.content,
+        (d.field == 1).then_some(d.content_cursor),
+    );
+    frame.render_widget(
+        Line::from("Tab — switch field   Enter — search   Esc — cancel")
+            .centered()
+            .style(style),
+        row(5),
+    );
 }
 
 fn draw_hotlist(frame: &mut Frame, entries: &[HotEntry], selected: usize) {

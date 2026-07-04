@@ -214,11 +214,65 @@ def test_archive():
     shutil.rmtree(root)
 
 
+def test_find():
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "sub"))
+    open(os.path.join(play, "needle-top.txt"), "w").write("x\n")
+    open(os.path.join(play, "sub", "needle-deep.txt"), "w").write("x\n")
+    open(os.path.join(play, "sub", "other.txt"), "w").write("x\n")
+    s = Session(play, home)
+    # F9 -> Command -> Find file... (Help, Quick search, Hotlist, Find)
+    s.send(b"\x1b[20~")                 # F9
+    s.send(b"\x1b[C")                   # Right -> Command
+    s.send(DOWN + DOWN + DOWN)          # -> Find file...
+    s.send(b"\r")                       # open find dialog
+    s.send(b"\x15")                     # Ctrl+U clears the "*" prefill
+    s.send(b"needle*")
+    s.send(b"\r", wait=STEP * 3)        # search
+    scr = s.screen()
+    check("find: results panelized", "find: needle*" in scr)
+    check("find: nested match with rel path", "sub/needle-deep.txt" in scr)
+    check("find: match count", "2 match(es)" in scr)
+    check("find: non-match absent", "other.txt" not in scr.replace("sub/other", ""))
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_compare():
+    root, play, home = sandbox()
+    left = os.path.join(play, "left")
+    right = os.path.join(play, "right")
+    os.makedirs(left)
+    os.makedirs(right)
+    for d in (left, right):
+        open(os.path.join(d, "same.txt"), "w").write("identical\n")
+        os.utime(os.path.join(d, "same.txt"), (1_700_000_000, 1_700_000_000))
+    open(os.path.join(left, "only-left.txt"), "w").write("l\n")
+    open(os.path.join(left, "differs.txt"), "w").write("short\n")
+    open(os.path.join(right, "differs.txt"), "w").write("much longer content\n")
+    s = Session(play, home, args=(left, right))
+    s.send(b"\x18")                     # Ctrl+X
+    s.send(b"d", wait=STEP * 2)         # compare
+    scr = s.screen()
+    check("compare: difference count", "2 difference(s) marked" in scr)
+    check("compare: marked summary shown", "file(s)" in scr)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def main():
     if not os.path.isfile(BIN):
         print(f"FAIL binary not found: {BIN} (run `cargo build` first)")
         sys.exit(2)
-    for test in (test_smoke, test_fileops, test_cmdline, test_viewer, test_archive):
+    for test in (
+        test_smoke,
+        test_fileops,
+        test_cmdline,
+        test_viewer,
+        test_archive,
+        test_find,
+        test_compare,
+    ):
         test()
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s): {', '.join(FAILURES)}")

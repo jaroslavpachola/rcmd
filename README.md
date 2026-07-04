@@ -81,7 +81,9 @@ end
 | Ctrl+S | Quick search (type-ahead; Ctrl+S again = next match) |
 | Ctrl+F | Filter shown files by glob (`*` or empty clears) |
 | Ctrl+\ | Directory hotlist (Enter cd, `a` add current, `d` delete) |
-| Ctrl+R | Reload panel |
+| Alt+F7 | Find file (glob + optional content); results panelized |
+| Ctrl+X d | Compare directories (marks differences in both panels) |
+| Ctrl+R | Reload panel (also restores listing after find/panelize) |
 | Esc | Cancel dialog / running operation / clear command line |
 | F10 | Quit |
 
@@ -100,6 +102,15 @@ F2 toggles soft-wrap, F4 toggles hex mode, F7 or `/` searches
 (case-insensitive), `n` next match, F3/F10/Esc/q quit. Lines are indexed
 lazily, so huge files open instantly; very long lines are broken at 4096
 columns.
+
+**Power tools**: Alt+F7 opens find file — a filename glob plus an
+optional case-insensitive content substring; matches stream live into
+the active panel as a *panelized* listing (paths relative to the panel
+dir), where marking and F5/F6/F8 work as usual. *Panelize command…*
+(F9 → Command) turns any command's stdout lines into such a listing
+(`git ls-files -m`, `rg -l TODO`, …). *Compare directories* (Ctrl+X d)
+marks files that are missing on the other side or differ in size/mtime
+in both panels — then a plain F5 copies the marked differences across.
 
 **Archives**: Enter on a `.zip`, `.tar`, `.tar.gz`/`.tgz`,
 `.tar.xz`/`.txz`, or `.tar.bz2`/`.tbz2` file browses it like a directory

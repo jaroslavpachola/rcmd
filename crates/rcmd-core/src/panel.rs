@@ -36,6 +36,10 @@ pub struct Panel {
     pub show_hidden: bool,
     /// Glob applied to files (directories always show), MC's "filter".
     pub filter: Option<String>,
+    /// When Some(label), the listing is an external result set (find /
+    /// command output) instead of the directory; any reload restores the
+    /// normal listing.
+    pub panelized: Option<String>,
 }
 
 impl Panel {
@@ -51,6 +55,7 @@ impl Panel {
             sort_reverse: false,
             show_hidden: true,
             filter: None,
+            panelized: None,
         };
         panel.reload()?;
         Ok(panel)
@@ -84,6 +89,7 @@ impl Panel {
     /// where possible and pruning marks for entries that no longer exist.
     /// On failure the previous listing is kept.
     pub fn reload(&mut self) -> io::Result<()> {
+        self.panelized = None;
         let keep = self.selected().map(|e| e.name.clone());
         // re-index the archive so appended members (F5 into a zip) appear
         if let Some(archive) = &self.archive {
@@ -335,6 +341,16 @@ impl Panel {
             }
         }
         (count, bytes)
+    }
+
+    /// Replace the listing with an external result set (entry names are
+    /// paths relative to `cwd`, so marking and file operations work
+    /// unchanged). Ctrl+R / any reload restores the directory listing.
+    pub fn panelize(&mut self, entries: Vec<Entry>, label: String) {
+        self.entries = entries;
+        self.panelized = Some(label);
+        self.marked.clear();
+        self.cursor = 0;
     }
 
     /// Quick search: first entry whose name starts with `prefix`
