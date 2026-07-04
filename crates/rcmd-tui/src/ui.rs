@@ -9,6 +9,66 @@ use rcmd_core::panel::Panel;
 
 use crate::app::{App, Ask, ConfirmDialog, Dialog, InputDialog, Job, MenuState, MENUS};
 
+const HELP_BG: Color = Color::Cyan;
+const HELP_FG: Color = Color::Black;
+
+/// Help text; lines starting with `#` render as section headers.
+const HELP_TEXT: &[&str] = &[
+    "",
+    "# Panels",
+    "  Tab             switch active panel",
+    "  Up/Down, PgUp/PgDn, Home/End   move the cursor",
+    "  Enter           enter directory (with empty command line)",
+    "  Backspace       go to parent directory",
+    "  Ctrl+R          reload both panels",
+    "  Alt+.           show/hide dotfiles",
+    "  Alt+N/E/S/T     sort by name/extension/size/mtime (again = reverse)",
+    "",
+    "# Marking",
+    "  Insert, Ctrl+T  toggle mark and advance",
+    "  +               select by glob pattern",
+    "  - or \\          unselect by glob pattern",
+    "  *               invert selection",
+    "  (the four keys above work while the command line is empty)",
+    "",
+    "# File operations  (marked entries, or the cursor entry)",
+    "  F5              copy",
+    "  F6              move / rename",
+    "  F7              make directory",
+    "  F8              delete to trash",
+    "  Shift+F8        delete permanently",
+    "  Esc             cancel a running operation",
+    "  Overwrite prompt hotkeys: o=overwrite a=all s=skip S=skip all",
+    "  Error prompt hotkeys:     r=retry s=skip S=skip all",
+    "",
+    "# Command line",
+    "  (type)          compose a command; Enter runs it in the panel dir",
+    "  cd PATH         changes the active panel instead",
+    "  Alt+Enter       insert the selected filename",
+    "  Ctrl+P / Ctrl+N previous / next history entry",
+    "  Ctrl+A/E/U      start / end / clear line",
+    "  Esc             clear the command line",
+    "  Ctrl+O          open a full shell here; exit returns to rcmd",
+    "",
+    "# Viewer (F3)",
+    "  F4              toggle hex dump",
+    "  F7 or /         search (case-insensitive), n = next match",
+    "  Left/Right      horizontal scroll",
+    "  F3/F10/Esc/q    close the viewer",
+    "",
+    "# Other",
+    "  F1              this help",
+    "  F4              edit in $VISUAL / $EDITOR",
+    "  F9              pulldown menu",
+    "  F10             quit",
+    "  rcmd -P FILE    write last directory to FILE on exit",
+    "                  (see README for the rc() shell wrapper)",
+];
+
+pub fn help_lines() -> usize {
+    HELP_TEXT.len()
+}
+
 const PANEL_BG: Color = Color::Blue;
 const PANEL_FG: Color = Color::Gray;
 const DIR_FG: Color = Color::White;
@@ -24,6 +84,10 @@ const ERROR_BG: Color = Color::Red;
 const ERROR_FG: Color = Color::White;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    if app.help.is_some() {
+        draw_help(frame, app);
+        return;
+    }
     if app.viewer.is_some() {
         draw_viewer(frame, app);
         return;
@@ -273,6 +337,56 @@ fn draw_keybar(frame: &mut Frame, area: Rect) {
         ));
     }
     frame.render_widget(Line::from(spans), area);
+}
+
+fn draw_help(frame: &mut Frame, app: &mut App) {
+    let Some(help) = app.help.as_mut() else {
+        return;
+    };
+    let [title_area, content, bottom] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
+    help.rows = content.height as usize;
+    help.top = help
+        .top
+        .min(HELP_TEXT.len().saturating_sub(help.rows.max(1)));
+
+    let base = Style::new().fg(HELP_FG).bg(HELP_BG);
+    let width = content.width as usize;
+    frame.render_widget(
+        Line::from(format!("{:<width$}", " Help — rcmd")).style(base.add_modifier(Modifier::BOLD)),
+        title_area,
+    );
+    frame.render_widget(Block::new().style(base), content);
+    for row in 0..content.height {
+        let Some(text) = HELP_TEXT.get(help.top + row as usize) else {
+            break;
+        };
+        let row_area = Rect {
+            y: content.y + row,
+            height: 1,
+            ..content
+        };
+        let (text, style) = match text.strip_prefix("# ") {
+            Some(header) => (
+                format!(" {header}"),
+                base.fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+            None => ((*text).to_string(), base),
+        };
+        frame.render_widget(Line::from(text).style(style), row_area);
+    }
+    frame.render_widget(
+        Line::from(format!(
+            "{:<width$}",
+            " Esc/F1/q close   arrows/PgUp/PgDn scroll"
+        ))
+        .style(base),
+        bottom,
+    );
 }
 
 fn draw_viewer(frame: &mut Frame, app: &mut App) {

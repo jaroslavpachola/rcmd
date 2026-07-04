@@ -106,6 +106,7 @@ pub struct Viewer {
 
 #[derive(Debug, Clone, Copy)]
 pub enum MenuAction {
+    Help,
     View,
     Edit,
     Copy,
@@ -150,6 +151,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
     (
         "Command",
         &[
+            Some(("Help", "F1", MenuAction::Help)),
             Some(("Open shell", "C-o", MenuAction::Shell)),
             Some(("Reload panel", "C-r", MenuAction::Reload)),
             Some(("Swap panels", "", MenuAction::SwapPanels)),
@@ -172,6 +174,13 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
 pub struct MenuState {
     pub menu: usize,
     pub item: usize,
+}
+
+/// Full-screen F1 help state.
+pub struct HelpState {
+    pub top: usize,
+    /// Content rows; updated on every draw, drives paging.
+    pub rows: usize,
 }
 
 /// The MC-style command line at the bottom of the screen.
@@ -240,6 +249,7 @@ pub struct App {
     pub job: Option<Job>,
     pub viewer: Option<Viewer>,
     pub menu: Option<MenuState>,
+    pub help: Option<HelpState>,
     pub cmdline: CmdLine,
     pending_exec: Option<Exec>,
     pub quit: bool,
@@ -275,6 +285,7 @@ impl App {
             job: None,
             viewer: None,
             menu: None,
+            help: None,
             cmdline: CmdLine::default(),
             pending_exec: None,
             quit: false,
@@ -416,12 +427,34 @@ impl App {
             self.on_job_key(key);
         } else if self.dialog.is_some() {
             self.on_dialog_key(key);
+        } else if self.help.is_some() {
+            self.on_help_key(key);
         } else if self.viewer.is_some() {
             self.on_viewer_key(key);
         } else if self.menu.is_some() {
             self.on_menu_key(key);
         } else {
             self.on_panel_key(key);
+        }
+    }
+
+    fn on_help_key(&mut self, key: KeyEvent) {
+        let Some(help) = self.help.as_mut() else {
+            return;
+        };
+        let rows = help.rows.max(1);
+        let max_top = crate::ui::help_lines().saturating_sub(rows);
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::F(1) | KeyCode::F(10) | KeyCode::Char('q') => {
+                self.help = None
+            }
+            KeyCode::Up => help.top = help.top.saturating_sub(1),
+            KeyCode::Down => help.top = (help.top + 1).min(max_top),
+            KeyCode::PageUp => help.top = help.top.saturating_sub(rows.saturating_sub(1)),
+            KeyCode::PageDown => help.top = (help.top + rows.saturating_sub(1)).min(max_top),
+            KeyCode::Home => help.top = 0,
+            KeyCode::End => help.top = max_top,
+            _ => {}
         }
     }
 
@@ -506,6 +539,7 @@ impl App {
 
     fn run_menu_action(&mut self, action: MenuAction) {
         match action {
+            MenuAction::Help => self.help = Some(HelpState { top: 0, rows: 1 }),
             MenuAction::View => self.open_viewer(),
             MenuAction::Edit => self.open_editor(),
             MenuAction::Copy => self.open_transfer(false),
@@ -783,6 +817,7 @@ impl App {
             KeyCode::Home if cmd_empty => self.panel().move_top(),
             KeyCode::End if cmd_empty => self.panel().move_bottom(),
             KeyCode::Backspace if cmd_empty => self.fallible(|p| p.go_up()),
+            KeyCode::F(1) => self.help = Some(HelpState { top: 0, rows: 1 }),
             KeyCode::F(3) => self.open_viewer(),
             KeyCode::F(4) => self.open_editor(),
             KeyCode::F(9) => {

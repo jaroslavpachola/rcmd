@@ -55,6 +55,7 @@ end
 | ↑ ↓ PgUp PgDn Home End | Move cursor |
 | Enter | Enter directory |
 | Backspace | Parent directory |
+| F1 | Help |
 | F3 | View file (internal viewer) |
 | F4 | Edit file in $VISUAL / $EDITOR (fallback vi) |
 | F9 | Pulldown menu |
