@@ -21,6 +21,8 @@ enum Kind {
     Zip,
     Tar,
     TarGz,
+    TarXz,
+    TarBz2,
 }
 
 pub struct ArchiveFs {
@@ -43,6 +45,10 @@ impl ArchiveFs {
             Kind::Tar
         } else if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
             Kind::TarGz
+        } else if name.ends_with(".tar.xz") || name.ends_with(".txz") {
+            Kind::TarXz
+        } else if name.ends_with(".tar.bz2") || name.ends_with(".tbz2") || name.ends_with(".tbz") {
+            Kind::TarBz2
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -56,7 +62,7 @@ impl ArchiveFs {
         };
         match kind {
             Kind::Zip => fs.index_zip()?,
-            Kind::Tar | Kind::TarGz => fs.index_tar()?,
+            _ => fs.index_tar()?,
         }
         Ok(fs)
     }
@@ -172,6 +178,8 @@ impl ArchiveFs {
         Ok(match self.kind {
             Kind::Tar => Box::new(file),
             Kind::TarGz => Box::new(GzDecoder::new(file)),
+            Kind::TarXz => Box::new(xz2::read::XzDecoder::new(file)),
+            Kind::TarBz2 => Box::new(bzip2::read::BzDecoder::new(file)),
             Kind::Zip => unreachable!("zip uses the zip reader"),
         })
     }
@@ -221,7 +229,7 @@ impl FsProvider for ArchiveFs {
                     "not found in archive",
                 ))
             }
-            Kind::Tar | Kind::TarGz => {
+            _ => {
                 let mut archive = tar::Archive::new(self.raw_reader()?);
                 for member in archive.entries()? {
                     let mut member = member?;
@@ -359,6 +367,37 @@ mod tests {
             .read_to_string(&mut content)
             .unwrap();
         assert_eq!(content, "fn main() {}\n");
+    }
+
+    #[test]
+    fn tar_xz_and_bz2_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (name, boxed) in [("t.tar.xz", true), ("t.tar.bz2", false)] {
+            let path = tmp.path().join(name);
+            let writer: Box<dyn Write> = if boxed {
+                Box::new(xz2::write::XzEncoder::new(File::create(&path).unwrap(), 6))
+            } else {
+                Box::new(bzip2::write::BzEncoder::new(
+                    File::create(&path).unwrap(),
+                    bzip2::Compression::default(),
+                ))
+            };
+            let mut tar = tar::Builder::new(writer);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(4);
+            header.set_cksum();
+            tar.append_data(&mut header, "x.txt", &b"data"[..]).unwrap();
+            tar.finish().unwrap();
+            drop(tar);
+
+            let fs = ArchiveFs::open(&path).unwrap();
+            let mut content = String::new();
+            fs.open_read(Path::new("x.txt"))
+                .unwrap()
+                .read_to_string(&mut content)
+                .unwrap();
+            assert_eq!(content, "data", "{name}");
+        }
     }
 
     #[test]

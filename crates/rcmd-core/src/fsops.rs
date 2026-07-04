@@ -79,16 +79,19 @@ pub fn spawn_copy(sources: Vec<PathBuf>, dest: PathBuf) -> JobHandle {
 
 pub fn spawn_move(sources: Vec<PathBuf>, dest: PathBuf) -> JobHandle {
     spawn(move |ctx| {
+        // Totals start as item counts; a cross-device fallback re-announces
+        // them with real file/byte numbers for that subtree.
+        let mut totals = (sources.len() as u64, 0u64);
         let _ = ctx.tx.send(JobEvent::Total {
-            files: sources.len() as u64,
-            bytes: 0,
+            files: totals.0,
+            bytes: totals.1,
         });
         let into_dir = dest.is_dir() || sources.len() > 1;
         for src in &sources {
             if ctx.cancelled() {
                 return Err(Aborted);
             }
-            move_one(ctx, src, &target_for(src, &dest, into_dir))?;
+            move_one(ctx, src, &target_for(src, &dest, into_dir), &mut totals)?;
         }
         Ok(())
     })
@@ -379,6 +382,12 @@ fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
         for name in names {
             copy_tree(ctx, &src.join(&name), &dst.join(&name))?;
         }
+        // after the children, so their creation doesn't bump it again
+        if let Ok(modified) = meta.modified() {
+            if let Ok(dir) = fs::File::open(dst) {
+                let _ = dir.set_times(fs::FileTimes::new().set_modified(modified));
+            }
+        }
         Ok(())
     } else if meta.is_symlink() {
         ctx.progress(src);
@@ -457,10 +466,13 @@ fn try_copy_file(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), CopyErr> {
     output
         .set_permissions(meta.permissions())
         .map_err(CopyErr::Io)?;
+    if let Ok(modified) = meta.modified() {
+        let _ = output.set_times(fs::FileTimes::new().set_modified(modified));
+    }
     Ok(())
 }
 
-fn move_one(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
+fn move_one(ctx: &mut Ctx, src: &Path, dst: &Path, totals: &mut (u64, u64)) -> Result<(), Aborted> {
     ctx.progress(src);
     if src == dst {
         return ctx.error(src, "source and destination are the same file");
@@ -482,6 +494,15 @@ fn move_one(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
                 return Ok(());
             }
             Err(err) if err.kind() == io::ErrorKind::CrossesDevices => {
+                // becomes a real copy: swap this item's "1" for its file
+                // count and add its bytes so the gauge means something
+                let (files, bytes) = scan(std::slice::from_ref(&src.to_path_buf()));
+                totals.0 = totals.0.saturating_sub(1) + files;
+                totals.1 += bytes;
+                let _ = ctx.tx.send(JobEvent::Total {
+                    files: totals.0,
+                    bytes: totals.1,
+                });
                 copy_tree(ctx, src, dst)?;
                 delete_tree(ctx, src)?;
                 ctx.progress(src);
@@ -562,6 +583,11 @@ fn extract_tree(ctx: &mut Ctx, fs: &dyn FsProvider, src: &Path, dst: &Path) -> R
             for child in children {
                 extract_tree(ctx, fs, &src.join(&child.name), &dst.join(&child.name))?;
             }
+            if let Some(modified) = entry.mtime {
+                if let Ok(dir) = fs::File::open(dst) {
+                    let _ = dir.set_times(fs::FileTimes::new().set_modified(modified));
+                }
+            }
             Ok(())
         }
         EntryKind::SymlinkDir | EntryKind::SymlinkFile | EntryKind::SymlinkBroken => {
@@ -585,7 +611,7 @@ fn extract_tree(ctx: &mut Ctx, fs: &dyn FsProvider, src: &Path, dst: &Path) -> R
             if !ctx.may_overwrite(dst)? {
                 return Ok(());
             }
-            extract_file(ctx, fs, src, dst, entry.size, entry.mode)
+            extract_file(ctx, fs, src, dst, &entry)
         }
     }
 }
@@ -595,18 +621,17 @@ fn extract_file(
     fs: &dyn FsProvider,
     src: &Path,
     dst: &Path,
-    size: u64,
-    mode: u32,
+    entry: &crate::entry::Entry,
 ) -> Result<(), Aborted> {
     loop {
         if ctx.cancelled() {
             return Err(Aborted);
         }
         let start = ctx.bytes_done;
-        match try_extract_file(ctx, fs, src, dst, mode) {
+        match try_extract_file(ctx, fs, src, dst, entry.mode, entry.mtime) {
             Ok(()) => {
                 ctx.files_done += 1;
-                ctx.bytes_done = start + size;
+                ctx.bytes_done = start + entry.size;
                 ctx.progress(src);
                 return Ok(());
             }
@@ -628,6 +653,7 @@ fn try_extract_file(
     src: &Path,
     dst: &Path,
     mode: u32,
+    mtime: Option<std::time::SystemTime>,
 ) -> Result<(), CopyErr> {
     let mut input = fs.open_read(src).map_err(CopyErr::Io)?;
     let mut output = std::fs::File::create(dst).map_err(CopyErr::Io)?;
@@ -652,6 +678,149 @@ fn try_extract_file(
         output
             .set_permissions(std::fs::Permissions::from_mode(mode))
             .map_err(CopyErr::Io)?;
+    }
+    if let Some(modified) = mtime {
+        let _ = output.set_times(fs::FileTimes::new().set_modified(modified));
+    }
+    Ok(())
+}
+
+/// Copy local files INTO a zip archive by appending members. Only zip
+/// supports in-place append; tar would need a full rewrite. Existing
+/// members are never touched — a same-named member is appended and
+/// shadows the old one for readers that pick the latest entry.
+pub fn spawn_pack_zip(sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) -> JobHandle {
+    spawn(move |ctx| {
+        let (files, bytes) = scan(&sources);
+        let _ = ctx.tx.send(JobEvent::Total { files, bytes });
+        let Some(file) = ctx.with_retry(&archive, || {
+            fs::OpenOptions::new().read(true).write(true).open(&archive)
+        })?
+        else {
+            return Ok(());
+        };
+        let mut zip = match zip::ZipWriter::new_append(file) {
+            Ok(zip) => zip,
+            Err(err) => {
+                ctx.error(&archive, &err.to_string())?;
+                return Ok(());
+            }
+        };
+        let mut outcome = Ok(());
+        for src in &sources {
+            if ctx.cancelled() {
+                outcome = Err(Aborted);
+                break;
+            }
+            let name = src.file_name().unwrap_or_default();
+            if let Err(abort) = pack_tree(ctx, &mut zip, src, &inside.join(name)) {
+                outcome = Err(abort);
+                break;
+            }
+        }
+        // always finalize: without the central directory the zip is broken
+        if let Err(err) = zip.finish() {
+            let _ = ctx.error(&archive, &format!("finalizing archive: {err}"));
+        }
+        outcome
+    })
+}
+
+fn pack_tree(
+    ctx: &mut Ctx,
+    zip: &mut zip::ZipWriter<fs::File>,
+    src: &Path,
+    dst_rel: &Path,
+) -> Result<(), Aborted> {
+    if ctx.cancelled() {
+        return Err(Aborted);
+    }
+    let Some(entry) = ctx.with_retry(src, || crate::entry::stat(src))? else {
+        return Ok(());
+    };
+    let rel_name = dst_rel.to_string_lossy().replace('\\', "/");
+    let options = zip::write::SimpleFileOptions::default()
+        .unix_permissions(if entry.mode == 0 { 0o644 } else { entry.mode })
+        .large_file(true);
+    match entry.kind {
+        EntryKind::Dir => {
+            let _ = zip.add_directory(format!("{rel_name}/"), options);
+            let Some(names) = read_names(ctx, src)? else {
+                return Ok(());
+            };
+            for name in names {
+                pack_tree(ctx, zip, &src.join(&name), &dst_rel.join(&name))?;
+            }
+            Ok(())
+        }
+        EntryKind::SymlinkDir | EntryKind::SymlinkFile | EntryKind::SymlinkBroken => {
+            ctx.progress(src);
+            let target = entry.link_target.clone().unwrap_or_default();
+            let done = ctx.with_retry(src, || {
+                zip.add_symlink(&rel_name, target.to_string_lossy().as_ref(), options)
+                    .map_err(|e| io::Error::other(e.to_string()))
+            })?;
+            if done.is_some() {
+                ctx.files_done += 1;
+                ctx.progress(src);
+            }
+            Ok(())
+        }
+        EntryKind::File => {
+            ctx.progress(src);
+            loop {
+                if ctx.cancelled() {
+                    let _ = zip.abort_file();
+                    return Err(Aborted);
+                }
+                let start = ctx.bytes_done;
+                match try_pack_file(ctx, zip, src, &rel_name, options) {
+                    Ok(()) => {
+                        ctx.files_done += 1;
+                        ctx.bytes_done = start + entry.size;
+                        ctx.progress(src);
+                        return Ok(());
+                    }
+                    Err(CopyErr::Cancelled) => {
+                        let _ = zip.abort_file();
+                        return Err(Aborted);
+                    }
+                    Err(CopyErr::Io(err)) => {
+                        let _ = zip.abort_file();
+                        ctx.bytes_done = start;
+                        match ctx.ask_error(src, err.to_string())? {
+                            Decision::Retry => continue,
+                            Decision::Skip => return Ok(()),
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn try_pack_file(
+    ctx: &mut Ctx,
+    zip: &mut zip::ZipWriter<fs::File>,
+    src: &Path,
+    rel_name: &str,
+    options: zip::write::SimpleFileOptions,
+) -> Result<(), CopyErr> {
+    let mut input = fs::File::open(src).map_err(CopyErr::Io)?;
+    zip.start_file(rel_name, options)
+        .map_err(|e| CopyErr::Io(io::Error::other(e.to_string())))?;
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        if ctx.cancelled() {
+            return Err(CopyErr::Cancelled);
+        }
+        let n = input.read(&mut buf).map_err(CopyErr::Io)?;
+        if n == 0 {
+            break;
+        }
+        zip.write_all(&buf[..n]).map_err(CopyErr::Io)?;
+        ctx.bytes_done += n as u64;
+        ctx.progress(src);
     }
     Ok(())
 }
@@ -849,6 +1018,71 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o640);
         }
+    }
+
+    #[test]
+    fn copy_preserves_mtime() {
+        use std::time::{Duration, UNIX_EPOCH};
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("old.txt");
+        fs::write(&src, b"x").unwrap();
+        let stamp = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        fs::File::open(&src)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(stamp))
+            .unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+
+        let result = run(spawn_copy(vec![src], out.clone()), vec![]);
+
+        assert!(!result.aborted);
+        let copied = fs::metadata(out.join("old.txt"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        let diff = copied
+            .duration_since(stamp)
+            .unwrap_or_else(|e| e.duration());
+        assert!(diff < Duration::from_secs(2), "mtime drifted by {diff:?}");
+    }
+
+    #[test]
+    fn pack_appends_into_existing_zip() {
+        use std::io::Write as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("box.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+        zip.start_file("existing.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"was here").unwrap();
+        zip.finish().unwrap();
+
+        let payload = tmp.path().join("payload");
+        fs::create_dir(&payload).unwrap();
+        fs::write(payload.join("new.txt"), b"added").unwrap();
+
+        let result = run(
+            spawn_pack_zip(vec![payload.clone()], archive.clone(), PathBuf::new()),
+            vec![],
+        );
+        assert!(!result.aborted);
+        assert_eq!(result.files_done, 1);
+
+        let afs = crate::archive::ArchiveFs::open(&archive).unwrap();
+        let mut content = String::new();
+        afs.open_read(Path::new("payload/new.txt"))
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        assert_eq!(content, "added");
+        // pre-existing member survived the append
+        content.clear();
+        afs.open_read(Path::new("existing.txt"))
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        assert_eq!(content, "was here");
     }
 
     #[test]

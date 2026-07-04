@@ -41,8 +41,9 @@ impl FsProvider for LocalFs {
 /// Filenames Enter will try to open as an archive.
 pub fn is_archive_name(name: &OsStr) -> bool {
     let name = name.to_string_lossy().to_lowercase();
-    name.ends_with(".zip")
-        || name.ends_with(".tar")
-        || name.ends_with(".tar.gz")
-        || name.ends_with(".tgz")
+    [
+        ".zip", ".tar", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tbz",
+    ]
+    .iter()
+    .any(|ext| name.ends_with(ext))
 }

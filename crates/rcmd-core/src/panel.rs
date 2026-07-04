@@ -85,6 +85,10 @@ impl Panel {
     /// On failure the previous listing is kept.
     pub fn reload(&mut self) -> io::Result<()> {
         let keep = self.selected().map(|e| e.name.clone());
+        // re-index the archive so appended members (F5 into a zip) appear
+        if let Some(archive) = &self.archive {
+            self.fs = Arc::new(ArchiveFs::open(archive)?);
+        }
         let mut entries = self.fs.read_dir(&self.cwd)?;
         if !self.show_hidden {
             entries.retain(|e| !e.is_hidden());

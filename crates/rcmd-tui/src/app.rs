@@ -96,8 +96,14 @@ pub struct Viewer {
     pub file: FileView,
     pub path: PathBuf,
     pub hex: bool,
+    /// Soft-wrap long lines (F2) instead of horizontal scrolling.
+    pub wrap: bool,
     pub top: usize,
+    /// In wrap mode: which wrapped segment of `top` is the first row.
+    pub top_seg: usize,
     pub left: usize,
+    /// Content columns; updated on every draw, drives wrapping.
+    pub cols: usize,
     /// Top row of the hex view (16 bytes per row).
     pub hex_top: u64,
     /// Content rows; updated on every draw, drives paging.
@@ -366,8 +372,13 @@ impl App {
         let cwd = self.panels[self.active].local_cwd();
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         ratatui::restore();
-        // The child must own Ctrl+C while it runs; restore our disposition after.
+        // Shell-style job control: the child runs in its own foreground
+        // process group, so Ctrl+C/Ctrl+Z hit it and never rcmd. We ignore
+        // the terminal signals meanwhile (SIGTTOU also lets us tcsetpgrp
+        // back from the "background").
         let old_sigint = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+        let old_sigtstp = unsafe { libc::signal(libc::SIGTSTP, libc::SIG_IGN) };
+        let old_sigttou = unsafe { libc::signal(libc::SIGTTOU, libc::SIG_IGN) };
         let mut command = std::process::Command::new(&shell);
         match &exec {
             Exec::Command(cmd) => {
@@ -383,12 +394,52 @@ impl App {
         unsafe {
             command.pre_exec(|| {
                 libc::signal(libc::SIGINT, libc::SIG_DFL);
+                libc::signal(libc::SIGTSTP, libc::SIG_DFL);
+                libc::signal(libc::SIGTTOU, libc::SIG_DFL);
+                libc::signal(libc::SIGTTIN, libc::SIG_DFL);
+                libc::setpgid(0, 0);
                 Ok(())
             });
         }
-        match command.status() {
-            Ok(status) if !status.success() => println!("[{status}]"),
-            Ok(_) => {}
+        match command.spawn() {
+            Ok(child) => {
+                let pid = child.id() as libc::pid_t;
+                unsafe {
+                    libc::setpgid(pid, pid); // idempotent with pre_exec's
+                    libc::tcsetpgrp(libc::STDIN_FILENO, pid);
+                }
+                loop {
+                    let mut status: libc::c_int = 0;
+                    let rc = unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) };
+                    if rc < 0 {
+                        break;
+                    }
+                    if libc::WIFSTOPPED(status) {
+                        // Ctrl+Z: we cannot park a stopped child (no jobs
+                        // table), so take the tty, say so, and resume it.
+                        unsafe {
+                            libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpgrp());
+                        }
+                        println!("[rcmd has no job control — resuming]");
+                        unsafe {
+                            libc::tcsetpgrp(libc::STDIN_FILENO, pid);
+                            libc::kill(-pid, libc::SIGCONT);
+                        }
+                        continue;
+                    }
+                    if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) != 0 {
+                        unsafe { libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpgrp()) };
+                        println!("[exit code {}]", libc::WEXITSTATUS(status));
+                    } else if libc::WIFSIGNALED(status) {
+                        unsafe { libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpgrp()) };
+                        println!("[killed by signal {}]", libc::WTERMSIG(status));
+                    }
+                    break;
+                }
+                unsafe {
+                    libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpgrp());
+                }
+            }
             Err(err) => println!("cannot run {shell}: {err}"),
         }
         if matches!(exec, Exec::Command(_)) {
@@ -399,6 +450,8 @@ impl App {
         }
         unsafe {
             libc::signal(libc::SIGINT, old_sigint);
+            libc::signal(libc::SIGTSTP, old_sigtstp);
+            libc::signal(libc::SIGTTOU, old_sigttou);
         }
         *terminal = ratatui::init();
         let _ = terminal.clear();
@@ -568,6 +621,11 @@ impl App {
                     }
                 }
             }
+            KeyCode::F(2) => {
+                v.wrap = !v.wrap;
+                v.top_seg = 0;
+                v.left = 0;
+            }
             KeyCode::F(4) => v.hex = !v.hex,
             KeyCode::Up => viewer_scroll(v, -1, rows),
             KeyCode::Down => viewer_scroll(v, 1, rows),
@@ -575,12 +633,13 @@ impl App {
             KeyCode::PageDown => viewer_scroll(v, page, rows),
             KeyCode::Home => {
                 v.top = 0;
+                v.top_seg = 0;
                 v.left = 0;
                 v.hex_top = 0;
             }
             KeyCode::End => viewer_end(v, rows),
-            KeyCode::Left => v.left = v.left.saturating_sub(8),
-            KeyCode::Right => v.left += 8,
+            KeyCode::Left if !v.wrap => v.left = v.left.saturating_sub(8),
+            KeyCode::Right if !v.wrap => v.left += 8,
             KeyCode::F(7) | KeyCode::Char('/') => {
                 v.prompt = Some((v.search.clone(), v.search.chars().count()));
             }
@@ -702,8 +761,11 @@ impl App {
                     file,
                     path: title_path,
                     hex: false,
+                    wrap: false,
                     top: 0,
+                    top_seg: 0,
                     left: 0,
+                    cols: 1,
                     hex_top: 0,
                     rows: 1,
                     search: String::new(),
@@ -871,14 +933,21 @@ impl App {
         }
         match dialog.action {
             InputAction::CopyTo { sources } => {
-                if self.panels[self.active].is_local() {
-                    self.start_transfer(sources, &value, fsops::spawn_copy, "copy")
-                } else {
-                    self.start_extract(sources, &value)
+                match (split_vfs_dest(&value), self.panels[self.active].is_local()) {
+                    (Some(_), false) => {
+                        self.status = Some(" cannot copy from archive to archive ".into())
+                    }
+                    (Some((archive, inside)), true) => self.start_pack(sources, archive, inside),
+                    (None, true) => self.start_transfer(sources, &value, fsops::spawn_copy, "copy"),
+                    (None, false) => self.start_extract(sources, &value),
                 }
             }
             InputAction::MoveTo { sources } => {
-                self.start_transfer(sources, &value, fsops::spawn_move, "move")
+                if split_vfs_dest(&value).is_some() {
+                    self.status = Some(" cannot move into an archive ".into());
+                } else {
+                    self.start_transfer(sources, &value, fsops::spawn_move, "move")
+                }
             }
             InputAction::Mkdir => {
                 let path = self.resolve(&value);
@@ -929,6 +998,32 @@ impl App {
         self.job = Some(Job {
             title: format!(" {verb} {} item(s) to {} ", sources.len(), dest.display()),
             handle: spawn(sources, dest),
+            total_files: 0,
+            total_bytes: 0,
+            files_done: 0,
+            bytes_done: 0,
+            current: PathBuf::new(),
+            ask: None,
+            button: 0,
+            src_panel: self.active,
+        });
+    }
+
+    /// Copy INTO an archive: zip appends in place; tar would need a full
+    /// rewrite, so it is refused.
+    fn start_pack(&mut self, sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) {
+        let name = archive.file_name().unwrap_or_default().to_string_lossy();
+        if !name.to_lowercase().ends_with(".zip") {
+            self.status = Some(" can only copy into .zip archives ".into());
+            return;
+        }
+        self.job = Some(Job {
+            title: format!(
+                " pack {} item(s) into {} ",
+                sources.len(),
+                archive.display()
+            ),
+            handle: fsops::spawn_pack_zip(sources, archive, inside),
             total_files: 0,
             total_bytes: 0,
             files_done: 0,
@@ -1159,10 +1254,14 @@ impl App {
             return;
         }
         let verb = if is_move { "Move" } else { "Copy" };
-        let mut dest = self.panels[self.active ^ 1]
-            .local_cwd()
-            .display()
-            .to_string();
+        let other = &self.panels[self.active ^ 1];
+        // an archive on the other side prefills its virtual path — accepting
+        // it packs into the zip (copy only)
+        let mut dest = if other.is_local() || is_move {
+            other.local_cwd().display().to_string()
+        } else {
+            other.display_path()
+        };
         if !dest.ends_with('/') {
             dest.push('/');
         }
@@ -1244,7 +1343,49 @@ impl App {
     }
 }
 
+fn line_segs(v: &mut Viewer, idx: usize, cols: usize) -> usize {
+    match v.file.line(idx) {
+        Ok(Some(line)) => ui::expand_line(&line).chars().count().div_ceil(cols).max(1),
+        _ => 1,
+    }
+}
+
+fn line_exists(v: &mut Viewer, idx: usize) -> bool {
+    matches!(v.file.line(idx), Ok(Some(_)))
+}
+
+fn viewer_scroll_wrapped(v: &mut Viewer, delta: isize) {
+    let cols = v.cols.max(1);
+    if delta >= 0 {
+        for _ in 0..delta {
+            if v.top_seg + 1 < line_segs(v, v.top, cols) {
+                v.top_seg += 1;
+            } else if line_exists(v, v.top + 1) {
+                v.top += 1;
+                v.top_seg = 0;
+            } else {
+                break;
+            }
+        }
+    } else {
+        for _ in 0..delta.unsigned_abs() {
+            if v.top_seg > 0 {
+                v.top_seg -= 1;
+            } else if v.top > 0 {
+                v.top -= 1;
+                v.top_seg = line_segs(v, v.top, cols).saturating_sub(1);
+            } else {
+                break;
+            }
+        }
+    }
+}
+
 fn viewer_scroll(v: &mut Viewer, delta: isize, rows: usize) {
+    if v.wrap && !v.hex {
+        viewer_scroll_wrapped(v, delta);
+        return;
+    }
     if v.hex {
         let total_rows = v.file.size.div_ceil(16);
         let cap = total_rows.saturating_sub(rows as u64);
@@ -1267,7 +1408,13 @@ fn viewer_end(v: &mut Viewer, rows: usize) {
     if v.hex {
         v.hex_top = v.file.size.div_ceil(16).saturating_sub(rows as u64);
     } else if let Ok(total) = v.file.total_lines() {
-        v.top = total.saturating_sub(rows);
+        if v.wrap {
+            let cols = v.cols.max(1);
+            v.top = total.saturating_sub(1);
+            v.top_seg = line_segs(v, v.top, cols).saturating_sub(1);
+        } else {
+            v.top = total.saturating_sub(rows);
+        }
     }
 }
 
@@ -1276,6 +1423,7 @@ fn viewer_search(v: &mut Viewer, from: usize, is_next: bool) {
         Ok(Some(idx)) => {
             v.found = Some(idx);
             v.top = idx.saturating_sub(2);
+            v.top_seg = 0;
             v.hex = false;
         }
         Ok(None) => {
@@ -1351,6 +1499,16 @@ fn edit_line(value: &mut String, cursor: &mut usize, code: KeyCode, mods: KeyMod
         _ => return false,
     }
     true
+}
+
+/// "archive.zip://sub/dir" → (archive path, path inside). Plain local
+/// paths return None.
+fn split_vfs_dest(input: &str) -> Option<(PathBuf, PathBuf)> {
+    let (archive, inside) = input.split_once("://")?;
+    Some((
+        PathBuf::from(archive),
+        PathBuf::from(inside.trim_matches('/')),
+    ))
 }
 
 fn byte_index(s: &str, char_idx: usize) -> usize {

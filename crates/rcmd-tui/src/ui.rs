@@ -142,8 +142,10 @@ const HELP_TEXT: &[&str] = &[
     "  Error prompt hotkeys:     r=retry s=skip S=skip all",
     "",
     "# Archives",
-    "  Enter on a .zip/.tar/.tar.gz browses it read-only; F5 copies",
-    "  out, F3 views members. Move/delete/mkdir are disabled inside.",
+    "  Enter on zip/tar/tar.{gz,xz,bz2} browses it; F5 copies out,",
+    "  F3 views members. Move/delete/mkdir are disabled inside.",
+    "  Copy INTO a zip: F5 with the other panel inside the zip, or a",
+    "  destination written as archive.zip://dir  (zip only).",
     "",
     "# Command line",
     "  (type)          compose a command; Enter runs it in the panel dir",
@@ -155,6 +157,7 @@ const HELP_TEXT: &[&str] = &[
     "  Ctrl+O          open a full shell here; exit returns to rcmd",
     "",
     "# Viewer (F3)",
+    "  F2              toggle line wrap",
     "  F4              toggle hex dump",
     "  F7 or /         search (case-insensitive), n = next match",
     "  Left/Right      horizontal scroll",
@@ -512,6 +515,7 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
     .areas(frame.area());
     v.rows = content.height as usize;
     let width = content.width as usize;
+    v.cols = width.max(1);
 
     let offset = if v.hex {
         v.hex_top * 16
@@ -523,11 +527,17 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
     } else {
         offset * 100 / v.file.size
     };
+    let mode = if v.hex {
+        "hex"
+    } else if v.wrap {
+        "wrap"
+    } else {
+        "text"
+    };
     let title = format!(
-        " {}  {} bytes  {percent}%  [{}]",
+        " {}  {} bytes  {percent}%  [{mode}]",
         v.path.display(),
         v.file.size,
-        if v.hex { "hex" } else { "text" },
     );
     frame.render_widget(
         Line::from(format!("{:<w$}", tail(&title, width), w = width))
@@ -535,41 +545,75 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
         title_area,
     );
 
-    for row in 0..content.height {
-        let row_area = Rect {
-            y: content.y + row,
-            height: 1,
-            ..content
-        };
-        if v.hex {
-            let row_offset = (v.hex_top + row as u64) * 16;
-            if row_offset >= v.file.size {
+    if v.wrap && !v.hex {
+        // soft-wrapped: walk (line, segment) pairs from the top row
+        let mut line_idx = v.top;
+        let mut seg = v.top_seg;
+        for row in 0..content.height {
+            let row_area = Rect {
+                y: content.y + row,
+                height: 1,
+                ..content
+            };
+            let Ok(Some(text)) = v.file.line(line_idx) else {
                 break;
+            };
+            let chars: Vec<char> = expand_line(&text).chars().collect();
+            if seg * width > chars.len() {
+                seg = 0; // stale segment after a resize
             }
-            let bytes = v.file.read_at(row_offset, 16).unwrap_or_default();
-            frame.render_widget(Line::from(hex_row(row_offset, &bytes)), row_area);
-        } else {
-            let idx = v.top + row as usize;
-            match v.file.line(idx) {
-                Ok(Some(text)) => {
-                    let display: String = expand_line(&text)
-                        .chars()
-                        .skip(v.left)
-                        .take(width)
-                        .collect();
-                    let style = if v.found == Some(idx) {
-                        Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::new()
-                    };
-                    frame.render_widget(Line::from(display).style(style), row_area);
+            let start = (seg * width).min(chars.len());
+            let display: String = chars[start..].iter().take(width).collect();
+            let style = if v.found == Some(line_idx) {
+                Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new()
+            };
+            frame.render_widget(Line::from(display).style(style), row_area);
+            if (seg + 1) * width < chars.len().max(1) {
+                seg += 1;
+            } else {
+                line_idx += 1;
+                seg = 0;
+            }
+        }
+    } else {
+        for row in 0..content.height {
+            let row_area = Rect {
+                y: content.y + row,
+                height: 1,
+                ..content
+            };
+            if v.hex {
+                let row_offset = (v.hex_top + row as u64) * 16;
+                if row_offset >= v.file.size {
+                    break;
                 }
-                _ => break,
+                let bytes = v.file.read_at(row_offset, 16).unwrap_or_default();
+                frame.render_widget(Line::from(hex_row(row_offset, &bytes)), row_area);
+            } else {
+                let idx = v.top + row as usize;
+                match v.file.line(idx) {
+                    Ok(Some(text)) => {
+                        let display: String = expand_line(&text)
+                            .chars()
+                            .skip(v.left)
+                            .take(width)
+                            .collect();
+                        let style = if v.found == Some(idx) {
+                            Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::new()
+                        };
+                        frame.render_widget(Line::from(display).style(style), row_area);
+                    }
+                    _ => break,
+                }
             }
         }
     }
 
-    let help = " F3/q Quit  F4 Hex  F7|/ Search  n Next  ←→ Scroll ";
+    let help = " F3/q Quit  F2 Wrap  F4 Hex  F7|/ Search  n Next  ←→ Scroll ";
     let note = v.note.clone().unwrap_or_default();
     frame.render_widget(
         Line::from(format!(
@@ -590,7 +634,7 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
 }
 
 /// Expand tabs to 8-column stops and hide control characters.
-fn expand_line(text: &str) -> String {
+pub fn expand_line(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut col = 0usize;
     for c in text.chars() {

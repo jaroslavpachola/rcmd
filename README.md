@@ -6,11 +6,13 @@ the roadmap.
 
 ## Status
 
-M5 — all milestones of the original plan shipped. Marking and F5–F8
-operations with MC-style dialogs, command line + shell integration, F3
-chunked viewer, F4 $EDITOR, F9 menu, F1 help, config file with keymap
-presets/custom bindings, quick search, filter, hotlist, themes, and
-read-only archive browsing (zip, tar, tar.gz) with extraction.
+All milestones of the original plan shipped, plus the debt list: marking
+and F5–F8 operations with MC-style dialogs (mtimes preserved on copy),
+command line + shell integration with real job control, F3 chunked
+viewer with wrap and hex modes, F4 $EDITOR, F9 menu, F1 help, config
+file with keymap presets/custom bindings, quick search, filter, hotlist,
+themes, archive browsing (zip, tar, tar.gz, tar.xz, tar.bz2) with
+extraction, and copying into zip archives.
 
 ## Run
 
@@ -53,7 +55,7 @@ end
 |-----|--------|
 | Tab | Switch panel |
 | ↑ ↓ PgUp PgDn Home End | Move cursor |
-| Enter | Enter directory or archive (.zip/.tar/.tar.gz/.tgz) |
+| Enter | Enter directory or archive (zip, tar, tar.{gz,xz,bz2}) |
 | Backspace | Parent directory / leave archive |
 | F1 | Help |
 | F3 | View file (internal viewer) |
@@ -87,15 +89,20 @@ In dialogs: arrows/Tab move between buttons, Enter confirms, Esc cancels;
 overwrite and error prompts also take hotkeys (o/a/s/S, r/s/S).
 
 **Viewer** (F3): arrows/PgUp/PgDn/Home/End scroll, ←→ horizontal scroll,
-F4 toggles hex mode, F7 or `/` searches (case-insensitive), `n` next
-match, F3/F10/Esc/q quit. Lines are indexed lazily, so huge files open
-instantly; very long lines are broken at 4096 columns.
+F2 toggles soft-wrap, F4 toggles hex mode, F7 or `/` searches
+(case-insensitive), `n` next match, F3/F10/Esc/q quit. Lines are indexed
+lazily, so huge files open instantly; very long lines are broken at 4096
+columns.
 
-**Archives**: Enter on a `.zip`, `.tar`, `.tar.gz`/`.tgz` file browses it
-like a directory (read-only — the panel title shows `archive://path`).
-F5 copies members out with the usual progress/overwrite dialogs, F3
-views them; move, delete, and mkdir are disabled inside. The archive
-index loads once at open; each member read decodes only that member.
+**Archives**: Enter on a `.zip`, `.tar`, `.tar.gz`/`.tgz`,
+`.tar.xz`/`.txz`, or `.tar.bz2`/`.tbz2` file browses it like a directory
+(the panel title shows `archive://path`). F5 copies members out with the
+usual progress/overwrite dialogs, F3 views them; move, delete, and mkdir
+are disabled inside. Copying **into** an archive works for zip only
+(members are appended in place — tar formats would need a full rewrite):
+F5 with the destination panel inside a zip, or any destination written
+as `path/to/archive.zip://dir`. The archive index loads once at open;
+each member read decodes only that member.
 
 ## Configuration
 
