@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -78,6 +78,66 @@ pub struct Job {
     src_panel: usize,
 }
 
+enum Exec {
+    Command(String),
+    Shell,
+}
+
+/// The MC-style command line at the bottom of the screen.
+#[derive(Default)]
+pub struct CmdLine {
+    pub value: String,
+    /// Cursor position in characters, not bytes.
+    pub cursor: usize,
+    history: Vec<String>,
+    hist_pos: Option<usize>,
+    saved: String,
+}
+
+impl CmdLine {
+    fn take(&mut self) -> String {
+        let value = self.value.trim().to_string();
+        self.value.clear();
+        self.cursor = 0;
+        self.hist_pos = None;
+        value
+    }
+
+    fn push_history(&mut self, cmd: &str) {
+        if self.history.last().map(String::as_str) != Some(cmd) {
+            self.history.push(cmd.to_string());
+        }
+    }
+
+    fn hist_prev(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        let pos = match self.hist_pos {
+            None => {
+                self.saved = self.value.clone();
+                self.history.len() - 1
+            }
+            Some(p) => p.saturating_sub(1),
+        };
+        self.hist_pos = Some(pos);
+        self.value = self.history[pos].clone();
+        self.cursor = self.value.chars().count();
+    }
+
+    fn hist_next(&mut self) {
+        let Some(pos) = self.hist_pos else { return };
+        if pos + 1 < self.history.len() {
+            self.hist_pos = Some(pos + 1);
+            self.value = self.history[pos + 1].clone();
+        } else {
+            self.hist_pos = None;
+            self.value = self.saved.clone();
+        }
+        self.cursor = self.value.chars().count();
+    }
+}
+
 pub struct App {
     pub panels: [Panel; 2],
     pub table_states: [TableState; 2],
@@ -87,16 +147,31 @@ pub struct App {
     pub panel_rows: usize,
     pub dialog: Option<Dialog>,
     pub job: Option<Job>,
+    pub cmdline: CmdLine,
+    pending_exec: Option<Exec>,
     pub quit: bool,
 }
 
 impl App {
-    pub fn new() -> Result<Self> {
+    pub fn new(dirs: &[PathBuf]) -> Result<Self> {
         let cwd = std::env::current_dir().context("cannot determine current directory")?;
-        let left = Panel::new(cwd.clone())
-            .with_context(|| format!("cannot read directory {}", cwd.display()))?;
-        let right = Panel::new(cwd.clone())
-            .with_context(|| format!("cannot read directory {}", cwd.display()))?;
+        let dir_at = |i: usize| -> Result<PathBuf> {
+            match dirs.get(i) {
+                Some(dir) => std::fs::canonicalize(dir)
+                    .with_context(|| format!("cannot open directory {}", dir.display())),
+                None => Ok(cwd.clone()),
+            }
+        };
+        let left_dir = dir_at(0)?;
+        let right_dir = if dirs.len() > 1 {
+            dir_at(1)?
+        } else {
+            left_dir.clone()
+        };
+        let left = Panel::new(left_dir.clone())
+            .with_context(|| format!("cannot read directory {}", left_dir.display()))?;
+        let right = Panel::new(right_dir.clone())
+            .with_context(|| format!("cannot read directory {}", right_dir.display()))?;
         Ok(App {
             panels: [left, right],
             table_states: [TableState::default(), TableState::default()],
@@ -105,6 +180,8 @@ impl App {
             panel_rows: 1,
             dialog: None,
             job: None,
+            cmdline: CmdLine::default(),
+            pending_exec: None,
             quit: false,
         })
     }
@@ -125,9 +202,60 @@ impl App {
                     }
                 }
             }
+            if let Some(exec) = self.pending_exec.take() {
+                self.execute(terminal, exec)?;
+            }
         }
         if let Some(job) = &self.job {
             job.handle.cancel();
+        }
+        Ok(())
+    }
+
+    /// Leave the TUI, run a command or an interactive shell in the active
+    /// panel's directory, then restore the TUI and reload both panels.
+    fn execute(&mut self, terminal: &mut DefaultTerminal, exec: Exec) -> Result<()> {
+        use std::io::Write as _;
+        use std::os::unix::process::CommandExt as _;
+
+        let cwd = self.panels[self.active].cwd.clone();
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        ratatui::restore();
+        // The child must own Ctrl+C while it runs; restore our disposition after.
+        let old_sigint = unsafe { libc::signal(libc::SIGINT, libc::SIG_IGN) };
+        let mut command = std::process::Command::new(&shell);
+        match &exec {
+            Exec::Command(cmd) => {
+                println!("{}$ {cmd}", cwd.display());
+                command.arg("-c").arg(cmd);
+            }
+            Exec::Shell => {}
+        }
+        command.current_dir(&cwd);
+        unsafe {
+            command.pre_exec(|| {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                Ok(())
+            });
+        }
+        match command.status() {
+            Ok(status) if !status.success() => println!("[{status}]"),
+            Ok(_) => {}
+            Err(err) => println!("cannot run {shell}: {err}"),
+        }
+        if matches!(exec, Exec::Command(_)) {
+            print!("Press Enter to return to rcmd...");
+            let _ = std::io::stdout().flush();
+            let mut sink = String::new();
+            let _ = std::io::stdin().read_line(&mut sink);
+        }
+        unsafe {
+            libc::signal(libc::SIGINT, old_sigint);
+        }
+        *terminal = ratatui::init();
+        let _ = terminal.clear();
+        for panel in &mut self.panels {
+            let _ = panel.reload();
         }
         Ok(())
     }
@@ -239,7 +367,7 @@ impl App {
                 KeyCode::Esc => {}
                 KeyCode::Enter => self.submit_input(d),
                 code => {
-                    edit_input(&mut d, code, key.modifiers);
+                    edit_line(&mut d.value, &mut d.cursor, code, key.modifiers);
                     self.dialog = Some(Dialog::Input(d));
                 }
             },
@@ -334,24 +462,27 @@ impl App {
         });
     }
 
-    /// Resolve dialog input to a path: `~` expands to $HOME, relative paths
-    /// are anchored at the active panel's directory.
+    /// Resolve user input to a normalized path: `~` expands to $HOME,
+    /// relative paths are anchored at the active panel's directory.
     fn resolve(&self, input: &str) -> PathBuf {
-        if input == "~" {
-            if let Some(home) = std::env::var_os("HOME") {
-                return PathBuf::from(home);
-            }
+        let raw = if input == "~" {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
         } else if let Some(rest) = input.strip_prefix("~/") {
-            if let Some(home) = std::env::var_os("HOME") {
-                return PathBuf::from(home).join(rest);
+            match std::env::var_os("HOME") {
+                Some(home) => PathBuf::from(home).join(rest),
+                None => PathBuf::from(input),
             }
-        }
-        let path = PathBuf::from(input);
-        if path.is_absolute() {
-            path
         } else {
-            self.panels[self.active].cwd.join(path)
-        }
+            let path = PathBuf::from(input);
+            if path.is_absolute() {
+                path
+            } else {
+                self.panels[self.active].cwd.join(path)
+            }
+        };
+        normalize(&raw)
     }
 
     fn on_panel_key(&mut self, key: KeyEvent) {
@@ -359,37 +490,90 @@ impl App {
         let alt = mods.contains(KeyModifiers::ALT);
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         let page = self.panel_rows.saturating_sub(1).max(1);
+        let cmd_empty = self.cmdline.value.is_empty();
         match key.code {
             KeyCode::F(10) => self.quit = true,
-            KeyCode::Char('q') if mods.is_empty() => self.quit = true,
             KeyCode::Tab | KeyCode::BackTab => self.active ^= 1,
             KeyCode::Up => self.panel().move_up(),
             KeyCode::Down => self.panel().move_down(),
-            KeyCode::Home => self.panel().move_top(),
-            KeyCode::End => self.panel().move_bottom(),
             KeyCode::PageUp => self.panel().page_up(page),
             KeyCode::PageDown => self.panel().page_down(page),
-            KeyCode::Enter => self.fallible(|p| p.enter()),
-            KeyCode::Backspace => self.fallible(|p| p.go_up()),
+            KeyCode::Enter if alt => self.insert_selected_name(),
+            KeyCode::Enter if cmd_empty => self.fallible(|p| p.enter()),
+            KeyCode::Enter => self.submit_command(),
+            KeyCode::Esc if !cmd_empty => {
+                self.cmdline.value.clear();
+                self.cmdline.cursor = 0;
+                self.cmdline.hist_pos = None;
+            }
             KeyCode::Insert => self.panel().toggle_mark(),
+            KeyCode::Char('o') if ctrl => self.pending_exec = Some(Exec::Shell),
             KeyCode::Char('t') if ctrl => self.panel().toggle_mark(),
             KeyCode::Char('r') if ctrl => self.fallible(|p| p.reload().map(|()| true)),
+            KeyCode::Char('p') if ctrl => self.cmdline.hist_prev(),
+            KeyCode::Char('n') if ctrl => self.cmdline.hist_next(),
             KeyCode::Char('.') if alt => self.fallible(|p| p.toggle_hidden().map(|()| true)),
             KeyCode::Char('n') if alt => self.panel().set_sort(SortKey::Name),
             KeyCode::Char('e') if alt => self.panel().set_sort(SortKey::Ext),
             KeyCode::Char('s') if alt => self.panel().set_sort(SortKey::Size),
             KeyCode::Char('t') if alt => self.panel().set_sort(SortKey::Mtime),
-            KeyCode::Char('+') if !ctrl && !alt => self.open_select(true),
-            KeyCode::Char('-') if !ctrl && !alt => self.open_select(false),
-            KeyCode::Char('\\') if !ctrl && !alt => self.open_select(false),
-            KeyCode::Char('*') if !ctrl && !alt => self.panel().invert_marks(),
+            KeyCode::Char('+') if cmd_empty && !ctrl && !alt => self.open_select(true),
+            KeyCode::Char('-') if cmd_empty && !ctrl && !alt => self.open_select(false),
+            KeyCode::Char('\\') if cmd_empty && !ctrl && !alt => self.open_select(false),
+            KeyCode::Char('*') if cmd_empty && !ctrl && !alt => self.panel().invert_marks(),
+            KeyCode::Home if cmd_empty => self.panel().move_top(),
+            KeyCode::End if cmd_empty => self.panel().move_bottom(),
+            KeyCode::Backspace if cmd_empty => self.fallible(|p| p.go_up()),
             KeyCode::F(5) => self.open_transfer(false),
             KeyCode::F(6) => self.open_transfer(true),
             KeyCode::F(7) => self.open_mkdir(),
             KeyCode::F(8) => self.open_delete(mods.contains(KeyModifiers::SHIFT)),
             KeyCode::F(20) => self.open_delete(true), // Shift+F8 on legacy terminals
-            _ => {}
+            code => {
+                if edit_line(
+                    &mut self.cmdline.value,
+                    &mut self.cmdline.cursor,
+                    code,
+                    mods,
+                ) {
+                    self.cmdline.hist_pos = None;
+                }
+            }
         }
+    }
+
+    fn submit_command(&mut self) {
+        let cmd = self.cmdline.take();
+        if cmd.is_empty() {
+            return;
+        }
+        self.cmdline.push_history(&cmd);
+        if let Some(dir) = parse_cd(&cmd) {
+            let target = if dir.is_empty() {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("/"))
+            } else {
+                self.resolve(dir)
+            };
+            if let Err(err) = self.panels[self.active].cd(target) {
+                self.status = Some(format!(" cd: {err} "));
+            }
+        } else {
+            self.pending_exec = Some(Exec::Command(cmd));
+        }
+    }
+
+    /// Alt+Enter: append the cursor entry's (shell-quoted) name.
+    fn insert_selected_name(&mut self) {
+        let Some(entry) = self.panels[self.active].selected() else {
+            return;
+        };
+        let text = format!("{} ", shell_quote(&entry.name.to_string_lossy()));
+        let idx = byte_index(&self.cmdline.value, self.cmdline.cursor);
+        self.cmdline.value.insert_str(idx, &text);
+        self.cmdline.cursor += text.chars().count();
+        self.cmdline.hist_pos = None;
     }
 
     fn describe(paths: &[PathBuf]) -> String {
@@ -461,13 +645,13 @@ impl App {
             return;
         }
         let what = Self::describe(&paths);
-        let (title, message) = if permanent {
-            (" Delete ".into(), format!("Permanently delete {what}?"))
+        let message = if permanent {
+            format!("Permanently delete {what}?")
         } else {
-            (" Delete ".into(), format!("Move {what} to trash?"))
+            format!("Move {what} to trash?")
         };
         self.dialog = Some(Dialog::Confirm(ConfirmDialog {
-            title,
+            title: " Delete ".into(),
             message,
             yes: !permanent, // safer default for the irreversible variant
             paths,
@@ -486,36 +670,41 @@ impl App {
     }
 }
 
-fn edit_input(d: &mut InputDialog, code: KeyCode, mods: KeyModifiers) {
+/// Shared line editing for the command line and input dialogs.
+/// Returns true when the key changed the value or cursor.
+fn edit_line(value: &mut String, cursor: &mut usize, code: KeyCode, mods: KeyModifiers) -> bool {
+    let ctrl = mods.contains(KeyModifiers::CONTROL);
+    let alt = mods.contains(KeyModifiers::ALT);
     match code {
-        KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => {
-            d.value.clear();
-            d.cursor = 0;
+        KeyCode::Char('u') if ctrl => {
+            value.clear();
+            *cursor = 0;
         }
-        KeyCode::Char(c)
-            if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::ALT) =>
-        {
-            d.value.insert(byte_index(&d.value, d.cursor), c);
-            d.cursor += 1;
+        KeyCode::Char('a') if ctrl => *cursor = 0,
+        KeyCode::Char('e') if ctrl => *cursor = value.chars().count(),
+        KeyCode::Char(c) if !ctrl && !alt => {
+            value.insert(byte_index(value, *cursor), c);
+            *cursor += 1;
         }
         KeyCode::Backspace => {
-            if d.cursor > 0 {
-                d.cursor -= 1;
-                d.value.remove(byte_index(&d.value, d.cursor));
+            if *cursor > 0 {
+                *cursor -= 1;
+                value.remove(byte_index(value, *cursor));
             }
         }
         KeyCode::Delete => {
-            let idx = byte_index(&d.value, d.cursor);
-            if idx < d.value.len() {
-                d.value.remove(idx);
+            let idx = byte_index(value, *cursor);
+            if idx < value.len() {
+                value.remove(idx);
             }
         }
-        KeyCode::Left => d.cursor = d.cursor.saturating_sub(1),
-        KeyCode::Right => d.cursor = (d.cursor + 1).min(d.value.chars().count()),
-        KeyCode::Home => d.cursor = 0,
-        KeyCode::End => d.cursor = d.value.chars().count(),
-        _ => {}
+        KeyCode::Left => *cursor = cursor.saturating_sub(1),
+        KeyCode::Right => *cursor = (*cursor + 1).min(value.chars().count()),
+        KeyCode::Home => *cursor = 0,
+        KeyCode::End => *cursor = value.chars().count(),
+        _ => return false,
     }
+    true
 }
 
 fn byte_index(s: &str, char_idx: usize) -> usize {
@@ -523,4 +712,125 @@ fn byte_index(s: &str, char_idx: usize) -> usize {
         .nth(char_idx)
         .map(|(i, _)| i)
         .unwrap_or(s.len())
+}
+
+/// `cd`? Returns the target ("" = home) or None if this isn't a cd command.
+fn parse_cd(cmd: &str) -> Option<&str> {
+    let rest = cmd.strip_prefix("cd")?;
+    if rest.is_empty() {
+        return Some("");
+    }
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some(rest.trim().trim_matches('"').trim_matches('\''))
+}
+
+/// Lexical path normalization: resolves `.` and `..` without touching the
+/// filesystem, so `cd ..` yields a clean cwd for the panel title.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn shell_quote(s: &str) -> String {
+    let plain = !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-+/=:,@%~".contains(c));
+    if plain {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_cd_variants() {
+        assert_eq!(parse_cd("cd"), Some(""));
+        assert_eq!(parse_cd("cd /tmp"), Some("/tmp"));
+        assert_eq!(parse_cd("cd   sub dir"), Some("sub dir"));
+        assert_eq!(parse_cd("cd \"my dir\""), Some("my dir"));
+        assert_eq!(parse_cd("cdrecord -x"), None);
+        assert_eq!(parse_cd("ls"), None);
+    }
+
+    #[test]
+    fn normalize_resolves_dots_lexically() {
+        assert_eq!(normalize(Path::new("/a/b/..")), PathBuf::from("/a"));
+        assert_eq!(normalize(Path::new("/a/./b")), PathBuf::from("/a/b"));
+        assert_eq!(normalize(Path::new("/../..")), PathBuf::from("/"));
+        assert_eq!(normalize(Path::new("/a/b/../../c")), PathBuf::from("/c"));
+    }
+
+    #[test]
+    fn shell_quote_only_when_needed() {
+        assert_eq!(shell_quote("plain-name.txt"), "plain-name.txt");
+        assert_eq!(shell_quote("with space"), "'with space'");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn edit_line_handles_unicode_and_shortcuts() {
+        let mut value = String::new();
+        let mut cursor = 0;
+        for c in "héllo".chars() {
+            edit_line(
+                &mut value,
+                &mut cursor,
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            );
+        }
+        assert_eq!(value, "héllo");
+        assert_eq!(cursor, 5);
+        edit_line(
+            &mut value,
+            &mut cursor,
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        );
+        assert_eq!(cursor, 0);
+        edit_line(&mut value, &mut cursor, KeyCode::Delete, KeyModifiers::NONE);
+        assert_eq!(value, "éllo");
+        edit_line(
+            &mut value,
+            &mut cursor,
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        );
+        assert_eq!(value, "");
+    }
+
+    #[test]
+    fn cmdline_history_round_trip() {
+        let mut cl = CmdLine::default();
+        cl.push_history("first");
+        cl.push_history("second");
+        cl.push_history("second"); // consecutive duplicate is dropped
+        assert_eq!(cl.history.len(), 2);
+        cl.value = "draft".into();
+        cl.hist_prev();
+        assert_eq!(cl.value, "second");
+        cl.hist_prev();
+        assert_eq!(cl.value, "first");
+        cl.hist_next();
+        assert_eq!(cl.value, "second");
+        cl.hist_next();
+        assert_eq!(cl.value, "draft"); // back to the stashed draft
+        assert_eq!(cl.hist_pos, None);
+    }
 }

@@ -127,6 +127,11 @@ impl Panel {
         Ok(true)
     }
 
+    /// Change to an arbitrary directory (command-line `cd`).
+    pub fn cd(&mut self, target: PathBuf) -> io::Result<()> {
+        self.change_dir(target)
+    }
+
     /// Switch to `target`, clearing marks (marks are per-directory); on
     /// failure (e.g. permission denied) the panel stays exactly as it was.
     fn change_dir(&mut self, target: PathBuf) -> io::Result<()> {

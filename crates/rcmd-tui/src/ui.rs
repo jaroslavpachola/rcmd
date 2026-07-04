@@ -24,8 +24,9 @@ const ERROR_BG: Color = Color::Red;
 const ERROR_FG: Color = Color::White;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let [main, status, keybar] = Layout::vertical([
+    let [main, status, cmdline, keybar] = Layout::vertical([
         Constraint::Min(3),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
@@ -52,6 +53,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.active == 1,
     );
     draw_status(frame, status, app);
+    draw_cmdline(frame, cmdline, app);
     draw_keybar(frame, keybar);
 
     if let Some(dialog) = &app.dialog {
@@ -198,6 +200,44 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         .style(Style::new().fg(PANEL_FG))
     };
     frame.render_widget(line, area);
+}
+
+fn draw_cmdline(frame: &mut Frame, area: Rect, app: &App) {
+    let prompt = tail(
+        &format!("{}$ ", abbrev_home(&app.panels[app.active].cwd)),
+        (area.width / 2) as usize,
+    );
+    let prompt_len = prompt.chars().count();
+    let field_width = (area.width as usize).saturating_sub(prompt_len).max(1);
+
+    let cl = &app.cmdline;
+    let chars: Vec<char> = cl.value.chars().collect();
+    let start = cl.cursor.saturating_sub(field_width.saturating_sub(1));
+    let visible: String = chars[start..].iter().take(field_width).collect();
+
+    frame.render_widget(
+        Line::from(vec![
+            Span::styled(prompt, Style::new().fg(Color::LightCyan)),
+            Span::raw(visible),
+        ]),
+        area,
+    );
+    if app.dialog.is_none() && app.job.is_none() {
+        frame.set_cursor_position((area.x + (prompt_len + cl.cursor - start) as u16, area.y));
+    }
+}
+
+fn abbrev_home(path: &std::path::Path) -> String {
+    if let Some(home) = std::env::var_os("HOME") {
+        if let Ok(rest) = path.strip_prefix(&home) {
+            return if rest.as_os_str().is_empty() {
+                "~".to_string()
+            } else {
+                format!("~/{}", rest.display())
+            };
+        }
+    }
+    path.display().to_string()
 }
 
 const KEYBAR: [(&str, &str); 10] = [

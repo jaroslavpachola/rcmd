@@ -13,3 +13,4 @@ rcmd-core = { path = "../rcmd-core" }
 anyhow.workspace = true
 ratatui.workspace = true
 chrono.workspace = true
+libc.workspace = true
