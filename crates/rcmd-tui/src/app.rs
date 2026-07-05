@@ -318,6 +318,8 @@ pub enum Action {
     /// Run `config.commands[i]` directly (per-command `key = "..."`).
     UserCommand(usize),
     Listing(ListMode),
+    /// M-t, like MC: brief → full → long → brief.
+    ListingCycle,
     OtherSameDir,
     OtherOpenDir,
     Reload,
@@ -373,9 +375,9 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
         "Sort",
         &[
             Some(("By name", "M-n", Action::Sort(SortKey::Name))),
-            Some(("By extension", "M-e", Action::Sort(SortKey::Ext))),
-            Some(("By size", "M-s", Action::Sort(SortKey::Size))),
-            Some(("By modify time", "M-t", Action::Sort(SortKey::Mtime))),
+            Some(("By extension", "", Action::Sort(SortKey::Ext))),
+            Some(("By size", "", Action::Sort(SortKey::Size))),
+            Some(("By modify time", "", Action::Sort(SortKey::Mtime))),
             None,
             Some(("Toggle reverse", "", Action::SortReverse)),
         ],
@@ -1519,6 +1521,14 @@ impl App {
             }
             Action::UserCommand(i) => self.run_user_command(i),
             Action::Listing(mode) => self.panel().list_mode = mode,
+            Action::ListingCycle => {
+                let panel = self.panel();
+                panel.list_mode = match panel.list_mode {
+                    ListMode::Brief => ListMode::Full,
+                    ListMode::Full => ListMode::Long,
+                    ListMode::Long => ListMode::Brief,
+                };
+            }
             Action::OtherSameDir => self.other_panel_dir(false),
             Action::OtherOpenDir => self.other_panel_dir(true),
             Action::Reload => self.fallible(|p| p.reload().map(|()| true)),

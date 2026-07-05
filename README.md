@@ -82,9 +82,11 @@ end
 | F7 | Make directory |
 | F8 | Delete to trash |
 | Shift+F8 | Delete permanently |
-| Alt+N / E / S / T | Sort by name / ext / size / mtime (again = reverse) |
+| Alt+N | Sort by name (again = reverse; other orders in F9 → Sort) |
+| Alt+T | Cycle listing format: brief / full / long |
+| Ctrl+U | Swap panels |
 | Alt+. | Toggle hidden files |
-| Ctrl+S | Quick search (type-ahead; Ctrl+S again = next match) |
+| Ctrl+S, Alt+S | Quick search (type-ahead; Ctrl+S again = next match) |
 | Ctrl+F | Filter shown files by glob (`*` or empty clears) |
 | Ctrl+\ | Directory hotlist (Enter cd, `a` add current, `d` delete) |
 | Alt+F7 | Find file (glob + optional content); results panelized |
@@ -101,8 +103,9 @@ end
 
 Typing goes to the **command line** at the bottom; Enter runs it in the
 active panel's directory (`cd` changes the panel instead). Alt+Enter
-inserts the selected filename, Ctrl+P/Ctrl+N walk history, Ctrl+A/E/U are
-readline-style. Ctrl+O suspends to a full shell — `exit` to come back.
+inserts the selected filename, Ctrl+P/Ctrl+N walk history, Ctrl+A/E are
+readline-style and Esc clears the line (Ctrl+U swaps panels, like MC).
+Ctrl+O suspends to a full shell — `exit` to come back.
 The `+`/`-`/`*`/`\` selection keys apply only while the command line is
 empty.
 
@@ -257,8 +260,8 @@ listing = "full"    # brief | full | long (panel listing format)
 #   toggle-hidden sort-name sort-ext sort-size sort-mtime sort-reverse
 #   menu mark quick-search hotlist filter up-dir enter history-back
 #   history-forward quick-view info-view user-menu listing-brief
-#   listing-full listing-long other-same-dir other-open-dir sftp-link
-#   find-file panelize compare-dirs dir-size
+#   listing-full listing-long listing-cycle other-same-dir other-open-dir
+#   sftp-link find-file panelize compare-dirs dir-size
 
 [[hotlist]]
 label = "projects"

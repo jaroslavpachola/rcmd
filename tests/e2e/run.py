@@ -426,10 +426,18 @@ def test_mcdepth():
     hdr = header_line(s)
     check("mcdepth: brief listing", "Size" not in hdr[:60] and "Size" in hdr[60:])
 
+    # Alt+T cycles the format like MC (brief -> full)
+    s.send(b"\x1bt")
+    check("mcdepth: alt+t cycles listing", "Size" in header_line(s)[:60])
+
     # Alt+o opens the dir under the cursor in the other panel; Alt+i syncs
     s.send(HOME_K + DOWN)              # cursor -> docs/
     s.send(b"\x1bo")
     check("mcdepth: alt+o", play + "/docs" in s.screen())
+    # Ctrl+U swaps the panels (MC), and again swaps back
+    s.send(b"\x15")
+    check("mcdepth: ctrl+u swaps", "/docs" in s.screen().split("\n")[0][:60])
+    s.send(b"\x15")
     s.send(b"\x1bi")
     check("mcdepth: alt+i", play + "/docs" not in s.screen())
     s.quit()
