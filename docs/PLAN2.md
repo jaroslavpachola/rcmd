@@ -1,7 +1,7 @@
 # rcmd 2.0 — beyond Midnight Commander
 
-**Status:** in progress — P0–P5 shipped, v1.1.0 released; plan revised
-2026-07-05 (Lua dropped, Windows moved post-2.0, P7/P8 rescoped); next: P6
+**Status:** in progress — P0–P6 shipped + P7's MC depth, v1.1.0
+released; remaining: P7 SFTP auth → P8 (the 2.0 release)
 **Prerequisite:** PLAN.md complete (it is). Baseline: MC-parity dual-pane
 manager, ~43 tests, pty-verified, no async runtime, `FsProvider` seam.
 
@@ -173,6 +173,22 @@ refresh on every keystroke.
   dirs-only (MC's lynx semantics); only Enter consults `[open]`.
 - Exit: PDF/image/office files open right from Enter; one personal
   workflow automated without recompiling.
+
+**DONE (2026-07-05).** Shipped as `[[open]]` / `[[commands]]` arrays of
+tables rather than the sketched inline tables — TOML arrays preserve
+file order, so "first matching rule wins" is real instead of
+alphabetical. Openers: matched case-insensitively against the cursor
+file on Enter (and double-click), run through a new `Exec::Quiet` path
+(the old editor exec, renamed) — no "press Enter" pause, GUI apps take
+a trailing `&`; local panels only; the `enter` keymap action (modern
+Right) never consults them. User commands: F2 menu (digit hotkeys 1-9,
+Enter runs) + optional `key = "..."` per command bound straight into
+the keymap at startup; they run as ordinary commands (with pause).
+Macros `%f %d %D %t %%`, shell-quoted, expanded against the active
+panel. e2e: opener-on-Enter, menu, `%d`, and `%t`-with-binding checks
+(suite 76); test_find needed a menu-navigation fix (the new "User
+menu..." row shifted Command-menu positions — position-coupled e2e
+navigation is fragile, noted). Lua stays out, as decided.
 
 ### P7 — depth & polish (revised 2026-07-05: + MC depth)
 **SFTP auth** — the deliberate P3 scope cuts held up in practice except

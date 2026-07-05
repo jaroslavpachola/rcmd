@@ -14,6 +14,7 @@ use ratatui::widgets::TableState;
 use rcmd_core::entry;
 use rcmd_core::find::{self, FindEvent, FindHandle};
 use rcmd_core::fsops::{self, JobEvent, JobHandle, Reply};
+use rcmd_core::glob::glob_match;
 use rcmd_core::panel::{ListMode, LoadKind, Panel, SortKey};
 use rcmd_core::sftp::{self, ConnectEvent, ConnectReply, SftpFs, SftpUrl};
 use rcmd_core::vfs::{FsProvider, LocalFs};
@@ -119,6 +120,8 @@ pub enum Dialog {
     /// Directory hotlist; the payload is the selected row.
     Hotlist(usize),
     Find(FindDialog),
+    /// F2 user menu ([[commands]]); the payload is the selected row.
+    UserMenu(usize),
 }
 
 pub enum Ask {
@@ -163,7 +166,9 @@ pub struct Job {
 
 enum Exec {
     Command(String),
-    Editor(String),
+    /// Like Command, but without the "Press Enter" pause — for editors
+    /// and [[open]] rules (append `&` in the rule for GUI apps).
+    Quiet(String),
     Shell,
 }
 
@@ -309,6 +314,9 @@ pub enum Action {
     HistoryForward,
     QuickView,
     InfoView,
+    UserMenu,
+    /// Run `config.commands[i]` directly (per-command `key = "..."`).
+    UserCommand(usize),
     Listing(ListMode),
     OtherSameDir,
     OtherOpenDir,
@@ -348,6 +356,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
         "Command",
         &[
             Some(("Help", "F1", Action::Help)),
+            Some(("User menu...", "F2", Action::UserMenu)),
             Some(("Quick search", "C-s", Action::QuickSearch)),
             Some(("Directory hotlist...", "C-\\", Action::Hotlist)),
             Some(("Find file...", "M-F7", Action::FindFile)),
@@ -530,8 +539,18 @@ impl App {
             panel.list_mode = config::list_mode_from_name(&config.listing);
             let _ = panel.reload();
         }
-        let (keymap, keymap_warnings) = keymap::build(&config.keymap, &config.keys);
+        let (mut keymap, keymap_warnings) = keymap::build(&config.keymap, &config.keys);
         warnings.extend(keymap_warnings);
+        for (i, cmd) in config.commands.iter().enumerate() {
+            if let Some(key) = &cmd.key {
+                match keymap::parse_key(key) {
+                    Some(parsed) => {
+                        keymap.insert(parsed, Action::UserCommand(i));
+                    }
+                    None => warnings.push(format!("bad key '{key}' for command '{}'", cmd.name)),
+                }
+            }
+        }
         let watch = if config.watch {
             let (tx, rx) = std::sync::mpsc::channel();
             match notify::recommended_watcher(move |event| {
@@ -963,7 +982,7 @@ impl App {
                 println!("{}$ {cmd}", cwd.display());
                 command.arg("-c").arg(cmd);
             }
-            Exec::Editor(cmd) => {
+            Exec::Quiet(cmd) => {
                 command.arg("-c").arg(cmd);
             }
             Exec::Shell => {}
@@ -1202,7 +1221,7 @@ impl App {
         if index < self.panels[side].entries.len() {
             self.panels[side].cursor = index;
             if double {
-                self.fallible(|p| p.enter());
+                self.enter_or_open();
             }
         }
     }
@@ -1491,6 +1510,14 @@ impl App {
             Action::HistoryForward => self.history_step(true),
             Action::QuickView => self.toggle_quick_view(),
             Action::InfoView => self.toggle_info(),
+            Action::UserMenu => {
+                if self.config.commands.is_empty() {
+                    self.status = Some(" no [[commands]] in the config — see F1 ".into());
+                } else {
+                    self.dialog = Some(Dialog::UserMenu(0));
+                }
+            }
+            Action::UserCommand(i) => self.run_user_command(i),
             Action::Listing(mode) => self.panel().list_mode = mode,
             Action::OtherSameDir => self.other_panel_dir(false),
             Action::OtherOpenDir => self.other_panel_dir(true),
@@ -1644,6 +1671,93 @@ impl App {
                 self.disk[side] = Some((panel.cwd.clone(), Instant::now(), free_space(&panel.cwd)));
             }
         }
+    }
+
+    /// Enter on the cursor entry: directories and archives first; a
+    /// plain file consults the [[open]] rules (local panels only, the
+    /// first matching glob wins, case-insensitive). The `enter` keymap
+    /// action (lynx-motion Right) stays dirs-only on purpose.
+    fn enter_or_open(&mut self) {
+        match self.panels[self.active].enter() {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(err) => {
+                self.status = Some(format!(" {err} "));
+                return;
+            }
+        }
+        let panel = &self.panels[self.active];
+        if !panel.is_local() {
+            return;
+        }
+        let Some(entry) = panel.selected() else {
+            return;
+        };
+        if entry.is_parent() || entry.is_dir() {
+            return;
+        }
+        let name = entry.name.to_string_lossy().to_lowercase();
+        let run = match self
+            .config
+            .open
+            .iter()
+            .find(|rule| glob_match(&rule.pattern.to_lowercase(), &name))
+        {
+            Some(rule) => rule.run.clone(),
+            None => return,
+        };
+        let cmd = self.expand_macros(&run);
+        self.pending_exec = Some(Exec::Quiet(cmd));
+    }
+
+    /// `%f` cursor file, `%d` this directory, `%D` the other panel's,
+    /// `%t` marked files, `%%` a literal percent — all shell-quoted.
+    fn expand_macros(&self, template: &str) -> String {
+        let panel = &self.panels[self.active];
+        let file = panel
+            .selected()
+            .filter(|e| !e.is_parent())
+            .map(|e| shell_quote(&e.name.to_string_lossy()))
+            .unwrap_or_default();
+        let tagged = panel
+            .entries
+            .iter()
+            .filter(|e| panel.is_marked(e))
+            .map(|e| shell_quote(&e.name.to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut out = String::new();
+        let mut chars = template.chars();
+        while let Some(c) = chars.next() {
+            if c != '%' {
+                out.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('f') => out.push_str(&file),
+                Some('d') => out.push_str(&shell_quote(&panel.local_cwd().to_string_lossy())),
+                Some('D') => out.push_str(&shell_quote(
+                    &self.panels[self.active ^ 1].local_cwd().to_string_lossy(),
+                )),
+                Some('t') => out.push_str(&tagged),
+                Some('%') => out.push('%'),
+                Some(other) => {
+                    out.push('%');
+                    out.push(other);
+                }
+                None => out.push('%'),
+            }
+        }
+        out
+    }
+
+    fn run_user_command(&mut self, i: usize) {
+        let Some(cmd) = self.config.commands.get(i) else {
+            return;
+        };
+        let run = cmd.run.clone();
+        let expanded = self.expand_macros(&run);
+        self.pending_exec = Some(Exec::Command(expanded));
     }
 
     /// Alt+i / Alt+o: point the other panel at the active panel's
@@ -1824,7 +1938,7 @@ impl App {
                 temp: temp.clone(),
             });
             if external {
-                self.pending_exec = Some(Exec::Editor(format!(
+                self.pending_exec = Some(Exec::Quiet(format!(
                     "{editor} {}",
                     shell_quote(&temp.to_string_lossy())
                 )));
@@ -1841,7 +1955,7 @@ impl App {
         }
         let path = panel.cwd.join(&entry.name);
         if external {
-            self.pending_exec = Some(Exec::Editor(format!(
+            self.pending_exec = Some(Exec::Quiet(format!(
                 "{editor} {}",
                 shell_quote(&path.to_string_lossy())
             )));
@@ -2481,6 +2595,31 @@ impl App {
                     _ => self.dialog = Some(Dialog::Hotlist(selected)),
                 }
             }
+            Dialog::UserMenu(mut selected) => {
+                let len = self.config.commands.len();
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => self.run_user_command(selected),
+                    KeyCode::Char(c @ '1'..='9') => {
+                        let i = c as usize - '1' as usize;
+                        if i < len {
+                            self.run_user_command(i);
+                        } else {
+                            self.dialog = Some(Dialog::UserMenu(selected));
+                        }
+                    }
+                    KeyCode::Up => {
+                        self.dialog = Some(Dialog::UserMenu(selected.saturating_sub(1)));
+                    }
+                    KeyCode::Down => {
+                        if selected + 1 < len {
+                            selected += 1;
+                        }
+                        self.dialog = Some(Dialog::UserMenu(selected));
+                    }
+                    _ => self.dialog = Some(Dialog::UserMenu(selected)),
+                }
+            }
             Dialog::Find(mut d) => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => self.submit_find(d),
@@ -3047,7 +3186,7 @@ impl App {
                 return;
             }
             KeyCode::Enter if cmd_empty => {
-                self.fallible(|p| p.enter());
+                self.enter_or_open();
                 return;
             }
             KeyCode::Enter => {

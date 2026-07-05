@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Openers & user commands** (P6): `[[open]]` config rules make Enter
+  open files by glob (first match wins, no pause — append `&` for GUI
+  apps; lynx-motion Right stays dirs-only); `[[commands]]` shell
+  templates with `%f %d %D %t` macros in a new F2 user menu (digit
+  hotkeys), each optionally bound to its own key
 - **File properties & listing formats** (P7 MC depth): Ctrl+X i info
   panel (full stat of the cursor file on the other panel: type, size,
   perms, owner/group, links, inode, mtime/atime/ctime), free-space

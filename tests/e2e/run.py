@@ -224,10 +224,11 @@ def test_find():
     open(os.path.join(play, "sub", "needle-deep.txt"), "w").write("x\n")
     open(os.path.join(play, "sub", "other.txt"), "w").write("x\n")
     s = Session(play, home)
-    # F9 -> Command -> Find file... (Help, Quick search, Hotlist, Find)
+    # F9 -> Command -> Find file...
+    # (Help, User menu, Quick search, Hotlist, Find)
     s.send(b"\x1b[20~")                 # F9
     s.send(b"\x1b[C")                   # Right -> Command
-    s.send(DOWN + DOWN + DOWN)          # -> Find file...
+    s.send(DOWN + DOWN + DOWN + DOWN)   # -> Find file...
     s.send(b"\r")                       # open find dialog
     s.send(b"\x15")                     # Ctrl+U clears the "*" prefill
     s.send(b"needle*")
@@ -431,6 +432,62 @@ def test_mcdepth():
     check("mcdepth: alt+o", play + "/docs" in s.screen())
     s.send(b"\x1bi")
     check("mcdepth: alt+i", play + "/docs" not in s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_extensibility():
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write(
+        '[[open]]\n'
+        'match = "*.txt"\n'
+        'run = "cp %f opened_copy"\n'
+        '\n'
+        '[[commands]]\n'
+        'name = "write marker"\n'
+        'run = "echo hello-%d > marker.out"\n'
+        '\n'
+        '[[commands]]\n'
+        'name = "list tagged"\n'
+        'run = "echo %t > tagged.out"\n'
+        'key = "ctrl+g"\n'
+    )
+    open(os.path.join(play, "notes.txt"), "w").write("data\n")
+    s = Session(play, home)
+
+    # Enter on a matching file runs the opener (quietly, no pause)
+    s.send(DOWN)                       # cursor -> notes.txt
+    s.send(b"\r", wait=STEP * 3)
+    copy = os.path.join(play, "opened_copy")
+    check(
+        "extensibility: opener ran on Enter",
+        os.path.isfile(copy) and open(copy).read() == "data\n",
+    )
+
+    # F2 user menu lists commands and runs the selection
+    s.send(b"\x1b[12~")                # F2
+    scr = s.screen()
+    check("extensibility: user menu", "User menu" in scr and "write marker" in scr)
+    s.send(b"\r", wait=STEP * 3)       # run "write marker" (pauses)
+    s.send(b"\r", wait=STEP * 2)       # return from the pause
+    marker = os.path.join(play, "marker.out")
+    check(
+        "extensibility: %d expanded",
+        os.path.isfile(marker) and play in open(marker).read(),
+    )
+
+    # a command bound via key = "ctrl+g" sees %t (marked files);
+    # listing by now: .., marker.out, notes.txt, opened_copy
+    s.send(HOME_K + DOWN + DOWN + INSERT)  # mark notes.txt
+    s.send(b"\x07", wait=STEP * 3)     # Ctrl+G
+    s.send(b"\r", wait=STEP * 2)
+    tagged = os.path.join(play, "tagged.out")
+    check(
+        "extensibility: %t + key binding",
+        os.path.isfile(tagged) and "notes.txt" in open(tagged).read(),
+    )
     s.quit()
     shutil.rmtree(root)
 
@@ -669,6 +726,7 @@ def main():
         test_quickview,
         test_mouse,
         test_mcdepth,
+        test_extensibility,
         test_git,
         test_editor,
         test_sftp,

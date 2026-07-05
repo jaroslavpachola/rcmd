@@ -34,12 +34,35 @@ pub struct Config {
     /// Custom bindings on top of the preset, e.g. "ctrl+y" = "swap-panels".
     pub keys: BTreeMap<String, String>,
     pub hotlist: Vec<HotEntry>,
+    /// Openers consulted by Enter on a file, in file order — the first
+    /// matching glob wins.
+    pub open: Vec<OpenRule>,
+    /// User commands: the F2 menu, in file order.
+    pub commands: Vec<UserCommand>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotEntry {
     pub label: String,
     pub path: String,
+}
+
+/// `[[open]]` — `match = "*.pdf"`, `run = "zathura %f &"`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenRule {
+    #[serde(rename = "match")]
+    pub pattern: String,
+    pub run: String,
+}
+
+/// `[[commands]]` — a named shell template with `%f %d %D %t` macros,
+/// shown in the F2 menu; `key` optionally binds it directly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserCommand {
+    pub name: String,
+    pub run: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 impl Default for Config {
@@ -57,6 +80,8 @@ impl Default for Config {
             editor: "internal".into(),
             keys: BTreeMap::new(),
             hotlist: Vec::new(),
+            open: Vec::new(),
+            commands: Vec::new(),
         }
     }
 }
@@ -175,6 +200,34 @@ path = "/home/user/git"
         assert_eq!(back.keys.len(), 2);
         assert_eq!(back.hotlist.len(), 1);
         assert_eq!(back.sort_key, "mtime");
+    }
+
+    #[test]
+    fn openers_and_commands_round_trip() {
+        let text = r#"
+[[open]]
+match = "*.pdf"
+run = "zathura %f &"
+
+[[commands]]
+name = "git status"
+run = "git status | less"
+key = "ctrl+g"
+
+[[commands]]
+name = "disk usage"
+run = "du -sh %t | less"
+"#;
+        let config: Config = toml::from_str(text).unwrap();
+        assert_eq!(config.open[0].pattern, "*.pdf");
+        assert_eq!(config.commands[0].key.as_deref(), Some("ctrl+g"));
+        assert_eq!(config.commands[1].key, None);
+
+        let out = toml::to_string_pretty(&config).unwrap();
+        let back: Config = toml::from_str(&out).unwrap();
+        assert_eq!(back.open.len(), 1);
+        assert_eq!(back.commands.len(), 2);
+        assert_eq!(back.commands[0].name, "git status");
     }
 
     #[test]

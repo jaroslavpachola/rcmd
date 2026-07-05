@@ -70,6 +70,7 @@ end
 | Enter | Enter directory or archive (zip, tar, tar.{gz,xz,bz2}) |
 | Backspace | Parent directory / leave archive |
 | F1 | Help |
+| F2 | User menu (`[[commands]]` from the config) |
 | F3 | View file (internal viewer) |
 | F4 | Edit file (built-in editor; `editor = "external"` for $EDITOR) |
 | F9 | Pulldown menu |
@@ -144,6 +145,33 @@ reconnect through the connection cache), Alt+↑ opens the hotlist.
 the file under the cursor, updating as you move. It uses the viewer's
 chunked reader, so previewing a multi-GB log is instant. Tab focuses
 the preview for scrolling (arrows/PgUp/PgDn); Ctrl+X q turns it off.
+
+**Openers & user commands**: `[[open]]` rules in the config make Enter
+open files by type — the first matching glob wins (case-insensitive):
+
+```toml
+[[open]]
+match = "*.pdf"
+run = "zathura %f >/dev/null 2>&1 &"
+```
+
+Openers run without a "press Enter" pause, so terminal programs (mpv,
+less) feel native and GUI programs just need a trailing `&`. In the
+`modern` keymap, Right still only enters directories — Enter opens.
+`[[commands]]` are named shell templates listed in the **F2 user menu**
+(first nine get digit hotkeys) and optionally bound directly:
+
+```toml
+[[commands]]
+name = "git status"
+run = "git status | less"
+key = "ctrl+g"
+```
+
+Both expand macros before running in the active panel's directory:
+`%f` the cursor file, `%d` this directory, `%D` the other panel's
+directory, `%t` all marked files, `%%` a literal percent — everything
+shell-quoted.
 
 **File properties**: the info panel (Ctrl+X i) turns the other panel
 into a live stat display of the file under the cursor — type, size,
@@ -228,13 +256,21 @@ listing = "full"    # brief | full | long (panel listing format)
 #   unselect-group invert-selection quit shell reload swap-panels
 #   toggle-hidden sort-name sort-ext sort-size sort-mtime sort-reverse
 #   menu mark quick-search hotlist filter up-dir enter history-back
-#   history-forward quick-view info-view listing-brief listing-full
-#   listing-long other-same-dir other-open-dir sftp-link find-file
-#   panelize compare-dirs dir-size
+#   history-forward quick-view info-view user-menu listing-brief
+#   listing-full listing-long other-same-dir other-open-dir sftp-link
+#   find-file panelize compare-dirs dir-size
 
 [[hotlist]]
 label = "projects"
 path = "/home/you/git"
+
+[[open]]                    # Enter on a matching file runs this
+match = "*.pdf"
+run = "zathura %f >/dev/null 2>&1 &"
+
+[[commands]]                # F2 user menu; key = "..." binds directly
+name = "git status"
+run = "git status | less"
 ```
 
 ## Development

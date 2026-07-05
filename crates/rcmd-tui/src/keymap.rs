@@ -21,6 +21,7 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("f8", "delete"),
     ("shift+f8", "delete-perm"),
     ("f20", "delete-perm"), // Shift+F8 on legacy terminals
+    ("f2", "user-menu"),
     ("f9", "menu"),
     ("f10", "quit"),
     ("insert", "mark"),
@@ -154,6 +155,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "history-forward" => Action::HistoryForward,
         "quick-view" => Action::QuickView,
         "info-view" => Action::InfoView,
+        "user-menu" => Action::UserMenu,
         "listing-brief" => Action::Listing(ListMode::Brief),
         "listing-full" => Action::Listing(ListMode::Full),
         "listing-long" => Action::Listing(ListMode::Long),

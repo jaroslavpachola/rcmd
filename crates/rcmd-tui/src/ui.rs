@@ -191,6 +191,22 @@ const HELP_TEXT: &[&str] = &[
     "  Both panels may share one connection; Ctrl+X d compares",
     "  local vs remote, then F5 syncs the marked differences.",
     "",
+    "# Openers & user commands  (config)",
+    "  [[open]] rules make Enter open files:",
+    "      [[open]]",
+    "      match = \"*.pdf\"",
+    "      run = \"zathura %f >/dev/null 2>&1 &\"",
+    "  First matching glob wins (case-insensitive), local panels only.",
+    "  Openers run without a pause; append & for GUI programs.",
+    "  In the modern keymap Right still only enters directories.",
+    "  [[commands]] are shell templates in the F2 user menu:",
+    "      [[commands]]",
+    "      name = \"git status\"",
+    "      run = \"git status | less\"",
+    "      key = \"ctrl+g\"        # optional direct binding",
+    "  Macros: %f cursor file, %d this dir, %D other panel's dir,",
+    "  %t marked files, %% literal percent — all shell-quoted.",
+    "",
     "# Command line",
     "  (type)          compose a command; Enter runs it in the panel dir",
     "  cd PATH         changes the active panel instead",
@@ -308,6 +324,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Input(d) => draw_input(frame, d),
             Dialog::Confirm(d) => draw_confirm(frame, d),
             Dialog::Hotlist(selected) => draw_hotlist(frame, &app.config.hotlist, *selected),
+            Dialog::UserMenu(selected) => draw_user_menu(frame, &app.config.commands, *selected),
             Dialog::Find(d) => draw_find(frame, d),
         }
     }
@@ -1575,6 +1592,56 @@ fn draw_find(frame: &mut Frame, d: &FindDialog) {
             .style(style),
         row(5),
     );
+}
+
+/// The F2 user menu: `[[commands]]` from the config, first nine with
+/// digit hotkeys.
+fn draw_user_menu(frame: &mut Frame, commands: &[crate::config::UserCommand], selected: usize) {
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let rows = commands.len().max(1) as u16;
+    let area = centered(60, (rows + 2).min(20), frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .title(" User menu ")
+        .title_bottom(Line::from(" Enter or 1-9 runs ").centered())
+        .style(base);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let name_w = commands
+        .iter()
+        .map(|c| c.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(24);
+    for (i, cmd) in commands.iter().enumerate() {
+        if i as u16 >= inner.height {
+            break;
+        }
+        let row = Rect {
+            y: inner.y + i as u16,
+            height: 1,
+            ..inner
+        };
+        let hotkey = if i < 9 {
+            format!("{}", i + 1)
+        } else {
+            " ".into()
+        };
+        let text: String = format!(" {hotkey} {:<name_w$}  {}", cmd.name, cmd.run)
+            .chars()
+            .take(inner.width as usize)
+            .collect();
+        frame.render_widget(
+            Line::from(format!("{text:<w$}", w = inner.width as usize)).style(if i == selected {
+                sel
+            } else {
+                base
+            }),
+            row,
+        );
+    }
 }
 
 fn draw_hotlist(frame: &mut Frame, entries: &[HotEntry], selected: usize) {
