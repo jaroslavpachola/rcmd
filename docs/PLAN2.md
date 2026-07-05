@@ -169,12 +169,14 @@ refresh on every keystroke.
 - ~~Lua~~ — **cut from 2.0** (decision D3, resolved 2026-07-05): openers
   + user commands are the extensibility story. `mlua` returns post-2.0
   only if `[commands]` demonstrably can't express a real workflow.
+- Openers respect lynx motion: in the `modern` keymap Right stays
+  dirs-only (MC's lynx semantics); only Enter consults `[open]`.
 - Exit: PDF/image/office files open right from Enter; one personal
   workflow automated without recompiling.
 
-### P7 — SFTP auth depth (the one debt item that made the cut)
-The deliberate P3 scope cuts held up in practice except where they lock
-users out entirely:
+### P7 — depth & polish (revised 2026-07-05: + MC depth)
+**SFTP auth** — the deliberate P3 scope cuts held up in practice except
+where they lock users out entirely:
 - **Passphrase-protected keys**: when `~/.ssh/id_*` needs a passphrase,
   prompt for it (masked, like the password dialog) instead of silently
   skipping to password auth. `ssh2` takes the passphrase directly.
@@ -182,8 +184,23 @@ users out entirely:
   favor of `keyboard-interactive` (default on some distros) currently
   fail; route its prompts through the existing ConnectAsk dialog.
 - Both reuse the ConnectEvent/ConnectReply protocol — no new UI.
-- Exit: a passphrase key and a kbd-interactive-only sshd both connect;
-  e2e covers at least the passphrase path (paramiko can serve both).
+
+**MC depth** — the properties/format features MC hands miss most:
+- **Info panel** (Ctrl+X i): the other panel shows the full stat of the
+  cursor file — perms, owner, group, size, all three times, inode,
+  links, symlink target — reusing the quick-view pane pattern. Needs an
+  `Entry` stat extension (uid/gid/atime/ctime) across the providers
+  (local + sftp; archives best-effort).
+- **Free space** in the panel footer (statvfs; local always, sftp where
+  the server supports the statvfs extension).
+- **Listing modes** per panel: brief (name-only multi-column), full
+  (current), long (perms owner group size date name); cycled from the
+  F9 menu, persisted in config.
+- Nitpicks while in there: Alt+i (other panel → same directory),
+  Alt+o (other panel → directory under cursor).
+- Exit: a passphrase key and a kbd-interactive-only sshd both connect
+  (e2e covers at least the passphrase path — paramiko can serve both);
+  info panel, free space, and all three listing modes pty-verified.
 
 ### P8 — 2.0 release engineering
 - Version 2.0.0, CHANGELOG, tag; release tarball as in 1.1.
@@ -202,7 +219,7 @@ users out entirely:
 
 P0 (days) → P1 (1–2 wk) → P2 (1–2 wk) → P3 (2–4 wk, flagship) →
 P4 (3–5 wk, riskiest) ∥ P5 (1–2 wk, parallelizable)   [all shipped] →
-P6 (~1 wk) → P7 (days) → P8 (days).
+P6 (~1 wk) → P7 (~1 wk) → P8 (days).
 
 ## Post-2.0 candidates (cut, not condemned)
 
@@ -214,6 +231,9 @@ P6 (~1 wk) → P7 (days) → P8 (days).
 - Editor soft-wrap; `$1` capture groups in replace (literal today).
 - Copy *into* tar archives (zip-append exists; tar needs a rewrite).
 - Quick-view hex mode; click-to-sort column headers; mouse marking.
+- chmod / chown / create-symlink dialogs (C-x c/o/s; `FsWrite` already
+  has set_mode and symlink — mostly dialog work).
+- Directory tree view (MC's tree panel).
 - Jobs queue UI (still just one job + viewer).
 - FsProvider dir-size over sftp (Ctrl+Space stays local-only).
 
