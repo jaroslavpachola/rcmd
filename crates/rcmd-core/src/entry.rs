@@ -13,6 +13,18 @@ pub enum EntryKind {
     SymlinkBroken,
 }
 
+/// Extended stat data for the info panel and the long listing; `None`
+/// where the provider cannot supply it (archives, partly sftp).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EntryStat {
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub atime: Option<SystemTime>,
+    pub ctime: Option<SystemTime>,
+    pub nlink: Option<u64>,
+    pub inode: Option<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub name: OsString,
@@ -22,6 +34,7 @@ pub struct Entry {
     /// Unix permission bits (0 where unavailable).
     pub mode: u32,
     pub link_target: Option<PathBuf>,
+    pub extra: EntryStat,
 }
 
 impl Entry {
@@ -33,6 +46,7 @@ impl Entry {
             mtime: None,
             mode: 0,
             link_target: None,
+            extra: EntryStat::default(),
         }
     }
 
@@ -90,6 +104,30 @@ fn mode_of(_meta: &fs::Metadata) -> u32 {
     0
 }
 
+#[cfg(unix)]
+fn extra_of(meta: &fs::Metadata) -> EntryStat {
+    use std::os::unix::fs::MetadataExt;
+    let ctime = u64::try_from(meta.ctime()).ok().and_then(|secs| {
+        SystemTime::UNIX_EPOCH.checked_add(std::time::Duration::new(secs, meta.ctime_nsec() as u32))
+    });
+    EntryStat {
+        uid: Some(meta.uid()),
+        gid: Some(meta.gid()),
+        atime: meta.accessed().ok(),
+        ctime,
+        nlink: Some(meta.nlink()),
+        inode: Some(meta.ino()),
+    }
+}
+
+#[cfg(not(unix))]
+fn extra_of(meta: &fs::Metadata) -> EntryStat {
+    EntryStat {
+        atime: meta.accessed().ok(),
+        ..EntryStat::default()
+    }
+}
+
 fn classify(meta: &fs::Metadata, path: &Path) -> (EntryKind, Option<PathBuf>) {
     if meta.is_symlink() {
         let kind = match fs::metadata(path) {
@@ -121,6 +159,7 @@ pub fn read_dir(path: &Path) -> io::Result<Vec<Entry>> {
             mtime: meta.modified().ok(),
             mode: mode_of(&meta),
             link_target,
+            extra: extra_of(&meta),
         });
     }
     Ok(out)
@@ -137,5 +176,6 @@ pub fn stat(path: &Path) -> io::Result<Entry> {
         mtime: meta.modified().ok(),
         mode: mode_of(&meta),
         link_target,
+        extra: extra_of(&meta),
     })
 }

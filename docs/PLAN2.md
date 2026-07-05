@@ -202,6 +202,20 @@ where they lock users out entirely:
   (e2e covers at least the passphrase path — paramiko can serve both);
   info panel, free space, and all three listing modes pty-verified.
 
+**MC depth DONE (2026-07-05, ahead of schedule at user request).**
+`Entry` grew an `EntryStat` (uid/gid/atime/ctime/nlink/inode; local
+fills all, sftp what the protocol carries, archives none — the UI says
+"n/a"). Ctrl+X i info pane reuses the quick-view pane slot (mutually
+exclusive), owner/group resolved through cached getpwuid_r/getgrgid_r
+(numeric on remote panels). Free space via statvfs, cached per side
+with a 3 s TTL, shown in local panel footers (when no filter label) and
+the info pane; sftp skipped (ssh2 only exposes fstatvfs on handles).
+Listing modes live on `Panel` (`list_mode`), rendered as different
+Table column sets; new F9 "View" menu (appended after Sort so existing
+menu geometry — and the mouse e2e — kept their coordinates). Alt+i and
+Alt+o shipped as planned, local panels only. e2e suite now 72 checks.
+Remaining in P7: the SFTP auth items above.
+
 ### P8 — 2.0 release engineering
 - Version 2.0.0, CHANGELOG, tag; release tarball as in 1.1.
 - **Install story**: `cargo install --git <repo> rcmd-tui` documented as

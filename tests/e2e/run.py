@@ -388,6 +388,53 @@ def status_line(s):
     return s.screen().split("\n")[-3]
 
 
+def header_line(s):
+    """The panel column-header row (borders row 0, header row 1)."""
+    return s.screen().split("\n")[1]
+
+
+def test_mcdepth():
+    import getpass
+
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "docs"))
+    open(os.path.join(play, "notes.txt"), "w").write("hello\n")
+    s = Session(play, home)
+    check("mcdepth: free space in footer", " free " in s.screen())
+
+    # info pane on the other panel follows the cursor
+    s.send(b"\x18")                    # Ctrl+X ...
+    s.send(b"i")                       # ... i -> info pane
+    s.send(END)                        # cursor -> notes.txt
+    scr = s.screen()
+    check("mcdepth: info pane opens", "Inode:" in scr and "regular file" in scr)
+    check("mcdepth: info owner resolved", getpass.getuser() in scr)
+    s.send(b"\x18i")                   # off
+
+    # long listing via F9 -> View
+    s.send(b"\x1b[20~")                # F9
+    s.send(b"\x1b[C\x1b[C\x1b[C")      # File -> Command -> Sort -> View
+    s.send(DOWN + DOWN + b"\r")        # Brief, Full, *Long*
+    check("mcdepth: long listing headers", "Owner" in header_line(s)[:60])
+    check("mcdepth: long listing owner", getpass.getuser() in s.screen())
+
+    # brief listing hides everything but names (left panel only)
+    s.send(b"\x1b[20~")
+    s.send(b"\x1b[C\x1b[C\x1b[C")
+    s.send(b"\r")                      # *Brief*
+    hdr = header_line(s)
+    check("mcdepth: brief listing", "Size" not in hdr[:60] and "Size" in hdr[60:])
+
+    # Alt+o opens the dir under the cursor in the other panel; Alt+i syncs
+    s.send(HOME_K + DOWN)              # cursor -> docs/
+    s.send(b"\x1bo")
+    check("mcdepth: alt+o", play + "/docs" in s.screen())
+    s.send(b"\x1bi")
+    check("mcdepth: alt+i", play + "/docs" not in s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_git():
     if not shutil.which("git"):
         print("SKIP git: no git binary")
@@ -621,6 +668,7 @@ def main():
         test_history,
         test_quickview,
         test_mouse,
+        test_mcdepth,
         test_git,
         test_editor,
         test_sftp,

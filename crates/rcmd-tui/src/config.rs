@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use rcmd_core::panel::SortKey;
+use rcmd_core::panel::{ListMode, SortKey};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +19,8 @@ pub struct Config {
     pub show_hidden: bool,
     pub sort_key: String,
     pub sort_reverse: bool,
+    /// Panel listing format: "brief" | "full" | "long".
+    pub listing: String,
     /// Auto-reload panels when their directory changes on disk.
     pub watch: bool,
     /// Mouse support (click, double-click, wheel). Additive only —
@@ -48,6 +50,7 @@ impl Default for Config {
             show_hidden: true,
             sort_key: "name".into(),
             sort_reverse: false,
+            listing: "full".into(),
             watch: true,
             mouse: true,
             git: true,
@@ -97,6 +100,22 @@ pub fn save(config: &Config) -> Result<()> {
     }
     std::fs::write(&path, toml::to_string_pretty(config)?)?;
     Ok(())
+}
+
+pub fn list_mode_from_name(name: &str) -> ListMode {
+    match name {
+        "brief" => ListMode::Brief,
+        "long" => ListMode::Long,
+        _ => ListMode::Full,
+    }
+}
+
+pub fn list_mode_name(mode: ListMode) -> &'static str {
+    match mode {
+        ListMode::Brief => "brief",
+        ListMode::Full => "full",
+        ListMode::Long => "long",
+    }
 }
 
 pub fn sort_key_from_name(name: &str) -> SortKey {

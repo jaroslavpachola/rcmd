@@ -14,7 +14,7 @@ use ratatui::widgets::TableState;
 use rcmd_core::entry;
 use rcmd_core::find::{self, FindEvent, FindHandle};
 use rcmd_core::fsops::{self, JobEvent, JobHandle, Reply};
-use rcmd_core::panel::{LoadKind, Panel, SortKey};
+use rcmd_core::panel::{ListMode, LoadKind, Panel, SortKey};
 use rcmd_core::sftp::{self, ConnectEvent, ConnectReply, SftpFs, SftpUrl};
 use rcmd_core::vfs::{FsProvider, LocalFs};
 use rcmd_core::view::FileView;
@@ -212,6 +212,9 @@ pub enum EditPrompt {
     },
 }
 
+/// One panel side's cached free-space measurement.
+pub type DiskSpace = Option<(PathBuf, Instant, Option<(u64, u64)>)>;
+
 /// Where the main-screen regions landed in the last draw; filled by
 /// [`ui::draw`], read by the mouse hit-testing.
 #[derive(Default, Clone, Copy)]
@@ -305,6 +308,10 @@ pub enum Action {
     HistoryBack,
     HistoryForward,
     QuickView,
+    InfoView,
+    Listing(ListMode),
+    OtherSameDir,
+    OtherOpenDir,
     Reload,
     SwapPanels,
     ToggleHidden,
@@ -362,6 +369,20 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("By modify time", "M-t", Action::Sort(SortKey::Mtime))),
             None,
             Some(("Toggle reverse", "", Action::SortReverse)),
+        ],
+    ),
+    (
+        "View",
+        &[
+            Some(("Brief listing", "", Action::Listing(ListMode::Brief))),
+            Some(("Full listing", "", Action::Listing(ListMode::Full))),
+            Some(("Long listing", "", Action::Listing(ListMode::Long))),
+            None,
+            Some(("Quick view", "C-x q", Action::QuickView)),
+            Some(("Info panel", "C-x i", Action::InfoView)),
+            None,
+            Some(("Other panel: same dir", "M-i", Action::OtherSameDir)),
+            Some(("Other panel: this dir", "M-o", Action::OtherOpenDir)),
         ],
     ),
 ];
@@ -445,6 +466,12 @@ pub struct App {
     pub viewer: Option<Viewer>,
     pub editor: Option<EditorState>,
     pub quick_view: Option<QuickView>,
+    /// Ctrl+X i: which panel shows the info pane, if any (mutually
+    /// exclusive with `quick_view`).
+    pub info: Option<usize>,
+    /// Free space per side: (dir it was measured for, when, free/total
+    /// bytes). Local panels only, refreshed by [`Self::disk_tick`].
+    pub disk: [DiskSpace; 2],
     pub menu: Option<MenuState>,
     pub help: Option<HelpState>,
     pub cmdline: CmdLine,
@@ -500,6 +527,7 @@ impl App {
             panel.show_hidden = config.show_hidden;
             panel.sort_key = config::sort_key_from_name(&config.sort_key);
             panel.sort_reverse = config.sort_reverse;
+            panel.list_mode = config::list_mode_from_name(&config.listing);
             let _ = panel.reload();
         }
         let (keymap, keymap_warnings) = keymap::build(&config.keymap, &config.keys);
@@ -541,6 +569,8 @@ impl App {
             viewer: None,
             editor: None,
             quick_view: None,
+            info: None,
+            disk: [None, None],
             menu: None,
             help: None,
             cmdline: CmdLine::default(),
@@ -576,6 +606,7 @@ impl App {
             self.tick_watch();
             self.update_quick_view();
             self.git_tick();
+            self.disk_tick();
             terminal.draw(|frame| ui::draw(frame, self))?;
             let loading = self.panels.iter().any(Panel::is_loading);
             let watch_pending = self
@@ -1159,7 +1190,7 @@ impl App {
 
     fn panel_click(&mut self, side: usize, area: Rect, y: u16, double: bool) {
         self.active = side;
-        if self.quick_view.as_ref().is_some_and(|q| q.side == side) {
+        if self.quick_view.as_ref().is_some_and(|q| q.side == side) || self.info == Some(side) {
             return;
         }
         // 2 border+header rows on top, 1 border row at the bottom
@@ -1255,6 +1286,9 @@ impl App {
                     let _ = fv.ensure_lines(want + 1);
                     qv.top = want.min(fv.known_lines().saturating_sub(1));
                 }
+                return;
+            }
+            if self.info == Some(side) {
                 return;
             }
             // scroll the hovered panel's cursor without stealing focus
@@ -1456,14 +1490,22 @@ impl App {
             Action::HistoryBack => self.history_step(false),
             Action::HistoryForward => self.history_step(true),
             Action::QuickView => self.toggle_quick_view(),
+            Action::InfoView => self.toggle_info(),
+            Action::Listing(mode) => self.panel().list_mode = mode,
+            Action::OtherSameDir => self.other_panel_dir(false),
+            Action::OtherOpenDir => self.other_panel_dir(true),
             Action::Reload => self.fallible(|p| p.reload().map(|()| true)),
             Action::SwapPanels => {
                 self.panels.swap(0, 1);
                 self.table_states.swap(0, 1);
                 self.git_info.swap(0, 1);
                 self.git_seen.swap(0, 1);
+                self.disk.swap(0, 1);
                 if let Some(qv) = self.quick_view.as_mut() {
                     qv.side ^= 1;
+                }
+                if let Some(side) = self.info.as_mut() {
+                    *side ^= 1;
                 }
             }
             Action::ToggleHidden => self.fallible(|p| p.toggle_hidden().map(|()| true)),
@@ -1526,6 +1568,7 @@ impl App {
         if self.quick_view.take().is_some() {
             return;
         }
+        self.info = None;
         self.quick_view = Some(QuickView {
             side: self.active ^ 1,
             view: None,
@@ -1571,6 +1614,62 @@ impl App {
                 qv.view = None;
                 qv.note = err.to_string();
             }
+        }
+    }
+
+    /// Ctrl+X i: turn the other panel into a stat/info pane (again
+    /// restores the listing).
+    fn toggle_info(&mut self) {
+        if self.info.take().is_some() {
+            return;
+        }
+        self.quick_view = None;
+        self.info = Some(self.active ^ 1);
+    }
+
+    /// Keep the free-space cache fresh: per local panel, re-measure when
+    /// the directory changed or the last figure is older than 3 s.
+    fn disk_tick(&mut self) {
+        for side in [0, 1] {
+            let panel = &self.panels[side];
+            if !panel.is_local() {
+                self.disk[side] = None;
+                continue;
+            }
+            let stale = match &self.disk[side] {
+                Some((dir, at, _)) => dir != &panel.cwd || at.elapsed() > Duration::from_secs(3),
+                None => true,
+            };
+            if stale {
+                self.disk[side] = Some((panel.cwd.clone(), Instant::now(), free_space(&panel.cwd)));
+            }
+        }
+    }
+
+    /// Alt+i / Alt+o: point the other panel at the active panel's
+    /// directory, or at the directory under its cursor.
+    fn other_panel_dir(&mut self, under_cursor: bool) {
+        let active = &self.panels[self.active];
+        if !active.is_local() {
+            self.status = Some(" works on local panels only ".into());
+            return;
+        }
+        let target = if under_cursor {
+            match active.selected() {
+                Some(e) if e.is_dir() && !e.is_parent() => active.cwd.join(&e.name),
+                _ => active.cwd.clone(),
+            }
+        } else {
+            active.cwd.clone()
+        };
+        let other = &mut self.panels[self.active ^ 1];
+        let result = if other.is_local() {
+            other.cd(target)
+        } else {
+            other.to_local(target)
+        };
+        if let Err(err) = result {
+            self.status = Some(format!(" {err} "));
         }
     }
 
@@ -2858,13 +2957,14 @@ impl App {
             match key.code {
                 KeyCode::Char('d' | 'D') => self.run_action(Action::CompareDirs),
                 KeyCode::Char('q' | 'Q') => self.run_action(Action::QuickView),
+                KeyCode::Char('i' | 'I') => self.run_action(Action::InfoView),
                 _ => {}
             }
             return;
         }
         if ctrl && key.code == KeyCode::Char('x') {
             self.prefix_cx = true;
-            self.status = Some(" C-x  (d = compare directories, q = quick view) ".into());
+            self.status = Some(" C-x  (d = compare dirs, q = quick view, i = info panel) ".into());
             return;
         }
         // Focused preview pane: a reduced key set (scrolling, Tab back,
@@ -2898,6 +2998,15 @@ impl App {
                         qv.top = want.min(max_top);
                     }
                 }
+                KeyCode::F(10) => self.quit = true,
+                _ => {}
+            }
+            return;
+        }
+        // Focused info pane: nothing to scroll — Tab back or quit.
+        if self.info == Some(self.active) {
+            match key.code {
+                KeyCode::Tab | KeyCode::BackTab => self.active ^= 1,
                 KeyCode::F(10) => self.quit = true,
                 _ => {}
             }
@@ -3320,6 +3429,24 @@ fn select_match(ed: &mut rcmd_edit::Editor, m: rcmd_edit::Match) {
     if m.len > 0 {
         ed.goto(end, true);
     }
+}
+
+/// (free, total) bytes of the filesystem holding `path`.
+#[cfg(unix)]
+fn free_space(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut vfs: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut vfs) } != 0 {
+        return None;
+    }
+    let frsize = vfs.f_frsize as u64;
+    Some((vfs.f_bavail as u64 * frsize, vfs.f_blocks as u64 * frsize))
+}
+
+#[cfg(not(unix))]
+fn free_space(_path: &Path) -> Option<(u64, u64)> {
+    None
 }
 
 /// Inverse of [`ui::screen_col`]: the character index whose cell covers

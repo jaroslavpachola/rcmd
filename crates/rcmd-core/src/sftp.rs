@@ -382,6 +382,17 @@ fn entry_from(name: std::ffi::OsString, st: &FileStat, sftp: &ssh2::Sftp, path: 
         mtime: st.mtime.map(|s| UNIX_EPOCH + Duration::from_secs(s)),
         mode: perm & 0o7777,
         link_target,
+        extra: rcmd_entry_stat(st),
+    }
+}
+
+/// What the SFTP protocol exposes: uid/gid/atime; no ctime/links/inode.
+fn rcmd_entry_stat(st: &FileStat) -> crate::entry::EntryStat {
+    crate::entry::EntryStat {
+        uid: st.uid,
+        gid: st.gid,
+        atime: st.atime.map(|s| UNIX_EPOCH + Duration::from_secs(s)),
+        ..Default::default()
     }
 }
 

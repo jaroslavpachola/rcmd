@@ -91,6 +91,8 @@ end
 | Alt+↑ | Directory hotlist |
 | Ctrl+X d | Compare directories (marks differences in both panels) |
 | Ctrl+X q | Quick view: other panel previews the cursor file |
+| Ctrl+X i | Info panel: other panel shows the cursor file's full stat |
+| Alt+i / Alt+o | Other panel: same directory / directory under cursor |
 | Ctrl+Space | Directory size (background scan into the Size column) |
 | Ctrl+R | Reload panel (also restores listing after find/panelize) |
 | Esc | Cancel dialog / running operation / clear command line |
@@ -142,6 +144,16 @@ reconnect through the connection cache), Alt+↑ opens the hotlist.
 the file under the cursor, updating as you move. It uses the viewer's
 chunked reader, so previewing a multi-GB log is instant. Tab focuses
 the preview for scrolling (arrows/PgUp/PgDn); Ctrl+X q turns it off.
+
+**File properties**: the info panel (Ctrl+X i) turns the other panel
+into a live stat display of the file under the cursor — type, size,
+permissions, owner and group (resolved locally, numeric on SFTP),
+hard links, inode, and all three timestamps — plus the filesystem's
+free space, which also shows in every local panel's footer. Listing
+formats are switchable per panel from F9 → View: *brief* (names only,
+full width), *full* (the classic name/size/mtime), and *long*
+(ls-style perms/owner/group/size/name); the choice persists in the
+config (`listing`).
 
 **Git awareness**: inside a git work tree the panel title shows the
 branch (`[main]`) and each entry gets a one-cell status column —
@@ -207,6 +219,7 @@ editor = "internal" # or "external" ($VISUAL/$EDITOR for F4)
 show_hidden = true
 sort_key = "name"   # name | ext | size | mtime
 sort_reverse = false
+listing = "full"    # brief | full | long (panel listing format)
 
 [keys]              # custom bindings on top of the preset
 "ctrl+y" = "swap-panels"
@@ -215,8 +228,9 @@ sort_reverse = false
 #   unselect-group invert-selection quit shell reload swap-panels
 #   toggle-hidden sort-name sort-ext sort-size sort-mtime sort-reverse
 #   menu mark quick-search hotlist filter up-dir enter history-back
-#   history-forward quick-view sftp-link find-file panelize compare-dirs
-#   dir-size
+#   history-forward quick-view info-view listing-brief listing-full
+#   listing-long other-same-dir other-open-dir sftp-link find-file
+#   panelize compare-dirs dir-size
 
 [[hotlist]]
 label = "projects"

@@ -5,7 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Clear, Gauge, Row, Table, TableState};
 use rcmd_core::entry::{Entry, EntryKind};
-use rcmd_core::panel::Panel;
+use rcmd_core::panel::{ListMode, Panel};
 
 use crate::app::{
     App, Ask, ConfirmDialog, ConnectAsk, Dialog, EditPrompt, FindDialog, InputDialog, Job, MENUS,
@@ -141,6 +141,12 @@ const HELP_TEXT: &[&str] = &[
     "  Alt+Up          directory hotlist (same as Ctrl+\\)",
     "  Ctrl+X q        quick view: the other panel previews the cursor",
     "                  file live (Tab focuses it for scrolling; again = off)",
+    "  Ctrl+X i        info panel: the other panel shows the full stat of",
+    "                  the cursor file (owner, times, inode...; again = off)",
+    "  Alt+I           other panel switches to this panel's directory",
+    "  Alt+O           other panel opens the directory under the cursor",
+    "  F9 > View       listing format: brief (names), full, long (ls -l);",
+    "                  the panel footer shows the filesystem's free space",
     "  Inside a git work tree the title shows [branch] and entries get a",
     "  status column: M modified, A added, ? untracked, ! ignored (dim).",
     "",
@@ -264,9 +270,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let qv_side = app.quick_view.as_ref().map(|q| q.side);
     for (i, area) in [(0, left), (1, right)] {
+        let disk = app.disk[i]
+            .as_ref()
+            .filter(|(dir, ..)| dir == &app.panels[i].cwd)
+            .and_then(|(_, _, space)| *space);
         if qv_side == Some(i) {
             let qv = app.quick_view.as_mut().expect("side implies quick view");
             draw_quick_view(frame, area, qv, app.active == i);
+        } else if app.info == Some(i) {
+            let browse = &app.panels[i ^ 1];
+            let browse_disk = app.disk[i ^ 1]
+                .as_ref()
+                .filter(|(dir, ..)| dir == &browse.cwd)
+                .and_then(|(_, _, space)| *space);
+            draw_info(frame, area, browse, browse_disk, app.active == i);
         } else {
             draw_panel(
                 frame,
@@ -275,6 +292,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 &mut app.table_states[i],
                 app.active == i,
                 app.git_info[i].as_ref().map(|(_, s)| s),
+                disk,
             );
         }
     }
@@ -313,6 +331,7 @@ fn draw_panel(
     state: &mut TableState,
     active: bool,
     git: Option<&GitStatus>,
+    disk: Option<(u64, u64)>,
 ) {
     let title_style = if active {
         Style::new().fg(th().select_fg).bg(th().select_bg)
@@ -352,6 +371,14 @@ fn draw_panel(
             ))
             .right_aligned(),
         );
+    } else if let Some((free, total)) = disk {
+        block = block.title_bottom(
+            Line::from(Span::styled(
+                format!(" {} / {} free ", human_size(free), human_size(total)),
+                Style::new().fg(th().header_fg),
+            ))
+            .right_aligned(),
+        );
     }
     if let Some(label) = &panel.panelized {
         block = block.title_bottom(Span::styled(
@@ -376,13 +403,31 @@ fn draw_panel(
         );
     }
 
-    let header = Row::new([
-        Cell::from(Line::from("Name").centered()),
-        Cell::from(Line::from("Size").centered()),
-        Cell::from(Line::from("Modify time").centered()),
-    ])
-    .style(Style::new().fg(th().header_fg));
+    let (labels, constraints): (&[&str], Vec<Constraint>) = match panel.list_mode {
+        ListMode::Brief => (&["Name"], vec![Constraint::Fill(1)]),
+        ListMode::Full => (
+            &["Name", "Size", "Modify time"],
+            vec![
+                Constraint::Fill(1),
+                Constraint::Length(7),
+                Constraint::Length(12),
+            ],
+        ),
+        ListMode::Long => (
+            &["Perms", "Owner", "Group", "Size", "Name"],
+            vec![
+                Constraint::Length(10),
+                Constraint::Length(8),
+                Constraint::Length(8),
+                Constraint::Length(7),
+                Constraint::Fill(1),
+            ],
+        ),
+    };
+    let header = Row::new(labels.iter().map(|l| Cell::from(Line::from(*l).centered())))
+        .style(Style::new().fg(th().header_fg));
 
+    let remote = panel.is_remote();
     let rows = panel.entries.iter().enumerate().map(|(i, entry)| {
         let git_mark = git.map(|g| g.marks.get(&entry.name).copied());
         entry_row(
@@ -390,21 +435,16 @@ fn draw_panel(
             panel.is_marked(entry),
             active && i == panel.cursor,
             git_mark,
+            panel.list_mode,
+            remote,
         )
     });
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Fill(1),
-            Constraint::Length(7),
-            Constraint::Length(12),
-        ],
-    )
-    .header(header)
-    .column_spacing(1)
-    .style(Style::new().fg(th().panel_fg).bg(th().panel_bg))
-    .block(block);
+    let table = Table::new(rows, constraints)
+        .header(header)
+        .column_spacing(1)
+        .style(Style::new().fg(th().panel_fg).bg(th().panel_bg))
+        .block(block);
 
     state.select(Some(panel.cursor));
     frame.render_stateful_widget(table, area, state);
@@ -478,6 +518,8 @@ fn entry_row(
     marked: bool,
     under_cursor: bool,
     git: Option<Option<char>>,
+    mode: ListMode,
+    remote: bool,
 ) -> Row<'_> {
     let (marker, base) = match entry.kind {
         EntryKind::Dir => (
@@ -539,12 +581,214 @@ fn entry_row(
             ]))
         }
     };
-    Row::new([
-        name_cell,
-        Cell::from(Line::from(size).right_aligned()),
-        Cell::from(mtime),
-    ])
+    let size_cell = Cell::from(Line::from(size).right_aligned());
+    match mode {
+        ListMode::Brief => Row::new(vec![name_cell]),
+        ListMode::Full => Row::new(vec![name_cell, size_cell, Cell::from(mtime)]),
+        ListMode::Long => Row::new(vec![
+            Cell::from(entry.perm_string()),
+            Cell::from(owner_label(entry.extra.uid, remote, true)),
+            Cell::from(owner_label(entry.extra.gid, remote, false)),
+            size_cell,
+            name_cell,
+        ]),
+    }
     .style(style)
+}
+
+/// Owner/group column text: resolved name locally, the bare id on
+/// remote panels (the server's ids mean nothing to our passwd).
+fn owner_label(id: Option<u32>, remote: bool, user: bool) -> String {
+    match id {
+        None => String::new(),
+        Some(id) if remote => id.to_string(),
+        Some(id) if user => user_name(id),
+        Some(id) => group_name(id),
+    }
+}
+
+/// The Ctrl+X i info pane: full stat of the file under the other
+/// panel's cursor, plus the filesystem's free space.
+fn draw_info(
+    frame: &mut Frame,
+    area: Rect,
+    browse: &Panel,
+    disk: Option<(u64, u64)>,
+    active: bool,
+) {
+    let title_style = if active {
+        Style::new().fg(th().select_fg).bg(th().select_bg)
+    } else {
+        Style::new().fg(th().panel_fg).bg(th().panel_bg)
+    };
+    let block = Block::bordered()
+        .style(Style::new().fg(th().panel_fg).bg(th().panel_bg))
+        .title(Span::styled(" Info ", title_style));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let time = |t: &Option<std::time::SystemTime>| {
+        t.map(|t| {
+            DateTime::<Local>::from(t)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|| "n/a".into())
+    };
+    let count = |n: &Option<u64>| n.map(|n| n.to_string()).unwrap_or_else(|| "n/a".into());
+    let remote = browse.is_remote();
+
+    let mut lines: Vec<String> = Vec::new();
+    match browse.selected() {
+        Some(e) if !e.is_parent() => {
+            let kind = match e.kind {
+                EntryKind::Dir => "directory".to_string(),
+                EntryKind::File => "regular file".to_string(),
+                EntryKind::SymlinkBroken => "broken symlink".to_string(),
+                EntryKind::SymlinkDir | EntryKind::SymlinkFile => format!(
+                    "symlink -> {}",
+                    e.link_target
+                        .as_ref()
+                        .map(|t| t.display().to_string())
+                        .unwrap_or_default()
+                ),
+            };
+            lines.push(format!("Name:      {}", e.name.to_string_lossy()));
+            lines.push(format!("Type:      {kind}"));
+            lines.push(format!("Size:      {}  ({})", e.size, human_size(e.size)));
+            lines.push(format!("Perms:     {}  ({:o})", e.perm_string(), e.mode));
+            let owner = |id: &Option<u32>, user: bool| match id {
+                None => "n/a".to_string(),
+                Some(id) if remote => id.to_string(),
+                Some(id) => format!(
+                    "{} ({id})",
+                    if user {
+                        user_name(*id)
+                    } else {
+                        group_name(*id)
+                    }
+                ),
+            };
+            lines.push(format!("Owner:     {}", owner(&e.extra.uid, true)));
+            lines.push(format!("Group:     {}", owner(&e.extra.gid, false)));
+            lines.push(format!("Links:     {}", count(&e.extra.nlink)));
+            lines.push(format!("Inode:     {}", count(&e.extra.inode)));
+            lines.push(String::new());
+            lines.push(format!("Modified:  {}", time(&e.mtime)));
+            lines.push(format!("Accessed:  {}", time(&e.extra.atime)));
+            lines.push(format!("Changed:   {}", time(&e.extra.ctime)));
+        }
+        _ => lines.push("(parent directory)".into()),
+    }
+    if let Some((free, total)) = disk {
+        let pct = (free * 100).checked_div(total).unwrap_or(0);
+        lines.push(String::new());
+        lines.push(format!(
+            "Space:     {} of {} free ({pct}%)",
+            human_size(free),
+            human_size(total)
+        ));
+    }
+
+    for (row, text) in lines.iter().enumerate() {
+        if row as u16 >= inner.height {
+            break;
+        }
+        let text: String = text.chars().take(inner.width as usize).collect();
+        frame.render_widget(
+            Line::from(text),
+            Rect {
+                y: inner.y + row as u16,
+                height: 1,
+                ..inner
+            },
+        );
+    }
+}
+
+/// "58.2G"-style human size (1024-based), one decimal below 100.
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["K", "M", "G", "T"];
+    if bytes < 1000 {
+        return format!("{bytes}B");
+    }
+    let mut val = bytes as f64;
+    let mut unit = 0;
+    val /= 1024.0;
+    while val >= 1000.0 && unit + 1 < UNITS.len() {
+        val /= 1024.0;
+        unit += 1;
+    }
+    if val >= 100.0 {
+        format!("{val:.0}{}", UNITS[unit])
+    } else {
+        format!("{val:.1}{}", UNITS[unit])
+    }
+}
+
+fn user_name(uid: u32) -> String {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u32, String>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().unwrap().get(&uid) {
+        return hit.clone();
+    }
+    let name = lookup_name(uid, true).unwrap_or_else(|| uid.to_string());
+    cache.lock().unwrap().insert(uid, name.clone());
+    name
+}
+
+fn group_name(gid: u32) -> String {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u32, String>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(hit) = cache.lock().unwrap().get(&gid) {
+        return hit.clone();
+    }
+    let name = lookup_name(gid, false).unwrap_or_else(|| gid.to_string());
+    cache.lock().unwrap().insert(gid, name.clone());
+    name
+}
+
+/// getpwuid_r / getgrgid_r, tolerating missing entries.
+fn lookup_name(id: u32, user: bool) -> Option<String> {
+    let mut buf = vec![0u8; 4096];
+    unsafe {
+        let name_ptr = if user {
+            let mut pwd: libc::passwd = std::mem::zeroed();
+            let mut out: *mut libc::passwd = std::ptr::null_mut();
+            let rc = libc::getpwuid_r(
+                id,
+                &mut pwd,
+                buf.as_mut_ptr() as *mut libc::c_char,
+                buf.len(),
+                &mut out,
+            );
+            if rc != 0 || out.is_null() {
+                return None;
+            }
+            pwd.pw_name
+        } else {
+            let mut grp: libc::group = std::mem::zeroed();
+            let mut out: *mut libc::group = std::ptr::null_mut();
+            let rc = libc::getgrgid_r(
+                id,
+                &mut grp,
+                buf.as_mut_ptr() as *mut libc::c_char,
+                buf.len(),
+                &mut out,
+            );
+            if rc != 0 || out.is_null() {
+                return None;
+            }
+            grp.gr_name
+        };
+        Some(
+            std::ffi::CStr::from_ptr(name_ptr)
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
 }
 
 /// Fits in 7 columns: plain bytes below 10M, then K/M/G like MC.

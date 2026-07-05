@@ -45,6 +45,7 @@ fn run(
     app.config.show_hidden = panel.show_hidden;
     app.config.sort_key = config::sort_key_name(panel.sort_key).to_string();
     app.config.sort_reverse = panel.sort_reverse;
+    app.config.listing = config::list_mode_name(panel.list_mode).to_string();
     if let Err(err) = config::save(&app.config) {
         eprintln!("rcmd: could not save config: {err}");
     }

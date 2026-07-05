@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **File properties & listing formats** (P7 MC depth): Ctrl+X i info
+  panel (full stat of the cursor file on the other panel: type, size,
+  perms, owner/group, links, inode, mtime/atime/ctime), free-space
+  display in local panel footers and the info panel, per-panel listing
+  formats brief/full/long via F9 → View (persisted as `listing`),
+  Alt+i / Alt+o point the other panel at this directory / the directory
+  under the cursor
+
 ## 1.1.0 — 2026-07-05
 
 2.0-roadmap phases P1–P5 (docs/PLAN2.md):

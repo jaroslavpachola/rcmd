@@ -138,6 +138,7 @@ impl ArchiveFs {
             mtime,
             mode,
             link_target,
+            extra: Default::default(),
         };
         let list = self.index.entry(parent).or_default();
         match list.iter_mut().find(|e| e.name == name) {
@@ -169,6 +170,7 @@ impl ArchiveFs {
                 mtime: None,
                 mode: 0o755,
                 link_target: None,
+                extra: Default::default(),
             });
         }
     }

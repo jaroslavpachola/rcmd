@@ -41,6 +41,15 @@ pub enum SortKey {
     Mtime,
 }
 
+/// Panel listing format: name-only, the classic three columns, or an
+/// ls -l style long format. Pure presentation — rendering reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListMode {
+    Brief,
+    Full,
+    Long,
+}
+
 /// One side of the two-panel view: a directory listing with a cursor and
 /// per-directory marks. Pure state + logic, no rendering concerns.
 pub struct Panel {
@@ -60,6 +69,7 @@ pub struct Panel {
     pub sort_key: SortKey,
     pub sort_reverse: bool,
     pub show_hidden: bool,
+    pub list_mode: ListMode,
     /// Glob applied to files (directories always show), MC's "filter".
     pub filter: Option<String>,
     /// When Some(label), the listing is an external result set (find /
@@ -90,6 +100,7 @@ impl Panel {
             sort_key: SortKey::Name,
             sort_reverse: false,
             show_hidden: true,
+            list_mode: ListMode::Full,
             filter: None,
             panelized: None,
             pending: None,
@@ -908,6 +919,26 @@ mod tests {
         assert!(panel.marked.is_empty());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn local_entries_carry_extended_stat() {
+        use std::os::unix::fs::MetadataExt;
+        let tree = make_tree();
+        let panel = Panel::new(tree.path().to_path_buf()).unwrap();
+        let file = panel
+            .entries
+            .iter()
+            .find(|e| !e.is_dir() && !e.is_parent())
+            .unwrap();
+        let meta = std::fs::metadata(tree.path().join(&file.name)).unwrap();
+        assert_eq!(file.extra.uid, Some(meta.uid()));
+        assert_eq!(file.extra.gid, Some(meta.gid()));
+        assert_eq!(file.extra.nlink, Some(meta.nlink()));
+        assert_eq!(file.extra.inode, Some(meta.ino()));
+        assert!(file.extra.atime.is_some());
+        assert!(file.extra.ctime.is_some());
+    }
+
     #[test]
     fn history_walks_back_forward_and_truncates() {
         let dir = tempfile::tempdir().unwrap();
@@ -1053,6 +1084,7 @@ mod tests {
                 mtime: None,
                 mode: 0o644,
                 link_target: None,
+                extra: Default::default(),
             }])
         }
         fn stat(&self, _path: &Path) -> io::Result<Entry> {
@@ -1123,6 +1155,7 @@ mod tests {
                 mtime: None,
                 mode: 0o755,
                 link_target: None,
+                extra: Default::default(),
             },
             Entry {
                 name: OsString::from("motd"),
@@ -1131,6 +1164,7 @@ mod tests {
                 mtime: None,
                 mode: 0o644,
                 link_target: None,
+                extra: Default::default(),
             },
         ];
         panel.adopt_remote(

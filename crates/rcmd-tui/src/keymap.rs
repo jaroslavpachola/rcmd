@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-use rcmd_core::panel::SortKey;
+use rcmd_core::panel::{ListMode, SortKey};
 
 use crate::app::Action;
 
@@ -36,6 +36,8 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("alt+left", "history-back"),
     ("alt+right", "history-forward"),
     ("alt+up", "hotlist"),
+    ("alt+i", "other-same-dir"),
+    ("alt+o", "other-open-dir"),
     ("alt+.", "toggle-hidden"),
     ("alt+n", "sort-name"),
     ("alt+e", "sort-ext"),
@@ -151,6 +153,12 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "history-back" => Action::HistoryBack,
         "history-forward" => Action::HistoryForward,
         "quick-view" => Action::QuickView,
+        "info-view" => Action::InfoView,
+        "listing-brief" => Action::Listing(ListMode::Brief),
+        "listing-full" => Action::Listing(ListMode::Full),
+        "listing-long" => Action::Listing(ListMode::Long),
+        "other-same-dir" => Action::OtherSameDir,
+        "other-open-dir" => Action::OtherOpenDir,
         "reload" => Action::Reload,
         "swap-panels" => Action::SwapPanels,
         "toggle-hidden" => Action::ToggleHidden,
