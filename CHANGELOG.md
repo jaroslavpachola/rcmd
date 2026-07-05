@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 — 2026-07-05
 
 2.0-roadmap phases P1–P5 (docs/PLAN2.md):
 

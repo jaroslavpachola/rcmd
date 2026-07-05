@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "bzip2",
  "flate2",
@@ -1069,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-edit"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "regex",
  "ropey",
@@ -1079,7 +1079,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-tui"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "chrono",
