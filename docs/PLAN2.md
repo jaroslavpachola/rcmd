@@ -1,6 +1,7 @@
 # rcmd 2.0 — beyond Midnight Commander
 
-**Status:** in progress — P0–P5 shipped (2026-07-04); next: P6
+**Status:** in progress — P0–P5 shipped, v1.1.0 released; plan revised
+2026-07-05 (Lua dropped, Windows moved post-2.0, P7/P8 rescoped); next: P6
 **Prerequisite:** PLAN.md complete (it is). Baseline: MC-parity dual-pane
 manager, ~43 tests, pty-verified, no async runtime, `FsProvider` seam.
 
@@ -158,33 +159,63 @@ detached and unborn HEADs. Scope cuts: no drag-and-drop or mouse marking
 text-only (no hex), git column is per-directory status, not per-panel
 refresh on every keystroke.
 
-### P6 — extensibility
+### P6 — extensibility (revised: no Lua)
 - **Openers first** (no scripting needed): `[open]` config section maps
   globs to commands (`"*.pdf" = "zathura %f"`); Enter on a file consults
   it (MC's mc.ext, but sane TOML).
 - **User commands**: `[commands]` — named shell templates with `%f`
   `%d` `%t` (tagged files) macros, bindable to keys and listed in a
   F2-style user menu.
-- **Lua last** (`mlua`, feature-gated): read-only API surface v0 —
-  query panels/selection, run jobs, add menu entries. API frozen small;
-  no promises of stability until it has three real users.
+- ~~Lua~~ — **cut from 2.0** (decision D3, resolved 2026-07-05): openers
+  + user commands are the extensibility story. `mlua` returns post-2.0
+  only if `[commands]` demonstrably can't express a real workflow.
 - Exit: PDF/image/office files open right from Enter; one personal
-  workflow automated per maintainer without recompiling.
+  workflow automated without recompiling.
 
-### P7 — Windows & the wider world
-- Port the unix-gated code: perms column (best-effort), symlink calls,
-  and the libc job-control block (Windows: plain process spawn, no
-  process groups). `trash` and `crossterm` already cross-platform.
-- CI matrix + release binaries for windows-latest; pty harness gets a
-  ConPTY variant or is marked unix-only with a Windows smoke script.
-- Exit: green CI on Windows and one real user browsing `C:\`.
+### P7 — SFTP auth depth (the one debt item that made the cut)
+The deliberate P3 scope cuts held up in practice except where they lock
+users out entirely:
+- **Passphrase-protected keys**: when `~/.ssh/id_*` needs a passphrase,
+  prompt for it (masked, like the password dialog) instead of silently
+  skipping to password auth. `ssh2` takes the passphrase directly.
+- **Keyboard-interactive auth**: servers that disable `password` in
+  favor of `keyboard-interactive` (default on some distros) currently
+  fail; route its prompts through the existing ConnectAsk dialog.
+- Both reuse the ConnectEvent/ConnectReply protocol — no new UI.
+- Exit: a passphrase key and a kbd-interactive-only sshd both connect;
+  e2e covers at least the passphrase path (paramiko can serve both).
+
+### P8 — 2.0 release engineering
+- Version 2.0.0, CHANGELOG, tag; release tarball as in 1.1.
+- **Install story**: `cargo install --git <repo> rcmd-tui` documented as
+  the one-command install (works today, no renames needed). Full
+  crates.io publish is decision D4 — the names `rcmd` *and* `rcmd-core`
+  are already squatted by unrelated crates, so publishing means renaming
+  the library crates (`rcmd-tui` itself is free); do it only if there is
+  demand beyond the git install.
+- Docs pass: README feature tour is current; PLAN2 gets its completion
+  retrospective like PLAN.md did.
+- Exit: v2.0.0 tagged; a stranger installs with one command and owns the
+  find/compare/sync/remote/edit workflows the Vision promised.
 
 ## Sequencing & effort (rough)
 
 P0 (days) → P1 (1–2 wk) → P2 (1–2 wk) → P3 (2–4 wk, flagship) →
-P4 (3–5 wk, riskiest) ∥ P5 (1–2 wk, parallelizable) → P6 (1–2 wk) →
-P7 (1–2 wk). P4 and P5 can swap or interleave; nothing after P3 blocks
-on P4.
+P4 (3–5 wk, riskiest) ∥ P5 (1–2 wk, parallelizable)   [all shipped] →
+P6 (~1 wk) → P7 (days) → P8 (days).
+
+## Post-2.0 candidates (cut, not condemned)
+
+- **Windows port** (was P7): unix-gated code is confined to the perms
+  column, symlinks, and the libc job-control block; `trash` and
+  `crossterm` are already cross-platform. Needs a ConPTY answer for the
+  pty harness. Do it when a real Windows user shows up.
+- **Lua scripting** (was in P6): only if `[commands]` proves too weak.
+- Editor soft-wrap; `$1` capture groups in replace (literal today).
+- Copy *into* tar archives (zip-append exists; tar needs a rewrite).
+- Quick-view hex mode; click-to-sort column headers; mouse marking.
+- Jobs queue UI (still just one job + viewer).
+- FsProvider dir-size over sftp (Ctrl+Space stays local-only).
 
 ## New crates
 
@@ -196,31 +227,33 @@ on P4.
 | editor buffer | `ropey` | P4 |
 | syntax highlighting | `syntect` (feature) | P4 |
 | git status | `git2` (feature) | P5 |
-| scripting | `mlua` (feature) | P6 |
+| ~~scripting~~ | ~~`mlua`~~ | cut with Lua |
 
 ## Risks
 
-- **P3 auth/UX rabbit hole** — SSH edge cases (jump hosts, 2FA) are
-  endless. Scope: agent + key + password against plain sshd; everything
-  else is post-2.0.
-- **P4 is where file managers go to die** — hence: own crate, hard
-  feature ceiling, shipped last, external editor never removed.
-- **Lua API regret** — a frozen v0 surface and feature gate keep it
-  revocable.
-- **Watcher storms** (P2) — debounce + automatic disable on >N events/s.
+- ~~P3 auth/UX rabbit hole~~ — held: agent + key + password shipped;
+  P7 adds exactly two more methods and then the line holds again
+  (jump hosts and 2FA stay post-2.0).
+- ~~P4 editor~~ — shipped within its ceiling; the ceiling stays law.
+- ~~Lua API regret~~ — resolved by not building it.
+- ~~Watcher storms~~ — debounce shipped in P2, no incidents.
+- **kbd-interactive protocol quirks** (P7): servers can send multiple
+  prompts per round; the dialog must loop, not assume one password.
+- **crates.io naming** (P8/D4): `rcmd` and `rcmd-core` are squatted;
+  publishing requires library renames — default is to not publish.
 
 ## Decision points
 
-- **D1 (P3): threads vs async** — stated above; the only place the 1.0
-  architecture is allowed to bend.
-- **D2 (P4): build vs embed editor** — spike ropey+syntect for a week;
-  if a maintained embeddable Rust editor core has emerged by then,
-  evaluate it before building.
-- **D3 (P6): how much Lua** — if `[open]` + `[commands]` cover 90% of
-  requests, Lua may stay permanently experimental.
+- **D1 (P3): threads vs async** — RESOLVED: threads, permanently.
+- **D2 (P4): build vs embed editor** — RESOLVED: built (`rcmd-edit`).
+- **D3 (P6): how much Lua** — RESOLVED 2026-07-05: none in 2.0;
+  `[open]` + `[commands]` carry extensibility.
+- **D4 (P8): crates.io publish** — OPEN: default no (name squatting
+  forces renames); `cargo install --git` is the documented install.
 
 ## What 2.0 still refuses to do
 
 FTP (dead protocol; SFTP only), cloud-storage APIs, tabs-as-in-browser,
-image rendering in-terminal, a jobs *queue* UI beyond one job + viewer
-(revisit post-2.0), and any default keybinding that breaks an MC hand.
+image rendering in-terminal, a jobs *queue* UI beyond one job + viewer,
+Windows and Lua (both post-2.0 candidates now), and any default
+keybinding that breaks an MC hand.
