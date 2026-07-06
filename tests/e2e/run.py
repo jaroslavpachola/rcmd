@@ -806,6 +806,10 @@ def test_subshell():
         if name == "fish":
             # pre-create so first-run completion generation is skipped
             os.makedirs(os.path.join(home, ".local/share/fish/generated_completions"))
+        if name == "zsh":
+            # CI runners have group-writable zsh dirs; Ubuntu's global
+            # compinit then blocks on an interactive security prompt
+            open(os.path.join(home, ".zshenv"), "w").write("skip_global_compinit=1\n")
         s = Session(play, home, shell=shell, subshell=True)
 
         # a typed command runs in the subshell, panels come right back

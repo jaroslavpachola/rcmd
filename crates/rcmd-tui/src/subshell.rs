@@ -465,11 +465,19 @@ fn build_command(shell: &str, kind: Kind) -> Result<(Option<PathBuf>, Command)> 
         }
         Kind::Zsh => {
             let dir = rc_dir()?;
+            // the user's .zshenv must run in the env phase (before
+            // /etc/zsh/zshrc — skip_global_compinit and friends), with
+            // ZDOTDIR restored afterwards so the rc phase finds our stub
+            std::fs::write(
+                dir.join(".zshenv"),
+                "_rcmd_zdotdir=\"$ZDOTDIR\"; ZDOTDIR=\"$HOME\"\n\
+                 [[ -r ~/.zshenv ]] && source ~/.zshenv\n\
+                 ZDOTDIR=\"$_rcmd_zdotdir\"; unset _rcmd_zdotdir\n",
+            )?;
             std::fs::write(
                 dir.join(".zshrc"),
                 format!(
                     "ZDOTDIR=\"$HOME\"\n\
-                     [[ -r ~/.zshenv ]] && source ~/.zshenv\n\
                      [[ -r ~/.zshrc ]] && source ~/.zshrc\n\
                      __rcmd_cwd() {{ builtin pwd >&{CTL_FD}; }}\n\
                      precmd_functions+=(__rcmd_cwd)\n"
