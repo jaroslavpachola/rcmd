@@ -1139,16 +1139,16 @@ impl App {
         let Some(sub) = self.subshell.as_mut() else {
             return Ok(());
         };
-        if pending_cmd.is_some() && !sub.ready() {
+        // a busy shell can't take a command (MC says the same); a shell
+        // still starting up (slow rc files, compinit) is worth waiting
+        // for — the session shows it booting
+        if pending_cmd.is_some() && !sub.ready() && !sub.starting() {
             self.status = Some(" the shell is already running a command — Ctrl+O shows it ".into());
             return Ok(());
         }
-        // the panels moved since the last agreement → the shell follows
-        // first (the reverse sync happens on the way out)
-        let inject = panel_dir.filter(|dir| sub.ready() && *dir != sub.agreed && *dir != sub.cwd());
         sub.debug(&format!(
-            "session start: cmd={pending_cmd:?} panel_dir={:?} inject={inject:?}",
-            self.panels[self.active].cwd
+            "session start: cmd={pending_cmd:?} panel_dir={panel_dir:?} starting={}",
+            sub.starting()
         ));
         let sub = self.subshell.as_mut().expect("subshell present");
 
@@ -1160,14 +1160,19 @@ impl App {
         out.write_all(&sub.take_output())?;
         out.flush()?;
 
-        let mut cd_wait = None;
+        // wait for the prompt before feeding anything; when the shell
+        // was ready on entry this resolves on the first loop pass
+        let mut start_wait = pending_cmd.is_some().then(Instant::now);
+        // cd sync first if the panels moved since the last agreement
+        // (the reverse sync happens on the way out)
+        let mut inject = panel_dir.filter(|dir| *dir != sub.agreed && *dir != sub.cwd());
+        let mut cd_wait: Option<Instant> = None;
         let mut awaiting = false;
-        if let Some(dir) = inject {
-            sub.feed_line(&format!("cd {}", shell_quote(&dir.to_string_lossy())));
-            cd_wait = Some(Instant::now());
-        } else if let Some(cmd) = pending_cmd.take() {
-            sub.feed_line(&cmd);
-            awaiting = true;
+        if pending_cmd.is_none() && sub.ready() {
+            // plain Ctrl+O at a prompt: sync the directory right away
+            if let Some(dir) = inject.take() {
+                sub.feed_line(&format!("cd {}", shell_quote(&dir.to_string_lossy())));
+            }
         }
 
         let mut size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
@@ -1184,6 +1189,25 @@ impl App {
             }
             if sub.failed {
                 break;
+            }
+            if let Some(since) = start_wait {
+                if sub.ready() {
+                    start_wait = None;
+                    if let Some(dir) = inject.take() {
+                        sub.feed_line(&format!("cd {}", shell_quote(&dir.to_string_lossy())));
+                        cd_wait = Some(Instant::now());
+                    } else if let Some(cmd) = pending_cmd.take() {
+                        sub.feed_line(&cmd);
+                        awaiting = true;
+                    }
+                } else if since.elapsed() > Duration::from_secs(10) {
+                    start_wait = None;
+                    pending_cmd = None;
+                    out.write_all(
+                        b"\r\n[rcmd: the shell never reached a prompt - command not sent]\r\n",
+                    )?;
+                    out.flush()?;
+                }
             }
             if let Some(since) = cd_wait
                 && (sub.ready() || since.elapsed() > Duration::from_secs(2))

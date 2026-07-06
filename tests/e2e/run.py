@@ -782,6 +782,14 @@ def test_scale():
     shutil.rmtree(root)
 
 
+def wait_buf(s, needle, timeout=15, start=0):
+    """Poll the raw pty stream for `needle` (slow shells, loaded CI)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline and needle not in s.buf[start:]:
+        s.drain(0.3)
+    return needle in s.buf[start:]
+
+
 def test_subshell():
     """R1 per-shell scenarios: forced subshell=true in every suite mode."""
     shells = ["/bin/sh"]
@@ -799,36 +807,39 @@ def test_subshell():
             # pre-create so first-run completion generation is skipped
             os.makedirs(os.path.join(home, ".local/share/fish/generated_completions"))
         s = Session(play, home, shell=shell, subshell=True)
-        s.drain(STEP * 2)  # shells can be slow to first prompt
 
         # a typed command runs in the subshell, panels come right back
-        # ('' splits the marker so the echoed command line can't match)
-        s.send(b"echo AA''BB\r", wait=STEP * 5)
-        check(f"subshell {name}: typed command ran", b"AABB" in s.buf)
-        check(f"subshell {name}: auto-returned to panels", "10Quit" in s.screen())
+        # ('' splits the marker so the echoed command line can't match;
+        # rcmd waits out slow shell startups — compinit and the like)
+        s.send(b"echo AA''BB\r")
+        check(f"subshell {name}: typed command ran", wait_buf(s, b"AABB"))
+        check(
+            f"subshell {name}: auto-returned to panels",
+            wait_for(s, "10Quit", timeout=10),
+        )
 
         # Ctrl+O into the shell, cd there, Ctrl+O back: the panel follows
         s.send(b"\x0f", wait=STEP * 2)
         s.send(b"cd followme\r", wait=STEP * 2)
-        s.send(b"\x0f", wait=STEP * 3)
+        s.send(b"\x0f", wait=STEP * 2)
         check(
             f"subshell {name}: panel follows the shell cwd",
-            play + "/followme" in s.screen(),
+            wait_for(s, play + "/followme", timeout=10),
         )
 
         # a panel cd syncs back into the shell before the next command
         s.send(b"cd ..\r", wait=STEP * 2)
         mark = len(s.buf)
-        s.send(b"echo P''WD=$PWD\r", wait=STEP * 5)
+        s.send(b"echo P''WD=$PWD\r")
         check(
             f"subshell {name}: shell follows the panel cwd",
-            b"PWD=" + play.encode() in s.buf[mark:],
+            wait_buf(s, b"PWD=" + play.encode(), start=mark),
         )
 
         # exit respawns the shell (with a note on the output screen)
         s.send(b"\x0f", wait=STEP * 2)
-        s.send(b"exit\r", wait=STEP * 5)
-        check(f"subshell {name}: exit respawns", b"respawned" in s.buf)
+        s.send(b"exit\r")
+        check(f"subshell {name}: exit respawns", wait_buf(s, b"respawned"))
         s.send(b"\x0f", wait=STEP * 2)
         s.quit()
         shutil.rmtree(root, ignore_errors=True)

@@ -74,6 +74,9 @@ pub struct Subshell {
     pub agreed: PathBuf,
     /// A prompt message arrived since the last feed (hook shells).
     prompt_seen: bool,
+    /// The shell reached a prompt at least once — distinguishes "still
+    /// starting up" (worth waiting for) from "busy with a command".
+    ever_ready: bool,
     last_output: Instant,
     fed_at: Option<Instant>,
     /// Output collected while the subshell screen is hidden.
@@ -150,6 +153,7 @@ impl Subshell {
             cwd: dir.to_path_buf(),
             agreed: dir.to_path_buf(),
             prompt_seen: false,
+            ever_ready: false,
             last_output: Instant::now(),
             fed_at: None,
             buf: Vec::new(),
@@ -234,6 +238,15 @@ impl Subshell {
             self.prompt_seen = true;
             self.debug("prompt message");
         }
+        if !self.ever_ready && self.ready() {
+            self.ever_ready = true;
+        }
+    }
+
+    /// Still waiting for the shell's very first prompt (slow rc files,
+    /// compinit, …)? Worth waiting for, unlike a running command.
+    pub fn starting(&self) -> bool {
+        !self.ever_ready && !self.failed
     }
 
     /// The buffered output (screen bytes) collected since the last take.
