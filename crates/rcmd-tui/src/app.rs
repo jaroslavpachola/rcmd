@@ -1200,7 +1200,9 @@ impl App {
                         sub.feed_line(&cmd);
                         awaiting = true;
                     }
-                } else if since.elapsed() > Duration::from_secs(10) {
+                } else if since.elapsed() > Duration::from_secs(30) {
+                    // cold-start compinit can take a long while; the
+                    // user watches the shell boot and can Ctrl+O out
                     start_wait = None;
                     pending_cmd = None;
                     out.write_all(

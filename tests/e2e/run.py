@@ -782,7 +782,7 @@ def test_scale():
     shutil.rmtree(root)
 
 
-def wait_buf(s, needle, timeout=15, start=0):
+def wait_buf(s, needle, timeout=40, start=0):
     """Poll the raw pty stream for `needle` (slow shells, loaded CI)."""
     deadline = time.time() + timeout
     while time.time() < deadline and needle not in s.buf[start:]:
@@ -812,7 +812,11 @@ def test_subshell():
         # ('' splits the marker so the echoed command line can't match;
         # rcmd waits out slow shell startups — compinit and the like)
         s.send(b"echo AA''BB\r")
-        check(f"subshell {name}: typed command ran", wait_buf(s, b"AABB"))
+        check(
+            f"subshell {name}: typed command ran",
+            wait_buf(s, b"AABB"),
+            detail=repr(s.buf[-400:]),
+        )
         check(
             f"subshell {name}: auto-returned to panels",
             wait_for(s, "10Quit", timeout=10),
