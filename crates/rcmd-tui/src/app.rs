@@ -501,6 +501,9 @@ pub struct App {
     pub areas: Areas,
     /// Last left-button press, for double-click detection.
     last_click: Option<(Instant, u16, u16)>,
+    /// A lone Esc waiting for its follow-up key (MC's ESC-as-Meta
+    /// prefix); resolved by the next key or a 1 s timeout.
+    esc_at: Option<Instant>,
     /// Git status per panel side (dir it was computed for + result);
     /// filled by background scans, cleared when a side leaves the repo.
     pub git_info: [Option<(PathBuf, git::GitStatus)>; 2],
@@ -605,6 +608,7 @@ impl App {
             prefix_cx: false,
             areas: Areas::default(),
             last_click: None,
+            esc_at: None,
             git_info: [None, None],
             git_seen: [None, None],
             git_tx,
@@ -628,6 +632,13 @@ impl App {
             self.update_quick_view();
             self.git_tick();
             self.disk_tick();
+            // an abandoned ESC prefix becomes a real Escape, like MC
+            if let Some(at) = self.esc_at
+                && at.elapsed() >= Duration::from_secs(1)
+            {
+                self.esc_at = None;
+                self.dispatch_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            }
             terminal.draw(|frame| ui::draw(frame, self))?;
             let loading = self.panels.iter().any(Panel::is_loading);
             let watch_pending = self
@@ -640,6 +651,7 @@ impl App {
                 || self.du.is_some()
                 || loading
                 || watch_pending
+                || self.esc_at.is_some()
             {
                 Duration::from_millis(50)
             } else {
@@ -1117,7 +1129,35 @@ impl App {
         }
     }
 
+    /// MC's ESC-as-Meta prefix, for terminals without working F-keys or
+    /// Alt: a lone Esc waits for a follow-up key — a digit becomes an
+    /// F-key (Esc 1 = F1 … Esc 0 = F10), anything else gets Alt added
+    /// (Esc t = Alt+T, Esc Enter = Alt+Enter), and Esc Esc is a real
+    /// Escape. Fast Esc+key already arrives as Alt from the terminal;
+    /// this handles the deliberate, slow-typed form.
     fn on_key(&mut self, key: KeyEvent) {
+        if self.esc_at.take().is_some() {
+            match key.code {
+                KeyCode::Char(c @ '0'..='9') if key.modifiers.is_empty() => {
+                    let n = if c == '0' { 10 } else { c as u8 - b'0' };
+                    self.on_key(KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE));
+                    return;
+                }
+                KeyCode::Esc => {} // deliberate double-Esc: a real Escape
+                _ => {
+                    self.on_key(KeyEvent::new(key.code, key.modifiers | KeyModifiers::ALT));
+                    return;
+                }
+            }
+        } else if key.code == KeyCode::Esc {
+            self.esc_at = Some(Instant::now());
+            self.status = Some(" ESC-  (1..0 = F1..F10, key = Alt+key, Esc = Esc) ".into());
+            return;
+        }
+        self.dispatch_key(key);
+    }
+
+    fn dispatch_key(&mut self, key: KeyEvent) {
         self.status = None;
         if self.job.is_some() {
             self.on_job_key(key);

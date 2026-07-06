@@ -5,7 +5,8 @@
 - **MC keybinding parity**: Alt+S = quick search, Alt+T = cycle listing
   format, Ctrl+U = swap panels — their Midnight Commander meanings
   (sort by ext/size/mtime moved to F9 → Sort or custom `[keys]`;
-  Alt+E freed)
+  Alt+E freed); ESC works as MC's meta prefix (Esc 1…0 = F1…F10,
+  Esc key = Alt+key, Esc Esc = Escape, 1 s timeout)
 - **Openers & user commands** (P6): `[[open]]` config rules make Enter
   open files by glob (first match wins, no pause — append `&` for GUI
   apps; lynx-motion Right stays dirs-only); `[[commands]]` shell

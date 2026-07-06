@@ -99,6 +99,7 @@ end
 | Ctrl+Space | Directory size (background scan into the Size column) |
 | Ctrl+R | Reload panel (also restores listing after find/panelize) |
 | Esc | Cancel dialog / running operation / clear command line |
+| Esc *key* | MC meta prefix: Esc 1…0 = F1…F10, Esc x = Alt+X, Esc Esc = Esc |
 | F10 | Quit |
 
 Typing goes to the **command line** at the bottom; Enter runs it in the
@@ -111,6 +112,11 @@ empty.
 
 In dialogs: arrows/Tab move between buttons, Enter confirms, Esc cancels;
 overwrite and error prompts also take hotkeys (o/a/s/S, r/s/S).
+
+Esc doubles as MC's meta prefix everywhere: after a lone Esc, a digit is
+an F-key (Esc 1 = F1 … Esc 0 = F10) and any other key gets Alt added —
+handy on terminals without working F-keys or Alt. Esc Esc is a real
+Escape; an unanswered Esc acts as one after a second.
 
 **Viewer** (F3): arrows/PgUp/PgDn/Home/End scroll, ←→ horizontal scroll,
 F2 toggles soft-wrap, F4 toggles hex mode, F7 or `/` searches

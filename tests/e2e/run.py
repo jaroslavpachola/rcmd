@@ -326,7 +326,8 @@ def test_history():
     check("history: forward", play + "/one" in s.screen())
     s.send(ALT_UP)
     check("history: alt+up opens hotlist", "Directory hotlist" in s.screen())
-    s.send(b"\x1b")
+    s.send(b"\x1b")                    # ESC prefix pending...
+    s.send(b"\x1b")                    # ...double-Esc closes the dialog
     s.quit()
     shutil.rmtree(root)
 
@@ -440,6 +441,32 @@ def test_mcdepth():
     s.send(b"\x15")
     s.send(b"\x1bi")
     check("mcdepth: alt+i", play + "/docs" not in s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_escmeta():
+    root, play, home = sandbox()
+    open(os.path.join(play, "read.me"), "w").write("esc meta works\n")
+    s = Session(play, home)
+    # Esc then 9 (separate writes, so crossterm sees a lone Esc) = F9
+    s.send(b"\x1b")
+    s.send(b"9")
+    check("escmeta: Esc 9 opens the menu", "Make directory..." in s.screen())
+    # Esc Esc = a real Escape: closes the menu
+    s.send(b"\x1b")
+    s.send(b"\x1b")
+    check("escmeta: Esc Esc escapes", "Make directory..." not in s.screen())
+    # Esc 3 on a file = F3 viewer
+    s.send(DOWN)                       # cursor -> read.me
+    s.send(b"\x1b")
+    s.send(b"3")
+    check("escmeta: Esc 3 views", "esc meta works" in s.screen())
+    s.send(b"q")
+    # Esc t = Alt+T (cycle listing: full -> long)
+    s.send(b"\x1b")
+    s.send(b"t")
+    check("escmeta: Esc t is Alt+T", "Owner" in header_line(s)[:60])
     s.quit()
     shutil.rmtree(root)
 
@@ -734,6 +761,7 @@ def main():
         test_quickview,
         test_mouse,
         test_mcdepth,
+        test_escmeta,
         test_extensibility,
         test_git,
         test_editor,
