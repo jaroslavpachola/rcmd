@@ -1,28 +1,31 @@
 # rcmd
 
 A Midnight Commander replacement in Rust: orthodox dual-pane file manager
-with MC keybindings, built on ratatui. The original roadmap
-([docs/PLAN.md](docs/PLAN.md)) is complete; the 2.0 roadmap is
-[docs/PLAN2.md](docs/PLAN2.md).
+with MC keybindings, built on ratatui. The 1.0
+([docs/PLAN.md](docs/PLAN.md)) and 2.0 ([docs/PLAN2.md](docs/PLAN2.md))
+roadmaps are complete; 3.0 is planned in
+[docs/PLAN3.md](docs/PLAN3.md).
 
 ## Status
 
-All milestones of the original plan shipped, plus the debt list: marking
-and F5–F8 operations with MC-style dialogs (mtimes preserved on copy),
+**2.0** — complete MC-workflow parity and beyond: marking and F5–F8
+operations with MC-style dialogs (mtimes preserved, F8 goes to trash),
 command line + shell integration with real job control, F3 chunked
-viewer with wrap and hex modes, F4 $EDITOR, F9 menu, F1 help, config
-file with keymap presets/custom bindings, quick search, filter, hotlist,
-themes, archive browsing (zip, tar, tar.gz, tar.xz, tar.bz2) with
-extraction, and copying into zip archives. From the 2.0 roadmap: find
-file / panelize / directory compare, non-blocking listings with
-filesystem watching, **SFTP remote panels** (browse, transfer, edit on
-servers), a **built-in editor** with syntax highlighting, and UX depth:
-mouse support, per-panel directory history, quick view, and git status
-in the panels — see below.
+viewer with wrap and hex modes, F9 menu, F1 help, config file with
+keymap presets/custom bindings, quick search, filter, hotlist, themes,
+archive browsing (zip, tar, tar.{gz,xz,bz2}) with extraction and
+copy-into-zip; find file / panelize / directory compare, non-blocking
+listings with filesystem watching, **SFTP remote panels**, a **built-in
+editor** with syntax highlighting, mouse support, per-panel directory
+history, quick view, info panel, listing formats, git status in the
+panels, **openers and an F2 user menu**, and MC's ESC-prefix — see
+below.
 
 ## Install & run
 
 ```sh
+cargo install --git https://github.com/jaroslavpachola/rcmd rcmd-tui
+# from a checkout:
 cargo install --path crates/rcmd-tui   # installs the `rcmd` binary
 # or during development:
 cargo run -p rcmd-tui                  # or: just run

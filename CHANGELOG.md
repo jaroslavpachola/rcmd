@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 2.0.0 — 2026-07-06
+
+The 2.0 roadmap (docs/PLAN2.md) is complete: rcmd now owns the
+workflows that used to require leaving it. One-command install:
+`cargo install --git https://github.com/jaroslavpachola/rcmd rcmd-tui`
 
 - **MC keybinding parity**: Alt+S = quick search, Alt+T = cycle listing
   format, Ctrl+U = swap panels — their Midnight Commander meanings

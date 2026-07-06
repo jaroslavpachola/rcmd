@@ -1,7 +1,8 @@
 # rcmd 2.0 — beyond Midnight Commander
 
-**Status:** in progress — P0–P6 shipped + P7's MC depth, v1.1.0
-released; remaining: P7 SFTP auth → P8 (the 2.0 release)
+**Status: COMPLETE — v2.0.0 released 2026-07-06.** P7's SFTP-auth items
+were moved to the 3.0 roadmap (docs/PLAN3.md) at the user's ship-now
+call. See the retrospective at the end.
 **Prerequisite:** PLAN.md complete (it is). Baseline: MC-parity dual-pane
 manager, ~43 tests, pty-verified, no async runtime, `FsProvider` seam.
 
@@ -218,7 +219,9 @@ where they lock users out entirely:
   (e2e covers at least the passphrase path — paramiko can serve both);
   info panel, free space, and all three listing modes pty-verified.
 
-**MC depth DONE (2026-07-05, ahead of schedule at user request).**
+**SFTP auth: moved to 3.0 (2026-07-06)** — the ship-now call for 2.0;
+carried into PLAN3 unchanged. **MC depth DONE (2026-07-05, ahead of
+schedule at user request).**
 `Entry` grew an `EntryStat` (uid/gid/atime/ctime/nlink/inode; local
 fills all, sftp what the protocol carries, archives none — the UI says
 "n/a"). Ctrl+X i info pane reuses the quick-view pane slot (mutually
@@ -244,6 +247,35 @@ Remaining in P7: the SFTP auth items above.
   retrospective like PLAN.md did.
 - Exit: v2.0.0 tagged; a stranger installs with one command and owns the
   find/compare/sync/remote/edit workflows the Vision promised.
+
+**DONE (2026-07-06).** v2.0.0 tagged and released; the git-install
+one-liner is the documented install (D4 stays resolved: no crates.io).
+
+## Retrospective (2.0)
+
+Shipped 2026-07-04 → 2026-07-06, one phase per sitting, each committed
+green (fmt, clippy -D warnings, unit tests, full pty e2e) and
+CI-verified before the next began. Final counts: 4 crates, 82 unit
+tests + 82 e2e checks driving the real binary in a pseudo-terminal.
+
+What the plan got right: the phase order (responsiveness before remote,
+editor last behind its own crate), the D1 bet (threads everywhere —
+blocking ssh2 on workers composed perfectly with the pending-load
+machinery; no async ever entered), and the standing rule that every
+phase ends pty-verified — the e2e suite caught real regressions
+(menu-position coupling, ESC-prefix breaking dialog closes) the unit
+tests never would have.
+
+What changed along the way: Lua was cut (D3 — `[[open]]`+`[[commands]]`
+cover it), Windows moved out entirely, `[open]` became ordered arrays
+of tables, the editor's 100 ms open goal was missed honestly (215 ms,
+accepted), MC depth (info panel, listing modes, free space) was pulled
+forward on demand, a keyboard audit late in the cycle fixed four
+bindings that broke MC hands and added the ESC meta prefix, and SFTP
+auth depth slid to 3.0 in the ship-now call.
+
+Post-2.0 candidates live above; the 3.0 roadmap (persistent subshell as
+flagship) is docs/PLAN3.md.
 
 ## Sequencing & effort (rough)
 
