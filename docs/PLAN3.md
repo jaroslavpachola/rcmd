@@ -56,6 +56,13 @@ Shipped 2026-07-06 (`rcmd-tui/src/subshell.rs` + a session loop in
   write end randomly landed on fd 27 itself, the no-op dup2 left
   CLOEXEC set and the hook fd died at exec — caught only because the
   full e2e suite shifts fd numbering. Handled explicitly.
+- **Landmine found: shells that block before their first prompt.**
+  Ubuntu's global compinit stops zsh at an interactive
+  insecure-directories question on CI runners. A command typed during
+  startup now waits up to 30 s in the subshell view (the user watches
+  the shell boot and can answer such prompts, or Ctrl+O away); the zsh
+  scaffolding runs `~/.zshenv` in the real env phase so things like
+  `skip_global_compinit` keep working.
 - Original goals, all kept:
 - A long-lived `$SHELL` child on a secondary pty, spawned at startup;
   `subshell = false` (and any spawn failure) falls back to 2.0's plain
