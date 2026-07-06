@@ -31,6 +31,10 @@ pub struct Config {
     pub git: bool,
     /// "internal" (the built-in editor) or "external" ($VISUAL/$EDITOR).
     pub editor: String,
+    /// Keep a persistent `$SHELL` on its own pty: Ctrl+O toggles to its
+    /// screen, typed commands run inside it, panels follow its cwd.
+    /// false = the pre-3.0 one-shot command execution.
+    pub subshell: bool,
     /// Custom bindings on top of the preset, e.g. "ctrl+y" = "swap-panels".
     pub keys: BTreeMap<String, String>,
     pub hotlist: Vec<HotEntry>,
@@ -78,6 +82,7 @@ impl Default for Config {
             mouse: true,
             git: true,
             editor: "internal".into(),
+            subshell: true,
             keys: BTreeMap::new(),
             hotlist: Vec::new(),
             open: Vec::new(),

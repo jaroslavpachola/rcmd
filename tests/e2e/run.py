@@ -32,19 +32,38 @@ FAILURES = []
 # generous waits: CI runners are slow
 STEP = float(os.environ.get("RCMD_E2E_STEP", "0.5"))
 
+# RCMD_E2E_SUBSHELL=1 runs the whole suite with the persistent subshell
+# on (commands run inside it, no "Press Enter" pause); default is off.
+SUBSHELL = os.environ.get("RCMD_E2E_SUBSHELL", "0") == "1"
+
+# Terminal queries a shell may block on (fish probes at every prompt);
+# a real terminal answers these, so the harness must too.
+QUERY = re.compile(rb"\x1b\[0?c|\x1b\[([56])n")
+
 signal.alarm(900)  # hard cap for the whole suite (the scale test is slow)
 
 
 class Session:
-    def __init__(self, cwd, home, args=()):
+    def __init__(self, cwd, home, args=(), shell="/bin/sh", subshell=None):
         self.buf = b""
+        want = SUBSHELL if subshell is None else subshell
+        cfg = os.path.join(home, ".config", "rcmd", "config.toml")
+        os.makedirs(os.path.dirname(cfg), exist_ok=True)
+        line = "subshell = %s\n" % ("true" if want else "false")
+        if os.path.exists(cfg):
+            text = open(cfg).read()
+            if "subshell" not in text:
+                # prepend: the flag must come before any [[table]]
+                open(cfg, "w").write(line + text)
+        else:
+            open(cfg, "w").write(line)
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             os.chdir(cwd)
             os.environ["HOME"] = home
             os.environ.pop("XDG_CONFIG_HOME", None)
             os.environ.pop("SSH_AUTH_SOCK", None)  # keep sftp auth deterministic
-            os.environ["SHELL"] = "/bin/sh"
+            os.environ["SHELL"] = shell
             os.environ["TERM"] = "xterm-256color"
             os.execv(BIN, [BIN, *args])
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
@@ -57,9 +76,17 @@ class Session:
             r, _, _ = select.select([self.fd], [], [], 0.05)
             if r:
                 try:
-                    self.buf += os.read(self.fd, 65536)
+                    chunk = os.read(self.fd, 65536)
                 except OSError:
                     return
+                self.buf += chunk
+                for m in QUERY.finditer(chunk):  # act like a real terminal
+                    if m.group(1) == b"6":
+                        os.write(self.fd, b"\x1b[1;1R")
+                    elif m.group(1) == b"5":
+                        os.write(self.fd, b"\x1b[0n")
+                    else:
+                        os.write(self.fd, b"\x1b[?6c")
 
     def send(self, keys, wait=None):
         os.write(self.fd, keys)
@@ -70,6 +97,12 @@ class Session:
         try:
             os.waitpid(self.pid, 0)
         except ChildProcessError:
+            pass
+        # forkpty masters are inheritable: close, or they pile up in
+        # every later child (which shifts its fd numbering)
+        try:
+            os.close(self.fd)
+        except OSError:
             pass
 
     def screen(self):
@@ -159,8 +192,12 @@ def test_cmdline():
     os.makedirs(os.path.join(play, "sub"))
     wdfile = os.path.join(root, "lastdir")
     s = Session(play, home, args=("-P", wdfile, play))
-    s.send(b"touch made.txt\r", wait=STEP * 2)   # runs command, then pause
-    s.send(b"\r", wait=STEP * 2)                 # return from pause
+    if SUBSHELL:
+        # runs inside the subshell; panels return by themselves
+        s.send(b"touch made.txt\r", wait=STEP * 4)
+    else:
+        s.send(b"touch made.txt\r", wait=STEP * 2)   # runs command, then pause
+        s.send(b"\r", wait=STEP * 2)                 # return from pause
     s.send(b"cd sub\r")
     s.quit()
     check("cmdline: command ran", os.path.isfile(os.path.join(play, "made.txt")))
@@ -506,7 +543,8 @@ def test_extensibility():
     scr = s.screen()
     check("extensibility: user menu", "User menu" in scr and "write marker" in scr)
     s.send(b"\r", wait=STEP * 3)       # run "write marker" (pauses)
-    s.send(b"\r", wait=STEP * 2)       # return from the pause
+    if not SUBSHELL:
+        s.send(b"\r", wait=STEP * 2)   # return from the pause
     marker = os.path.join(play, "marker.out")
     check(
         "extensibility: %d expanded",
@@ -517,7 +555,8 @@ def test_extensibility():
     # listing by now: .., marker.out, notes.txt, opened_copy
     s.send(HOME_K + DOWN + DOWN + INSERT)  # mark notes.txt
     s.send(b"\x07", wait=STEP * 3)     # Ctrl+G
-    s.send(b"\r", wait=STEP * 2)
+    if not SUBSHELL:
+        s.send(b"\r", wait=STEP * 2)
     tagged = os.path.join(play, "tagged.out")
     check(
         "extensibility: %t + key binding",
@@ -743,6 +782,58 @@ def test_scale():
     shutil.rmtree(root)
 
 
+def test_subshell():
+    """R1 per-shell scenarios: forced subshell=true in every suite mode."""
+    shells = ["/bin/sh"]
+    for name in ("bash", "zsh", "fish"):
+        path = shutil.which(name)
+        if path:
+            shells.append(path)
+        else:
+            print(f"SKIP subshell {name}: not installed")
+    for shell in shells:
+        name = os.path.basename(shell)
+        root, play, home = sandbox()
+        os.makedirs(os.path.join(play, "followme"))
+        if name == "fish":
+            # pre-create so first-run completion generation is skipped
+            os.makedirs(os.path.join(home, ".local/share/fish/generated_completions"))
+        s = Session(play, home, shell=shell, subshell=True)
+        s.drain(STEP * 2)  # shells can be slow to first prompt
+
+        # a typed command runs in the subshell, panels come right back
+        # ('' splits the marker so the echoed command line can't match)
+        s.send(b"echo AA''BB\r", wait=STEP * 5)
+        check(f"subshell {name}: typed command ran", b"AABB" in s.buf)
+        check(f"subshell {name}: auto-returned to panels", "10Quit" in s.screen())
+
+        # Ctrl+O into the shell, cd there, Ctrl+O back: the panel follows
+        s.send(b"\x0f", wait=STEP * 2)
+        s.send(b"cd followme\r", wait=STEP * 2)
+        s.send(b"\x0f", wait=STEP * 3)
+        check(
+            f"subshell {name}: panel follows the shell cwd",
+            play + "/followme" in s.screen(),
+        )
+
+        # a panel cd syncs back into the shell before the next command
+        s.send(b"cd ..\r", wait=STEP * 2)
+        mark = len(s.buf)
+        s.send(b"echo P''WD=$PWD\r", wait=STEP * 5)
+        check(
+            f"subshell {name}: shell follows the panel cwd",
+            b"PWD=" + play.encode() in s.buf[mark:],
+        )
+
+        # exit respawns the shell (with a note on the output screen)
+        s.send(b"\x0f", wait=STEP * 2)
+        s.send(b"exit\r", wait=STEP * 5)
+        check(f"subshell {name}: exit respawns", b"respawned" in s.buf)
+        s.send(b"\x0f", wait=STEP * 2)
+        s.quit()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def main():
     if not os.path.isfile(BIN):
         print(f"FAIL binary not found: {BIN} (run `cargo build` first)")
@@ -765,6 +856,7 @@ def main():
         test_extensibility,
         test_git,
         test_editor,
+        test_subshell,
         test_sftp,
         test_scale,
     ):

@@ -5,10 +5,12 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use notify::Watcher as _;
 use ratatui::DefaultTerminal;
+use ratatui::crossterm::cursor;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use ratatui::crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 use rcmd_core::entry;
@@ -22,6 +24,7 @@ use rcmd_core::view::FileView;
 
 use crate::config::{Config, HotEntry};
 use crate::keymap::Keymap;
+use crate::subshell::Subshell;
 use crate::{config, git, keymap, ui};
 
 pub enum InputAction {
@@ -514,6 +517,9 @@ pub struct App {
     pub config: Config,
     keymap: Keymap,
     pending_exec: Option<Exec>,
+    /// The persistent subshell (PLAN3 R1); None = plain exec fallback,
+    /// either by `subshell = false` or because the spawn failed.
+    subshell: Option<Subshell>,
     pub quit: bool,
 }
 
@@ -576,6 +582,18 @@ impl App {
         } else {
             None
         };
+        let subshell = if config.subshell {
+            let (cols, rows) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
+            match Subshell::spawn(&left.local_cwd(), cols, rows) {
+                Ok(sub) => Some(sub),
+                Err(err) => {
+                    warnings.push(format!("subshell disabled: {err}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let status = if warnings.is_empty() {
             None
         } else {
@@ -616,6 +634,7 @@ impl App {
             config,
             keymap,
             pending_exec: None,
+            subshell,
             quit: false,
         })
     }
@@ -632,6 +651,7 @@ impl App {
             self.update_quick_view();
             self.git_tick();
             self.disk_tick();
+            self.subshell_tick();
             // an abandoned ESC prefix becomes a real Escape, like MC
             if let Some(at) = self.esc_at
                 && at.elapsed() >= Duration::from_secs(1)
@@ -652,6 +672,7 @@ impl App {
                 || loading
                 || watch_pending
                 || self.esc_at.is_some()
+                || self.subshell.as_ref().is_some_and(|s| !s.ready())
             {
                 Duration::from_millis(50)
             } else {
@@ -661,12 +682,23 @@ impl App {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
                     Event::Mouse(mouse) => self.on_mouse(mouse),
+                    Event::Resize(cols, rows) => {
+                        if let Some(sub) = self.subshell.as_mut() {
+                            sub.resize(cols, rows);
+                        }
+                    }
                     _ => {}
                 }
             }
             if let Some(exec) = self.pending_exec.take() {
-                self.execute(terminal, exec)?;
-                self.finish_remote_edit();
+                if self.subshell.is_some() && !matches!(exec, Exec::Quiet(_)) {
+                    // Ctrl+O and typed commands live in the subshell;
+                    // Quiet (editors, openers) stays a one-shot child
+                    self.subshell_session(terminal, exec)?;
+                } else {
+                    self.execute(terminal, exec)?;
+                    self.finish_remote_edit();
+                }
             }
         }
         if let Some(job) = &self.job {
@@ -1069,6 +1101,162 @@ impl App {
             set_mouse_capture(true);
         }
         let _ = terminal.clear();
+        for panel in &mut self.panels {
+            let _ = panel.reload();
+        }
+        self.git_refresh();
+        Ok(())
+    }
+
+    /// Pump the hidden subshell every loop tick: collect output for the
+    /// next Ctrl+O, keep the hook channel drained, respawn on `exit`.
+    fn subshell_tick(&mut self) {
+        let Some(sub) = self.subshell.as_mut() else {
+            return;
+        };
+        sub.pump(false);
+        if let Some(note) = sub.note.take() {
+            self.status = Some(note);
+        }
+        if sub.failed {
+            self.subshell = None;
+        }
+    }
+
+    /// Ctrl+O or a typed command while the persistent subshell lives:
+    /// leave the alternate screen (the shell owns the primary one — its
+    /// scrollback IS MC's "output screen") and pass keys through raw
+    /// until Ctrl+O comes back or the fed command finishes.
+    fn subshell_session(&mut self, terminal: &mut DefaultTerminal, exec: Exec) -> Result<()> {
+        use std::io::Write as _;
+
+        let mut pending_cmd = match exec {
+            Exec::Command(cmd) => Some(cmd),
+            _ => None,
+        };
+        let panel = &self.panels[self.active];
+        let panel_dir = panel.is_local().then(|| panel.cwd.clone());
+        let Some(sub) = self.subshell.as_mut() else {
+            return Ok(());
+        };
+        if pending_cmd.is_some() && !sub.ready() {
+            self.status = Some(" the shell is already running a command — Ctrl+O shows it ".into());
+            return Ok(());
+        }
+        // the panels moved since the last agreement → the shell follows
+        // first (the reverse sync happens on the way out)
+        let inject = panel_dir.filter(|dir| sub.ready() && *dir != sub.agreed && *dir != sub.cwd());
+        sub.debug(&format!(
+            "session start: cmd={pending_cmd:?} panel_dir={:?} inject={inject:?}",
+            self.panels[self.active].cwd
+        ));
+        let sub = self.subshell.as_mut().expect("subshell present");
+
+        if self.config.mouse {
+            set_mouse_capture(false);
+        }
+        let mut out = std::io::stdout();
+        ratatui::crossterm::execute!(out, LeaveAlternateScreen, cursor::Show)?;
+        out.write_all(&sub.take_output())?;
+        out.flush()?;
+
+        let mut cd_wait = None;
+        let mut awaiting = false;
+        if let Some(dir) = inject {
+            sub.feed_line(&format!("cd {}", shell_quote(&dir.to_string_lossy())));
+            cd_wait = Some(Instant::now());
+        } else if let Some(cmd) = pending_cmd.take() {
+            sub.feed_line(&cmd);
+            awaiting = true;
+        }
+
+        let mut size = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
+        if let Some(sub) = self.subshell.as_mut() {
+            sub.resize(size.0, size.1); // no-op unless it drifted
+        }
+        loop {
+            let sub = self.subshell.as_mut().expect("subshell present");
+            sub.pump(true);
+            let bytes = sub.take_output();
+            if !bytes.is_empty() {
+                out.write_all(&bytes)?;
+                out.flush()?;
+            }
+            if sub.failed {
+                break;
+            }
+            if let Some(since) = cd_wait
+                && (sub.ready() || since.elapsed() > Duration::from_secs(2))
+            {
+                cd_wait = None;
+                if let Some(cmd) = pending_cmd.take() {
+                    sub.feed_line(&cmd);
+                    awaiting = true;
+                }
+            }
+            if awaiting && cd_wait.is_none() && sub.ready() {
+                break; // the command finished — back to the panels, like MC
+            }
+            let mut fds = [
+                libc::pollfd {
+                    fd: 0,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: sub.master_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: sub.pipe_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            unsafe { libc::poll(fds.as_mut_ptr(), 3, 100) };
+            if fds[0].revents & libc::POLLIN != 0 {
+                let mut keys = [0u8; 1024];
+                let n = unsafe { libc::read(0, keys.as_mut_ptr().cast(), keys.len()) };
+                if n > 0 {
+                    let keys = &keys[..n as usize];
+                    // Ctrl+O never reaches the shell (MC-compatible —
+                    // yes, that shadows nano's save inside the subshell)
+                    if let Some(pos) = keys.iter().position(|&b| b == 0x0F) {
+                        sub.feed(&keys[..pos]);
+                        break;
+                    }
+                    sub.feed(keys);
+                }
+            }
+            let now = ratatui::crossterm::terminal::size().unwrap_or(size);
+            if now != size {
+                size = now;
+                sub.resize(now.0, now.1);
+            }
+        }
+
+        ratatui::crossterm::execute!(out, EnterAlternateScreen)?;
+        if self.config.mouse {
+            set_mouse_capture(true);
+        }
+        let _ = terminal.clear();
+        if let Some(sub) = self.subshell.as_mut() {
+            if sub.failed {
+                self.status = sub.note.take();
+                self.subshell = None;
+            } else {
+                let _ = sub.note.take(); // it was visible on the output screen
+                let cwd = sub.cwd();
+                sub.debug("session exit");
+                sub.agreed = cwd.clone();
+                // the shell moved → the active panel follows
+                let panel = &mut self.panels[self.active];
+                if panel.is_local() && panel.cwd != cwd && cwd.is_dir() {
+                    let _ = panel.cd(cwd);
+                }
+            }
+        }
         for panel in &mut self.panels {
             let _ = panel.reload();
         }

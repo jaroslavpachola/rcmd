@@ -1,6 +1,8 @@
 # rcmd 3.0 — the live commander
 
-**Status:** planned (drafted 2026-07-06, alongside the 2.0 release)
+**Status:** R1 DONE (2026-07-06) — the persistent subshell is in,
+default-on with `subshell = false` as the escape hatch; now dogfooding.
+R2–R5 open. (Drafted 2026-07-06, alongside the 2.0 release.)
 **Prerequisite:** PLAN2.md complete (it is). Baseline: 2.0 — MC-workflow
 parity and beyond, SFTP panels, built-in editor, openers/user menu;
 threads-not-async settled (D1); 82 unit tests + 82 pty e2e checks.
@@ -25,8 +27,36 @@ files like text, watch logs live, complete paths as you type.
 
 ## Phases
 
-### R1 — the persistent subshell (the flagship, and the risk)
-MC's hairiest subsystem, rebuilt deliberately:
+### R1 — the persistent subshell (the flagship, and the risk) — DONE
+
+Shipped 2026-07-06 (`rcmd-tui/src/subshell.rs` + a session loop in
+`app.rs`). What the build taught us:
+
+- **E1 resolved: hand-rolled** over `libc::openpty` — no new crate; the
+  e2e harness had already proven the pty knowledge, and `libc` was a
+  dependency anyway.
+- **E2 resolved: hooks + pipe, MC's trick minus the SIGSTOP dance.**
+  bash (`--rcfile` wrapper), zsh (`ZDOTDIR` stub) and fish
+  (`-C` function) get a prompt hook that writes `pwd` to inherited
+  fd 27; each message is also the "prompt is idle" signal that gates
+  command injection and the auto-return to panels. Plain `sh`/dash:
+  `/proc/<pid>/cwd` + `TIOCGPGRP` (is the shell the foreground pgroup?)
+  + 100 ms output quiescence.
+- cd sync uses an **"agreed directory"**: whoever (panel or shell)
+  moved away from the last agreement is the one synced from — no
+  ping-pong, panel wins ties.
+- The panels live in the alternate screen, the subshell owns the
+  primary one, so the terminal itself is MC's "output screen"; hidden
+  output is buffered (1 MB cap) and replayed on the next Ctrl+O.
+- **Landmine found: hidden terminal queries.** fish blocks at startup
+  (and vim would too) waiting for DA1/DSR answers no one gives while
+  the pty is hidden. A tiny shim answers exactly those while hidden;
+  when visible, the real terminal answers through the passthrough.
+- **Landmine found: `dup2(fd, fd)` keeps CLOEXEC.** When the pipe's
+  write end randomly landed on fd 27 itself, the no-op dup2 left
+  CLOEXEC set and the hook fd died at exec — caught only because the
+  full e2e suite shifts fd numbering. Handled explicitly.
+- Original goals, all kept:
 - A long-lived `$SHELL` child on a secondary pty, spawned at startup;
   `subshell = false` (and any spawn failure) falls back to 2.0's plain
   exec forever.
@@ -41,6 +71,14 @@ MC's hairiest subsystem, rebuilt deliberately:
 - `exit` in the subshell respawns it (with a note), like MC.
 - Exit: a month of Ctrl+O muscle memory without a bug report to
   yourself; the entire e2e suite passes with the subshell on and off.
+
+Scope notes: Ctrl+O always returns to panels, even from a full-screen
+app in the subshell (MC-compatible — it shadows nano's save there);
+`Exec::Quiet` (openers, external editor, temp viewers) deliberately
+stays on the one-shot path because remote-edit upload and temp cleanup
+need synchronous completion. CI runs the e2e suite twice (subshell on
+and off) plus per-shell scenarios: sh, bash, zsh, fish.
+`RCMD_SUBSHELL_LOG=/path` traces the state machine while dogfooding.
 
 ### R2 — SFTP auth depth (carried from 2.0's P7)
 - **Passphrase-protected keys**: when `~/.ssh/id_*` needs a passphrase,
@@ -111,12 +149,11 @@ sitting, prune freely.
 
 ## Decision points
 
-- **E1 (R1): pty layer** — hand-rolled (the e2e harness proves we know
-  ptys) vs the `portable-pty` crate. Spike both for a day before
-  committing.
-- **E2 (R1): cwd tracking** — shell hooks (precise, per-shell setup) vs
-  `/proc/<pid>/cwd` polling (universal, coarser). Likely hooks with
-  polling fallback.
+- **E1 (R1): pty layer** — RESOLVED: hand-rolled over `libc::openpty`
+  (see R1 notes; `portable-pty` never became worth a dependency).
+- **E2 (R1): cwd tracking** — RESOLVED: prompt hooks writing to an
+  inherited pipe fd for bash/zsh/fish, `/proc` + foreground-pgroup
+  fallback for plain sh (see R1 notes).
 - **E3 (R4): job queue UI shape** — MC never had one worth copying;
   design from scratch, small.
 

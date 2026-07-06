@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **Persistent subshell** (3.0 R1, the flagship): a long-lived `$SHELL`
+  on its own pty, like MC's. Ctrl+O toggles panels ↔ the shell's screen
+  (the last output survives the trip), typed commands run *inside* the
+  shell — aliases, functions, history and `$?` persist — and cd syncs
+  both ways (panels follow a subshell `cd` on return; the shell is
+  moved to the panel directory before a command runs). `exit` respawns
+  the shell with a note. bash/zsh/fish get prompt hooks over a pipe for
+  cwd + prompt-idle tracking; other shells (dash, POSIX sh) fall back
+  to `/proc/<pid>/cwd` and foreground-process-group probing. While
+  hidden, output is buffered for replay and a small shim answers
+  blocking terminal queries (DA1/DSR — fish probes at startup).
+  `subshell = false` (or any spawn failure) restores the pre-3.0
+  one-shot execution. The e2e suite now runs twice in CI — subshell on
+  and off — plus per-shell scenarios for sh, bash, zsh and fish.
+
 ## 2.0.0 — 2026-07-06
 
 The 2.0 roadmap (docs/PLAN2.md) is complete: rcmd now owns the

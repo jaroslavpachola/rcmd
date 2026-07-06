@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod git;
 mod keymap;
+mod subshell;
 mod ui;
 
 use std::path::PathBuf;

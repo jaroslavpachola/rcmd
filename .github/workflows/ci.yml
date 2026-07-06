@@ -34,6 +34,12 @@ jobs:
       - name: Install paramiko (sftp e2e server)
         if: runner.os == 'Linux'
         run: pip3 install --user paramiko
+      - name: Install shells (subshell e2e scenarios)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh fish
       - name: End-to-end (pty)
         if: runner.os == 'Linux'
         run: RCMD_E2E_STEP=0.8 python3 tests/e2e/run.py
+      - name: End-to-end (pty, subshell on)
+        if: runner.os == 'Linux'
+        run: RCMD_E2E_STEP=0.8 RCMD_E2E_SUBSHELL=1 python3 tests/e2e/run.py

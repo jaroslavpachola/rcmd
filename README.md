@@ -3,8 +3,8 @@
 A Midnight Commander replacement in Rust: orthodox dual-pane file manager
 with MC keybindings, built on ratatui. The 1.0
 ([docs/PLAN.md](docs/PLAN.md)) and 2.0 ([docs/PLAN2.md](docs/PLAN2.md))
-roadmaps are complete; 3.0 is planned in
-[docs/PLAN3.md](docs/PLAN3.md).
+roadmaps are complete; 3.0 ([docs/PLAN3.md](docs/PLAN3.md)) is under
+way — its flagship, the **persistent subshell** behind Ctrl+O, is in.
 
 ## Status
 
@@ -109,9 +109,20 @@ Typing goes to the **command line** at the bottom; Enter runs it in the
 active panel's directory (`cd` changes the panel instead). Alt+Enter
 inserts the selected filename, Ctrl+P/Ctrl+N walk history, Ctrl+A/E are
 readline-style and Esc clears the line (Ctrl+U swaps panels, like MC).
-Ctrl+O suspends to a full shell — `exit` to come back.
 The `+`/`-`/`*`/`\` selection keys apply only while the command line is
 empty.
+
+**The subshell** (Ctrl+O): a persistent `$SHELL` runs on its own pty for
+the whole session, exactly like MC's. Ctrl+O flips between the panels
+and its screen — the last command's output is still there — and typed
+commands run *inside* it, so aliases, functions, history and `$?`
+survive between commands. cd sync goes both ways: the panels follow a
+`cd` typed in the subshell, and the subshell is moved to the active
+panel's directory before running anything. `exit` respawns it. bash,
+zsh and fish get a prompt hook for precise tracking; plain POSIX `sh`
+works with a `/proc`-based fallback. `subshell = false` in the config
+restores the old one-shot execution (also the automatic fallback if the
+shell cannot be spawned).
 
 In dialogs: arrows/Tab move between buttons, Enter confirms, Esc cancels;
 overwrite and error prompts also take hotkeys (o/a/s/S, r/s/S).
@@ -256,6 +267,7 @@ watch = true        # auto-reload panels on external changes
 mouse = true        # click/double-click/wheel support
 git = true          # git status column + branch in panel titles
 editor = "internal" # or "external" ($VISUAL/$EDITOR for F4)
+subshell = true     # persistent $SHELL behind Ctrl+O (false = one-shot exec)
 show_hidden = true
 sort_key = "name"   # name | ext | size | mtime
 sort_reverse = false
