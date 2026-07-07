@@ -24,9 +24,9 @@ fn main() -> Result<()> {
         app::set_mouse_capture(true);
     }
     let result = run(&args, cfg, [load_warning, theme_warning], &mut terminal);
-    if mouse {
-        app::set_mouse_capture(false);
-    }
+    // Unconditional: the options form can turn the mouse on mid-session
+    // (disabling an inactive capture is a harmless escape sequence).
+    app::set_mouse_capture(false);
     ratatui::restore();
     result
 }

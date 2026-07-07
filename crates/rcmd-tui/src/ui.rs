@@ -9,13 +9,14 @@ use rcmd_core::panel::{ListMode, Panel};
 
 use crate::app::{
     App, Ask, ConfirmDialog, ConnectAsk, Dialog, EditPrompt, FindDialog, InputDialog, Job, MENUS,
-    MenuState, QuickView,
+    MenuState, OPTION_ROWS, OptionsDialog, QuickView, menu_label,
 };
 use crate::config::HotEntry;
 use crate::git::GitStatus;
 
-/// All colors in one place; selected once at startup from config
-/// (`theme = "mc" | "dark"`), then read through [`th`].
+/// All colors in one place; selected from config (`theme = "mc" |
+/// "dark"`) at startup or from the options form, read through [`th`].
+#[derive(Clone, Copy)]
 pub struct Theme {
     pub panel_bg: Color,
     pub panel_fg: Color,
@@ -93,9 +94,10 @@ fn dark_theme() -> Theme {
     }
 }
 
-static THEME: std::sync::OnceLock<Theme> = std::sync::OnceLock::new();
+static THEME: std::sync::RwLock<Option<Theme>> = std::sync::RwLock::new(None);
 
-/// Install the theme once at startup; returns a warning for unknown names.
+/// Install the theme; returns a warning for unknown names. Called at
+/// startup and again when the options form switches themes.
 pub fn init_theme(name: &str) -> Option<String> {
     let (theme, warning) = match name {
         "mc" => (mc_theme(), None),
@@ -105,12 +107,15 @@ pub fn init_theme(name: &str) -> Option<String> {
             Some(format!("unknown theme '{other}', using mc")),
         ),
     };
-    let _ = THEME.set(theme);
+    *THEME.write().unwrap_or_else(|e| e.into_inner()) = Some(theme);
     warning
 }
 
-fn th() -> &'static Theme {
-    THEME.get_or_init(mc_theme)
+fn th() -> Theme {
+    THEME
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(mc_theme)
 }
 
 /// Help text; lines starting with `#` render as section headers.
@@ -142,8 +147,11 @@ const HELP_TEXT: &[&str] = &[
     "                  (an active long panel takes the whole width, MC's",
     "                  one-panel view; Tab or cycling back restores the split)",
     "  Alt+Left/Right  walk the panel's directory history (back/forward)",
-    "  F9 > Options    lynx-like motion: Left = parent directory, Right =",
-    "                  enter the directory under the cursor (persists)",
+    "  F9 > Options    panel options form (MC-style checkboxes): hidden",
+    "                  files, lynx-like motion (Left/Right = parent/enter),",
+    "                  mouse, auto-reload, git, subshell, editor, theme —",
+    "                  applied live, saved to the config on exit",
+    "  In menus the highlighted letter runs the entry (F9 o p = options)",
     "  Alt+Up          directory hotlist (same as Ctrl+\\)",
     "  Ctrl+X q        quick view: the other panel previews the cursor",
     "                  file live (Tab focuses it for scrolling; again = off)",
@@ -355,6 +363,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Hotlist(selected) => draw_hotlist(frame, &app.config.hotlist, *selected),
             Dialog::UserMenu(selected) => draw_user_menu(frame, &app.config.commands, *selected),
             Dialog::Find(d) => draw_find(frame, d),
+            Dialog::Options(d) => draw_options(frame, d),
         }
     }
     if let Some(job) = &app.job {
@@ -1421,11 +1430,30 @@ fn hex_row(offset: u64, bytes: &[u8]) -> String {
 
 /// Menu-bar geometry: (x, width) of every title in the top bar plus the
 /// dropdown rect of the open menu — shared by drawing and mouse clicks.
+/// Rendered length of a menu label, without its `&` hotkey marker.
+fn label_len(label: &str) -> usize {
+    let (pre, hot, post) = menu_label(label);
+    pre.chars().count() + usize::from(hot.is_some()) + post.chars().count()
+}
+
+/// The label as spans, hotkey letter highlighted MC-style.
+fn hot_spans(label: &str, style: Style, spans: &mut Vec<Span<'static>>) {
+    let (pre, hot, post) = menu_label(label);
+    spans.push(Span::styled(pre.to_string(), style));
+    if let Some(c) = hot {
+        spans.push(Span::styled(
+            c.to_string(),
+            style.fg(th().mark_fg).add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans.push(Span::styled(post.to_string(), style));
+}
+
 pub fn menu_layout(menu: usize, area: Rect) -> (Vec<(u16, u16)>, Rect) {
     let mut titles = Vec::new();
     let mut x = 0u16;
     for (title, _) in MENUS {
-        let width = format!("  {title}  ").chars().count() as u16;
+        let width = (label_len(title) + 4) as u16;
         titles.push((area.x + x, width));
         x += width;
     }
@@ -1433,7 +1461,7 @@ pub fn menu_layout(menu: usize, area: Rect) -> (Vec<(u16, u16)>, Rect) {
     let label_w = entries
         .iter()
         .flatten()
-        .map(|(l, ..)| l.chars().count())
+        .map(|(l, ..)| label_len(l))
         .max()
         .unwrap_or(0);
     let keys_w = entries
@@ -1462,8 +1490,10 @@ fn draw_menu(frame: &mut Frame, ms: &MenuState) {
     frame.render_widget(Clear, bar);
     let mut spans = Vec::new();
     for (i, (title, _)) in MENUS.iter().enumerate() {
-        let text = format!("  {title}  ");
-        spans.push(Span::styled(text, if i == ms.menu { sel } else { base }));
+        let style = if i == ms.menu { sel } else { base };
+        spans.push(Span::styled("  ", style));
+        hot_spans(title, style, &mut spans);
+        spans.push(Span::styled("  ", style));
     }
     let used = titles.last().map(|(x, w)| x + w).unwrap_or(0);
     spans.push(Span::styled(
@@ -1476,7 +1506,7 @@ fn draw_menu(frame: &mut Frame, ms: &MenuState) {
     let label_w = entries
         .iter()
         .flatten()
-        .map(|(l, ..)| l.chars().count())
+        .map(|(l, ..)| label_len(l))
         .max()
         .unwrap_or(0);
     let keys_w = entries
@@ -1504,9 +1534,12 @@ fn draw_menu(frame: &mut Frame, ms: &MenuState) {
                 row,
             ),
             Some((label, keys, _)) => {
-                let text = format!(" {label:<label_w$} {keys:>keys_w$} ");
                 let style = if i == ms.item { sel } else { base };
-                frame.render_widget(Line::from(text).style(style), row);
+                let mut spans = vec![Span::styled(" ", style)];
+                hot_spans(label, style, &mut spans);
+                let pad = label_w.saturating_sub(label_len(label));
+                spans.push(Span::styled(format!("{:pad$} {keys:>keys_w$} ", ""), style));
+                frame.render_widget(Line::from(spans), row);
             }
         }
     }
@@ -1589,6 +1622,60 @@ fn field_row(frame: &mut Frame, field: Rect, value: &str, cursor: Option<usize>)
     if let Some(cur) = cursor {
         frame.set_cursor_position((field.x + (cur - start) as u16, field.y));
     }
+}
+
+/// F9 > Options > Panel options — the MC-style checkbox form.
+fn draw_options(frame: &mut Frame, d: &OptionsDialog) {
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let area = centered(44, (OPTION_ROWS + 4) as u16, frame.area());
+    let inner = popup(frame, area, " Panel options ", base);
+    let check = |on: bool| if on { "[x]" } else { "[ ]" };
+    let radio = |on: bool| if on { "(*)" } else { "( )" };
+    let rows: [String; OPTION_ROWS] = [
+        format!(" {} Show hidden files", check(d.show_hidden)),
+        format!(" {} Lynx-like motion", check(d.lynx)),
+        format!(" {} Mouse support", check(d.mouse)),
+        format!(" {} Auto-reload panels", check(d.watch)),
+        format!(" {} Git status", check(d.git)),
+        format!(" {} Persistent subshell", check(d.subshell)),
+        format!(
+            " Editor  {} internal  {} external",
+            radio(!d.external_editor),
+            radio(d.external_editor)
+        ),
+        format!(
+            " Theme   {} mc  {} dark",
+            radio(!d.dark_theme),
+            radio(d.dark_theme)
+        ),
+    ];
+    for (i, text) in rows.iter().enumerate() {
+        let row = Rect {
+            x: inner.x + 1,
+            y: inner.y + i as u16,
+            width: inner.width.saturating_sub(2),
+            height: 1,
+        };
+        let style = if d.cursor == i { sel } else { base };
+        let width = row.width as usize;
+        frame.render_widget(Line::from(format!("{text:<width$}")).style(style), row);
+    }
+    let buttons = Rect {
+        x: inner.x,
+        y: inner.y + OPTION_ROWS as u16 + 1,
+        width: inner.width,
+        height: 1,
+    };
+    let selected = if d.cursor == OPTION_ROWS {
+        usize::from(!d.ok)
+    } else {
+        usize::MAX // neither highlighted while an option row is focused
+    };
+    frame.render_widget(
+        buttons_line(&["OK", "Cancel"], selected, base, sel),
+        buttons,
+    );
 }
 
 fn draw_find(frame: &mut Frame, d: &FindDialog) {

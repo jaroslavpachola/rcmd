@@ -125,6 +125,47 @@ pub enum Dialog {
     Find(FindDialog),
     /// F2 user menu ([[commands]]); the payload is the selected row.
     UserMenu(usize),
+    Options(OptionsDialog),
+}
+
+/// F9 > Options > Panel options — MC-style checkbox form over the
+/// config toggles. OK applies everything live; the config file is
+/// written on exit as usual.
+pub struct OptionsDialog {
+    /// Focused row: the options in order, then [`OPTION_ROWS`] = the
+    /// OK/Cancel button row.
+    pub cursor: usize,
+    pub show_hidden: bool,
+    pub lynx: bool,
+    pub mouse: bool,
+    pub watch: bool,
+    pub git: bool,
+    pub subshell: bool,
+    /// false = "internal", true = "external" ($VISUAL/$EDITOR).
+    pub external_editor: bool,
+    /// false = "mc" theme, true = "dark".
+    pub dark_theme: bool,
+    /// Focused button on the button row: true = OK.
+    pub ok: bool,
+}
+
+/// Number of option rows in the form (the button row comes after).
+pub const OPTION_ROWS: usize = 8;
+
+impl OptionsDialog {
+    fn toggle(&mut self) {
+        match self.cursor {
+            0 => self.show_hidden = !self.show_hidden,
+            1 => self.lynx = !self.lynx,
+            2 => self.mouse = !self.mouse,
+            3 => self.watch = !self.watch,
+            4 => self.git = !self.git,
+            5 => self.subshell = !self.subshell,
+            6 => self.external_editor = !self.external_editor,
+            7 => self.dark_theme = !self.dark_theme,
+            _ => {}
+        }
+    }
 }
 
 pub enum Ask {
@@ -328,83 +369,128 @@ pub enum Action {
     Reload,
     SwapPanels,
     ToggleHidden,
-    LynxMotion,
+    Options,
     Sort(SortKey),
     SortReverse,
 }
 
-/// None = separator line.
+/// None = separator line. `&` in a label marks its hotkey letter,
+/// MC-style: highlighted in the dropdown, pressing it runs the entry.
 pub type MenuEntry = Option<(&'static str, &'static str, Action)>;
 
 pub const MENUS: &[(&str, &[MenuEntry])] = &[
     (
-        "File",
+        "&File",
         &[
-            Some(("View", "F3", Action::View)),
-            Some(("Edit", "F4", Action::Edit)),
-            Some(("Copy...", "F5", Action::Copy)),
-            Some(("Move/rename...", "F6", Action::Move)),
-            Some(("Make directory...", "F7", Action::Mkdir)),
-            Some(("Delete (trash)", "F8", Action::Delete)),
-            Some(("Delete permanently", "S-F8", Action::DeletePerm)),
+            Some(("&View", "F3", Action::View)),
+            Some(("&Edit", "F4", Action::Edit)),
+            Some(("&Copy...", "F5", Action::Copy)),
+            Some(("&Move/rename...", "F6", Action::Move)),
+            Some(("Ma&ke directory...", "F7", Action::Mkdir)),
+            Some(("&Delete (trash)", "F8", Action::Delete)),
+            Some(("Delete &permanently", "S-F8", Action::DeletePerm)),
             None,
-            Some(("Select group...", "+", Action::SelectGroup)),
-            Some(("Unselect group...", "-", Action::UnselectGroup)),
-            Some(("Invert selection", "*", Action::InvertSelection)),
+            Some(("&Select group...", "+", Action::SelectGroup)),
+            Some(("&Unselect group...", "-", Action::UnselectGroup)),
+            Some(("&Invert selection", "*", Action::InvertSelection)),
             None,
-            Some(("Directory size", "C-spc", Action::DirSize)),
-            Some(("Filter files...", "C-f", Action::Filter)),
+            Some(("Directory si&ze", "C-spc", Action::DirSize)),
+            Some(("&Filter files...", "C-f", Action::Filter)),
             None,
-            Some(("Quit", "F10", Action::Quit)),
+            Some(("&Quit", "F10", Action::Quit)),
         ],
     ),
     (
-        "Command",
+        "&Command",
         &[
-            Some(("Help", "F1", Action::Help)),
-            Some(("User menu...", "F2", Action::UserMenu)),
-            Some(("Quick search", "C-s", Action::QuickSearch)),
-            Some(("Directory hotlist...", "C-\\", Action::Hotlist)),
-            Some(("Find file...", "M-F7", Action::FindFile)),
-            Some(("Panelize command...", "", Action::Panelize)),
-            Some(("Compare directories", "C-x d", Action::CompareDirs)),
-            Some(("SFTP link...", "", Action::SftpLink)),
-            Some(("Open shell", "C-o", Action::Shell)),
-            Some(("Reload panel", "C-r", Action::Reload)),
-            Some(("Swap panels", "", Action::SwapPanels)),
-            Some(("Toggle hidden files", "M-.", Action::ToggleHidden)),
+            Some(("&Help", "F1", Action::Help)),
+            Some(("&User menu...", "F2", Action::UserMenu)),
+            Some(("&Quick search", "C-s", Action::QuickSearch)),
+            Some(("Directory ho&tlist...", "C-\\", Action::Hotlist)),
+            Some(("&Find file...", "M-F7", Action::FindFile)),
+            Some(("&Panelize command...", "", Action::Panelize)),
+            Some(("&Compare directories", "C-x d", Action::CompareDirs)),
+            Some(("SFTP &link...", "", Action::SftpLink)),
+            Some(("&Open shell", "C-o", Action::Shell)),
+            Some(("&Reload panel", "C-r", Action::Reload)),
+            Some(("S&wap panels", "C-u", Action::SwapPanels)),
+            Some(("Toggle hidde&n files", "M-.", Action::ToggleHidden)),
         ],
     ),
     (
-        "Sort",
+        "&Sort",
         &[
-            Some(("By name", "M-n", Action::Sort(SortKey::Name))),
-            Some(("By extension", "", Action::Sort(SortKey::Ext))),
-            Some(("By size", "", Action::Sort(SortKey::Size))),
-            Some(("By modify time", "", Action::Sort(SortKey::Mtime))),
+            Some(("By &name", "M-n", Action::Sort(SortKey::Name))),
+            Some(("By &extension", "", Action::Sort(SortKey::Ext))),
+            Some(("By &size", "", Action::Sort(SortKey::Size))),
+            Some(("By &modify time", "", Action::Sort(SortKey::Mtime))),
             None,
-            Some(("Toggle reverse", "", Action::SortReverse)),
+            Some(("Toggle &reverse", "", Action::SortReverse)),
         ],
     ),
     (
-        "View",
+        "&View",
         &[
-            Some(("Brief listing", "", Action::Listing(ListMode::Brief))),
-            Some(("Full listing", "", Action::Listing(ListMode::Full))),
-            Some(("Long listing", "", Action::Listing(ListMode::Long))),
+            Some(("&Brief listing", "", Action::Listing(ListMode::Brief))),
+            Some(("&Full listing", "", Action::Listing(ListMode::Full))),
+            Some(("&Long listing", "", Action::Listing(ListMode::Long))),
             None,
-            Some(("Quick view", "C-x q", Action::QuickView)),
-            Some(("Info panel", "C-x i", Action::InfoView)),
+            Some(("&Quick view", "C-x q", Action::QuickView)),
+            Some(("&Info panel", "C-x i", Action::InfoView)),
             None,
-            Some(("Other panel: same dir", "M-i", Action::OtherSameDir)),
-            Some(("Other panel: this dir", "M-o", Action::OtherOpenDir)),
+            Some(("Other panel: &same dir", "M-i", Action::OtherSameDir)),
+            Some(("Other panel: &this dir", "M-o", Action::OtherOpenDir)),
         ],
     ),
     (
-        "Options",
-        &[Some(("Lynx-like motion", "", Action::LynxMotion))],
+        "&Options",
+        &[Some(("&Panel options...", "", Action::Options))],
     ),
 ];
+
+/// The character after `&` in a menu label — its hotkey, lowercased.
+pub fn menu_hotkey(label: &str) -> Option<char> {
+    let mut chars = label.chars();
+    while let Some(c) = chars.next() {
+        if c == '&' {
+            return chars.next().map(|c| c.to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+/// Label split at the `&` marker: (before, hotkey letter, after).
+pub fn menu_label(label: &str) -> (&str, Option<char>, &str) {
+    match label.split_once('&') {
+        Some((pre, rest)) => {
+            let mut chars = rest.chars();
+            let hot = chars.next();
+            (pre, hot, chars.as_str())
+        }
+        None => (label, None, ""),
+    }
+}
+
+/// A fresh filesystem watcher for panel auto-reload; the warning is
+/// set when the platform watcher cannot start.
+fn build_watch() -> (Option<WatchState>, Option<String>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    match notify::recommended_watcher(move |event| {
+        let _ = tx.send(event);
+    }) {
+        Ok(watcher) => (
+            Some(WatchState {
+                watcher,
+                rx,
+                watched: [None, None],
+                dirty: [None, None],
+                last: [None, None],
+            }),
+            None,
+        ),
+        Err(err) => (None, Some(format!("watch disabled: {err}"))),
+    }
+}
 
 /// The complete key table for a config: preset + lynx state + custom
 /// bindings, plus any `[[commands]]` hotkeys. Rebuilt when a toggle
@@ -576,22 +662,9 @@ impl App {
         let (keymap, keymap_warnings) = full_keymap(&config);
         warnings.extend(keymap_warnings);
         let watch = if config.watch {
-            let (tx, rx) = std::sync::mpsc::channel();
-            match notify::recommended_watcher(move |event| {
-                let _ = tx.send(event);
-            }) {
-                Ok(watcher) => Some(WatchState {
-                    watcher,
-                    rx,
-                    watched: [None, None],
-                    dirty: [None, None],
-                    last: [None, None],
-                }),
-                Err(err) => {
-                    warnings.push(format!("watch disabled: {err}"));
-                    None
-                }
-            }
+            let (watch, warning) = build_watch();
+            warnings.extend(warning);
+            watch
         } else {
             None
         };
@@ -1732,6 +1805,26 @@ impl App {
                     self.run_action(action);
                 }
             }
+            KeyCode::Char(c) => {
+                // MC-style hotkeys: an entry letter of the open menu
+                // runs it; otherwise a title letter switches menus.
+                let c = c.to_ascii_lowercase();
+                let entry = MENUS[ms.menu]
+                    .1
+                    .iter()
+                    .flatten()
+                    .find(|(label, ..)| menu_hotkey(label) == Some(c));
+                if let Some(&(_, _, action)) = entry {
+                    self.menu = None;
+                    self.run_action(action);
+                } else if let Some(menu) = MENUS
+                    .iter()
+                    .position(|(title, _)| menu_hotkey(title) == Some(c))
+                {
+                    ms.menu = menu;
+                    ms.item = first_menu_item(MENUS[menu].1);
+                }
+            }
             _ => {}
         }
     }
@@ -1813,14 +1906,19 @@ impl App {
                 }
             }
             Action::ToggleHidden => self.fallible(|p| p.toggle_hidden().map(|()| true)),
-            Action::LynxMotion => {
-                let on = !self.config.lynx_on();
-                self.config.lynx = Some(on);
-                (self.keymap, _) = full_keymap(&self.config);
-                self.status = Some(format!(
-                    " lynx-like motion {} ",
-                    if on { "on" } else { "off" }
-                ));
+            Action::Options => {
+                self.dialog = Some(Dialog::Options(OptionsDialog {
+                    cursor: 0,
+                    show_hidden: self.panels[self.active].show_hidden,
+                    lynx: self.config.lynx_on(),
+                    mouse: self.config.mouse,
+                    watch: self.config.watch,
+                    git: self.config.git,
+                    subshell: self.config.subshell,
+                    external_editor: self.config.editor == "external",
+                    dark_theme: self.config.theme == "dark",
+                    ok: true,
+                }));
             }
             Action::Sort(key) => self.panel().set_sort(key),
             Action::SortReverse => {
@@ -2906,6 +3004,41 @@ impl App {
                     _ => self.dialog = Some(Dialog::UserMenu(selected)),
                 }
             }
+            Dialog::Options(mut d) => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => {
+                    if d.cursor != OPTION_ROWS || d.ok {
+                        self.apply_options(&d);
+                    }
+                }
+                KeyCode::Char(' ') if d.cursor == OPTION_ROWS => {
+                    // Space presses the focused button, like MC
+                    if d.ok {
+                        self.apply_options(&d);
+                    }
+                }
+                KeyCode::Up => {
+                    d.cursor = if d.cursor == 0 {
+                        OPTION_ROWS
+                    } else {
+                        d.cursor - 1
+                    };
+                    self.dialog = Some(Dialog::Options(d));
+                }
+                KeyCode::Down | KeyCode::Tab => {
+                    d.cursor = (d.cursor + 1) % (OPTION_ROWS + 1);
+                    self.dialog = Some(Dialog::Options(d));
+                }
+                KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right => {
+                    if d.cursor == OPTION_ROWS {
+                        d.ok = !d.ok;
+                    } else {
+                        d.toggle();
+                    }
+                    self.dialog = Some(Dialog::Options(d));
+                }
+                _ => self.dialog = Some(Dialog::Options(d)),
+            },
             Dialog::Find(mut d) => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => self.submit_find(d),
@@ -2923,6 +3056,65 @@ impl App {
                     self.dialog = Some(Dialog::Find(d));
                 }
             },
+        }
+    }
+
+    /// OK in the options form: apply every change live and record it in
+    /// the config (written back on exit as usual).
+    fn apply_options(&mut self, d: &OptionsDialog) {
+        for i in 0..2 {
+            if self.panels[i].show_hidden != d.show_hidden
+                && let Err(err) = self.panels[i].toggle_hidden()
+            {
+                self.status = Some(format!(" {err} "));
+            }
+        }
+        self.config.show_hidden = d.show_hidden;
+        if self.config.lynx_on() != d.lynx {
+            self.config.lynx = Some(d.lynx);
+            (self.keymap, _) = full_keymap(&self.config);
+        }
+        if self.config.mouse != d.mouse {
+            self.config.mouse = d.mouse;
+            set_mouse_capture(d.mouse);
+        }
+        if self.config.watch != d.watch {
+            self.config.watch = d.watch;
+            self.watch = if d.watch {
+                let (watch, warning) = build_watch();
+                if let Some(warning) = warning {
+                    self.status = Some(format!(" {warning} "));
+                }
+                watch
+            } else {
+                None
+            };
+        }
+        if self.config.git != d.git {
+            self.config.git = d.git;
+            self.git_info = [None, None];
+            self.git_refresh();
+        }
+        self.config.subshell = d.subshell;
+        if !d.subshell {
+            self.subshell = None;
+        } else if self.subshell.is_none() {
+            let (cols, rows) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
+            match Subshell::spawn(&self.panels[self.active].local_cwd(), cols, rows) {
+                Ok(sub) => self.subshell = Some(sub),
+                Err(err) => self.status = Some(format!(" subshell disabled: {err} ")),
+            }
+        }
+        self.config.editor = if d.external_editor {
+            "external"
+        } else {
+            "internal"
+        }
+        .to_string();
+        let theme = if d.dark_theme { "dark" } else { "mc" };
+        if self.config.theme != theme {
+            self.config.theme = theme.to_string();
+            ui::init_theme(theme);
         }
     }
 

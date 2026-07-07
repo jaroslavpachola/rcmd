@@ -16,11 +16,20 @@
   `subshell = false` (or any spawn failure) restores the pre-3.0
   one-shot execution. The e2e suite now runs twice in CI — subshell on
   and off — plus per-shell scenarios for sh, bash, zsh and fish.
-- **Lynx-like motion is now a UI toggle** (MC parity): F9 > Options >
-  Lynx-like motion switches Left/Right = parent/enter at runtime and
-  persists as `lynx = true|false` in the config; the `modern` keymap
-  preset now just means "lynx on by default". Right stays dirs-only —
-  Enter opens files.
+- **Panel options form** (MC parity): F9 > Options > Panel options is
+  an MC-style checkbox dialog over the everyday toggles — hidden files,
+  lynx-like motion, mouse, auto-reload, git status, persistent
+  subshell — plus editor (internal/external) and theme (mc/dark)
+  radios. OK applies everything live (the subshell spawns or stops,
+  the theme switches in place, the keymap rebuilds) and the config
+  persists on exit.
+- **Menu hotkey letters** (MC parity): every F9 menu title and entry
+  has a highlighted hotkey — `F9 o p` opens Panel options. Entries of
+  the open menu win over titles; arrows and Enter work as before.
+- **Lynx-like motion** (MC parity): Left = parent, Right = enter (dirs
+  only — Enter opens files), now switchable from the options form and
+  persisted as `lynx = true|false`; the `modern` keymap preset just
+  means "lynx on by default".
 - **One-panel view for long listings** (MC parity): while the *active*
   panel is in the *long* format it takes the whole screen width and the
   other panel is hidden; Tab to the other panel (or cycling the format

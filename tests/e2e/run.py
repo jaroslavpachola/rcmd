@@ -487,19 +487,25 @@ def test_mcdepth():
     s.send(b"\x1bi")
     check("mcdepth: alt+i", play + "/docs" not in s.screen())
 
-    # lynx-like motion: F9 -> Options toggles it, then Right/Left navigate
+    # panel options form, reached via MC-style menu hotkey letters:
+    # F9, then "o" (Options title), then "p" (Panel options...)
     s.send(b"\x1b[20~")
-    s.send(b"\x1b[C\x1b[C\x1b[C\x1b[C") # File -> ... -> View -> Options
-    s.send(b"\r")                      # Lynx-like motion: on
-    check("mcdepth: lynx toggle on", "lynx-like motion on" in s.screen())
+    s.send(b"o")
+    s.send(b"p")
+    check("mcdepth: options form opens", "Lynx-like motion" in s.screen())
+    s.send(DOWN)                       # -> lynx row
+    s.send(b" ")                       # check it
+    check("mcdepth: form checkbox", "[x] Lynx-like motion" in s.screen())
+    s.send(b"\r")                      # OK applies live
     s.send(HOME_K + DOWN)              # cursor -> docs/
-    s.send(b"\x1b[C")                  # Right enters it
+    s.send(b"\x1b[C")                  # lynx Right enters it
     check("mcdepth: lynx right enters", "/docs" in s.screen().split("\n")[0][:60])
-    s.send(b"\x1b[D")                  # Left goes to the parent
+    s.send(b"\x1b[D")                  # lynx Left goes to the parent
     check("mcdepth: lynx left up", "/docs" not in s.screen().split("\n")[0][:60])
     s.send(b"\x1b[20~")
-    s.send(b"\x1b[C\x1b[C\x1b[C\x1b[C")
-    s.send(b"\r")                      # off again
+    s.send(b"o")
+    s.send(b"p")
+    s.send(DOWN + b" " + b"\r")        # uncheck, OK
     s.send(HOME_K + DOWN)
     s.send(b"\x1b[C")                  # Right is a no-op once more
     check("mcdepth: lynx toggles off", "/docs" not in s.screen().split("\n")[0][:60])

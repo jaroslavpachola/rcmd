@@ -169,6 +169,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "reload" => Action::Reload,
         "swap-panels" => Action::SwapPanels,
         "toggle-hidden" => Action::ToggleHidden,
+        "options" => Action::Options,
         "sort-name" => Action::Sort(SortKey::Name),
         "sort-ext" => Action::Sort(SortKey::Ext),
         "sort-size" => Action::Sort(SortKey::Size),

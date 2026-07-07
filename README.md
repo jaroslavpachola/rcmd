@@ -76,7 +76,7 @@ end
 | F2 | User menu (`[[commands]]` from the config) |
 | F3 | View file (internal viewer) |
 | F4 | Edit file (built-in editor; `editor = "external"` for $EDITOR) |
-| F9 | Pulldown menu |
+| F9 | Pulldown menu (highlighted letters are hotkeys: `F9 o p` = Panel options) |
 | Insert, Ctrl+T | Mark entry and advance |
 | `+` / `-` (or `\`) | Select / unselect by glob |
 | `*` | Invert marks |
@@ -261,12 +261,15 @@ hotlist stores sftp:// entries, so `Ctrl+\` + Enter reconnects.
 ## Configuration
 
 `~/.config/rcmd/config.toml` (created/rewritten on exit — panel sort
-mode, hidden-file setting, and the hotlist persist automatically):
+mode, hidden-file setting, and the hotlist persist automatically).
+The everyday toggles — hidden files, lynx-like motion, mouse,
+auto-reload, git, subshell, editor, theme — also live in an MC-style
+checkbox form under **F9 → Options → Panel options**, applied live:
 
 ```toml
 theme = "mc"        # or "dark" (truecolor); applied at startup
 keymap = "mc"       # or "modern" (= lynx-like motion on by default)
-lynx = false        # Left/Right = parent/enter; toggle in F9 > Options
+lynx = false        # Left/Right = parent/enter; in the options form
 watch = true        # auto-reload panels on external changes
 mouse = true        # click/double-click/wheel support
 git = true          # git status column + branch in panel titles
