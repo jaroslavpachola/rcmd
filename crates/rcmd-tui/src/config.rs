@@ -14,8 +14,13 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     /// "mc" (classic blue) or "dark" (truecolor). Applied at startup.
     pub theme: String,
-    /// "mc" or "modern" (adds lynx-style Left/Right navigation).
+    /// "mc" or "modern" (turns lynx-like motion on by default).
     pub keymap: String,
+    /// Lynx-like motion: Left = parent directory, Right = enter the
+    /// directory under the cursor (files stay untouched). Toggled from
+    /// F9 > Options and persisted; unset follows the keymap preset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lynx: Option<bool>,
     pub show_hidden: bool,
     pub sort_key: String,
     pub sort_reverse: bool,
@@ -69,11 +74,20 @@ pub struct UserCommand {
     pub key: Option<String>,
 }
 
+impl Config {
+    /// Effective lynx-motion state: an explicit `lynx` wins, otherwise
+    /// the "modern" preset implies on.
+    pub fn lynx_on(&self) -> bool {
+        self.lynx.unwrap_or(self.keymap == "modern")
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
             theme: "mc".into(),
             keymap: "mc".into(),
+            lynx: None,
             show_hidden: true,
             sort_key: "name".into(),
             sort_reverse: false,

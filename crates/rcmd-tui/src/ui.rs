@@ -142,6 +142,8 @@ const HELP_TEXT: &[&str] = &[
     "                  (an active long panel takes the whole width, MC's",
     "                  one-panel view; Tab or cycling back restores the split)",
     "  Alt+Left/Right  walk the panel's directory history (back/forward)",
+    "  F9 > Options    lynx-like motion: Left = parent directory, Right =",
+    "                  enter the directory under the cursor (persists)",
     "  Alt+Up          directory hotlist (same as Ctrl+\\)",
     "  Ctrl+X q        quick view: the other panel previews the cursor",
     "                  file live (Tab focuses it for scrolling; again = off)",
@@ -202,7 +204,7 @@ const HELP_TEXT: &[&str] = &[
     "      run = \"zathura %f >/dev/null 2>&1 &\"",
     "  First matching glob wins (case-insensitive), local panels only.",
     "  Openers run without a pause; append & for GUI programs.",
-    "  In the modern keymap Right still only enters directories.",
+    "  With lynx-like motion Right still only enters directories.",
     "  [[commands]] are shell templates in the F2 user menu:",
     "      [[commands]]",
     "      name = \"git status\"",
@@ -250,7 +252,7 @@ const HELP_TEXT: &[&str] = &[
     "                  (see README for the rc() shell wrapper)",
     "",
     "# Config  (~/.config/rcmd/config.toml, saved on exit)",
-    "  theme = \"mc\" | \"dark\"      keymap = \"mc\" | \"modern\"",
+    "  theme = \"mc\" | \"dark\"      keymap = \"mc\" | \"modern\" (= lynx on)",
     "  [keys] section adds custom bindings, e.g. \"ctrl+y\" = \"swap-panels\"",
 ];
 

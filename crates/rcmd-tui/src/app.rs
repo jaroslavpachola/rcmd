@@ -328,6 +328,7 @@ pub enum Action {
     Reload,
     SwapPanels,
     ToggleHidden,
+    LynxMotion,
     Sort(SortKey),
     SortReverse,
 }
@@ -399,7 +400,29 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Other panel: this dir", "M-o", Action::OtherOpenDir)),
         ],
     ),
+    (
+        "Options",
+        &[Some(("Lynx-like motion", "", Action::LynxMotion))],
+    ),
 ];
+
+/// The complete key table for a config: preset + lynx state + custom
+/// bindings, plus any `[[commands]]` hotkeys. Rebuilt when a toggle
+/// (F9 > Options) changes the config at runtime.
+fn full_keymap(config: &config::Config) -> (Keymap, Vec<String>) {
+    let (mut keymap, mut warnings) = keymap::build(&config.keymap, config.lynx_on(), &config.keys);
+    for (i, cmd) in config.commands.iter().enumerate() {
+        if let Some(key) = &cmd.key {
+            match keymap::parse_key(key) {
+                Some(parsed) => {
+                    keymap.insert(parsed, Action::UserCommand(i));
+                }
+                None => warnings.push(format!("bad key '{key}' for command '{}'", cmd.name)),
+            }
+        }
+    }
+    (keymap, warnings)
+}
 
 pub struct MenuState {
     pub menu: usize,
@@ -550,18 +573,8 @@ impl App {
             panel.list_mode = config::list_mode_from_name(&config.listing);
             let _ = panel.reload();
         }
-        let (mut keymap, keymap_warnings) = keymap::build(&config.keymap, &config.keys);
+        let (keymap, keymap_warnings) = full_keymap(&config);
         warnings.extend(keymap_warnings);
-        for (i, cmd) in config.commands.iter().enumerate() {
-            if let Some(key) = &cmd.key {
-                match keymap::parse_key(key) {
-                    Some(parsed) => {
-                        keymap.insert(parsed, Action::UserCommand(i));
-                    }
-                    None => warnings.push(format!("bad key '{key}' for command '{}'", cmd.name)),
-                }
-            }
-        }
         let watch = if config.watch {
             let (tx, rx) = std::sync::mpsc::channel();
             match notify::recommended_watcher(move |event| {
@@ -1800,6 +1813,15 @@ impl App {
                 }
             }
             Action::ToggleHidden => self.fallible(|p| p.toggle_hidden().map(|()| true)),
+            Action::LynxMotion => {
+                let on = !self.config.lynx_on();
+                self.config.lynx = Some(on);
+                (self.keymap, _) = full_keymap(&self.config);
+                self.status = Some(format!(
+                    " lynx-like motion {} ",
+                    if on { "on" } else { "off" }
+                ));
+            }
             Action::Sort(key) => self.panel().set_sort(key),
             Action::SortReverse => {
                 let panel = self.panel();

@@ -52,22 +52,24 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("*", "invert-selection"),
 ];
 
-const MODERN_EXTRAS: &[(&str, &str)] = &[("left", "up-dir"), ("right", "enter")];
+/// MC's "Lynx-like motion" (F9 > Options): Left = parent directory,
+/// Right = enter the directory under the cursor. The "modern" preset
+/// turns it on by default; the `lynx` config key overrides either way.
+const LYNX_KEYS: &[(&str, &str)] = &[("left", "up-dir"), ("right", "enter")];
 
-pub fn build(preset: &str, custom: &BTreeMap<String, String>) -> (Keymap, Vec<String>) {
+pub fn build(preset: &str, lynx: bool, custom: &BTreeMap<String, String>) -> (Keymap, Vec<String>) {
     let mut map = Keymap::new();
     let mut warnings = Vec::new();
     for (key, action) in DEFAULTS {
         bind(&mut map, key, action).expect("default binding must parse");
     }
-    match preset {
-        "mc" => {}
-        "modern" => {
-            for (key, action) in MODERN_EXTRAS {
-                bind(&mut map, key, action).expect("preset binding must parse");
-            }
+    if !matches!(preset, "mc" | "modern") {
+        warnings.push(format!("unknown keymap preset '{preset}', using mc"));
+    }
+    if lynx {
+        for (key, action) in LYNX_KEYS {
+            bind(&mut map, key, action).expect("lynx binding must parse");
         }
-        other => warnings.push(format!("unknown keymap preset '{other}', using mc")),
     }
     for (key, action) in custom {
         if let Err(warning) = bind(&mut map, key, action) {
@@ -229,7 +231,7 @@ mod tests {
             ("zz+bad".to_string(), "quit".to_string()),
             ("f5".to_string(), "no-such-action".to_string()),
         ]);
-        let (map, warnings) = build("modern", &custom);
+        let (map, warnings) = build("modern", true, &custom);
         assert!(matches!(
             map.get(&(KeyCode::Left, KeyModifiers::NONE)),
             Some(Action::UpDir)
@@ -244,7 +246,10 @@ mod tests {
             map.get(&(KeyCode::F(5), KeyModifiers::NONE)),
             Some(Action::Copy)
         ));
-        let (_, warnings) = build("dvorak", &BTreeMap::new());
+        let (_, warnings) = build("dvorak", false, &BTreeMap::new());
         assert_eq!(warnings.len(), 1);
+        // lynx off: Left stays unbound (panel Left is a no-op in mc)
+        let (map, _) = build("mc", false, &BTreeMap::new());
+        assert!(!map.contains_key(&(KeyCode::Left, KeyModifiers::NONE)));
     }
 }

@@ -179,8 +179,8 @@ run = "zathura %f >/dev/null 2>&1 &"
 ```
 
 Openers run without a "press Enter" pause, so terminal programs (mpv,
-less) feel native and GUI programs just need a trailing `&`. In the
-`modern` keymap, Right still only enters directories — Enter opens.
+less) feel native and GUI programs just need a trailing `&`. With
+lynx-like motion on, Right still only enters directories — Enter opens.
 `[[commands]]` are named shell templates listed in the **F2 user menu**
 (first nine get digit hotkeys) and optionally bound directly:
 
@@ -265,7 +265,8 @@ mode, hidden-file setting, and the hotlist persist automatically):
 
 ```toml
 theme = "mc"        # or "dark" (truecolor); applied at startup
-keymap = "mc"       # or "modern": Left/Right = parent/enter (lynx style)
+keymap = "mc"       # or "modern" (= lynx-like motion on by default)
+lynx = false        # Left/Right = parent/enter; toggle in F9 > Options
 watch = true        # auto-reload panels on external changes
 mouse = true        # click/double-click/wheel support
 git = true          # git status column + branch in panel titles
