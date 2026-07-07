@@ -139,6 +139,7 @@ const HELP_TEXT: &[&str] = &[
     "  Alt+.           show/hide dotfiles",
     "  Alt+N           sort by name (again = reverse); others in F9 > Sort",
     "  Alt+T           cycle listing format: brief / full / long",
+    "                  (long takes the whole width, MC-style one-panel view)",
     "  Alt+Left/Right  walk the panel's directory history (back/forward)",
     "  Alt+Up          directory hotlist (same as Ctrl+\\)",
     "  Ctrl+X q        quick view: the other panel previews the cursor",
@@ -147,8 +148,8 @@ const HELP_TEXT: &[&str] = &[
     "                  the cursor file (owner, times, inode...; again = off)",
     "  Alt+I           other panel switches to this panel's directory",
     "  Alt+O           other panel opens the directory under the cursor",
-    "  F9 > View       listing format: brief (names), full, long (ls -l);",
-    "                  the panel footer shows the filesystem's free space",
+    "  F9 > View       listing format: brief (names), full, long (ls -l,",
+    "                  full-width); the panel footer shows free space",
     "  Inside a git work tree the title shows [branch] and entries get a",
     "  status column: M modified, A added, ? untracked, ! ignored (dim).",
     "",
@@ -277,8 +278,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .areas(frame.area());
 
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(main);
+    // MC's one-panel view: a long listing needs the whole width, so while
+    // either side shows one, only the active panel is drawn, full-width
+    // (Tab still switches; the hidden side gets a zero area so mouse
+    // hit-testing skips it).
+    let qv_side = app.quick_view.as_ref().map(|q| q.side);
+    let listing_long = |i: usize| {
+        qv_side != Some(i) && app.info != Some(i) && app.panels[i].list_mode == ListMode::Long
+    };
+    let [left, right] = if listing_long(0) || listing_long(1) {
+        let hidden = Rect::new(main.x, main.y, 0, 0);
+        if app.active == 0 {
+            [main, hidden]
+        } else {
+            [hidden, main]
+        }
+    } else {
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(main)
+    };
 
     // 2 border rows + 1 column-header row.
     app.panel_rows = main.height.saturating_sub(3) as usize;
@@ -289,8 +306,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         keybar,
     };
 
-    let qv_side = app.quick_view.as_ref().map(|q| q.side);
     for (i, area) in [(0, left), (1, right)] {
+        if area.width == 0 {
+            continue;
+        }
         let disk = app.disk[i]
             .as_ref()
             .filter(|(dir, ..)| dir == &app.panels[i].cwd)

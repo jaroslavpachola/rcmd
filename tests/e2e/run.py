@@ -457,6 +457,13 @@ def test_mcdepth():
     check("mcdepth: long listing headers", "Owner" in header_line(s)[:60])
     check("mcdepth: long listing owner", getpass.getuser() in s.screen())
 
+    # long = MC's one-panel view: full width, the other panel is hidden
+    check("mcdepth: long is one-panel", "Modify time" not in header_line(s))
+    s.send(b"\t")                      # Tab: the other (full) panel, alone
+    hdr = header_line(s)
+    check("mcdepth: one-panel tab", "Modify time" in hdr and "Owner" not in hdr)
+    s.send(b"\t")                      # back to the long panel
+
     # brief listing hides everything but names (left panel only)
     s.send(b"\x1b[20~")
     s.send(b"\x1b[C\x1b[C\x1b[C")

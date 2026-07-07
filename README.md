@@ -86,7 +86,7 @@ end
 | F8 | Delete to trash |
 | Shift+F8 | Delete permanently |
 | Alt+N | Sort by name (again = reverse; other orders in F9 → Sort) |
-| Alt+T | Cycle listing format: brief / full / long |
+| Alt+T | Cycle listing format: brief / full / long (long = full-width one-panel view) |
 | Ctrl+U | Swap panels |
 | Alt+. | Toggle hidden files |
 | Ctrl+S, Alt+S | Quick search (type-ahead; Ctrl+S again = next match) |
@@ -203,8 +203,10 @@ hard links, inode, and all three timestamps — plus the filesystem's
 free space, which also shows in every local panel's footer. Listing
 formats are switchable per panel from F9 → View: *brief* (names only,
 full width), *full* (the classic name/size/mtime), and *long*
-(ls-style perms/owner/group/size/name); the choice persists in the
-config (`listing`).
+(ls-style perms/owner/group/size/name). A long listing needs room, so
+it triggers MC's one-panel view: the active panel takes the whole
+width and the other is hidden until you Tab to it or cycle the format
+back. The choice persists in the config (`listing`).
 
 **Git awareness**: inside a git work tree the panel title shows the
 branch (`[main]`) and each entry gets a one-cell status column —
