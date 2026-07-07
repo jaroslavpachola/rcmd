@@ -146,6 +146,16 @@ pub fn save(config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Read-modify-write: apply `f` to the *on-disk* config and save. Used
+/// for every settings change (options form, hotlist edits, exit-time
+/// panel state) so a long-lived instance never clobbers what another
+/// one saved in the meantime with its own stale in-memory copy.
+pub fn update(f: impl FnOnce(&mut Config)) -> Result<()> {
+    let (mut config, _) = load();
+    f(&mut config);
+    save(&config)
+}
+
 pub fn list_mode_from_name(name: &str) -> ListMode {
     match name {
         "brief" => ListMode::Brief,

@@ -21,8 +21,14 @@
   lynx-like motion, mouse, auto-reload, git status, persistent
   subshell — plus editor (internal/external) and theme (mc/dark)
   radios. OK applies everything live (the subshell spawns or stops,
-  the theme switches in place, the keymap rebuilds) and the config
-  persists on exit.
+  the theme switches in place, the keymap rebuilds) and writes the
+  config file immediately.
+- **bugfix: config saves no longer clobber each other.** Every save is
+  now a read-modify-write of the on-disk file: options and hotlist
+  changes write through when they happen, exit only overlays panel
+  state (sort/hidden/listing). Previously each exiting instance dumped
+  its whole in-memory config, so with two rcmd sessions open the later
+  exit silently reverted settings the earlier one had saved.
 - **Menu hotkey letters** (MC parity): every F9 menu title and entry
   has a highlighted hotkey — `F9 o p` opens Panel options. Entries of
   the open menu win over titles; arrows and Enter work as before.

@@ -260,10 +260,12 @@ hotlist stores sftp:// entries, so `Ctrl+\` + Enter reconnects.
 
 ## Configuration
 
-`~/.config/rcmd/config.toml` (created/rewritten on exit — panel sort
-mode, hidden-file setting, and the hotlist persist automatically).
+`~/.config/rcmd/config.toml` — options-form and hotlist changes are
+saved the moment they happen; panel state (sort mode, hidden files,
+listing format) is saved on exit. Saves merge into the on-disk file,
+so several rcmd instances never clobber each other's settings.
 The everyday toggles — hidden files, lynx-like motion, mouse,
-auto-reload, git, subshell, editor, theme — also live in an MC-style
+auto-reload, git, subshell, editor, theme — live in an MC-style
 checkbox form under **F9 → Options → Panel options**, applied live:
 
 ```toml

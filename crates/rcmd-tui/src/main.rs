@@ -41,13 +41,20 @@ fn run(
     let mut app = app::App::new(&args.dirs, cfg, warnings)?;
     let result = app.run(terminal);
 
-    // Persist panel settings and the hotlist for the next session.
+    // Persist the panel state for the next session — onto the *on-disk*
+    // config, not this instance's copy: options-form and hotlist changes
+    // are written through when they happen, and another instance may
+    // have saved its own since we started.
     let panel = &app.panels[app.active];
-    app.config.show_hidden = panel.show_hidden;
-    app.config.sort_key = config::sort_key_name(panel.sort_key).to_string();
-    app.config.sort_reverse = panel.sort_reverse;
-    app.config.listing = config::list_mode_name(panel.list_mode).to_string();
-    if let Err(err) = config::save(&app.config) {
+    let (show_hidden, sort_reverse) = (panel.show_hidden, panel.sort_reverse);
+    let sort_key = config::sort_key_name(panel.sort_key).to_string();
+    let listing = config::list_mode_name(panel.list_mode).to_string();
+    if let Err(err) = config::update(|cfg| {
+        cfg.show_hidden = show_hidden;
+        cfg.sort_key = sort_key;
+        cfg.sort_reverse = sort_reverse;
+        cfg.listing = listing;
+    }) {
         eprintln!("rcmd: could not save config: {err}");
     }
 

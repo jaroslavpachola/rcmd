@@ -129,8 +129,9 @@ pub enum Dialog {
 }
 
 /// F9 > Options > Panel options — MC-style checkbox form over the
-/// config toggles. OK applies everything live; the config file is
-/// written on exit as usual.
+/// config toggles. OK applies everything live and writes the config
+/// file immediately (exit-time saves only cover panel state, so a
+/// second running instance cannot clobber applied options).
 pub struct OptionsDialog {
     /// Focused row: the options in order, then [`OPTION_ROWS`] = the
     /// OK/Cancel button row.
@@ -2956,12 +2957,14 @@ impl App {
                                 .map(|n| n.to_string_lossy().into_owned())
                                 .unwrap_or_else(|| path.clone());
                             self.config.hotlist.push(HotEntry { label, path });
+                            self.save_hotlist();
                         }
                         self.dialog = Some(Dialog::Hotlist(selected));
                     }
                     KeyCode::Char('d') => {
                         if selected < len {
                             self.config.hotlist.remove(selected);
+                            self.save_hotlist();
                         }
                         let len = self.config.hotlist.len();
                         self.dialog = Some(Dialog::Hotlist(selected.min(len.saturating_sub(1))));
@@ -3059,8 +3062,16 @@ impl App {
         }
     }
 
-    /// OK in the options form: apply every change live and record it in
-    /// the config (written back on exit as usual).
+    /// Hotlist edits write through to disk like the options form.
+    fn save_hotlist(&mut self) {
+        let hotlist = self.config.hotlist.clone();
+        if let Err(err) = config::update(move |c| c.hotlist = hotlist) {
+            self.status = Some(format!(" could not save config: {err} "));
+        }
+    }
+
+    /// OK in the options form: apply every change live and write it
+    /// through to the config file right away.
     fn apply_options(&mut self, d: &OptionsDialog) {
         for i in 0..2 {
             if self.panels[i].show_hidden != d.show_hidden
@@ -3115,6 +3126,24 @@ impl App {
         if self.config.theme != theme {
             self.config.theme = theme.to_string();
             ui::init_theme(theme);
+        }
+        // Write through immediately — waiting for exit would let any
+        // other running instance clobber these on its own exit.
+        let cfg = &self.config;
+        let (lynx, mouse, watch, git, subshell) =
+            (cfg.lynx, cfg.mouse, cfg.watch, cfg.git, cfg.subshell);
+        let (show_hidden, editor, theme) = (cfg.show_hidden, cfg.editor.clone(), cfg.theme.clone());
+        if let Err(err) = config::update(move |c| {
+            c.show_hidden = show_hidden;
+            c.lynx = lynx;
+            c.mouse = mouse;
+            c.watch = watch;
+            c.git = git;
+            c.subshell = subshell;
+            c.editor = editor;
+            c.theme = theme;
+        }) {
+            self.status = Some(format!(" could not save config: {err} "));
         }
     }
 

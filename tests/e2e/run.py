@@ -497,6 +497,10 @@ def test_mcdepth():
     s.send(b" ")                       # check it
     check("mcdepth: form checkbox", "[x] Lynx-like motion" in s.screen())
     s.send(b"\r")                      # OK applies live
+    time.sleep(0.5)                    # ... and writes through to disk
+    cfg_path = os.path.join(home, ".config", "rcmd", "config.toml")
+    check("mcdepth: options write through", "lynx = true" in open(cfg_path).read())
+    s2 = Session(play, home)           # second instance, soon-stale memory
     s.send(HOME_K + DOWN)              # cursor -> docs/
     s.send(b"\x1b[C")                  # lynx Right enters it
     check("mcdepth: lynx right enters", "/docs" in s.screen().split("\n")[0][:60])
@@ -509,6 +513,10 @@ def test_mcdepth():
     s.send(HOME_K + DOWN)
     s.send(b"\x1b[C")                  # Right is a no-op once more
     check("mcdepth: lynx toggles off", "/docs" not in s.screen().split("\n")[0][:60])
+    # the second instance never saw the toggles; its exit must save only
+    # panel state, not clobber the options another instance applied
+    s2.quit()
+    check("mcdepth: exit does not clobber", "lynx = false" in open(cfg_path).read())
     s.quit()
     shutil.rmtree(root)
 
