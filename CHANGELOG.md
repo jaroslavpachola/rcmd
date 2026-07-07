@@ -16,11 +16,11 @@
   `subshell = false` (or any spawn failure) restores the pre-3.0
   one-shot execution. The e2e suite now runs twice in CI — subshell on
   and off — plus per-shell scenarios for sh, bash, zsh and fish.
-- **One-panel view for long listings** (MC parity): a panel in the
-  *long* format now takes the whole screen width and the other panel is
-  hidden — Tab still switches (the other panel then shows full-width),
-  cycling the format back restores the split. Previously the six
-  ls-style columns were squeezed into a half-width panel.
+- **One-panel view for long listings** (MC parity): while the *active*
+  panel is in the *long* format it takes the whole screen width and the
+  other panel is hidden; Tab to the other panel (or cycling the format
+  back) restores the split. Previously the six ls-style columns were
+  squeezed into a half-width panel.
 
 ## 2.0.0 — 2026-07-06
 

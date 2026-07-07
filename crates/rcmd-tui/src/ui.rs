@@ -139,7 +139,8 @@ const HELP_TEXT: &[&str] = &[
     "  Alt+.           show/hide dotfiles",
     "  Alt+N           sort by name (again = reverse); others in F9 > Sort",
     "  Alt+T           cycle listing format: brief / full / long",
-    "                  (long takes the whole width, MC-style one-panel view)",
+    "                  (an active long panel takes the whole width, MC's",
+    "                  one-panel view; Tab or cycling back restores the split)",
     "  Alt+Left/Right  walk the panel's directory history (back/forward)",
     "  Alt+Up          directory hotlist (same as Ctrl+\\)",
     "  Ctrl+X q        quick view: the other panel previews the cursor",
@@ -279,14 +280,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     .areas(frame.area());
 
     // MC's one-panel view: a long listing needs the whole width, so while
-    // either side shows one, only the active panel is drawn, full-width
-    // (Tab still switches; the hidden side gets a zero area so mouse
-    // hit-testing skips it).
+    // the ACTIVE side shows one, only that panel is drawn, full-width (the
+    // hidden side gets a zero area so mouse hit-testing skips it). Only the
+    // active side counts: an off-side long panel renders squeezed in the
+    // split rather than invisibly forcing fullscreen — the state stays
+    // visible and Alt+T on either side always behaves predictably.
     let qv_side = app.quick_view.as_ref().map(|q| q.side);
     let listing_long = |i: usize| {
         qv_side != Some(i) && app.info != Some(i) && app.panels[i].list_mode == ListMode::Long
     };
-    let [left, right] = if listing_long(0) || listing_long(1) {
+    let [left, right] = if listing_long(app.active) {
         let hidden = Rect::new(main.x, main.y, 0, 0);
         if app.active == 0 {
             [main, hidden]
