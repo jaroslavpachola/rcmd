@@ -220,6 +220,9 @@ def test_viewer():
         for i in range(200):
             f.write(f"line {i:04}\n")
         f.write("FINDME here\n")
+    open(os.path.join(play, "code.rs"), "w").write(
+        'fn main() {\n    let greeting = "hello";\n    println!("{greeting}");\n}\n'
+    )
     s = Session(play, home)
     s.send(DOWN)                        # -> big.txt
     s.send(F3, wait=STEP * 2)
@@ -227,6 +230,10 @@ def test_viewer():
     s.send(b"/")
     s.send(b"findme\r", wait=STEP * 2)  # case-insensitive search
     check("viewer: search", "FINDME here" in s.screen())
+    # the matched substring is styled on its own: a style change sits
+    # between the match and the rest of the line in the raw stream
+    check("viewer: match span highlighted",
+          re.search(rb"FINDME(?:\x1b\[[0-9;]*m)+ here", s.buf))
     s.send(b"\x1b[14~")                 # F4 hex
     check("viewer: hex", re.search(r"00000000  .*\|line", s.screen()))
     s.send(b"\x1b[14~")                 # back to text
@@ -237,6 +244,14 @@ def test_viewer():
         f.write("APPENDED tail line\n")
     check("viewer: follow picks up appends", wait_for(s, "APPENDED tail line"))
     s.send(b"f")                        # stop following
+    s.send(b"q")
+    # syntax highlighting: a .rs file emits RGB color runs, plain .txt
+    # (checked above) never did
+    s.send(b"\x13code\r", wait=STEP)    # quick search -> code.rs
+    mark = len(s.buf)
+    s.send(F3, wait=STEP * 2)
+    check("viewer: syntax colors on .rs",
+          b"[38;2;" in s.buf[mark:] and "greeting" in s.screen())
     s.send(b"q")
     s.quit()
     shutil.rmtree(root)

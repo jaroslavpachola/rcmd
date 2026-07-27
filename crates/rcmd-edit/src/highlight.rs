@@ -10,7 +10,7 @@ use syntect::highlighting::{
 };
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 
-use crate::Editor;
+use crate::LineSource;
 
 const CHECKPOINT: usize = 32;
 /// Highlighting is skipped entirely above these limits.
@@ -74,9 +74,9 @@ impl Highlighter {
     /// Foreground-color spans (as char ranges) for `count` lines starting
     /// at `start` — one call per frame, one state replay per call. An
     /// empty inner vec means "render that line plain".
-    pub fn range_spans(
+    pub fn range_spans<S: LineSource>(
         &mut self,
-        ed: &Editor,
+        src: &mut S,
         start: usize,
         count: usize,
     ) -> Vec<Vec<(usize, usize, [u8; 3])>> {
@@ -100,10 +100,10 @@ impl Highlighter {
             let (mut ps, mut hs) = self.states.last().expect("seeded above").clone();
             let from = (self.states.len() - 1) * CHECKPOINT;
             for i in from..from + CHECKPOINT {
-                if i >= ed.line_count() {
+                if i >= src.line_count() {
                     break;
                 }
-                if !self.advance(&mut ps, &mut hs, &hl, &ed.line_with_nl(i)) {
+                if !self.advance(&mut ps, &mut hs, &hl, &src.line_with_nl(i)) {
                     return plain;
                 }
             }
@@ -113,17 +113,17 @@ impl Highlighter {
 
         let (mut ps, mut hs) = self.states[want].clone();
         for i in want * CHECKPOINT..start {
-            if !self.advance(&mut ps, &mut hs, &hl, &ed.line_with_nl(i)) {
+            if !self.advance(&mut ps, &mut hs, &hl, &src.line_with_nl(i)) {
                 return plain;
             }
         }
         let mut out = Vec::with_capacity(count);
         for line in start..start + count {
-            if line >= ed.line_count() {
+            if line >= src.line_count() {
                 out.push(Vec::new());
                 continue;
             }
-            let text = ed.line_with_nl(line);
+            let text = src.line_with_nl(line);
             if text.chars().count() > MAX_LINE_CHARS {
                 out.push(Vec::new());
                 continue;

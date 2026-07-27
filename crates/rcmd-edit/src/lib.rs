@@ -27,9 +27,9 @@ impl Highlighter {
 
     pub fn invalidate_from(&mut self, _line: usize) {}
 
-    pub fn range_spans(
+    pub fn range_spans<S: LineSource>(
         &mut self,
-        _ed: &Editor,
+        _src: &mut S,
         _start: usize,
         count: usize,
     ) -> Vec<Vec<(usize, usize, [u8; 3])>> {
@@ -755,9 +755,24 @@ impl Editor {
         let idx = self.char_idx(m.pos) + m.len.max(1);
         self.pos_at(idx.min(self.rope.len_chars()))
     }
+}
 
-    #[cfg(feature = "syntax")]
-    pub(crate) fn line_with_nl(&self, idx: usize) -> String {
+/// Anything that can hand the highlighter its lines: the editor's rope
+/// or the viewer's lazily-indexed file (hence `&mut self` — lazy
+/// sources index on demand).
+pub trait LineSource {
+    fn line_count(&mut self) -> usize;
+    /// Line content including its trailing newline (the syntect syntax
+    /// set expects newlines; a missing final one is tolerated).
+    fn line_with_nl(&mut self, idx: usize) -> String;
+}
+
+impl LineSource for Editor {
+    fn line_count(&mut self) -> usize {
+        self.rope.len_lines()
+    }
+
+    fn line_with_nl(&mut self, idx: usize) -> String {
         self.rope.line(idx).to_string()
     }
 }

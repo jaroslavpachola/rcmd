@@ -249,7 +249,9 @@ const HELP_TEXT: &[&str] = &[
     "# Viewer (F3)",
     "  F2              toggle line wrap",
     "  F4              toggle hex dump",
-    "  F7 or /         search (case-insensitive), n = next match",
+    "  F7 or /         search (case-insensitive), n = next match;",
+    "                  matches are highlighted, the found line marked",
+    "  Files with a known syntax (≤2 MB) get syntax colors, like F4",
     "  Left/Right      horizontal scroll",
     "  f               follow mode (tail -f): stick to the growing end",
     "  F3/F10/Esc/q    close the viewer",
@@ -1190,7 +1192,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
     frame.render_widget(ratatui::widgets::Block::new().style(base), content);
     let rows = st.rows;
     let all_spans = match st.hl.as_mut() {
-        Some(hl) => hl.range_spans(&st.ed, st.top, rows),
+        Some(hl) => hl.range_spans(&mut st.ed, st.top, rows),
         None => vec![Vec::new(); rows],
     };
     if st.wrap {
@@ -1401,6 +1403,41 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
         title_area,
     );
 
+    // syntax spans for the visible line range (empty without a
+    // recognized syntax); search matches are overlaid per line below
+    let needle = v.search.clone();
+    let all_spans = match v.hl.as_mut() {
+        Some(hl) => hl.range_spans(&mut FileLines(&mut v.file), v.top, content.height as usize),
+        None => Vec::new(),
+    };
+    let styled =
+        |v: &mut crate::app::Viewer, idx: usize, all_spans: &[Vec<(usize, usize, [u8; 3])>]| {
+            let text = match v.file.line(idx) {
+                Ok(Some(text)) => text,
+                _ => return None,
+            };
+            let (expanded, map) = expand_with_map(&text);
+            let clamp = |i: usize| map[i.min(map.len() - 1)];
+            let spans: Vec<(usize, usize, [u8; 3])> = all_spans
+                .get(idx.saturating_sub(v.top))
+                .map(|sp| {
+                    sp.iter()
+                        .map(|&(a, b, rgb)| (clamp(a), clamp(b), rgb))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let matches = if needle.is_empty() {
+                Vec::new()
+            } else {
+                match_ranges(&expanded, &needle)
+            };
+            let base = if v.found == Some(idx) {
+                Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new()
+            };
+            Some((expanded, spans, matches, base))
+        };
     if v.wrap && !v.hex {
         // soft-wrapped: walk (line, segment) pairs from the top row
         let mut line_idx = v.top;
@@ -1411,22 +1448,19 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
                 height: 1,
                 ..content
             };
-            let Ok(Some(text)) = v.file.line(line_idx) else {
+            let Some((expanded, spans, matches, base)) = styled(v, line_idx, &all_spans) else {
                 break;
             };
-            let chars: Vec<char> = expand_line(&text).chars().collect();
-            if seg * width > chars.len() {
+            let len = expanded.chars().count();
+            if seg * width > len {
                 seg = 0; // stale segment after a resize
             }
-            let start = (seg * width).min(chars.len());
-            let display: String = chars[start..].iter().take(width).collect();
-            let style = if v.found == Some(line_idx) {
-                Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD)
-            } else {
-                Style::new()
-            };
-            frame.render_widget(Line::from(display).style(style), row_area);
-            if (seg + 1) * width < chars.len().max(1) {
+            let start = (seg * width).min(len);
+            frame.render_widget(
+                viewer_line(&expanded, &spans, &matches, start, width, base),
+                row_area,
+            );
+            if (seg + 1) * width < len.max(1) {
                 seg += 1;
             } else {
                 line_idx += 1;
@@ -1449,22 +1483,13 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
                 frame.render_widget(Line::from(hex_row(row_offset, &bytes)), row_area);
             } else {
                 let idx = v.top + row as usize;
-                match v.file.line(idx) {
-                    Ok(Some(text)) => {
-                        let display: String = expand_line(&text)
-                            .chars()
-                            .skip(v.left)
-                            .take(width)
-                            .collect();
-                        let style = if v.found == Some(idx) {
-                            Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::new()
-                        };
-                        frame.render_widget(Line::from(display).style(style), row_area);
-                    }
-                    _ => break,
-                }
+                let Some((expanded, spans, matches, base)) = styled(v, idx, &all_spans) else {
+                    break;
+                };
+                frame.render_widget(
+                    viewer_line(&expanded, &spans, &matches, v.left, width, base),
+                    row_area,
+                );
             }
         }
     }
@@ -1490,6 +1515,120 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
 }
 
 /// Expand tabs to 8-column stops and hide control characters.
+/// Adapter: the viewer's chunked file as a highlighter line source.
+/// Only files under the highlighter's 2 MB gate ever get here, so the
+/// full index walk behind `total_lines` is cheap.
+struct FileLines<'a>(&'a mut rcmd_core::view::FileView);
+
+impl rcmd_edit::LineSource for FileLines<'_> {
+    fn line_count(&mut self) -> usize {
+        self.0.total_lines().unwrap_or(0)
+    }
+
+    fn line_with_nl(&mut self, idx: usize) -> String {
+        match self.0.line(idx) {
+            Ok(Some(mut s)) => {
+                s.push('\n');
+                s
+            }
+            _ => String::new(),
+        }
+    }
+}
+
+/// Like [`expand_line`], also returning raw-char → expanded-char
+/// offsets (length = raw chars + 1) so span columns survive tab
+/// expansion.
+fn expand_with_map(text: &str) -> (String, Vec<usize>) {
+    let mut out = String::with_capacity(text.len());
+    let mut map = Vec::with_capacity(text.len() + 1);
+    let mut col = 0usize;
+    for c in text.chars() {
+        map.push(col);
+        match c {
+            '\t' => {
+                let pad = 8 - col % 8;
+                out.extend(std::iter::repeat_n(' ', pad));
+                col += pad;
+            }
+            c if (c as u32) < 0x20 => {
+                out.push('\u{b7}');
+                col += 1;
+            }
+            c => {
+                out.push(c);
+                col += 1;
+            }
+        }
+    }
+    map.push(col);
+    (out, map)
+}
+
+/// Case-insensitive occurrences of `needle` in `text`, as char ranges
+/// (char-wise lowercase — the same approximation the search itself
+/// uses).
+fn match_ranges(text: &str, needle: &str) -> Vec<(usize, usize)> {
+    let ned: Vec<char> = needle
+        .chars()
+        .filter_map(|c| c.to_lowercase().next())
+        .collect();
+    if ned.is_empty() {
+        return Vec::new();
+    }
+    let hay: Vec<char> = text
+        .chars()
+        .filter_map(|c| c.to_lowercase().next())
+        .collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + ned.len() <= hay.len() {
+        if hay[i..i + ned.len()] == ned[..] {
+            out.push((i, i + ned.len()));
+            i += ned.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// One viewer row: syntax colors with the search matches overlaid,
+/// windowed to `[start, start+width)` of the expanded text.
+fn viewer_line(
+    expanded: &str,
+    spans: &[(usize, usize, [u8; 3])],
+    matches: &[(usize, usize)],
+    start: usize,
+    width: usize,
+    base: Style,
+) -> Line<'static> {
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let mut out: Vec<Span> = Vec::new();
+    let mut run = String::new();
+    let mut run_style = base;
+    for (i, c) in expanded.chars().enumerate().skip(start).take(width) {
+        let mut style = base;
+        if let Some(&(_, _, rgb)) = spans.iter().find(|&&(a, b, _)| i >= a && i < b) {
+            style = base.fg(Color::Rgb(rgb[0], rgb[1], rgb[2]));
+        }
+        if matches.iter().any(|&(a, b)| i >= a && i < b) {
+            style = sel;
+        }
+        if style != run_style {
+            if !run.is_empty() {
+                out.push(Span::styled(std::mem::take(&mut run), run_style));
+            }
+            run_style = style;
+        }
+        run.push(c);
+    }
+    if !run.is_empty() {
+        out.push(Span::styled(run, run_style));
+    }
+    Line::from(out)
+}
+
 pub fn expand_line(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut col = 0usize;

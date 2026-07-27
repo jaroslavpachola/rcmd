@@ -362,6 +362,9 @@ pub struct QuickView {
 pub struct Viewer {
     pub file: FileView,
     pub path: PathBuf,
+    /// Syntect highlighting, present only under the editor's size
+    /// ceiling (2 MB) for a recognized syntax; None = plain (fast).
+    pub hl: Option<rcmd_edit::Highlighter>,
     pub hex: bool,
     /// Soft-wrap long lines (F2) instead of horizontal scrolling.
     pub wrap: bool,
@@ -1984,9 +1987,17 @@ impl App {
     fn follow_tick(&mut self) {
         if let Some(v) = self.viewer.as_mut()
             && v.follow
-            && v.file.refresh().unwrap_or(false)
         {
-            viewer_end(v, v.rows.max(1));
+            let before = v.file.size;
+            if v.file.refresh().unwrap_or(false) {
+                if let Some(hl) = v.hl.as_mut()
+                    && v.file.size < before
+                {
+                    // rotation/truncation: earlier lines changed
+                    hl.invalidate_from(0);
+                }
+                viewer_end(v, v.rows.max(1));
+            }
         }
     }
 
@@ -2484,6 +2495,7 @@ impl App {
         match FileView::open(&open_path) {
             Ok(file) => {
                 self.viewer = Some(Viewer {
+                    hl: rcmd_edit::Highlighter::new(&open_path, file.size as usize),
                     file,
                     path: title_path,
                     hex: false,

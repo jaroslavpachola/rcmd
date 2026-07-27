@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Viewer highlighting**: the F3 viewer now syntax-colors files with a
+  recognized syntax under the editor's 2 MB ceiling (same syntect
+  machinery, plain and instant above it), and search matches are
+  highlighted precisely — every visible occurrence gets the selection
+  style, the current found line keeps its bold marker. Works in wrap
+  mode and survives tab expansion; follow mode invalidates the parse
+  cache only when the file shrinks (rotation).
+
 - **Job queue** (3.0 R4): `b` in a copy/move/delete/pack progress
   dialog sends the job to the background — the panels come back, the
   status line shows aggregate progress, and more jobs can start
