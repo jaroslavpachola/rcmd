@@ -346,6 +346,8 @@ pub struct QuickView {
     /// Shown instead of content when there is nothing to preview.
     pub note: String,
     pub top: usize,
+    /// F4 while the preview is focused: hex dump instead of text.
+    pub hex: bool,
     /// Content rows; updated on every draw, drives paging.
     pub rows: usize,
 }
@@ -2125,6 +2127,7 @@ impl App {
             view: None,
             note: String::new(),
             top: 0,
+            hex: false,
             rows: 1,
         });
         self.update_quick_view();
@@ -4018,6 +4021,10 @@ impl App {
             let page = rows.saturating_sub(1).max(1);
             match key.code {
                 KeyCode::Tab | KeyCode::BackTab => self.active ^= 1,
+                KeyCode::F(4) => {
+                    qv.hex = !qv.hex;
+                    qv.top = 0;
+                }
                 KeyCode::Up => qv.top = qv.top.saturating_sub(1),
                 KeyCode::PageUp => qv.top = qv.top.saturating_sub(page),
                 KeyCode::Home => qv.top = 0,
@@ -4028,7 +4035,9 @@ impl App {
                             KeyCode::PageDown => qv.top + page,
                             _ => usize::MAX,
                         };
-                        let known = if want == usize::MAX {
+                        let known = if qv.hex {
+                            fv.size.div_ceil(16) as usize
+                        } else if want == usize::MAX {
                             fv.total_lines().unwrap_or(0)
                         } else {
                             let _ = fv.ensure_lines(want + 1);

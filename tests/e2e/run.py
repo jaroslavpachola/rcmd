@@ -419,6 +419,13 @@ def test_quickview():
     )
     s.send(DOWN)                        # -> prose.txt
     check("quickview: switches file", "second file content" in s.screen())
+    s.send(b"\t")                       # focus the preview
+    s.send(F4, wait=STEP)               # R4: hex mode
+    check("quickview: hex dump",           # "se" of "second" in hex
+          "00000000  73 65" in s.screen())
+    s.send(F4, wait=STEP)               # back to text
+    check("quickview: hex off", "00000000" not in s.screen())
+    s.send(b"\t")                       # focus back to the listing
     s.send(b"\x18q")                    # toggle off
     check("quickview: toggles off", "Quick view" not in s.screen())
     s.quit()

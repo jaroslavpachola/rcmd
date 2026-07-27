@@ -549,6 +549,27 @@ fn draw_quick_view(frame: &mut Frame, area: Rect, qv: &mut QuickView, active: bo
     qv.rows = inner.height as usize;
 
     match qv.view.as_mut() {
+        Some((_, fv)) if qv.hex => {
+            for row in 0..inner.height {
+                let offset = (qv.top + row as usize) as u64 * 16;
+                if offset >= fv.size {
+                    break;
+                }
+                let bytes = fv.read_at(offset, 16).unwrap_or_default();
+                let text: String = hex_row(offset, &bytes)
+                    .chars()
+                    .take(inner.width as usize)
+                    .collect();
+                frame.render_widget(
+                    Line::from(text),
+                    Rect {
+                        y: inner.y + row,
+                        height: 1,
+                        ..inner
+                    },
+                );
+            }
+        }
         Some((_, fv)) => {
             for row in 0..inner.height {
                 let Ok(Some(line)) = fv.line(qv.top + row as usize) else {
