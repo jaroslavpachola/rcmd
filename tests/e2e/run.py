@@ -703,6 +703,41 @@ def test_cxops():
     shutil.rmtree(root)
 
 
+def test_jobs():
+    """R4 job queue: background a job, list it, foreground it, finish.
+    The copy source is a FIFO, so the job blocks deterministically
+    until the test opens the writing end."""
+    root, play, home = sandbox()
+    dest = os.path.join(play, "dest")
+    os.makedirs(dest)
+    os.mkfifo(os.path.join(play, "pipe.dat"))
+    s = Session(play, home, args=(play, dest))
+    s.send(b"\x13pipe\r", wait=STEP)        # quick search -> pipe.dat
+    s.send(F5)
+    s.send(b"\r", wait=STEP * 2)            # copy to dest/ — blocks on the fifo
+    check("jobs: progress dialog", "copy 1 item" in s.screen())
+    s.send(b"b", wait=STEP)                 # detach
+    check("jobs: status shows background job",
+          "1 job(s) running" in s.screen())
+    s.send(b"\x18j", wait=STEP)             # C-x j
+    scr = s.screen()
+    check("jobs: list shows it", "Jobs" in scr and "copy 1 item" in scr)
+    s.send(b"\r", wait=STEP)                # Enter: foreground again
+    check("jobs: foregrounded", "b — background" in s.screen())
+    s.send(b"b", wait=STEP)                 # detach again
+    s.send(F10, wait=STEP)                  # quit must refuse
+    check("jobs: quit refused while running", "still running" in s.screen())
+    fd = os.open(os.path.join(play, "pipe.dat"), os.O_WRONLY)
+    os.write(fd, b"data!")
+    os.close(fd)                            # EOF -> the copy completes
+    check("jobs: finishes in background", wait_for(s, "done —"))
+    copied = os.path.join(dest, "pipe.dat")
+    check("jobs: payload arrived",
+          os.path.isfile(copied) and open(copied, "rb").read() == b"data!")
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_bulk_rename():
     """R3: bulk rename — edit names in the editor, preview, apply."""
     root, play, home = sandbox()
@@ -1235,6 +1270,7 @@ def main():
         test_escmeta,
         test_aliases,
         test_bulk_rename,
+        test_jobs,
         test_cxops,
         test_extensibility,
         test_git,

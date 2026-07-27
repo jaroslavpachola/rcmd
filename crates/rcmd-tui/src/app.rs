@@ -155,6 +155,8 @@ pub enum Dialog {
     Options(OptionsDialog),
     /// Bulk rename: what the edited buffer asks for, awaiting Yes/No.
     RenamePreview(RenamePreview),
+    /// Background-jobs list; the payload is the selected row.
+    Jobs(usize),
 }
 
 /// The confirmation step of a bulk rename — nothing has touched the
@@ -253,6 +255,9 @@ pub struct Job {
     pub ask: Option<Ask>,
     pub button: usize,
     src_panel: usize,
+    /// Running detached ('b' in the progress dialog): the dialog is
+    /// hidden, the panels stay interactive, asks pull it back up.
+    pub background: bool,
 }
 
 enum Exec {
@@ -442,6 +447,8 @@ pub enum Action {
     /// Marked names open as an editable list; the saved diff becomes
     /// renames and deletes (after a preview).
     BulkRename,
+    /// The running-jobs list (C-x j / F9 > Command > Jobs).
+    Jobs,
     /// C-l: redraw the screen from scratch.
     Repaint,
 }
@@ -488,6 +495,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Reload panel", "C-r", Action::Reload)),
             Some(("S&wap panels", "C-u", Action::SwapPanels)),
             Some(("Toggle hidde&n files", "M-.", Action::ToggleHidden)),
+            Some(("&Jobs...", "C-x j", Action::Jobs)),
         ],
     ),
     (
@@ -658,7 +666,8 @@ pub struct App {
     /// Rows visible inside a panel; updated on every draw, drives PgUp/PgDn.
     pub panel_rows: usize,
     pub dialog: Option<Dialog>,
-    pub job: Option<Job>,
+    /// Running jobs; at most one is foreground (its dialog is modal).
+    pub jobs: Vec<Job>,
     pub viewer: Option<Viewer>,
     pub editor: Option<EditorState>,
     pub quick_view: Option<QuickView>,
@@ -769,7 +778,7 @@ impl App {
             status,
             panel_rows: 1,
             dialog: None,
-            job: None,
+            jobs: Vec::new(),
             viewer: None,
             editor: None,
             quick_view: None,
@@ -834,7 +843,7 @@ impl App {
                 .watch
                 .as_ref()
                 .is_some_and(|w| w.dirty.iter().any(Option::is_some));
-            let timeout = if self.job.is_some()
+            let timeout = if !self.jobs.is_empty()
                 || self.find.is_some()
                 || self.connect.is_some()
                 || self.du.is_some()
@@ -870,8 +879,16 @@ impl App {
                     self.finish_remote_edit();
                 }
             }
+            // quitting with jobs still running would orphan them
+            if self.quit && !self.jobs.is_empty() {
+                self.quit = false;
+                self.status = Some(format!(
+                    " {} job(s) still running — C-x j lists them (Esc/c cancels) ",
+                    self.jobs.len()
+                ));
+            }
         }
-        if let Some(job) = &self.job {
+        for job in &self.jobs {
             job.handle.cancel();
         }
         if let Some(find) = &self.find {
@@ -941,6 +958,7 @@ impl App {
     /// latest 2 s after the first event of a burst.
     fn tick_watch(&mut self) {
         use std::time::Instant;
+        let busy = self.fg_job().is_some();
         let Some(watch) = self.watch.as_mut() else {
             return;
         };
@@ -958,11 +976,7 @@ impl App {
                 }
             }
         }
-        if self.job.is_some()
-            || self.find.is_some()
-            || self.dialog.is_some()
-            || self.quick_search.is_some()
-        {
+        if busy || self.find.is_some() || self.dialog.is_some() || self.quick_search.is_some() {
             return;
         }
         for i in 0..2 {
@@ -1461,56 +1475,81 @@ impl App {
         Ok(())
     }
 
+    /// The job whose dialog is on screen (modal); background jobs run
+    /// without one until they finish or need an answer.
+    pub fn fg_job(&self) -> Option<&Job> {
+        self.jobs.iter().find(|j| !j.background)
+    }
+
+    fn fg_job_mut(&mut self) -> Option<&mut Job> {
+        self.jobs.iter_mut().find(|j| !j.background)
+    }
+
     fn drain_job(&mut self) {
-        let Some(job) = self.job.as_mut() else { return };
-        let mut done = None;
-        while let Ok(event) = job.handle.events.try_recv() {
-            match event {
-                JobEvent::Total { files, bytes } => {
-                    job.total_files = files;
-                    job.total_bytes = bytes;
+        let mut any_done = false;
+        let mut i = 0;
+        while i < self.jobs.len() {
+            let job = &mut self.jobs[i];
+            let mut done = None;
+            while let Ok(event) = job.handle.events.try_recv() {
+                match event {
+                    JobEvent::Total { files, bytes } => {
+                        job.total_files = files;
+                        job.total_bytes = bytes;
+                    }
+                    JobEvent::Progress {
+                        files_done,
+                        bytes_done,
+                        current,
+                    } => {
+                        job.files_done = files_done;
+                        job.bytes_done = bytes_done;
+                        job.current = current;
+                    }
+                    JobEvent::AskOverwrite { path } => {
+                        job.ask = Some(Ask::Overwrite { path });
+                        job.button = 0;
+                        // a question pulls a background job back up
+                        job.background = false;
+                    }
+                    JobEvent::AskError { path, message } => {
+                        job.ask = Some(Ask::Error { path, message });
+                        job.button = 0;
+                        job.background = false;
+                    }
+                    JobEvent::Done {
+                        files_done,
+                        skipped,
+                        aborted,
+                    } => done = Some((files_done, skipped, aborted)),
                 }
-                JobEvent::Progress {
-                    files_done,
-                    bytes_done,
-                    current,
-                } => {
-                    job.files_done = files_done;
-                    job.bytes_done = bytes_done;
-                    job.current = current;
-                }
-                JobEvent::AskOverwrite { path } => {
-                    job.ask = Some(Ask::Overwrite { path });
-                    job.button = 0;
-                }
-                JobEvent::AskError { path, message } => {
-                    job.ask = Some(Ask::Error { path, message });
-                    job.button = 0;
-                }
-                JobEvent::Done {
-                    files_done,
-                    skipped,
-                    aborted,
-                } => done = Some((files_done, skipped, aborted)),
             }
-        }
-        if let Some((files_done, skipped, aborted)) = done {
-            let mut job = self.job.take().expect("job present");
+            let Some((files_done, skipped, aborted)) = done else {
+                i += 1;
+                continue;
+            };
+            let mut job = self.jobs.remove(i);
             if let Some(thread) = job.handle.thread.take() {
                 let _ = thread.join();
             }
             if !aborted {
                 self.panels[job.src_panel].marked.clear();
             }
-            for panel in &mut self.panels {
-                let _ = panel.reload();
-            }
-            self.git_refresh();
+            any_done = true;
             self.status = Some(match (aborted, skipped) {
                 (true, _) => format!(" aborted — {files_done} item(s) processed "),
                 (false, 0) => format!(" done — {files_done} item(s) processed "),
                 (false, n) => format!(" done — {files_done} item(s) processed, {n} skipped "),
             });
+        }
+        if any_done {
+            for panel in &mut self.panels {
+                let _ = panel.reload();
+            }
+            self.git_refresh();
+            if self.jobs.is_empty() && matches!(self.dialog, Some(Dialog::Jobs(_))) {
+                self.dialog = None;
+            }
         }
     }
 
@@ -1544,7 +1583,7 @@ impl App {
 
     fn dispatch_key(&mut self, key: KeyEvent) {
         self.status = None;
-        if self.job.is_some() {
+        if self.fg_job().is_some() {
             self.on_job_key(key);
         } else if self.connect.is_some() {
             self.on_connect_key(key);
@@ -1591,7 +1630,7 @@ impl App {
 
     fn on_click(&mut self, x: u16, y: u16, double: bool) {
         // Dialogs and prompts stay keyboard-only; the menu is the exception.
-        if self.job.is_some()
+        if self.fg_job().is_some()
             || self.connect.is_some()
             || self.find.is_some()
             || self.dialog.is_some()
@@ -1750,7 +1789,7 @@ impl App {
     }
 
     fn on_wheel(&mut self, x: u16, y: u16, delta: isize) {
-        if self.job.is_some()
+        if self.fg_job().is_some()
             || self.connect.is_some()
             || self.find.is_some()
             || self.dialog.is_some()
@@ -2111,6 +2150,13 @@ impl App {
             }
             Action::Repaint => self.repaint = true,
             Action::BulkRename => self.open_bulk_rename(),
+            Action::Jobs => {
+                if self.jobs.is_empty() {
+                    self.status = Some(" no jobs running ".into());
+                } else {
+                    self.dialog = Some(Dialog::Jobs(0));
+                }
+            }
         }
     }
 
@@ -3186,10 +3232,13 @@ impl App {
     }
 
     fn on_job_key(&mut self, key: KeyEvent) {
-        let Some(job) = self.job.as_mut() else { return };
+        let Some(job) = self.fg_job_mut() else { return };
         let Some(ask) = &job.ask else {
-            if key.code == KeyCode::Esc {
-                job.handle.cancel();
+            match key.code {
+                KeyCode::Esc => job.handle.cancel(),
+                // detach: the job keeps running, panels come back
+                KeyCode::Char('b' | 'B') => job.background = true,
+                _ => {}
             }
             return;
         };
@@ -3251,6 +3300,35 @@ impl App {
                 }
                 _ => self.dialog = Some(Dialog::RenamePreview(d)),
             },
+            Dialog::Jobs(mut selected) => {
+                let len = self.jobs.len();
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => {
+                        // bring it to the front: its dialog returns
+                        if let Some(job) = self.jobs.get_mut(selected) {
+                            job.background = false;
+                        }
+                    }
+                    KeyCode::Char('c' | 'C') | KeyCode::Delete => {
+                        if let Some(job) = self.jobs.get(selected) {
+                            job.handle.cancel();
+                        }
+                        self.dialog = Some(Dialog::Jobs(selected));
+                    }
+                    KeyCode::Up => {
+                        selected = selected.saturating_sub(1);
+                        self.dialog = Some(Dialog::Jobs(selected));
+                    }
+                    KeyCode::Down => {
+                        if selected + 1 < len {
+                            selected += 1;
+                        }
+                        self.dialog = Some(Dialog::Jobs(selected));
+                    }
+                    _ => self.dialog = Some(Dialog::Jobs(selected)),
+                }
+            }
             Dialog::Confirm(mut d) => match key.code {
                 KeyCode::Esc | KeyCode::Char('n') => {}
                 KeyCode::Char('y') => self.start_delete(d.paths, d.permanent),
@@ -3831,7 +3909,7 @@ impl App {
         dest_label: String,
     ) {
         let verb = if is_move { "move" } else { "copy" };
-        self.job = Some(Job {
+        self.jobs.push(Job {
             title: format!(" {verb} {} item(s) to {} ", sources.len(), dest_label),
             handle: fsops::spawn_transfer(src_fs, sources, dst_fs, dest, is_move),
             total_files: 0,
@@ -3842,6 +3920,7 @@ impl App {
             ask: None,
             button: 0,
             src_panel: self.active,
+            background: false,
         });
     }
 
@@ -3924,7 +4003,7 @@ impl App {
         verb: &str,
     ) {
         let dest = self.resolve(dest);
-        self.job = Some(Job {
+        self.jobs.push(Job {
             title: format!(" {verb} {} item(s) to {} ", sources.len(), dest.display()),
             handle: spawn(sources, dest),
             total_files: 0,
@@ -3935,6 +4014,7 @@ impl App {
             ask: None,
             button: 0,
             src_panel: self.active,
+            background: false,
         });
     }
 
@@ -3959,7 +4039,7 @@ impl App {
             self.status = Some(" can only copy into .zip or .tar[.gz/xz/bz2] archives ".into());
             return;
         };
-        self.job = Some(Job {
+        self.jobs.push(Job {
             title: format!(
                 " pack {} item(s) into {} ",
                 sources.len(),
@@ -3974,13 +4054,14 @@ impl App {
             ask: None,
             button: 0,
             src_panel: self.active,
+            background: false,
         });
     }
 
     fn start_extract(&mut self, sources: Vec<PathBuf>, dest: &str) {
         let dest = self.resolve(dest);
         let fs = self.panels[self.active].fs.clone();
-        self.job = Some(Job {
+        self.jobs.push(Job {
             title: format!(" extract {} item(s) to {} ", sources.len(), dest.display()),
             handle: fsops::spawn_extract(fs, sources, dest),
             total_files: 0,
@@ -3991,6 +4072,7 @@ impl App {
             ask: None,
             button: 0,
             src_panel: self.active,
+            background: false,
         });
     }
 
@@ -4002,7 +4084,7 @@ impl App {
         } else {
             fsops::spawn_delete(paths, permanent)
         };
-        self.job = Some(Job {
+        self.jobs.push(Job {
             title: format!(" {verb} {count} item(s) "),
             handle,
             total_files: 0,
@@ -4013,6 +4095,7 @@ impl App {
             ask: None,
             button: 0,
             src_panel: self.active,
+            background: false,
         });
     }
 
@@ -4057,6 +4140,7 @@ impl App {
                 KeyCode::Char('c' | 'C') => self.open_chmod(),
                 KeyCode::Char('o' | 'O') => self.open_chown(),
                 KeyCode::Char('s' | 'S') => self.open_symlink(),
+                KeyCode::Char('j' | 'J') => self.run_action(Action::Jobs),
                 _ => {}
             }
             return;
@@ -4065,7 +4149,7 @@ impl App {
             self.prefix_cx = true;
             self.status = Some(
                 " C-x  (d = compare, q = quick view, i = info, c = chmod, \
-                 o = chown, s = symlink, t/p = paste tags/path) "
+                 o = chown, s = symlink, j = jobs, t/p = paste tags/path) "
                     .into(),
             );
             return;

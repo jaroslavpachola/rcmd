@@ -196,6 +196,9 @@ const HELP_TEXT: &[&str] = &[
     "                  rename (swaps are fine), delete lines to delete;",
     "                  save, close, and confirm the preview",
     "  Esc             cancel a running operation",
+    "  b               send the running operation to the background",
+    "  Ctrl+X j        jobs list: Enter foregrounds, c cancels; the",
+    "                  status line shows aggregate background progress",
     "  Overwrite prompt hotkeys: o=overwrite a=all s=skip S=skip all",
     "  Error prompt hotkeys:     r=retry s=skip S=skip all",
     "",
@@ -383,9 +386,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Find(d) => draw_find(frame, d),
             Dialog::Options(d) => draw_options(frame, d),
             Dialog::RenamePreview(d) => draw_rename_preview(frame, d),
+            Dialog::Jobs(selected) => draw_jobs(frame, &app.jobs, *selected),
         }
     }
-    if let Some(job) = &app.job {
+    if let Some(job) = app.fg_job() {
         draw_job(frame, job);
         if let Some(ask) = &job.ask {
             draw_ask(frame, ask, job.button);
@@ -905,6 +909,17 @@ fn format_size(size: u64) -> String {
 fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     let line = if let Some(msg) = &app.status {
         Line::from(msg.as_str()).style(Style::new().fg(th().error_fg).bg(th().error_bg))
+    } else if !app.jobs.is_empty() && app.fg_job().is_none() {
+        // background jobs: aggregate progress, C-x j for the list
+        let (done, total) = app.jobs.iter().fold((0u64, 0u64), |(d, t), j| {
+            (d + j.bytes_done, t + j.total_bytes)
+        });
+        let pct = (done * 100).checked_div(total).unwrap_or(0);
+        Line::from(format!(
+            " {} job(s) running — {pct}% — C-x j lists them ",
+            app.jobs.len()
+        ))
+        .style(Style::new().fg(th().select_fg).bg(th().select_bg))
     } else if let Some(prefix) = &app.quick_search {
         Line::from(format!("Search: {prefix}"))
             .style(Style::new().fg(th().select_fg).bg(th().select_bg))
@@ -952,7 +967,7 @@ fn draw_cmdline(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         area,
     );
-    if app.dialog.is_none() && app.job.is_none() {
+    if app.dialog.is_none() && app.fg_job().is_none() {
         frame.set_cursor_position((area.x + (prompt_len + cl.cursor - start) as u16, area.y));
     }
 }
@@ -2088,6 +2103,55 @@ fn draw_connect_ask(frame: &mut Frame, ask: &ConnectAsk) {
     }
 }
 
+/// The C-x j jobs list: every running job with its progress; Enter
+/// pulls one to the foreground, c cancels it.
+fn draw_jobs(frame: &mut Frame, jobs: &[Job], selected: usize) {
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let rows = jobs.len().max(1) as u16;
+    let area = centered(70, (rows + 2).min(16), frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .title(" Jobs ")
+        .title_bottom(Line::from(" Enter foreground · c cancel · Esc close ").centered())
+        .style(base);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if jobs.is_empty() {
+        frame.render_widget(Line::from(" nothing running ").centered(), inner);
+        return;
+    }
+    let selected = selected.min(jobs.len() - 1);
+    for (i, job) in jobs.iter().enumerate() {
+        if i as u16 >= inner.height {
+            break;
+        }
+        let row = Rect {
+            y: inner.y + i as u16,
+            height: 1,
+            ..inner
+        };
+        let pct = (job.bytes_done * 100)
+            .checked_div(job.total_bytes)
+            .or_else(|| (job.files_done * 100).checked_div(job.total_files))
+            .map(|p| format!("{p:>3}%"))
+            .unwrap_or_else(|| "  …%".into());
+        let counts = format!("{}/{}", job.files_done, job.total_files);
+        let text = tail(
+            &format!(" {pct} {counts:>9}  {}", job.title.trim()),
+            inner.width as usize,
+        );
+        frame.render_widget(
+            Line::from(format!("{text:<w$}", w = inner.width as usize)).style(if i == selected {
+                sel
+            } else {
+                base
+            }),
+            row,
+        );
+    }
+}
+
 fn draw_job(frame: &mut Frame, job: &Job) {
     let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let area = centered(64, 8, frame.area());
@@ -2120,7 +2184,12 @@ fn draw_job(frame: &mut Frame, job: &Job) {
             row(3),
         );
     }
-    frame.render_widget(Line::from("Esc — cancel").centered().style(style), row(4));
+    frame.render_widget(
+        Line::from("Esc — cancel   b — background")
+            .centered()
+            .style(style),
+        row(4),
+    );
 }
 
 fn draw_ask(frame: &mut Frame, ask: &Ask, button: usize) {

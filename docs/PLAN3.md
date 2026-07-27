@@ -3,7 +3,8 @@
 **Status:** R1 DONE (2026-07-06) — the persistent subshell is in,
 default-on with `subshell = false` as the escape hatch; now dogfooding.
 R2 DONE (2026-07-27). R3 DONE (2026-07-27) — the whole menu shipped,
-nothing pruned. R4–R5 open. (Drafted 2026-07-06, alongside the 2.0 release.)
+nothing pruned. R4 DONE (2026-07-27) — again the whole menu, including
+the job queue (E3 resolved). R5 open. (Drafted 2026-07-06, alongside the 2.0 release.)
 **Prerequisite:** PLAN2.md complete (it is). Baseline: 2.0 — MC-workflow
 parity and beyond, SFTP panels, built-in editor, openers/user menu;
 threads-not-async settled (D1); 82 unit tests + 82 pty e2e checks.
@@ -147,15 +148,42 @@ both subshell modes). Notes per item:
   the bare name prefilled), plus legacy F16–F18 codes for the shifted
   F-keys; everything remappable via `[keys]`.
 
-### R4 — depth debt (cherry-pickable menu)
-- Editor: soft-wrap; `$1`..`$9` capture groups in replace; mcedit-style
-  F5/F6 block copy/move as aliases for the clipboard ops.
-- chmod / chown / create-symlink dialogs (C-x c/o/s — `FsWrite` already
-  has the verbs; chown needs one new one).
-- Copy *into* tar archives (full rewrite-append); quick-view hex mode;
-  click-to-sort column headers; Ctrl+Space dir-size over sftp.
-- **Job queue**: more than one running job — a jobs list dialog,
-  background transfers, per-job progress in the status line.
+### R4 — depth debt — DONE (2026-07-27, whole menu shipped)
+
+One green commit per item (fmt, clippy -D, units, full e2e both
+subshell modes; suite now 167 checks). Notes:
+
+- **Editor depth**: `$1`–`$9` capture groups in replace (expansion only
+  trusts captures that re-find the exact highlighted match); mcedit
+  F5/F6 (F5 duplicates the block or line and fills the clipboard, F6
+  cuts for pasting elsewhere); soft-wrap behind Alt+W — segments reuse
+  the horizontal-clipping renderer with a per-segment left edge, so
+  tabs/selection/syntax colors came free; wrap-aware viewport walks at
+  most a screenful, clicks map through the wrapped rows.
+- **C-x c/o/s dialogs**: chmod (octal), chown (`user[:group]`, names
+  via getpwnam/getgrnam locally, numeric on sftp), symlink to the
+  cursor entry. New `FsWrite::set_owner` verb: `lchown` locally, the
+  UIDGID setstat attribute over sftp (missing half backfilled from
+  lstat) — so all three work on remote panels.
+- **Copy into tar**: full rewrite-append as planned — existing entries
+  stream into a temp with the same compression (`append_data` re-fixes
+  long names), new trees follow with per-file progress and the usual
+  retry/skip, temp renames over. Plain/.gz/.xz/.bz2; zip keeps its
+  in-place append. Compressor trailers flushed explicitly (an enum
+  sink with `finish`), never trusted to Drop.
+- **Quick-view hex** (F4 while the preview is focused), **click-to-sort
+  headers** (same toggle as F9 > Sort; layout re-derived from the fixed
+  column widths), **Ctrl+Space over sftp/archives** (provider-walking
+  twin of the local scan).
+- **Job queue** (E3, designed from scratch — deliberately small):
+  `jobs: Vec<Job>` with at most one *foreground* job (its dialog is
+  modal, exactly the old behavior); `b` detaches it — panels come back,
+  the status line shows "N job(s) running — pct%", and new jobs can
+  start meanwhile. C-x j / F9 > Command > Jobs lists them: Enter
+  foregrounds, c cancels. An overwrite/error question pulls a
+  background job back to the front by itself; quitting is refused
+  while jobs run. e2e drives it deterministically by copying from a
+  FIFO (the job blocks until the test opens the writing end).
 
 ### R5 — packaging & the wider world
 - `[profile.release]`: thin LTO + strip (there is currently none).
@@ -193,8 +221,10 @@ sitting, prune freely.
 - **E2 (R1): cwd tracking** — RESOLVED: prompt hooks writing to an
   inherited pipe fd for bash/zsh/fish, `/proc` + foreground-pgroup
   fallback for plain sh (see R1 notes).
-- **E3 (R4): job queue UI shape** — MC never had one worth copying;
-  design from scratch, small.
+- **E3 (R4): job queue UI shape** — RESOLVED: one foreground job
+  (modal dialog, as before) + any number of detached background jobs,
+  `b` to detach, C-x j to list/foreground/cancel, asks auto-foreground
+  (see R4 notes).
 
 ## What 3.0 refuses to do
 

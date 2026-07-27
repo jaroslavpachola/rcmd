@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **Job queue** (3.0 R4): `b` in a copy/move/delete/pack progress
+  dialog sends the job to the background — the panels come back, the
+  status line shows aggregate progress, and more jobs can start
+  meanwhile. C-x j (or F9 > Command > Jobs) lists running jobs: Enter
+  brings one to the foreground, `c` cancels. A job that needs an
+  answer (overwrite/error) pulls itself back up; quitting is refused
+  while jobs run.
+- **Editor depth** (3.0 R4): `$1`–`$9` capture groups in replace,
+  mcedit-style F5/F6 block copy/move, and soft-wrap on Alt+W (wrapped
+  segments keep selection, tabs and syntax colors; clicks and the
+  viewport are wrap-aware).
+- **chmod / chown / symlink dialogs** (3.0 R4): C-x c (octal mode),
+  C-x o (`user[:group]`, names resolved locally, numeric ids over
+  sftp), C-x s (link to the cursor entry) — all work on remote panels
+  through the new `FsWrite::set_owner` verb.
+- **Copy into tar** (3.0 R4): a tar destination (plain/.gz/.xz/.bz2)
+  is rewritten in full — old entries stream across, new trees append,
+  a temp file renames over the archive. Zip keeps in-place append.
+- **Quick-view hex mode** (3.0 R4): F4 while the preview pane is
+  focused flips it to a hex dump.
+- **Click-to-sort** (3.0 R4): clicking a panel column header sorts by
+  that column; clicking again reverses.
+- **Ctrl+Space everywhere** (3.0 R4): directory size now also works on
+  sftp and archive panels via provider traversal.
+
 - **Bulk rename via the editor** (3.0 R3): F9 > File > Bulk rename
   opens the marked names (or the cursor entry) as a numbered text
   buffer in the built-in editor — edit names to rename (swaps and
