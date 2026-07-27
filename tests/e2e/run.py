@@ -842,6 +842,22 @@ def test_editor():
     check("editor: F5 duplicated the line",
           open(path).read().count("alpha") == 2)
 
+    # R4: Alt+W soft-wrap — the tail of a long line becomes visible
+    long_path = os.path.join(play, "wide.txt")
+    open(long_path, "w").write("HEAD" + "x" * 150 + "WRAPTAIL\n")
+    s.send(b"\x12", wait=STEP)          # Ctrl+R reload the panel
+    s.send(b"\x1bs")                    # quick search...
+    s.send(b"wide\r", wait=STEP)        # ...to wide.txt
+    s.send(F4, wait=STEP * 2)
+    check("editor: long line clipped", "WRAPTAIL" not in s.screen())
+    s.send(b"\x1bw", wait=STEP)         # Alt+W wrap on
+    check("editor: soft-wrap shows the tail", "WRAPTAIL" in s.screen())
+    s.send(b"\x1bw", wait=STEP)         # wrap off again
+    check("editor: wrap toggles back", "WRAPTAIL" not in s.screen())
+    s.send(F10, wait=STEP * 2)
+
+    s.send(b"\x1bs")                    # back to notes.txt
+    s.send(b"notes\r", wait=STEP)
     s.send(F4, wait=STEP * 2)           # reopen
     s.send(b"junk")                     # modify
     s.send(F10)                         # quit -> unsaved-changes dialog

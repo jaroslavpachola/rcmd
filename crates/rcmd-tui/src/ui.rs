@@ -254,6 +254,7 @@ const HELP_TEXT: &[&str] = &[
     "  F2 save (atomic, keeps permissions and CRLF)   F10/Esc quit",
     "  F3 mark (select; Shift+arrows also select)     F8 delete line",
     "  F5 copy the block (no block: duplicate line)   F6 move (cut) it",
+    "  Alt+W toggle soft-wrap (long lines fold instead of scrolling)",
     "  Ctrl+C/X/V copy/cut/paste   Ctrl+Z undo   Ctrl+Y redo",
     "  Ctrl+A select all   Ctrl+arrows word hop   Tab inserts a tab",
     "  F7 search (regex, smartcase), Shift+F7 next match",
@@ -1038,6 +1039,13 @@ pub fn screen_col(text: &str, col: usize) -> usize {
     scol
 }
 
+/// Wrapped-segment count of an editor line at `cols` wide (always ≥ 1;
+/// an exact-multiple width gets an extra row so the cursor can sit at
+/// the line end).
+pub fn ed_line_segs(ed: &rcmd_edit::Editor, line: usize, cols: usize) -> usize {
+    screen_col(&ed.line(line), ed.line_len(line)) / cols.max(1) + 1
+}
+
 /// One editor line as styled spans: syntax colors, selection overlay,
 /// tab expansion and horizontal clipping in a single pass.
 #[allow(clippy::too_many_arguments)]
@@ -1148,43 +1156,89 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
         Some(hl) => hl.range_spans(&st.ed, st.top, rows),
         None => vec![Vec::new(); rows],
     };
-    for (row, spans) in all_spans.iter().enumerate().take(rows) {
-        let idx = st.top + row;
-        if idx >= st.ed.line_count() {
-            break;
+    if st.wrap {
+        // soft-wrap: walk (line, segment) pairs from the top row; each
+        // segment reuses the clipping renderer with its own left edge
+        let cols = st.cols.max(1);
+        let empty: Vec<(usize, usize, [u8; 3])> = Vec::new();
+        let mut line_idx = st.top;
+        let mut seg = st.top_seg;
+        for row in 0..rows {
+            if line_idx >= st.ed.line_count() {
+                break;
+            }
+            let row_area = Rect {
+                y: content.y + row as u16,
+                height: 1,
+                ..content
+            };
+            let text = st.ed.line(line_idx);
+            let spans = all_spans.get(line_idx - st.top).unwrap_or(&empty);
+            let line = editor_line(
+                &text,
+                spans,
+                st.ed.sel_on_line(line_idx),
+                seg * cols,
+                cols,
+                base,
+                sel_style,
+            );
+            frame.render_widget(line, row_area);
+            if line_idx == st.ed.cursor.line {
+                let scol = screen_col(&text, st.ed.cursor.col);
+                if scol / cols == seg {
+                    frame.set_cursor_position((
+                        content.x + (scol % cols) as u16,
+                        content.y + row as u16,
+                    ));
+                }
+            }
+            seg += 1;
+            if seg >= ed_line_segs(&st.ed, line_idx, cols) {
+                line_idx += 1;
+                seg = 0;
+            }
         }
-        let row_area = Rect {
-            y: content.y + row as u16,
-            height: 1,
-            ..content
-        };
-        let text = st.ed.line(idx);
-        let line = editor_line(
-            &text,
-            spans,
-            st.ed.sel_on_line(idx),
-            st.left,
-            st.cols,
-            base,
-            sel_style,
-        );
-        frame.render_widget(line, row_area);
-    }
-    // hardware cursor on the edit position
-    let cur_line = st.ed.line(st.ed.cursor.line);
-    let scol = screen_col(&cur_line, st.ed.cursor.col);
-    if st.ed.cursor.line >= st.top
-        && st.ed.cursor.line < st.top + rows
-        && scol >= st.left
-        && scol < st.left + st.cols
-    {
-        frame.set_cursor_position((
-            content.x + (scol - st.left) as u16,
-            content.y + (st.ed.cursor.line - st.top) as u16,
-        ));
+    } else {
+        for (row, spans) in all_spans.iter().enumerate().take(rows) {
+            let idx = st.top + row;
+            if idx >= st.ed.line_count() {
+                break;
+            }
+            let row_area = Rect {
+                y: content.y + row as u16,
+                height: 1,
+                ..content
+            };
+            let text = st.ed.line(idx);
+            let line = editor_line(
+                &text,
+                spans,
+                st.ed.sel_on_line(idx),
+                st.left,
+                st.cols,
+                base,
+                sel_style,
+            );
+            frame.render_widget(line, row_area);
+        }
+        // hardware cursor on the edit position
+        let cur_line = st.ed.line(st.ed.cursor.line);
+        let scol = screen_col(&cur_line, st.ed.cursor.col);
+        if st.ed.cursor.line >= st.top
+            && st.ed.cursor.line < st.top + rows
+            && scol >= st.left
+            && scol < st.left + st.cols
+        {
+            frame.set_cursor_position((
+                content.x + (scol - st.left) as u16,
+                content.y + (st.ed.cursor.line - st.top) as u16,
+            ));
+        }
     }
 
-    let help = " F2 Save  F3 Mark  F4 Replace  F7 Search  F8 DelLine  ^Z Undo  ^C/^X/^V  F10 Quit ";
+    let help =
+        " F2 Save  F3 Mark  F4 Replace  F5/F6 CopyMove  F7 Search  F8 DelLine  M-w Wrap  F10 Quit ";
     let note = st.note.clone().unwrap_or_default();
     frame.render_widget(
         Line::from(format!(

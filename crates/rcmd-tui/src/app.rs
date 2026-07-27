@@ -271,8 +271,12 @@ pub struct EditorState {
     /// Shown in the title bar (the sftp URL for remote scratch edits).
     pub title: String,
     pub top: usize,
+    /// In wrap mode: which wrapped segment of `top` is the first row.
+    pub top_seg: usize,
     /// Horizontal scroll in screen columns.
     pub left: usize,
+    /// Soft-wrap (Alt+W) instead of horizontal scrolling.
+    pub wrap: bool,
     /// Text area size; updated on every draw.
     pub rows: usize,
     pub cols: usize,
@@ -1596,8 +1600,29 @@ impl App {
         }
         if let Some(st) = self.editor.as_mut() {
             if st.prompt.is_none() && y >= 1 && (y as usize) <= st.rows {
-                let line = (st.top + y as usize - 1).min(st.ed.line_count().saturating_sub(1));
-                let col = col_at_screen(&st.ed.line(line), st.left + x as usize);
+                let (line, col) = if st.wrap {
+                    // walk visual rows down from the top to this row
+                    let cols = st.cols.max(1);
+                    let (mut line, mut seg) = (st.top, st.top_seg);
+                    for _ in 0..(y as usize - 1) {
+                        seg += 1;
+                        if seg >= ui::ed_line_segs(&st.ed, line, cols) {
+                            if line + 1 >= st.ed.line_count() {
+                                break;
+                            }
+                            line += 1;
+                            seg = 0;
+                        }
+                    }
+                    let line = line.min(st.ed.line_count().saturating_sub(1));
+                    (
+                        line,
+                        col_at_screen(&st.ed.line(line), seg * cols + x as usize),
+                    )
+                } else {
+                    let line = (st.top + y as usize - 1).min(st.ed.line_count().saturating_sub(1));
+                    (line, col_at_screen(&st.ed.line(line), st.left + x as usize))
+                };
                 st.ed.goto(rcmd_edit::Pos { line, col }, false);
             }
             return;
@@ -2476,7 +2501,9 @@ impl App {
                     ed,
                     title,
                     top: 0,
+                    top_seg: 0,
                     left: 0,
+                    wrap: false,
                     rows: 1,
                     cols: 1,
                     prompt: None,
@@ -2747,6 +2774,12 @@ impl App {
                     self.editor_find(&pattern, from);
                 }
                 return;
+            }
+            KeyCode::Char('w') if alt => {
+                st.wrap = !st.wrap;
+                st.top_seg = 0;
+                st.left = 0;
+                edited = false;
             }
             // mcedit hands: F5 copies the block (or line), F6 moves it
             KeyCode::F(5) => st.ed.block_copy(),
@@ -3025,6 +3058,52 @@ impl App {
         };
         let rows = st.rows.max(1);
         let cols = st.cols.max(1);
+        if st.wrap {
+            st.left = 0;
+            let segs_of = |ed: &rcmd_edit::Editor, line: usize| ui::ed_line_segs(ed, line, cols);
+            if st.top >= st.ed.line_count() {
+                st.top = st.ed.line_count().saturating_sub(1);
+                st.top_seg = 0;
+            }
+            if st.top_seg >= segs_of(&st.ed, st.top) {
+                st.top_seg = 0;
+            }
+            let cline = st.ed.cursor.line;
+            let cseg = ui::screen_col(&st.ed.line(cline), st.ed.cursor.col) / cols;
+            if (cline, cseg) < (st.top, st.top_seg) {
+                st.top = cline;
+                st.top_seg = cseg;
+                return;
+            }
+            // cursor at or below the top: done if it fits in the window
+            let (mut line, mut seg) = (st.top, st.top_seg);
+            for _ in 0..rows {
+                if (line, seg) == (cline, cseg) {
+                    return;
+                }
+                seg += 1;
+                if seg >= segs_of(&st.ed, line) {
+                    line += 1;
+                    seg = 0;
+                }
+            }
+            // below: walk rows-1 visual rows back from the cursor
+            let (mut line, mut seg) = (cline, cseg);
+            for _ in 0..rows.saturating_sub(1) {
+                if seg > 0 {
+                    seg -= 1;
+                } else if line > 0 {
+                    line -= 1;
+                    seg = segs_of(&st.ed, line) - 1;
+                } else {
+                    break;
+                }
+            }
+            st.top = line;
+            st.top_seg = seg;
+            return;
+        }
+        st.top_seg = 0;
         if st.ed.cursor.line < st.top {
             st.top = st.ed.cursor.line;
         }
@@ -4311,7 +4390,9 @@ impl App {
                 ed: rcmd_edit::Editor::create(&path),
                 title,
                 top: 0,
+                top_seg: 0,
                 left: 0,
+                wrap: false,
                 rows: 1,
                 cols: 1,
                 prompt: None,
