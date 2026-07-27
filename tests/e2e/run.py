@@ -801,6 +801,10 @@ def test_extensibility():
         'match = "*.txt"\n'
         'run = "cp %f opened_copy"\n'
         '\n'
+        '[[view]]\n'
+        'match = "*.dat"\n'
+        'run = "tr a-z A-Z < %f"\n'
+        '\n'
         '[[commands]]\n'
         'name = "write marker"\n'
         'run = "echo hello-%d > marker.out"\n'
@@ -846,6 +850,19 @@ def test_extensibility():
         "extensibility: %t + key binding",
         os.path.isfile(tagged) and "notes.txt" in open(tagged).read(),
     )
+
+    # [[view]] filter: F3 shows the command's stdout, Shift+F3 the raw file
+    open(os.path.join(play, "message.dat"), "w").write("filtered view content\n")
+    s.send(b"\x12", wait=STEP)          # Ctrl+R reload
+    s.send(b"\x13message\r", wait=STEP) # quick search -> message.dat
+    s.send(F3, wait=STEP * 2)
+    check("extensibility: [[view]] filter output",
+          "FILTERED VIEW CONTENT" in s.screen())
+    s.send(b"q")
+    s.send(b"\x1b[13;2~", wait=STEP * 2)  # Shift+F3: raw
+    check("extensibility: Shift+F3 raw view",
+          "filtered view content" in s.screen())
+    s.send(b"q")
     s.quit()
     shutil.rmtree(root)
 

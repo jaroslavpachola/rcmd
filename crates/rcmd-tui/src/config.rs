@@ -46,6 +46,10 @@ pub struct Config {
     /// Openers consulted by Enter on a file, in file order — the first
     /// matching glob wins.
     pub open: Vec<OpenRule>,
+    /// View filters consulted by F3: the command's stdout is shown in
+    /// the internal viewer (`view = "pdftotext %f -"`). Shift+F3 views
+    /// the raw bytes. Same shape and matching as `[[open]]`.
+    pub view: Vec<OpenRule>,
     /// User commands: the F2 menu, in file order.
     pub commands: Vec<UserCommand>,
 }
@@ -100,6 +104,7 @@ impl Default for Config {
             keys: BTreeMap::new(),
             hotlist: Vec::new(),
             open: Vec::new(),
+            view: Vec::new(),
             commands: Vec::new(),
         }
     }

@@ -14,6 +14,8 @@ pub type Keymap = HashMap<(KeyCode, KeyModifiers), Action>;
 const DEFAULTS: &[(&str, &str)] = &[
     ("f1", "help"),
     ("f3", "view"),
+    ("shift+f3", "view-raw"),
+    ("f15", "view-raw"), // S-F3 on legacy terminals
     ("f4", "edit"),
     ("f5", "copy"),
     ("f6", "move"),
@@ -154,6 +156,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
     Some(match name {
         "help" => Action::Help,
         "view" => Action::View,
+        "view-raw" => Action::ViewRaw,
         "edit" => Action::Edit,
         "copy" => Action::Copy,
         "move" => Action::Move,

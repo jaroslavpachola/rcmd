@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **View filters** (`[[view]]` in the config): F3 can now pipe a file
+  through a command and show its stdout in the internal viewer —
+  `match = "*.pdf"` / `run = "pdftotext %f -"` — with search, wrap and
+  hex working on the filtered text. First matching glob wins, local
+  panels only; a failing filter falls back to the raw bytes with a
+  status note, and Shift+F3 always views raw.
+
 - **Viewer highlighting**: the F3 viewer now syntax-colors files with a
   recognized syntax under the editor's 2 MB ceiling (same syntect
   machinery, plain and instant above it), and search matches are

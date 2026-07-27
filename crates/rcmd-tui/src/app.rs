@@ -452,6 +452,8 @@ pub enum Action {
     BulkRename,
     /// The running-jobs list (C-x j / F9 > Command > Jobs).
     Jobs,
+    /// Shift+F3: the internal viewer without any [[view]] filter.
+    ViewRaw,
     /// C-l: redraw the screen from scratch.
     Repaint,
 }
@@ -2065,7 +2067,8 @@ impl App {
             Action::Panelize => self.open_panelize(),
             Action::CompareDirs => self.compare_dirs(),
             Action::DirSize => self.dir_size(),
-            Action::View => self.open_viewer(),
+            Action::View => self.open_viewer(false),
+            Action::ViewRaw => self.open_viewer(true),
             Action::Edit => self.open_editor(),
             Action::Copy => self.open_transfer(false),
             Action::Move => self.open_transfer(true),
@@ -2453,7 +2456,7 @@ impl App {
         }
     }
 
-    fn open_viewer(&mut self) {
+    fn open_viewer(&mut self, raw: bool) {
         let panel = &self.panels[self.active];
         let Some(entry) = panel.selected() else {
             return;
@@ -2463,6 +2466,23 @@ impl App {
             return;
         }
         let name = entry.name.clone();
+        // [[view]] filter (F3 only — Shift+F3 stays raw): the
+        // command's stdout becomes the viewed text
+        if !raw && panel.is_local() {
+            let lower = name.to_string_lossy().to_lowercase();
+            let rule = self
+                .config
+                .view
+                .iter()
+                .find(|rule| glob_match(&rule.pattern.to_lowercase(), &lower))
+                .cloned();
+            if let Some(rule) = rule
+                && self.open_filtered_view(&rule)
+            {
+                return;
+            }
+        }
+        let panel = &self.panels[self.active];
         let (open_path, title_path, temp) = if panel.is_local() {
             let path = panel.cwd.join(&name);
             (path.clone(), path, None)
@@ -2519,6 +2539,65 @@ impl App {
                     let _ = std::fs::remove_file(temp);
                 }
                 self.status = Some(format!(" view: {err} "));
+            }
+        }
+    }
+
+    /// Run a `[[view]]` filter and open the internal viewer on its
+    /// stdout. False = filter unusable (spawn failed, or it failed
+    /// with nothing to show) — the caller falls back to the raw view.
+    fn open_filtered_view(&mut self, rule: &crate::config::OpenRule) -> bool {
+        let cwd = self.panels[self.active].local_cwd();
+        let cmd = self.expand_macros(&rule.run);
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let output = std::process::Command::new(&shell)
+            .arg("-c")
+            .arg(&cmd)
+            .current_dir(&cwd)
+            .output();
+        let output = match output {
+            Ok(out) => out,
+            Err(err) => {
+                self.status = Some(format!(" view filter: {err} — showing raw "));
+                return false;
+            }
+        };
+        if output.stdout.is_empty() && !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            let first = err.lines().next().unwrap_or("failed").trim();
+            self.status = Some(format!(" view filter: {first} — showing raw "));
+            return false;
+        }
+        let temp = std::env::temp_dir().join(format!("rcmd-view-{}-filtered", std::process::id()));
+        if std::fs::write(&temp, &output.stdout).is_err() {
+            return false;
+        }
+        match FileView::open(&temp) {
+            Ok(file) => {
+                self.viewer = Some(Viewer {
+                    hl: None, // filter output, not the file's syntax
+                    file,
+                    path: PathBuf::from(cmd),
+                    hex: false,
+                    wrap: false,
+                    follow: false,
+                    top: 0,
+                    top_seg: 0,
+                    left: 0,
+                    cols: 1,
+                    hex_top: 0,
+                    rows: 1,
+                    search: String::new(),
+                    found: None,
+                    prompt: None,
+                    note: None,
+                    temp: Some(temp),
+                });
+                true
+            }
+            Err(_) => {
+                let _ = std::fs::remove_file(&temp);
+                false
             }
         }
     }
