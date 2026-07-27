@@ -235,6 +235,7 @@ const HELP_TEXT: &[&str] = &[
     "  F4              toggle hex dump",
     "  F7 or /         search (case-insensitive), n = next match",
     "  Left/Right      horizontal scroll",
+    "  f               follow mode (tail -f): stick to the growing end",
     "  F3/F10/Esc/q    close the viewer",
     "",
     "# Editor (F4, built-in)",
@@ -1283,8 +1284,9 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
     } else {
         "text"
     };
+    let follow = if v.follow { " [follow]" } else { "" };
     let title = format!(
-        " {}  {} bytes  {percent}%  [{mode}]",
+        " {}  {} bytes  {percent}%  [{mode}]{follow}",
         v.path.display(),
         v.file.size,
     );

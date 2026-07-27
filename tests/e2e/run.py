@@ -229,6 +229,14 @@ def test_viewer():
     check("viewer: search", "FINDME here" in s.screen())
     s.send(b"\x1b[14~")                 # F4 hex
     check("viewer: hex", re.search(r"00000000  .*\|line", s.screen()))
+    s.send(b"\x1b[14~")                 # back to text
+    s.send(b"f", wait=STEP)             # follow mode (R3): tail -f
+    check("viewer: follow tag and jump to end", "[follow]" in s.screen()
+          and "FINDME here" in s.screen())
+    with open(os.path.join(play, "big.txt"), "a") as f:
+        f.write("APPENDED tail line\n")
+    check("viewer: follow picks up appends", wait_for(s, "APPENDED tail line"))
+    s.send(b"f")                        # stop following
     s.send(b"q")
     s.quit()
     shutil.rmtree(root)

@@ -93,6 +93,34 @@ impl FileView {
         Ok(())
     }
 
+    /// Follow mode: pick up external changes to the file. Returns true
+    /// when the size changed. Growth resumes indexing at the frontier;
+    /// shrinking (truncate/rotate) rebuilds the index from scratch.
+    pub fn refresh(&mut self) -> io::Result<bool> {
+        let size = self.file.metadata()?.len();
+        if size == self.size {
+            return Ok(false);
+        }
+        if size < self.size {
+            self.offsets = vec![0];
+            self.indexed_to = 0;
+            self.cur_len = 0;
+            self.size = size;
+            self.fully_indexed = size == 0;
+            return Ok(true);
+        }
+        // A break exactly at the old EOF never pushed the next line's
+        // start (that would have been a phantom line); now that data
+        // follows it, register it.
+        if self.cur_len == 0 && self.indexed_to > 0 && self.offsets.last() != Some(&self.indexed_to)
+        {
+            self.offsets.push(self.indexed_to);
+        }
+        self.size = size;
+        self.fully_indexed = false;
+        Ok(true)
+    }
+
     /// Read one line (lossy UTF-8, trailing newline/CR stripped).
     /// None once past the last line.
     pub fn line(&mut self, idx: usize) -> io::Result<Option<String>> {
@@ -199,6 +227,39 @@ mod tests {
         assert_eq!(v.search_from(2, "bravo").unwrap(), Some(3));
         assert_eq!(v.search_from(4, "bravo").unwrap(), None);
         assert_eq!(v.search_from(0, "zulu").unwrap(), None);
+    }
+
+    #[test]
+    fn refresh_follows_appends_and_truncation() {
+        use std::fs::OpenOptions;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        std::fs::write(&path, "one\ntwo\n").unwrap();
+        let mut v = FileView::open(&path).unwrap();
+        assert_eq!(v.total_lines().unwrap(), 2); // fully indexed
+        assert!(!v.refresh().unwrap());
+
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(b"three\nfour\n").unwrap();
+        assert!(v.refresh().unwrap());
+        assert_eq!(v.total_lines().unwrap(), 4);
+        assert_eq!(v.line(2).unwrap().unwrap(), "three");
+        assert_eq!(v.line(3).unwrap().unwrap(), "four");
+
+        // growth of an unterminated last line
+        f.write_all(b"fi").unwrap();
+        assert!(v.refresh().unwrap());
+        assert_eq!(v.line(4).unwrap().unwrap(), "fi");
+        f.write_all(b"ve\n").unwrap();
+        assert!(v.refresh().unwrap());
+        assert_eq!(v.total_lines().unwrap(), 5);
+        assert_eq!(v.line(4).unwrap().unwrap(), "five");
+
+        // rotation: smaller file rebuilds the index
+        std::fs::write(&path, "fresh\n").unwrap();
+        assert!(v.refresh().unwrap());
+        assert_eq!(v.total_lines().unwrap(), 1);
+        assert_eq!(v.line(0).unwrap().unwrap(), "fresh");
     }
 
     #[test]

@@ -319,6 +319,9 @@ pub struct Viewer {
     pub hex: bool,
     /// Soft-wrap long lines (F2) instead of horizontal scrolling.
     pub wrap: bool,
+    /// Follow mode ('f', tail -f): pick up appended data every loop
+    /// tick and stick to the bottom.
+    pub follow: bool,
     pub top: usize,
     /// In wrap mode: which wrapped segment of `top` is the first row.
     pub top_seg: usize,
@@ -746,6 +749,7 @@ impl App {
             self.poll_loads();
             self.update_watches();
             self.tick_watch();
+            self.follow_tick();
             self.update_quick_view();
             self.git_tick();
             self.disk_tick();
@@ -771,6 +775,7 @@ impl App {
                 || watch_pending
                 || self.esc_at.is_some()
                 || self.subshell.as_ref().is_some_and(|s| !s.ready())
+                || self.viewer.as_ref().is_some_and(|v| v.follow)
             {
                 Duration::from_millis(50)
             } else {
@@ -1793,7 +1798,25 @@ impl App {
                 let from = v.found.map(|f| f + 1).unwrap_or(v.top);
                 viewer_search(v, from, true);
             }
+            KeyCode::Char('f' | 'F') => {
+                v.follow = !v.follow;
+                if v.follow {
+                    let _ = v.file.refresh();
+                    viewer_end(v, rows);
+                    v.note = Some(" following — f stops ".into());
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// Follow mode: re-index on growth and stick to the bottom.
+    fn follow_tick(&mut self) {
+        if let Some(v) = self.viewer.as_mut()
+            && v.follow
+            && v.file.refresh().unwrap_or(false)
+        {
+            viewer_end(v, v.rows.max(1));
         }
     }
 
@@ -2269,6 +2292,7 @@ impl App {
                     path: title_path,
                     hex: false,
                     wrap: false,
+                    follow: false,
                     top: 0,
                     top_seg: 0,
                     left: 0,
