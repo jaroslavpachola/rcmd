@@ -1682,7 +1682,8 @@ fn draw_options(frame: &mut Frame, d: &OptionsDialog) {
 
 fn draw_find(frame: &mut Frame, d: &FindDialog) {
     let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
-    let area = centered(64, 8, frame.area());
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let area = centered(64, 9, frame.area());
     let inner = popup(frame, area, " Find file ", style);
     let row = |offset: u16| Rect {
         x: inner.x + 1,
@@ -1704,11 +1705,20 @@ fn draw_find(frame: &mut Frame, d: &FindDialog) {
         &d.content,
         (d.field == 1).then_some(d.content_cursor),
     );
+    let tick = if d.skip_ignored { 'x' } else { ' ' };
     frame.render_widget(
-        Line::from("Tab — switch field   Enter — search   Esc — cancel")
+        Line::from(format!("[{tick}] Skip gitignored files")).style(if d.field == 2 {
+            sel
+        } else {
+            style
+        }),
+        row(5),
+    );
+    frame.render_widget(
+        Line::from("Tab — switch   Space — toggle   Enter — search   Esc — cancel")
             .centered()
             .style(style),
-        row(5),
+        row(6),
     );
 }
 

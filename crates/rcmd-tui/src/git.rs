@@ -24,6 +24,26 @@ pub fn scan(_dir: &Path) -> Option<GitStatus> {
     None
 }
 
+/// A skip predicate for find (R3): true for gitignored paths and the
+/// `.git` directory itself. `None` when `root` is not inside a work
+/// tree (or the feature is off) — find then walks everything.
+#[cfg(not(feature = "git"))]
+pub fn ignore_filter(_root: &Path) -> Option<rcmd_core::find::SkipFn> {
+    None
+}
+
+#[cfg(feature = "git")]
+pub fn ignore_filter(root: &Path) -> Option<rcmd_core::find::SkipFn> {
+    let repo = git2::Repository::discover(root).ok()?;
+    repo.workdir()?;
+    Some(Box::new(move |path: &Path| {
+        if path.file_name().is_some_and(|n| n == ".git") {
+            return true;
+        }
+        repo.is_path_ignored(path).unwrap_or(false)
+    }))
+}
+
 /// Higher wins when several changed paths collapse onto one entry.
 #[cfg(feature = "git")]
 fn rank(mark: char) -> u8 {

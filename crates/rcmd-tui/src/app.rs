@@ -81,7 +81,9 @@ pub struct FindDialog {
     pub name_cursor: usize,
     pub content: String,
     pub content_cursor: usize,
-    /// 0 = name field, 1 = content field.
+    /// Skip gitignored trees when searching inside a work tree.
+    pub skip_ignored: bool,
+    /// 0 = name field, 1 = content field, 2 = the gitignore checkbox.
     pub field: usize,
 }
 
@@ -3060,17 +3062,27 @@ impl App {
             Dialog::Find(mut d) => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => self.submit_find(d),
-                KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => {
-                    d.field ^= 1;
+                KeyCode::Tab | KeyCode::Down => {
+                    d.field = (d.field + 1) % 3;
+                    self.dialog = Some(Dialog::Find(d));
+                }
+                KeyCode::BackTab | KeyCode::Up => {
+                    d.field = (d.field + 2) % 3;
+                    self.dialog = Some(Dialog::Find(d));
+                }
+                KeyCode::Char(' ') if d.field == 2 => {
+                    d.skip_ignored = !d.skip_ignored;
                     self.dialog = Some(Dialog::Find(d));
                 }
                 code => {
-                    let (value, cursor) = if d.field == 0 {
-                        (&mut d.name, &mut d.name_cursor)
-                    } else {
-                        (&mut d.content, &mut d.content_cursor)
-                    };
-                    edit_line(value, cursor, code, key.modifiers);
+                    if d.field < 2 {
+                        let (value, cursor) = if d.field == 0 {
+                            (&mut d.name, &mut d.name_cursor)
+                        } else {
+                            (&mut d.content, &mut d.content_cursor)
+                        };
+                        edit_line(value, cursor, code, key.modifiers);
+                    }
                     self.dialog = Some(Dialog::Find(d));
                 }
             },
@@ -3203,8 +3215,13 @@ impl App {
             None => format!("find: {pattern}"),
         };
         panel.panelize(Vec::new(), label);
+        let skip = if dialog.skip_ignored {
+            git::ignore_filter(&root)
+        } else {
+            None
+        };
         self.find = Some(FindState {
-            handle: find::spawn_find(root, pattern, content),
+            handle: find::spawn_find(root, pattern, content, skip),
             panel: panel_idx,
             count: 0,
         });
@@ -3248,6 +3265,7 @@ impl App {
             name_cursor: 1,
             content: String::new(),
             content_cursor: 0,
+            skip_ignored: true,
             field: 0,
         }));
     }

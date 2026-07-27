@@ -30,9 +30,18 @@ impl FindHandle {
     }
 }
 
+/// "Skip this path?" — supplied by the caller (e.g. a gitignore check);
+/// a skipped directory is not descended into.
+pub type SkipFn = Box<dyn Fn(&Path) -> bool + Send>;
+
 /// `pattern` globs against file names (not paths); `content`, when set,
 /// additionally requires a case-insensitive substring match in the file.
-pub fn spawn_find(root: PathBuf, pattern: String, content: Option<String>) -> FindHandle {
+pub fn spawn_find(
+    root: PathBuf,
+    pattern: String,
+    content: Option<String>,
+    skip: Option<SkipFn>,
+) -> FindHandle {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let flag = cancel.clone();
@@ -45,6 +54,7 @@ pub fn spawn_find(root: PathBuf, pattern: String, content: Option<String>) -> Fi
             &root,
             &pattern,
             needle.as_deref(),
+            skip.as_deref(),
             &tx,
             &flag,
             &mut matches,
@@ -65,6 +75,7 @@ fn walk(
     dir: &Path,
     pattern: &str,
     needle: Option<&[u8]>,
+    skip: Option<&(dyn Fn(&Path) -> bool + Send)>,
     tx: &Sender<FindEvent>,
     cancel: &AtomicBool,
     matches: &mut u64,
@@ -78,6 +89,9 @@ fn walk(
             return;
         }
         let path = dent.path();
+        if skip.is_some_and(|f| f(&path)) {
+            continue;
+        }
         let Ok(meta) = dent.metadata() else { continue }; // lstat
         *scanned += 1;
         // symlinked dirs are not followed (no loops)
@@ -100,7 +114,9 @@ fn walk(
             }
         }
         if is_dir {
-            walk(root, &path, pattern, needle, tx, cancel, matches, scanned);
+            walk(
+                root, &path, pattern, needle, skip, tx, cancel, matches, scanned,
+            );
         }
     }
 }
@@ -163,7 +179,12 @@ mod tests {
     #[test]
     fn finds_by_name_glob_with_relative_paths() {
         let t = tree();
-        let (names, matches) = collect(spawn_find(t.path().to_path_buf(), "*.rs".into(), None));
+        let (names, matches) = collect(spawn_find(
+            t.path().to_path_buf(),
+            "*.rs".into(),
+            None,
+            None,
+        ));
         assert_eq!(names, ["src/deep/util.rs", "src/main.rs"]);
         assert_eq!(matches, 2);
     }
@@ -175,8 +196,24 @@ mod tests {
             t.path().to_path_buf(),
             "*".into(),
             Some("Magic".into()),
+            None,
         ));
         assert_eq!(names, ["notes.txt", "src/main.rs"]);
+    }
+
+    #[test]
+    fn skip_prunes_files_and_whole_trees() {
+        let t = tree();
+        let (names, _) = collect(spawn_find(
+            t.path().to_path_buf(),
+            "*".into(),
+            None,
+            Some(Box::new(|p: &Path| {
+                p.file_name()
+                    .is_some_and(|n| n == "deep" || n == "notes.txt")
+            })),
+        ));
+        assert_eq!(names, ["src", "src/main.rs"]);
     }
 
     #[test]
@@ -189,6 +226,7 @@ mod tests {
             dir.path().to_path_buf(),
             "*".into(),
             Some("needle".into()),
+            None,
         ));
         assert_eq!(names, ["big.bin"]);
     }

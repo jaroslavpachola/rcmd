@@ -266,21 +266,38 @@ def test_find():
     open(os.path.join(play, "needle-top.txt"), "w").write("x\n")
     open(os.path.join(play, "sub", "needle-deep.txt"), "w").write("x\n")
     open(os.path.join(play, "sub", "other.txt"), "w").write("x\n")
+    # a gitignored tree: skipped by default, searched when toggled off
+    gitted = bool(shutil.which("git"))
+    if gitted:
+        os.makedirs(os.path.join(play, "junk"))
+        open(os.path.join(play, "junk", "needle-hidden.txt"), "w").write("x\n")
+        open(os.path.join(play, ".gitignore"), "w").write("junk/\n")
+        subprocess.run(["git", "-C", play, "init", "-q"], check=True)
+
+    def find(keys):
+        # F9 -> Command -> Find file...
+        # (Help, User menu, Quick search, Hotlist, Find)
+        s.send(b"\x1b[20~")                 # F9
+        s.send(b"\x1b[C")                   # Right -> Command
+        s.send(DOWN + DOWN + DOWN + DOWN)   # -> Find file...
+        s.send(b"\r")                       # open find dialog
+        s.send(b"\x15")                     # Ctrl+U clears the "*" prefill
+        s.send(keys)
+        s.send(b"\r", wait=STEP * 3)        # search
+
     s = Session(play, home)
-    # F9 -> Command -> Find file...
-    # (Help, User menu, Quick search, Hotlist, Find)
-    s.send(b"\x1b[20~")                 # F9
-    s.send(b"\x1b[C")                   # Right -> Command
-    s.send(DOWN + DOWN + DOWN + DOWN)   # -> Find file...
-    s.send(b"\r")                       # open find dialog
-    s.send(b"\x15")                     # Ctrl+U clears the "*" prefill
-    s.send(b"needle*")
-    s.send(b"\r", wait=STEP * 3)        # search
+    find(b"needle*")
     scr = s.screen()
     check("find: results panelized", "find: needle*" in scr)
     check("find: nested match with rel path", "sub/needle-deep.txt" in scr)
     check("find: match count", "2 match(es)" in scr)
     check("find: non-match absent", "other.txt" not in scr.replace("sub/other", ""))
+    if gitted:
+        check("find: gitignored tree skipped", "needle-hidden" not in scr)
+        find(b"needle*" + b"\t\t" + b" ")   # Tab to the checkbox, untick
+        scr = s.screen()
+        check("find: unticked finds ignored", "junk/needle-hidden.txt" in scr)
+        check("find: unticked count", "3 match(es)" in scr)
     s.quit()
     shutil.rmtree(root)
 
