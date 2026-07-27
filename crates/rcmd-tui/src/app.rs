@@ -2934,6 +2934,8 @@ impl App {
             },
             Dialog::Hotlist(mut selected) => {
                 let len = self.config.hotlist.len();
+                let recent = self.hotlist_recent();
+                let total = len + recent.len();
                 match key.code {
                     KeyCode::Esc => {}
                     KeyCode::Enter => {
@@ -2952,6 +2954,9 @@ impl App {
                                     self.status = Some(format!(" hotlist: {err} "));
                                 }
                             }
+                        } else if let Some(loc) = recent.get(selected - len) {
+                            // recent entries are display paths / sftp URLs
+                            self.navigate(&loc.clone());
                         }
                     }
                     KeyCode::Char('a') => {
@@ -2976,15 +2981,15 @@ impl App {
                             self.config.hotlist.remove(selected);
                             self.save_hotlist();
                         }
-                        let len = self.config.hotlist.len();
-                        self.dialog = Some(Dialog::Hotlist(selected.min(len.saturating_sub(1))));
+                        let total = self.config.hotlist.len() + recent.len();
+                        self.dialog = Some(Dialog::Hotlist(selected.min(total.saturating_sub(1))));
                     }
                     KeyCode::Up => {
                         selected = selected.saturating_sub(1);
                         self.dialog = Some(Dialog::Hotlist(selected));
                     }
                     KeyCode::Down => {
-                        if selected + 1 < len {
+                        if selected + 1 < total {
                             selected += 1;
                         }
                         self.dialog = Some(Dialog::Hotlist(selected));
@@ -3070,6 +3075,30 @@ impl App {
                 }
             },
         }
+    }
+
+    /// Recent directories for the hotlist dialog: both panels'
+    /// histories merged (active panel first), deduped, pinned entries
+    /// and the place we're standing excluded, capped.
+    pub fn hotlist_recent(&self) -> Vec<String> {
+        let here = self.panels[self.active].display_path();
+        let mut out: Vec<String> = Vec::new();
+        let locations = self.panels[self.active]
+            .recent_locations()
+            .chain(self.panels[self.active ^ 1].recent_locations());
+        for loc in locations {
+            if loc == here
+                || out.iter().any(|x| x == loc)
+                || self.config.hotlist.iter().any(|h| h.path == loc)
+            {
+                continue;
+            }
+            out.push(loc.to_string());
+            if out.len() == 15 {
+                break;
+            }
+        }
+        out
     }
 
     /// Hotlist edits write through to disk like the options form.

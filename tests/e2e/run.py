@@ -369,8 +369,12 @@ def test_history():
     check("history: forward", play + "/one" in s.screen())
     s.send(ALT_UP)
     check("history: alt+up opens hotlist", "Directory hotlist" in s.screen())
-    s.send(b"\x1b")                    # ESC prefix pending...
-    s.send(b"\x1b")                    # ...double-Esc closes the dialog
+    # recent directories (R3): visited dirs listed below the pinned ones
+    check("history: hotlist lists recent dirs", "Recent:" in s.screen()
+          and play + "/two" in s.screen())
+    s.send(b"\r", wait=STEP)           # first recent row = most recent: two
+    check("history: recent entry cds", play + "/two" in s.screen()
+          and "Directory hotlist" not in s.screen())
     s.quit()
     shutil.rmtree(root)
 

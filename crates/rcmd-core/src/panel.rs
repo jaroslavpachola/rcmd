@@ -252,6 +252,12 @@ impl Panel {
         self.hist_pos = self.history.len() - 1;
     }
 
+    /// History locations, newest first — feeds the hotlist's recent
+    /// list (local paths and sftp:// URLs alike).
+    pub fn recent_locations(&self) -> impl Iterator<Item = &str> {
+        self.history.iter().rev().map(String::as_str)
+    }
+
     /// Previous history location to navigate to, if any.
     pub fn hist_back(&mut self) -> Option<String> {
         let pos = self.hist_pos.checked_sub(1)?;

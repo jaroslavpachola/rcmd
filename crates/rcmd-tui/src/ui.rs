@@ -360,7 +360,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         match dialog {
             Dialog::Input(d) => draw_input(frame, d),
             Dialog::Confirm(d) => draw_confirm(frame, d),
-            Dialog::Hotlist(selected) => draw_hotlist(frame, &app.config.hotlist, *selected),
+            Dialog::Hotlist(selected) => {
+                draw_hotlist(frame, &app.config.hotlist, &app.hotlist_recent(), *selected)
+            }
             Dialog::UserMenu(selected) => draw_user_menu(frame, &app.config.commands, *selected),
             Dialog::Find(d) => draw_find(frame, d),
             Dialog::Options(d) => draw_options(frame, d),
@@ -1760,10 +1762,36 @@ fn draw_user_menu(frame: &mut Frame, commands: &[crate::config::UserCommand], se
     }
 }
 
-fn draw_hotlist(frame: &mut Frame, entries: &[HotEntry], selected: usize) {
+fn draw_hotlist(frame: &mut Frame, entries: &[HotEntry], recent: &[String], selected: usize) {
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
-    let rows = entries.len().max(1) as u16;
+    let title = Style::new().fg(th().header_fg).bg(th().dialog_bg);
+
+    // display rows: pinned entries, then a header + the recent list;
+    // `Some(i)` carries the selectable index a row answers to
+    let label_w = entries
+        .iter()
+        .map(|e| e.label.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(16);
+    let mut lines: Vec<(String, Option<usize>)> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let path = abbrev_home(std::path::Path::new(&e.path));
+            (format!(" {:<label_w$}  {}", e.label, path), Some(i))
+        })
+        .collect();
+    if !recent.is_empty() {
+        lines.push((" Recent:".into(), None));
+        lines.extend(recent.iter().enumerate().map(|(i, loc)| {
+            let path = abbrev_home(std::path::Path::new(loc));
+            (format!("   {path}"), Some(entries.len() + i))
+        }));
+    }
+
+    let rows = lines.len().max(1) as u16;
     let area = centered(56, (rows + 2).min(20), frame.area());
     frame.render_widget(Clear, area);
     let block = Block::bordered()
@@ -1773,39 +1801,36 @@ fn draw_hotlist(frame: &mut Frame, entries: &[HotEntry], selected: usize) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if entries.is_empty() {
+    if lines.is_empty() {
         frame.render_widget(
             Line::from(" empty — press 'a' to add the current directory ").centered(),
             inner,
         );
         return;
     }
-    let label_w = entries
+    // keep the selected row in view when the list outgrows the dialog
+    let sel_row = lines
         .iter()
-        .map(|e| e.label.chars().count())
-        .max()
-        .unwrap_or(0)
-        .min(16);
-    for (i, entry) in entries.iter().enumerate() {
-        if i as u16 >= inner.height {
+        .position(|(_, s)| *s == Some(selected))
+        .unwrap_or(0);
+    let first = sel_row.saturating_sub(inner.height.saturating_sub(1) as usize);
+    for (i, (text, sel_idx)) in lines.iter().enumerate().skip(first) {
+        if (i - first) as u16 >= inner.height {
             break;
         }
         let row = Rect {
-            y: inner.y + i as u16,
+            y: inner.y + (i - first) as u16,
             height: 1,
             ..inner
         };
-        let path = abbrev_home(std::path::Path::new(&entry.path));
-        let text = tail(
-            &format!(" {:<label_w$}  {}", entry.label, path),
-            inner.width as usize,
-        );
+        let text = tail(text, inner.width as usize);
+        let style = match sel_idx {
+            Some(s) if *s == selected => sel,
+            Some(_) => base,
+            None => title,
+        };
         frame.render_widget(
-            Line::from(format!("{text:<w$}", w = inner.width as usize)).style(if i == selected {
-                sel
-            } else {
-                base
-            }),
+            Line::from(format!("{text:<w$}", w = inner.width as usize)).style(style),
             row,
         );
     }
