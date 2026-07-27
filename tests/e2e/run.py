@@ -628,6 +628,37 @@ def test_aliases():
     shutil.rmtree(root)
 
 
+def test_cxops():
+    """R4: C-x c chmod, C-x o chown, C-x s symlink."""
+    import pwd
+    root, play, home = sandbox()
+    open(os.path.join(play, "target.txt"), "w").write("x\n")
+    s = Session(play, home)
+    s.send(END)                             # -> target.txt
+
+    s.send(b"\x18c", wait=STEP)             # C-x c
+    check("cxops: chmod dialog", "Chmod" in s.screen())
+    s.send(b"\x15")                         # clear the prefilled mode
+    s.send(b"600\r", wait=STEP * 2)
+    mode = os.stat(os.path.join(play, "target.txt")).st_mode & 0o777
+    check("cxops: chmod applied", mode == 0o600, f"mode {oct(mode)}")
+
+    s.send(b"\x18o", wait=STEP)             # C-x o
+    check("cxops: chown dialog", "Chown" in s.screen())
+    me = pwd.getpwuid(os.getuid()).pw_name
+    s.send(me.encode() + b"\r", wait=STEP * 2)   # chown to self: allowed
+    check("cxops: chown self ok", "chown: 1 item(s)" in s.screen())
+
+    s.send(b"\x18s", wait=STEP)             # C-x s
+    check("cxops: symlink dialog", "Symlink" in s.screen())
+    s.send(b"\r", wait=STEP * 2)            # accept "target.txt-link"
+    link = os.path.join(play, "target.txt-link")
+    check("cxops: symlink created",
+          os.path.islink(link) and os.readlink(link) == "target.txt")
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_bulk_rename():
     """R3: bulk rename — edit names in the editor, preview, apply."""
     root, play, home = sandbox()
@@ -1113,6 +1144,7 @@ def main():
         test_escmeta,
         test_aliases,
         test_bulk_rename,
+        test_cxops,
         test_extensibility,
         test_git,
         test_editor,

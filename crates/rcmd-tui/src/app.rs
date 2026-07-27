@@ -46,6 +46,18 @@ pub enum InputAction {
     EditNew,
     /// M-c: the value is a cd target (path or sftp:// URL).
     QuickCd,
+    /// C-x c: the value is an octal mode for these paths.
+    Chmod {
+        paths: Vec<PathBuf>,
+    },
+    /// C-x o: the value is `user[:group]` for these paths.
+    Chown {
+        paths: Vec<PathBuf>,
+    },
+    /// C-x s: the value is the link name; `target` is what it points to.
+    SymlinkTo {
+        target: PathBuf,
+    },
 }
 
 /// An SFTP connection attempt on its worker thread; `ask` is the
@@ -3582,6 +3594,39 @@ impl App {
                     self.do_cd(value.trim());
                 }
             }
+            InputAction::Chmod { paths } => {
+                let Ok(mode) = u32::from_str_radix(value.trim(), 8) else {
+                    self.status = Some(format!(" chmod: '{}' is not octal ", value.trim()));
+                    return;
+                };
+                if mode > 0o7777 {
+                    self.status = Some(" chmod: mode out of range ".into());
+                    return;
+                }
+                self.apply_fs_op(&paths, "chmod", |w, p| w.set_mode(p, mode));
+            }
+            InputAction::Chown { paths } => {
+                let remote = self.panels[self.active].is_remote();
+                match parse_owner_spec(value.trim(), remote) {
+                    Err(err) => self.status = Some(format!(" chown: {err} ")),
+                    Ok((None, None)) => self.status = Some(" chown: nothing to change ".into()),
+                    Ok((uid, gid)) => {
+                        self.apply_fs_op(&paths, "chown", |w, p| w.set_owner(p, uid, gid));
+                    }
+                }
+            }
+            InputAction::SymlinkTo { target } => {
+                let name = value.trim();
+                if name.is_empty() {
+                    return;
+                }
+                let link = if Path::new(name).is_absolute() {
+                    PathBuf::from(name)
+                } else {
+                    self.panels[self.active].cwd.join(name)
+                };
+                self.apply_fs_op(&[link], "symlink", |w, p| w.symlink(&target, p));
+            }
         }
     }
 
@@ -3865,6 +3910,9 @@ impl App {
                 KeyCode::Char('i' | 'I') => self.run_action(Action::InfoView),
                 KeyCode::Char('t' | 'T') => self.run_action(Action::PasteTags),
                 KeyCode::Char('p' | 'P') => self.run_action(Action::PastePath),
+                KeyCode::Char('c' | 'C') => self.open_chmod(),
+                KeyCode::Char('o' | 'O') => self.open_chown(),
+                KeyCode::Char('s' | 'S') => self.open_symlink(),
                 _ => {}
             }
             return;
@@ -3872,8 +3920,8 @@ impl App {
         if ctrl && key.code == KeyCode::Char('x') {
             self.prefix_cx = true;
             self.status = Some(
-                " C-x  (d = compare dirs, q = quick view, i = info panel, \
-                 t = paste tags, p = paste path) "
+                " C-x  (d = compare, q = quick view, i = info, c = chmod, \
+                 o = chown, s = symlink, t/p = paste tags/path) "
                     .into(),
             );
             return;
@@ -4269,6 +4317,106 @@ impl App {
         }
     }
 
+    /// The panel's write half, or a status message saying why not.
+    fn writable_targets(&mut self) -> Option<Vec<PathBuf>> {
+        let panel = &self.panels[self.active];
+        if panel.fs.writer().is_none() {
+            self.status = Some(" archive is read-only ".into());
+            return None;
+        }
+        let targets = panel.targets();
+        if targets.is_empty() {
+            self.status = Some(" nothing selected ".into());
+            return None;
+        }
+        Some(targets)
+    }
+
+    /// C-x c: octal chmod on the marked entries (or the cursor entry).
+    fn open_chmod(&mut self) {
+        let Some(paths) = self.writable_targets() else {
+            return;
+        };
+        let mode = self.panels[self.active]
+            .selected()
+            .map(|e| format!("{:o}", e.mode))
+            .unwrap_or_else(|| "644".into());
+        self.dialog = Some(Dialog::Input(InputDialog {
+            title: format!(" Chmod {} (octal) ", Self::describe(&paths)),
+            cursor: mode.chars().count(),
+            value: mode,
+            action: InputAction::Chmod { paths },
+        }));
+    }
+
+    /// C-x o: chown on the marked entries (or the cursor entry).
+    fn open_chown(&mut self) {
+        let Some(paths) = self.writable_targets() else {
+            return;
+        };
+        self.dialog = Some(Dialog::Input(InputDialog {
+            title: format!(" Chown {} (user[:group]) ", Self::describe(&paths)),
+            value: String::new(),
+            cursor: 0,
+            action: InputAction::Chown { paths },
+        }));
+    }
+
+    /// C-x s: create a symlink to the cursor entry.
+    fn open_symlink(&mut self) {
+        let panel = &self.panels[self.active];
+        if panel.fs.writer().is_none() {
+            self.status = Some(" archive is read-only ".into());
+            return;
+        }
+        let Some(entry) = panel.selected().filter(|e| !e.is_parent()) else {
+            self.status = Some(" nothing selected ".into());
+            return;
+        };
+        let target = PathBuf::from(&entry.name);
+        let value = format!("{}-link", entry.name.to_string_lossy());
+        self.dialog = Some(Dialog::Input(InputDialog {
+            title: format!(" Symlink to \"{}\" named: ", entry.name.to_string_lossy()),
+            cursor: value.chars().count(),
+            value,
+            action: InputAction::SymlinkTo { target },
+        }));
+    }
+
+    /// Run one FsWrite operation over several paths, reporting the
+    /// first error (with a count of how many succeeded before it).
+    fn apply_fs_op(
+        &mut self,
+        paths: &[PathBuf],
+        verb: &str,
+        op: impl Fn(&dyn rcmd_core::vfs::FsWrite, &Path) -> std::io::Result<()>,
+    ) {
+        let fs = self.panels[self.active].fs.clone();
+        let Some(writer) = fs.writer() else {
+            self.status = Some(" read-only ".into());
+            return;
+        };
+        let mut done = 0usize;
+        for path in paths {
+            if let Err(err) = op(writer, path) {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                self.status = Some(format!(" {verb} {name}: {err} ({done} done) "));
+                self.reload_panels();
+                return;
+            }
+            done += 1;
+        }
+        self.status = Some(format!(" {verb}: {done} item(s) "));
+        self.reload_panels();
+    }
+
+    fn reload_panels(&mut self) {
+        for panel in &mut self.panels {
+            let _ = panel.reload();
+        }
+        self.git_refresh();
+    }
+
     fn open_mkdir(&mut self) {
         if self.panels[self.active].archive.is_some() {
             self.status = Some(" archive is read-only ".into());
@@ -4605,6 +4753,67 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// `user[:group]` → numeric ids for chown; either side may be empty
+/// ("leave unchanged") or numeric. On remote panels (`numeric_only`)
+/// names cannot be resolved — the server's passwd is not ours.
+fn parse_owner_spec(spec: &str, numeric_only: bool) -> Result<(Option<u32>, Option<u32>), String> {
+    let (user, group) = match spec.split_once(':') {
+        Some((u, g)) => (u.trim(), g.trim()),
+        None => (spec.trim(), ""),
+    };
+    let resolve = |name: &str, is_user: bool| -> Result<Option<u32>, String> {
+        if name.is_empty() {
+            return Ok(None);
+        }
+        if let Ok(id) = name.parse::<u32>() {
+            return Ok(Some(id));
+        }
+        if numeric_only {
+            return Err(format!("'{name}': numeric ids only on a remote panel"));
+        }
+        lookup_id(name, is_user)
+            .ok_or_else(|| {
+                format!(
+                    "unknown {} '{name}'",
+                    if is_user { "user" } else { "group" }
+                )
+            })
+            .map(Some)
+    };
+    Ok((resolve(user, true)?, resolve(group, false)?))
+}
+
+/// getpwnam_r / getgrnam_r: name → uid/gid.
+fn lookup_id(name: &str, is_user: bool) -> Option<u32> {
+    let cname = std::ffi::CString::new(name).ok()?;
+    let mut buf = vec![0u8; 4096];
+    unsafe {
+        if is_user {
+            let mut pwd: libc::passwd = std::mem::zeroed();
+            let mut out: *mut libc::passwd = std::ptr::null_mut();
+            let rc = libc::getpwnam_r(
+                cname.as_ptr(),
+                &mut pwd,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut out,
+            );
+            (rc == 0 && !out.is_null()).then_some(pwd.pw_uid)
+        } else {
+            let mut grp: libc::group = std::mem::zeroed();
+            let mut out: *mut libc::group = std::ptr::null_mut();
+            let rc = libc::getgrnam_r(
+                cname.as_ptr(),
+                &mut grp,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut out,
+            );
+            (rc == 0 && !out.is_null()).then_some(grp.gr_gid)
+        }
+    }
+}
+
 fn shell_quote(s: &str) -> String {
     let plain = !s.is_empty()
         && s.chars()
@@ -4619,6 +4828,17 @@ fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_spec_parsing() {
+        assert_eq!(parse_owner_spec("0:0", true), Ok((Some(0), Some(0))));
+        assert_eq!(parse_owner_spec("1000", true), Ok((Some(1000), None)));
+        assert_eq!(parse_owner_spec(":5", true), Ok((None, Some(5))));
+        assert_eq!(parse_owner_spec("", true), Ok((None, None)));
+        assert!(parse_owner_spec("alice", true).is_err()); // names need local passwd
+        assert_eq!(parse_owner_spec("root:", false), Ok((Some(0), None)));
+        assert!(parse_owner_spec("no-such-user-xyz", false).is_err());
+    }
 
     #[test]
     fn parse_cd_variants() {

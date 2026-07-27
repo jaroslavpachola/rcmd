@@ -33,6 +33,10 @@ pub trait FsWrite: Send + Sync {
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
     fn open_write(&self, path: &Path) -> io::Result<Box<dyn Write + Send>>;
     fn set_mode(&self, path: &Path, mode: u32) -> io::Result<()>;
+    /// Change owner and/or group (numeric ids; `None` = leave as is).
+    /// Symlinks themselves are changed, not their targets, where the
+    /// backend allows it.
+    fn set_owner(&self, path: &Path, uid: Option<u32>, gid: Option<u32>) -> io::Result<()>;
     fn set_mtime(&self, path: &Path, mtime: SystemTime) -> io::Result<()>;
     fn symlink(&self, target: &Path, link: &Path) -> io::Result<()>;
 }
@@ -92,6 +96,21 @@ impl FsWrite for LocalFs {
         {
             let _ = (path, mode);
             Ok(())
+        }
+    }
+
+    fn set_owner(&self, path: &Path, uid: Option<u32>, gid: Option<u32>) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::lchown(path, uid, gid)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (path, uid, gid);
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "ownership is not supported on this platform",
+            ))
         }
     }
 

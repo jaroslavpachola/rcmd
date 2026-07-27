@@ -649,6 +649,25 @@ impl FsWrite for SftpFs {
             .map_err(ioerr)
     }
 
+    fn set_owner(&self, path: &Path, uid: Option<u32>, gid: Option<u32>) -> io::Result<()> {
+        // SFTP's UIDGID attribute carries both ids; fill the missing
+        // half from the current stat so it stays unchanged
+        let raw = self.lock();
+        let (cur_uid, cur_gid) = match raw.sftp.lstat(path) {
+            Ok(st) => (st.uid, st.gid),
+            Err(_) => (None, None),
+        };
+        raw.sftp
+            .setstat(
+                path,
+                stat_with(|st| {
+                    st.uid = uid.or(cur_uid);
+                    st.gid = gid.or(cur_gid);
+                }),
+            )
+            .map_err(ioerr)
+    }
+
     fn set_mtime(&self, path: &Path, mtime: SystemTime) -> io::Result<()> {
         let secs = mtime
             .duration_since(UNIX_EPOCH)
