@@ -188,6 +188,10 @@ const HELP_TEXT: &[&str] = &[
     "  Shift+F8        delete permanently",
     "  Shift+F4        edit a new file (created on first save)",
     "  Shift+F5/F6     copy / rename the cursor file in place",
+    "  F9 > File > Bulk rename   edit the marked names as text: each",
+    "                  line is \"number TAB name\" — change names to",
+    "                  rename (swaps are fine), delete lines to delete;",
+    "                  save, close, and confirm the preview",
     "  Esc             cancel a running operation",
     "  Overwrite prompt hotkeys: o=overwrite a=all s=skip S=skip all",
     "  Error prompt hotkeys:     r=retry s=skip S=skip all",
@@ -372,6 +376,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::UserMenu(selected) => draw_user_menu(frame, &app.config.commands, *selected),
             Dialog::Find(d) => draw_find(frame, d),
             Dialog::Options(d) => draw_options(frame, d),
+            Dialog::RenamePreview(d) => draw_rename_preview(frame, d),
         }
     }
     if let Some(job) = &app.job {
@@ -1851,6 +1856,69 @@ fn draw_hotlist(frame: &mut Frame, entries: &[HotEntry], recent: &[String], sele
             row,
         );
     }
+}
+
+/// Bulk-rename preview: every rename and delete the edited buffer asks
+/// for, awaiting Yes/No — nothing has happened yet.
+fn draw_rename_preview(frame: &mut Frame, d: &crate::app::RenamePreview) {
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let danger = Style::new().fg(th().error_fg).bg(th().error_bg);
+
+    let mut lines: Vec<(String, bool)> = d
+        .renames
+        .iter()
+        .map(|(old, new)| (format!(" {} → {new}", old.to_string_lossy()), false))
+        .chain(d.deletes.iter().map(|name| {
+            (
+                format!(" delete {} (to trash)", name.to_string_lossy()),
+                true,
+            )
+        }))
+        .collect();
+    let max_rows = 12usize;
+    if lines.len() > max_rows {
+        let hidden = lines.len() - (max_rows - 1);
+        lines.truncate(max_rows - 1);
+        lines.push((format!(" …and {hidden} more"), false));
+    }
+
+    let area = centered(64, (lines.len() as u16 + 4).min(20), frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .title(format!(
+            " Bulk rename — {} rename(s), {} delete(s) ",
+            d.renames.len(),
+            d.deletes.len()
+        ))
+        .style(base);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    for (i, (text, is_delete)) in lines.iter().enumerate() {
+        if i as u16 >= inner.height.saturating_sub(2) {
+            break;
+        }
+        let row = Rect {
+            y: inner.y + i as u16,
+            height: 1,
+            ..inner
+        };
+        frame.render_widget(
+            Line::from(tail(text, inner.width as usize)).style(if *is_delete {
+                danger
+            } else {
+                base
+            }),
+            row,
+        );
+    }
+    let buttons = Rect {
+        y: inner.y + inner.height.saturating_sub(1),
+        height: 1,
+        ..inner
+    };
+    let selected = usize::from(!d.yes);
+    frame.render_widget(buttons_line(&["Yes", "No"], selected, base, sel), buttons);
 }
 
 fn draw_confirm(frame: &mut Frame, d: &ConfirmDialog) {

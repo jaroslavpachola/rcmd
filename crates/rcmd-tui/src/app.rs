@@ -141,6 +141,25 @@ pub enum Dialog {
     /// F2 user menu ([[commands]]); the payload is the selected row.
     UserMenu(usize),
     Options(OptionsDialog),
+    /// Bulk rename: what the edited buffer asks for, awaiting Yes/No.
+    RenamePreview(RenamePreview),
+}
+
+/// The confirmation step of a bulk rename — nothing has touched the
+/// filesystem yet when this is on screen.
+pub struct RenamePreview {
+    pub dir: PathBuf,
+    pub renames: Vec<(std::ffi::OsString, String)>,
+    pub deletes: Vec<std::ffi::OsString>,
+    pub yes: bool,
+}
+
+/// An in-flight bulk rename editor session: the numbered temp buffer
+/// and the original names its indices map back to.
+struct BulkRename {
+    dir: PathBuf,
+    names: Vec<std::ffi::OsString>,
+    temp: PathBuf,
 }
 
 /// F9 > Options > Panel options — MC-style checkbox form over the
@@ -402,6 +421,9 @@ pub enum Action {
     PastePath,
     /// M-c: MC's quick cd dialog.
     QuickCd,
+    /// Marked names open as an editable list; the saved diff becomes
+    /// renames and deletes (after a preview).
+    BulkRename,
     /// C-l: redraw the screen from scratch.
     Repaint,
 }
@@ -418,6 +440,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Edit", "F4", Action::Edit)),
             Some(("&Copy...", "F5", Action::Copy)),
             Some(("&Move/rename...", "F6", Action::Move)),
+            Some(("&Bulk rename (editor)...", "", Action::BulkRename)),
             Some(("Ma&ke directory...", "F7", Action::Mkdir)),
             Some(("&Delete (trash)", "F8", Action::Delete)),
             Some(("Delete &permanently", "S-F8", Action::DeletePerm)),
@@ -638,6 +661,7 @@ pub struct App {
     /// remote directory on both panels closes the connection.
     connections: Vec<(String, Weak<SftpFs>)>,
     remote_edit: Option<RemoteEdit>,
+    bulk_rename: Option<BulkRename>,
     du: Option<DuJob>,
     watch: Option<WatchState>,
     /// Ctrl+X was pressed; the next key completes the chord.
@@ -741,6 +765,7 @@ impl App {
             connect: None,
             connections: Vec::new(),
             remote_edit: None,
+            bulk_rename: None,
             du: None,
             watch,
             prefix_cx: false,
@@ -2003,6 +2028,7 @@ impl App {
                 }));
             }
             Action::Repaint => self.repaint = true,
+            Action::BulkRename => self.open_bulk_rename(),
         }
     }
 
@@ -2456,10 +2482,92 @@ impl App {
     fn close_editor(&mut self) {
         self.editor = None;
         self.finish_remote_edit();
+        self.finish_bulk_rename();
         for panel in &mut self.panels {
             let _ = panel.reload();
         }
         self.git_refresh();
+    }
+
+    /// Bulk rename: marked names (or the cursor entry) become a
+    /// numbered buffer in the built-in editor; closing it turns the
+    /// diff into a previewed batch of renames and deletes.
+    fn open_bulk_rename(&mut self) {
+        if !self.require_local() {
+            return;
+        }
+        let panel = &self.panels[self.active];
+        let names = panel.target_names();
+        if names.is_empty() {
+            self.status = Some(" nothing selected ".into());
+            return;
+        }
+        let dir = panel.cwd.clone();
+        let buffer = rcmd_core::rename::buffer_for(&names);
+        let temp = std::env::temp_dir().join(format!("rcmd-rename-{}", std::process::id()));
+        if let Err(err) = std::fs::write(&temp, &buffer) {
+            self.status = Some(format!(" bulk rename: {err} "));
+            return;
+        }
+        // always the built-in editor — the diff must be processed when
+        // the session ends inside rcmd, $EDITOR can't signal that
+        let title = format!(
+            "bulk rename: {} name(s) — edit, save, close (keep the numbers)",
+            names.len()
+        );
+        if self.open_internal_editor(&temp, title) {
+            self.bulk_rename = Some(BulkRename { dir, names, temp });
+        } else {
+            let _ = std::fs::remove_file(&temp);
+        }
+    }
+
+    /// After the bulk-rename editor closes: diff the saved buffer and
+    /// hand the outcome to the preview dialog. An unsaved session left
+    /// the temp file untouched, which diffs to "no changes".
+    fn finish_bulk_rename(&mut self) {
+        let Some(bulk) = self.bulk_rename.take() else {
+            return;
+        };
+        let text = std::fs::read_to_string(&bulk.temp).unwrap_or_default();
+        let _ = std::fs::remove_file(&bulk.temp);
+        match rcmd_core::rename::parse(&text, &bulk.names) {
+            Err(err) => self.status = Some(format!(" bulk rename: {err} — nothing done ")),
+            Ok(plan) if plan.is_empty() => self.status = Some(" bulk rename: no changes ".into()),
+            Ok(plan) => {
+                self.dialog = Some(Dialog::RenamePreview(RenamePreview {
+                    dir: bulk.dir,
+                    renames: plan.renames,
+                    deletes: plan.deletes,
+                    yes: false,
+                }));
+            }
+        }
+    }
+
+    /// Yes on the preview: two-phase renames now, deletes (to trash)
+    /// through the ordinary job engine.
+    fn apply_bulk_rename(&mut self, preview: RenamePreview) {
+        if !preview.renames.is_empty() {
+            match rcmd_core::rename::apply(&preview.dir, &preview.renames) {
+                Ok(()) => {
+                    self.status = Some(format!(" renamed {} item(s) ", preview.renames.len()));
+                }
+                Err(err) => self.status = Some(format!(" bulk rename: {err} ")),
+            }
+        }
+        for panel in &mut self.panels {
+            let _ = panel.reload();
+        }
+        self.git_refresh();
+        if !preview.deletes.is_empty() {
+            let paths = preview
+                .deletes
+                .iter()
+                .map(|name| preview.dir.join(name))
+                .collect();
+            self.start_delete(paths, false);
+        }
     }
 
     /// Save (used by F2 and the quit confirm); returns success.
@@ -2984,6 +3092,24 @@ impl App {
                     edit_line(&mut d.value, &mut d.cursor, code, key.modifiers);
                     self.dialog = Some(Dialog::Input(d));
                 }
+            },
+            Dialog::RenamePreview(mut d) => match key.code {
+                KeyCode::Esc | KeyCode::Char('n' | 'N') => {
+                    self.status = Some(" bulk rename cancelled ".into());
+                }
+                KeyCode::Char('y' | 'Y') => self.apply_bulk_rename(d),
+                KeyCode::Enter => {
+                    if d.yes {
+                        self.apply_bulk_rename(d);
+                    } else {
+                        self.status = Some(" bulk rename cancelled ".into());
+                    }
+                }
+                KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                    d.yes = !d.yes;
+                    self.dialog = Some(Dialog::RenamePreview(d));
+                }
+                _ => self.dialog = Some(Dialog::RenamePreview(d)),
             },
             Dialog::Confirm(mut d) => match key.code {
                 KeyCode::Esc | KeyCode::Char('n') => {}

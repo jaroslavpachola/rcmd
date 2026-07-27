@@ -628,6 +628,45 @@ def test_aliases():
     shutil.rmtree(root)
 
 
+def test_bulk_rename():
+    """R3: bulk rename — edit names in the editor, preview, apply."""
+    root, play, home = sandbox()
+    for name in ("aaa.txt", "bbb.txt", "ccc.txt"):
+        open(os.path.join(play, name), "w").write(name + "\n")
+    s = Session(play, home)
+    s.send(b"+")                            # select group dialog
+    s.send(b"\r", wait=STEP)                # "*" marks all files
+    s.send(b"\x1b[20~")                     # F9 (File menu opens)
+    s.send(b"b", wait=STEP)                 # Bulk rename (entry hotkey)
+    check("bulk: editor opens with numbered names",
+          "bulk rename" in s.screen() and "aaa.txt" in s.screen())
+    s.send(END)                             # end of line 1: "0<TAB>aaa.txt"
+    s.send(b"\x7f" * 7)                     # backspace away "aaa.txt"
+    s.send(b"zzz.txt")
+    s.send(DOWN + HOME_K)                   # line 2
+    s.send(F8, wait=STEP)                   # editor: delete line (bbb.txt)
+    s.send(F2, wait=STEP)                   # save
+    s.send(F10, wait=STEP * 2)              # close -> preview
+    scr = s.screen()
+    check("bulk: preview lists the rename",
+          "aaa.txt" in scr and "zzz.txt" in scr and "1 rename(s)" in scr)
+    check("bulk: preview lists the delete", "delete bbb.txt" in scr)
+    check("bulk: nothing happened yet",
+          os.path.isfile(os.path.join(play, "aaa.txt")))
+    s.send(b"y", wait=STEP * 3)
+    deadline = time.time() + 8
+    while time.time() < deadline and os.path.exists(os.path.join(play, "bbb.txt")):
+        s.drain(0.3)
+    check("bulk: rename applied",
+          open(os.path.join(play, "zzz.txt")).read() == "aaa.txt\n"
+          and not os.path.exists(os.path.join(play, "aaa.txt")))
+    check("bulk: delete applied", not os.path.exists(os.path.join(play, "bbb.txt")))
+    check("bulk: untouched file kept",
+          open(os.path.join(play, "ccc.txt")).read() == "ccc.txt\n")
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_extensibility():
     root, play, home = sandbox()
     cfgdir = os.path.join(home, ".config", "rcmd")
@@ -1073,6 +1112,7 @@ def main():
         test_mcdepth,
         test_escmeta,
         test_aliases,
+        test_bulk_rename,
         test_extensibility,
         test_git,
         test_editor,

@@ -204,6 +204,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "paste-path" => Action::PastePath,
         "quick-cd" => Action::QuickCd,
         "repaint" => Action::Repaint,
+        "bulk-rename" => Action::BulkRename,
         _ => return None,
     })
 }
