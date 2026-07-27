@@ -3670,6 +3670,12 @@ impl App {
         }
         // Structural keys: navigation and command-line plumbing.
         match key.code {
+            // Tab completes a path once the command line has text (or as
+            // MC's M-Tab always); on an empty line it switches panels.
+            KeyCode::Tab if alt || !cmd_empty => {
+                self.complete_cmdline();
+                return;
+            }
             KeyCode::Tab | KeyCode::BackTab => {
                 self.active ^= 1;
                 return;
@@ -3812,6 +3818,31 @@ impl App {
             }
         } else {
             self.pending_exec = Some(Exec::Command(cmd));
+        }
+    }
+
+    /// Tab: complete the path under the cursor (files/dirs only).
+    fn complete_cmdline(&mut self) {
+        use rcmd_core::complete::{complete_word, word_start};
+        let cur = byte_index(&self.cmdline.value, self.cmdline.cursor);
+        let head = &self.cmdline.value[..cur];
+        let start = word_start(head);
+        let cwd = self.panels[self.active].local_cwd();
+        match complete_word(&cwd, &head[start..cur]) {
+            None => self.status = Some(" no match ".into()),
+            Some(done) => {
+                let word_chars = self.cmdline.value[start..cur].chars().count();
+                self.cmdline.value.replace_range(start..cur, &done.word);
+                self.cmdline.cursor = self.cmdline.cursor - word_chars + done.word.chars().count();
+                self.cmdline.hist_pos = None;
+                if done.matches.len() > 1 {
+                    let mut list = done.matches.join("  ");
+                    if list.chars().count() > 76 {
+                        list = format!("{}…", list.chars().take(75).collect::<String>());
+                    }
+                    self.status = Some(format!(" {list} "));
+                }
+            }
         }
     }
 

@@ -190,8 +190,14 @@ def test_fileops():
 def test_cmdline():
     root, play, home = sandbox()
     os.makedirs(os.path.join(play, "sub"))
+    open(os.path.join(play, "sub", "deep-target.txt"), "w").write("x\n")
     wdfile = os.path.join(root, "lastdir")
     s = Session(play, home, args=("-P", wdfile, play))
+    s.send(b"ls sub/de")
+    s.send(b"\t", wait=STEP)            # Tab completes the path
+    check("cmdline: tab completion", "ls sub/deep-target.txt" in s.screen())
+    s.send(b"\x1b", wait=STEP)          # clear the line (Esc Esc: real Esc)
+    s.send(b"\x1b", wait=STEP)
     if SUBSHELL:
         # runs inside the subshell; panels return by themselves
         s.send(b"touch made.txt\r", wait=STEP * 4)
