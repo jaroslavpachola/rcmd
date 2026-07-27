@@ -2,7 +2,8 @@
 
 **Status:** R1 DONE (2026-07-06) — the persistent subshell is in,
 default-on with `subshell = false` as the escape hatch; now dogfooding.
-R2 DONE (2026-07-27). R3–R5 open. (Drafted 2026-07-06, alongside the 2.0 release.)
+R2 DONE (2026-07-27). R3 DONE (2026-07-27) — the whole menu shipped,
+nothing pruned. R4–R5 open. (Drafted 2026-07-06, alongside the 2.0 release.)
 **Prerequisite:** PLAN2.md complete (it is). Baseline: 2.0 — MC-workflow
 parity and beyond, SFTP panels, built-in editor, openers/user menu;
 threads-not-async settled (D1); 82 unit tests + 82 pty e2e checks.
@@ -109,23 +110,42 @@ pubkey-only server never asks for a password.
   encrypted PEM ECDSA key (wrong passphrase retried), and a
   kbd-interactive-only server sending two prompts in one round.
 
-### R3 — workflow bells (cherry-pickable menu)
-- **Bulk rename via the editor**: marked files open as a text buffer in
-  `rcmd-edit`; the saved diff becomes renames/deletes through the job
-  engine and its dialogs. Two-phase rename (temp names) handles swaps
-  and collisions; a preview dialog confirms before touching anything.
-- **Viewer follow mode**: tail -f toggle in F3, re-index on notify
-  events, stick to the bottom.
-- **Command-line Tab completion** for paths (files/dirs only, no
-  command completion).
-- **Find file, gitignore-aware**: skip ignored trees by default inside
-  a work tree (toggle in the dialog).
-- **Recent directories** in the hotlist dialog (panel history already
-  records them; merged, deduped, below the pinned entries).
-- **MC alias batch**: M-y/M-u history back/forward, M-? find file,
-  M-c quick cd, C-l repaint, C-x t / C-x p (tagged names / path to the
-  command line), S-F4 edit-new-file (`Editor::create` finally wired),
-  S-F5/S-F6 copy/rename in place.
+### R3 — workflow bells — DONE (2026-07-27, whole menu shipped)
+
+Each item its own green commit (fmt, clippy -D, unit + full pty e2e in
+both subshell modes). Notes per item:
+
+- **Bulk rename via the editor** (F9 > File > Bulk rename): shipped
+  vidir-style — marked names become a `<index>\t<name>` buffer in
+  `rcmd-edit` (always the built-in editor: $EDITOR can't signal
+  "session over"); the index column makes deleted lines and renames
+  unambiguous. Changed lines = renames (two-phase temp names; swaps
+  and chains covered by unit tests; occupied targets refused and the
+  item restored), deleted lines = trash deletes through the job
+  engine, everything behind a mandatory preview dialog. A buffer that
+  doesn't parse applies nothing. Parsing/apply live in
+  `rcmd-core::rename`.
+- **Viewer follow mode**: `f` in F3 (loop-tick fstat rather than
+  notify — works for any path, no watch rewiring); sticks to the
+  bottom, truncation/rotation rebuilds the index. Landmine found:
+  growing a fully-indexed file whose last byte was a line break needs
+  the frontier line-start registered explicitly, or the first appended
+  line is invisible.
+- **Command-line Tab completion**: Tab completes once the line has
+  text (empty line still switches panels; M-Tab always completes);
+  common-prefix advance + candidate list in the status line;
+  `rcmd-core::complete`, escape-aware.
+- **Find file, gitignore-aware**: on by default inside a work tree
+  (git2 `is_path_ignored` + `.git` itself), checkbox in the dialog;
+  the find worker just takes an opaque skip predicate so rcmd-core
+  stays git-free.
+- **Recent directories** in the hotlist: both panels' histories
+  merged newest-first under a "Recent:" header, deduped, pinned and
+  current location excluded, capped at 15.
+- **MC alias batch**: all shipped (M-y/M-u, M-?, M-c quick cd, C-l,
+  C-x t / C-x p, S-F4 edit-new via `Editor::create`, S-F5/S-F6 with
+  the bare name prefilled), plus legacy F16–F18 codes for the shifted
+  F-keys; everything remappable via `[keys]`.
 
 ### R4 — depth debt (cherry-pickable menu)
 - Editor: soft-wrap; `$1`..`$9` capture groups in replace; mcedit-style

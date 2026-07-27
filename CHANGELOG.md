@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **Bulk rename via the editor** (3.0 R3): F9 > File > Bulk rename
+  opens the marked names (or the cursor entry) as a numbered text
+  buffer in the built-in editor — edit names to rename (swaps and
+  chains are fine: renames go through temp names in two phases),
+  delete lines to delete (to trash, via the job engine), then confirm
+  the preview. Occupied targets are refused and restored, and a buffer
+  that doesn't parse applies nothing.
+- **Viewer follow mode** (3.0 R3): `f` in the F3 viewer toggles
+  tail&nbsp;-f — appended data is picked up every loop tick and the
+  view sticks to the bottom; truncation or rotation re-indexes from
+  scratch. `[follow]` shows in the title.
+- **Command-line Tab completion** (3.0 R3): with text on the line, Tab
+  completes the path under the cursor (files and directories only) —
+  unique matches get a trailing `/` or space, ambiguous ones advance
+  to the common prefix and list candidates in the status line. An
+  empty line still switches panels; Alt+Tab always completes.
+- **Gitignore-aware find** (3.0 R3): inside a git work tree, Alt+F7
+  now skips ignored trees and `.git` by default; a checkbox in the
+  dialog searches everything again.
+- **Recent directories in the hotlist** (3.0 R3): the hotlist dialog
+  lists both panels' visited directories (newest first, deduped,
+  pinned entries excluded) below the pinned rows; Enter cds, sftp
+  URLs reconnect through the connection cache.
+- **MC alias batch** (3.0 R3): M-y/M-u history back/forward, M-? find
+  file, M-c quick cd dialog, C-l repaint, C-x t / C-x p paste tagged
+  names / the panel path to the command line, S-F4 edit a new file
+  (created on first save), S-F5/S-F6 copy/rename the cursor file in
+  place with the name prefilled. All remappable via `[keys]`.
 - **SFTP auth depth** (3.0 R2): the connect worker now asks the server
   which auth methods it accepts and tries only those, in OpenSSH order
   (publickey, keyboard-interactive, password). Passphrase-protected
