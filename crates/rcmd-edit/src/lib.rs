@@ -582,6 +582,63 @@ impl Editor {
         !self.clipboard.is_empty()
     }
 
+    /// The current line with its newline (a missing final newline is
+    /// supplied), for whole-line clipboard ops.
+    fn line_for_block(&self) -> (usize, usize, String) {
+        let start = self.rope.line_to_char(self.cursor.line);
+        let len = self.rope.line(self.cursor.line).len_chars();
+        let text = self.rope.slice(start..start + len).to_string();
+        (start, len, text)
+    }
+
+    /// mcedit F5: duplicate the marked block at the cursor (also
+    /// copies it to the clipboard); without a selection, duplicate the
+    /// current line.
+    pub fn block_copy(&mut self) {
+        match self.sel_range() {
+            Some((a, b)) => {
+                let text = self.rope.slice(a..b).to_string();
+                self.clipboard = text.clone();
+                self.clear_selection();
+                self.splice(b, 0, &text, Kind::Other);
+            }
+            None => {
+                let (start, _, text) = self.line_for_block();
+                let block = if text.ends_with('\n') {
+                    text
+                } else {
+                    format!("{text}\n")
+                };
+                self.clipboard = block.clone();
+                self.splice(start, 0, &block, Kind::Other);
+            }
+        }
+    }
+
+    /// mcedit F6: move the marked block to the clipboard (paste drops
+    /// it elsewhere); without a selection, take the whole line.
+    pub fn block_move(&mut self) {
+        if self.sel_range().is_some() {
+            self.cut();
+            return;
+        }
+        let (start, len, text) = self.line_for_block();
+        if len == 0 {
+            if start > 0 {
+                // empty last line: eat the newline before it
+                self.clipboard = "\n".into();
+                self.splice(start - 1, 1, "", Kind::Other);
+            }
+            return;
+        }
+        self.clipboard = if text.ends_with('\n') {
+            text
+        } else {
+            format!("{text}\n")
+        };
+        self.splice(start, len, "", Kind::Other);
+    }
+
     // ----- undo / redo ----------------------------------------------
 
     pub fn undo(&mut self) -> bool {
@@ -849,6 +906,33 @@ mod tests {
         }
         assert_eq!(e.text(), "bbbbbb");
         assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn block_copy_and_move() {
+        // selection: F5 duplicates in place, F6 cuts to the clipboard
+        let mut e = ed("one two");
+        e.goto(Pos { line: 0, col: 0 }, false);
+        e.goto(Pos { line: 0, col: 3 }, true);
+        e.block_copy();
+        assert_eq!(e.text(), "oneone two");
+        e.goto(Pos { line: 0, col: 0 }, false);
+        e.goto(Pos { line: 0, col: 3 }, true);
+        e.block_move();
+        assert_eq!(e.text(), "one two");
+        e.move_end(false);
+        e.paste();
+        assert_eq!(e.text(), "one twoone");
+        // no selection: whole-line duplicate / cut
+        let mut e = ed("aa\nbb\ncc");
+        e.goto(Pos { line: 1, col: 1 }, false);
+        e.block_copy();
+        assert_eq!(e.text(), "aa\nbb\nbb\ncc");
+        e.block_move();
+        assert_eq!(e.text(), "aa\nbb\ncc");
+        e.goto(Pos { line: 2, col: 0 }, false);
+        e.paste();
+        assert_eq!(e.text(), "aa\nbb\nbb\ncc");
     }
 
     #[test]

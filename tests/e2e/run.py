@@ -790,7 +790,7 @@ def test_git():
     shutil.rmtree(root)
 
 
-F2, F4, F10 = b"\x1b[12~", b"\x1b[14~", b"\x1b[21~"
+F2, F4, F6, F10 = b"\x1b[12~", b"\x1b[14~", b"\x1b[17~", b"\x1b[21~"
 
 
 def test_editor():
@@ -831,6 +831,16 @@ def test_editor():
     s.send(F2)                          # save
     s.send(F10, wait=STEP * 2)
     check("editor: capture groups", "A-BET" in open(path).read())
+
+    # R4: F5/F6 block ops — duplicate the first line, then cut one copy
+    s.send(F4, wait=STEP * 2)
+    s.send(F5)                          # no selection: duplicate line 1
+    s.send(F6)                          # cut the duplicate (clipboard)
+    s.send(b"\x16")                     # Ctrl+V pastes it back
+    s.send(F2)
+    s.send(F10, wait=STEP * 2)
+    check("editor: F5 duplicated the line",
+          open(path).read().count("alpha") == 2)
 
     s.send(F4, wait=STEP * 2)           # reopen
     s.send(b"junk")                     # modify

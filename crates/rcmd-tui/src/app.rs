@@ -2748,6 +2748,9 @@ impl App {
                 }
                 return;
             }
+            // mcedit hands: F5 copies the block (or line), F6 moves it
+            KeyCode::F(5) => st.ed.block_copy(),
+            KeyCode::F(6) => st.ed.block_move(),
             KeyCode::F(8) => st.ed.delete_selection_or_line(),
             KeyCode::F(10) => {
                 self.editor_quit();

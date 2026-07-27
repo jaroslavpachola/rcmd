@@ -253,6 +253,7 @@ const HELP_TEXT: &[&str] = &[
     "# Editor (F4, built-in)",
     "  F2 save (atomic, keeps permissions and CRLF)   F10/Esc quit",
     "  F3 mark (select; Shift+arrows also select)     F8 delete line",
+    "  F5 copy the block (no block: duplicate line)   F6 move (cut) it",
     "  Ctrl+C/X/V copy/cut/paste   Ctrl+Z undo   Ctrl+Y redo",
     "  Ctrl+A select all   Ctrl+arrows word hop   Tab inserts a tab",
     "  F7 search (regex, smartcase), Shift+F7 next match",
