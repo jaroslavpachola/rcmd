@@ -259,12 +259,28 @@ def test_archive():
     s.send(END)                         # -> inside.txt
     s.send(F5)
     s.send(b"\r", wait=STEP * 3)        # extract to out/
-    s.quit()
     extracted = os.path.join(play, "out/inside.txt")
     check(
         "archive: extracted",
         os.path.isfile(extracted) and open(extracted).read() == "from the archive\n",
     )
+
+    # R4: copy INTO the tar — other panel (out/) holds a new file; F5
+    # from there with the tar path as destination rewrites the archive
+    open(os.path.join(play, "out", "fresh.txt"), "w").write("packed later\n")
+    s.send(b"\t")                       # -> right panel (out/)
+    s.send(b"\x12")                     # reload to see fresh.txt
+    s.send(b"\x13fresh\r", wait=STEP)   # quick search -> fresh.txt
+    s.send(F5)
+    s.send(b"\x15")                     # clear the prefilled destination
+    s.send(os.path.join(play, "b.tar.gz").encode() + b"://\r", wait=STEP * 4)
+    check("archive: packed into tar", wait_for(s, "done —"))
+    s.quit()
+    with tarfile.open(os.path.join(play, "b.tar.gz")) as t:
+        names = t.getnames()
+        packed = t.extractfile("fresh.txt").read()
+    check("archive: tar holds old and new",
+          "inside.txt" in names and packed == b"packed later\n")
     shutil.rmtree(root)
 
 

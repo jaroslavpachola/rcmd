@@ -3938,21 +3938,34 @@ impl App {
         });
     }
 
-    /// Copy INTO an archive: zip appends in place; tar would need a full
-    /// rewrite, so it is refused.
+    /// Copy INTO an archive: zip appends in place, tar (plain or
+    /// compressed) goes through a full rewrite-append.
     fn start_pack(&mut self, sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) {
-        let name = archive.file_name().unwrap_or_default().to_string_lossy();
-        if !name.to_lowercase().ends_with(".zip") {
-            self.status = Some(" can only copy into .zip archives ".into());
+        let name = archive
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+        let is_tar = [
+            ".tar", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tbz",
+        ]
+        .iter()
+        .any(|ext| name.ends_with(ext));
+        let handle = if name.ends_with(".zip") {
+            fsops::spawn_pack_zip(sources.clone(), archive.clone(), inside)
+        } else if is_tar {
+            fsops::spawn_pack_tar(sources.clone(), archive.clone(), inside)
+        } else {
+            self.status = Some(" can only copy into .zip or .tar[.gz/xz/bz2] archives ".into());
             return;
-        }
+        };
         self.job = Some(Job {
             title: format!(
                 " pack {} item(s) into {} ",
                 sources.len(),
                 archive.display()
             ),
-            handle: fsops::spawn_pack_zip(sources, archive, inside),
+            handle,
             total_files: 0,
             total_bytes: 0,
             files_done: 0,

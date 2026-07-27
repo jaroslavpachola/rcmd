@@ -1059,6 +1059,203 @@ pub fn spawn_pack_zip(sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) 
     })
 }
 
+/// Copy INTO a tar archive (R4): tars cannot append in place across
+/// compressors, so the whole archive is rewritten — existing entries
+/// stream into a temp file with the same compression, the new trees
+/// are appended behind them, and the temp renames over the original.
+pub fn spawn_pack_tar(sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) -> JobHandle {
+    spawn(move |ctx| {
+        let (files, bytes) = scan(&sources);
+        let _ = ctx.tx.send(JobEvent::Total { files, bytes });
+        let temp = {
+            let dir = archive.parent().unwrap_or_else(|| Path::new("."));
+            let name = archive.file_name().unwrap_or_default().to_string_lossy();
+            dir.join(format!(".{name}.rcmd-{}", std::process::id()))
+        };
+        match rewrite_tar(ctx, &sources, &archive, &inside, &temp) {
+            Ok(Ok(())) => {
+                if let Err(err) = fs::rename(&temp, &archive) {
+                    let _ = fs::remove_file(&temp);
+                    return ctx.error(&archive, &format!("replacing archive: {err}"));
+                }
+                Ok(())
+            }
+            Ok(Err(err)) => {
+                let _ = fs::remove_file(&temp);
+                ctx.error(&archive, &err.to_string())?;
+                Ok(())
+            }
+            Err(Aborted) => {
+                let _ = fs::remove_file(&temp);
+                Err(Aborted)
+            }
+        }
+    })
+}
+
+/// The write half of a tar rewrite; `finish` flushes the compressor's
+/// trailer explicitly instead of trusting Drop.
+enum TarSink {
+    Plain(fs::File),
+    Gz(flate2::write::GzEncoder<fs::File>),
+    Xz(xz2::write::XzEncoder<fs::File>),
+    Bz(bzip2::write::BzEncoder<fs::File>),
+}
+
+impl Write for TarSink {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            TarSink::Plain(w) => w.write(buf),
+            TarSink::Gz(w) => w.write(buf),
+            TarSink::Xz(w) => w.write(buf),
+            TarSink::Bz(w) => w.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            TarSink::Plain(w) => w.flush(),
+            TarSink::Gz(w) => w.flush(),
+            TarSink::Xz(w) => w.flush(),
+            TarSink::Bz(w) => w.flush(),
+        }
+    }
+}
+
+impl TarSink {
+    fn create(path: &Path, archive_name: &str) -> io::Result<TarSink> {
+        let file = fs::File::create(path)?;
+        Ok(if archive_name.ends_with(".tar") {
+            TarSink::Plain(file)
+        } else if archive_name.ends_with(".tar.gz") || archive_name.ends_with(".tgz") {
+            TarSink::Gz(flate2::write::GzEncoder::new(
+                file,
+                flate2::Compression::default(),
+            ))
+        } else if archive_name.ends_with(".tar.xz") || archive_name.ends_with(".txz") {
+            TarSink::Xz(xz2::write::XzEncoder::new(file, 6))
+        } else {
+            TarSink::Bz(bzip2::write::BzEncoder::new(
+                file,
+                bzip2::Compression::default(),
+            ))
+        })
+    }
+
+    fn finish(self) -> io::Result<()> {
+        match self {
+            TarSink::Plain(_) => Ok(()),
+            TarSink::Gz(w) => w.finish().map(|_| ()),
+            TarSink::Xz(w) => w.finish().map(|_| ()),
+            TarSink::Bz(w) => w.finish().map(|_| ()),
+        }
+    }
+}
+
+fn tar_source(path: &Path, archive_name: &str) -> io::Result<Box<dyn Read>> {
+    let file = fs::File::open(path)?;
+    Ok(if archive_name.ends_with(".tar") {
+        Box::new(file)
+    } else if archive_name.ends_with(".tar.gz") || archive_name.ends_with(".tgz") {
+        Box::new(flate2::read::GzDecoder::new(file))
+    } else if archive_name.ends_with(".tar.xz") || archive_name.ends_with(".txz") {
+        Box::new(xz2::read::XzDecoder::new(file))
+    } else {
+        Box::new(bzip2::read::BzDecoder::new(file))
+    })
+}
+
+/// Ok(Ok) = temp holds the finished archive; Ok(Err) = fatal io error;
+/// Err = cancelled. Per-item problems on the *new* entries go through
+/// the ordinary retry/skip dialog inside `tar_tree`.
+fn rewrite_tar(
+    ctx: &mut Ctx,
+    sources: &[PathBuf],
+    archive: &Path,
+    inside: &Path,
+    temp: &Path,
+) -> Result<Result<(), io::Error>, Aborted> {
+    let name = archive
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_lowercase();
+    let mut tar = match TarSink::create(temp, &name) {
+        Ok(sink) => tar::Builder::new(sink),
+        Err(err) => return Ok(Err(err)),
+    };
+    tar.follow_symlinks(false);
+    // stream the existing entries across unchanged (append_data /
+    // append_link re-handle long names, so GNU/PAX entries survive)
+    let copied = (|| -> io::Result<()> {
+        let mut old = tar::Archive::new(tar_source(archive, &name)?);
+        for entry in old.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.into_owned();
+            let mut header = entry.header().clone();
+            let kind = header.entry_type();
+            match entry.link_name()? {
+                Some(link) if kind.is_symlink() || kind.is_hard_link() => {
+                    tar.append_link(&mut header, &path, &link)?;
+                }
+                _ => tar.append_data(&mut header, &path, &mut entry)?,
+            }
+        }
+        Ok(())
+    })();
+    if let Err(err) = copied {
+        return Ok(Err(err));
+    }
+    for src in sources {
+        if ctx.cancelled() {
+            return Err(Aborted);
+        }
+        let base = src.file_name().unwrap_or_default();
+        tar_tree(ctx, &mut tar, src, &inside.join(base))?;
+    }
+    match tar.into_inner().and_then(TarSink::finish) {
+        Ok(()) => Ok(Ok(())),
+        Err(err) => Ok(Err(err)),
+    }
+}
+
+/// Append one tree to the tar builder. Progress and cancel are
+/// per-item (unlike the chunked zip path) — the whole temp archive is
+/// discarded on cancel, so finer granularity buys nothing.
+fn tar_tree(
+    ctx: &mut Ctx,
+    tar: &mut tar::Builder<TarSink>,
+    src: &Path,
+    dst_rel: &Path,
+) -> Result<(), Aborted> {
+    if ctx.cancelled() {
+        return Err(Aborted);
+    }
+    let Some(entry) = ctx.with_retry(src, || crate::entry::stat(src))? else {
+        return Ok(());
+    };
+    if entry.kind == EntryKind::Dir {
+        let _ = ctx.with_retry(src, || tar.append_dir(dst_rel, src))?;
+        let Some(names) = read_names(ctx, src)? else {
+            return Ok(());
+        };
+        for name in names {
+            tar_tree(ctx, tar, &src.join(&name), &dst_rel.join(&name))?;
+        }
+        return Ok(());
+    }
+    ctx.progress(src);
+    let done = ctx.with_retry(src, || tar.append_path_with_name(src, dst_rel))?;
+    if done.is_some() {
+        ctx.files_done += 1;
+        if entry.kind == EntryKind::File {
+            ctx.bytes_done += entry.size;
+        }
+        ctx.progress(src);
+    }
+    Ok(())
+}
+
 fn pack_tree(
     ctx: &mut Ctx,
     zip: &mut zip::ZipWriter<fs::File>,
@@ -1416,6 +1613,57 @@ mod tests {
             .read_to_string(&mut content)
             .unwrap();
         assert_eq!(content, "was here");
+    }
+
+    #[test]
+    fn pack_rewrites_tar_archives() {
+        for name in ["box.tar", "box.tar.gz"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let archive = tmp.path().join(name);
+            // existing archive with one member
+            {
+                let sink = TarSink::create(&archive, name).unwrap();
+                let mut tar = tar::Builder::new(sink);
+                let mut header = tar::Header::new_gnu();
+                header.set_size(8);
+                header.set_mode(0o644);
+                header.set_cksum();
+                tar.append_data(&mut header, "existing.txt", &b"was here"[..])
+                    .unwrap();
+                tar.into_inner().unwrap().finish().unwrap();
+            }
+            let payload = tmp.path().join("payload");
+            fs::create_dir(&payload).unwrap();
+            fs::write(payload.join("new.txt"), b"added").unwrap();
+            std::os::unix::fs::symlink("new.txt", payload.join("link")).unwrap();
+
+            let result = run(
+                spawn_pack_tar(vec![payload.clone()], archive.clone(), PathBuf::new()),
+                vec![],
+            );
+            assert!(!result.aborted, "{name}");
+            assert_eq!(result.files_done, 2, "{name}"); // file + symlink
+
+            let afs = crate::archive::ArchiveFs::open(&archive).unwrap();
+            let mut content = String::new();
+            afs.open_read(Path::new("payload/new.txt"))
+                .unwrap()
+                .read_to_string(&mut content)
+                .unwrap();
+            assert_eq!(content, "added", "{name}");
+            content.clear();
+            afs.open_read(Path::new("existing.txt"))
+                .unwrap()
+                .read_to_string(&mut content)
+                .unwrap();
+            assert_eq!(content, "was here", "{name}");
+            let link = afs.stat(Path::new("payload/link")).unwrap();
+            assert_eq!(
+                link.link_target.as_deref(),
+                Some(Path::new("new.txt")),
+                "{name}"
+            );
+        }
     }
 
     #[test]
