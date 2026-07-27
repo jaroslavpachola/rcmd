@@ -153,6 +153,17 @@ pub fn spawn_dir_size(path: PathBuf) -> Receiver<(u64, u64)> {
     rx
 }
 
+/// Ctrl+Space on a non-local panel: the same totals via [`FsProvider`]
+/// traversal (sftp round-trips, archive walks) on a worker thread.
+pub fn spawn_dir_size_fs(fs: Arc<dyn FsProvider>, path: PathBuf) -> Receiver<(u64, u64)> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let totals = scan_provider(&*fs, std::slice::from_ref(&path));
+        let _ = tx.send(totals);
+    });
+    rx
+}
+
 /// Copy or move across providers: upload (local→remote), download
 /// (remote→local) and remote↔remote all stream through the same chunk
 /// loop; the dialogs protocol is identical to the local jobs. A move on

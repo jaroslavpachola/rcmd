@@ -999,6 +999,16 @@ def test_sftp():
             s.drain(0.3)
         check("sftp: remote delete", not os.path.exists(uploaded))
 
+        # R4: Ctrl+Space directory size over sftp (dir made server-side
+        # only now, so the earlier position-coupled steps stay put)
+        os.makedirs(os.path.join(remote, "deep"))
+        open(os.path.join(remote, "deep", "one.bin"), "w").write("x" * 10)
+        open(os.path.join(remote, "deep", "two.bin"), "w").write("y" * 6)
+        s.send(b"\x12", wait=STEP)          # Ctrl+R reload the listing
+        s.send(b"\x13deep\r", wait=STEP)    # quick search -> deep/
+        s.send(b"\x00", wait=STEP)          # Ctrl+Space
+        check("sftp: remote dir size", wait_for(s, "deep: 16 bytes in 2 file(s)"))
+
         khfile = os.path.join(home, ".ssh", "known_hosts")
         check(
             "sftp: host key saved",

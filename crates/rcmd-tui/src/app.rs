@@ -3565,9 +3565,6 @@ impl App {
             self.status = Some(" a size scan is already running ".into());
             return;
         }
-        if !self.require_local() {
-            return;
-        }
         let panel = &self.panels[self.active];
         let Some(entry) = panel.selected() else {
             return;
@@ -3578,8 +3575,14 @@ impl App {
         }
         let name = entry.name.clone();
         let cwd = panel.cwd.clone();
+        let rx = if panel.is_local() {
+            fsops::spawn_dir_size(cwd.join(&name))
+        } else {
+            // sftp and archive panels size through their provider
+            fsops::spawn_dir_size_fs(panel.fs.clone(), cwd.join(&name))
+        };
         self.du = Some(DuJob {
-            rx: fsops::spawn_dir_size(cwd.join(&name)),
+            rx,
             panel: self.active,
             cwd,
             name,
