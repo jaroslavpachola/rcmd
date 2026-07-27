@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Packaging** (3.0 R5): release binaries are now thin-LTO'd and
+  stripped, and every release ships a second, fully static
+  `x86_64-unknown-linux-musl` tarball (C dependencies vendored) that
+  runs on any distro. The README opens with a demo GIF recorded by the
+  project's own pty harness.
 - **rar and 7z browsing**: Enter on a `.rar` or `.7z` opens it like any
   archive — read-only listing, F3 views members, F5 copies out,
   Ctrl+Space sizes directories. Served by the first working external

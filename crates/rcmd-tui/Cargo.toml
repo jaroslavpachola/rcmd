@@ -12,6 +12,8 @@ path = "src/main.rs"
 default = ["syntax", "git"]
 syntax = ["rcmd-edit/syntax"]
 git = ["dep:git2"]
+# Static builds (musl tarball): vendor the C dependencies.
+vendored = ["rcmd-core/vendored"]
 
 [dependencies]
 rcmd-core = { path = "../rcmd-core" }

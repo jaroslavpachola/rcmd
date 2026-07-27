@@ -4,7 +4,8 @@
 default-on with `subshell = false` as the escape hatch; now dogfooding.
 R2 DONE (2026-07-27). R3 DONE (2026-07-27) — the whole menu shipped,
 nothing pruned. R4 DONE (2026-07-27) — again the whole menu, including
-the job queue (E3 resolved). R5 open. (Drafted 2026-07-06, alongside the 2.0 release.)
+the job queue (E3 resolved). R5 DONE (2026-07-27) — only the 3.0.0
+tag itself waits for the R1 dogfooding window to close (~2026-08-06). (Drafted 2026-07-06, alongside the 2.0 release.)
 **Prerequisite:** PLAN2.md complete (it is). Baseline: 2.0 — MC-workflow
 parity and beyond, SFTP panels, built-in editor, openers/user menu;
 threads-not-async settled (D1); 82 unit tests + 82 pty e2e checks.
@@ -185,14 +186,21 @@ subshell modes; suite now 167 checks). Notes:
   while jobs run. e2e drives it deterministically by copying from a
   FIFO (the job blocks until the test opens the writing end).
 
-### R5 — packaging & the wider world
-- `[profile.release]`: thin LTO + strip (there is currently none).
-- A static `x86_64-unknown-linux-musl` tarball next to the glibc one —
-  runs on any distro, the best "installable everywhere" move that
-  needs no crates.io.
-- Demo GIF in the README (vhs, or the pty harness itself).
+### R5 — packaging & the wider world — DONE (2026-07-27)
+- `[profile.release]` thin LTO + strip: shipped (7.3 MB binary).
+- Static musl tarball: shipped — a `vendored` cargo feature
+  (`ssh2/vendored-openssl`; xz2/bzip2 already vendor statically) plus
+  a musl entry in the release matrix with an ldd static-linkage gate.
+  The workflow gained `workflow_dispatch` so packaging can be dry-run
+  without a tag (upload is tag-gated).
+- Demo GIF: shipped — recorded by `tests/e2e/record_demo.py` (the pty
+  harness with timestamps, emitting asciicast v2) and rendered by agg
+  with a VGA palette so the mc theme looks like itself; cast + gif
+  committed, embedded in the README.
 - Windows, Lua, macOS builds, crates.io (D4): all stay parked unless
   real demand shows up — unchanged from the 2.0 decisions.
+- Note: versions now bump per feature (user call, 2026-07-27); the
+  3.0.0 release tag follows the R1 dogfooding exit, not this phase.
 
 ## Sequencing & effort (rough)
 

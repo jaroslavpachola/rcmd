@@ -6,6 +6,13 @@ with MC keybindings, built on ratatui. The 1.0
 roadmaps are complete; 3.0 ([docs/PLAN3.md](docs/PLAN3.md)) is under
 way — its flagship, the **persistent subshell** behind Ctrl+O, is in.
 
+![rcmd demo: browsing, the syntax-highlighted viewer, marking and
+copying, the persistent subshell](docs/demo.gif)
+
+*(recorded by [tests/e2e/record_demo.py](tests/e2e/record_demo.py) —
+the same pty harness that runs the test suite — and rendered with
+[agg](https://github.com/asciinema/agg))*
+
 ## Status
 
 **2.0** — complete MC-workflow parity and beyond: marking and F5–F8
@@ -21,6 +28,17 @@ history, quick view, info panel, listing formats, git status in the
 panels, **openers and an F2 user menu**, and MC's ESC-prefix — see
 below.
 
+**3.0 so far** (unreleased, dogfooding): the persistent **subshell**
+(Ctrl+O), SFTP auth depth (passphrase keys, keyboard-interactive),
+bulk rename via the editor, viewer follow mode (tail&nbsp;-f) with
+syntax highlighting and precise search-match highlighting, `[[view]]`
+filters (F3 through `pdftotext` & co.), Tab path completion,
+gitignore-aware find, recent directories in the hotlist, a **job
+queue** with background transfers, chmod/chown/symlink dialogs, editor
+soft-wrap + `$1` capture groups + block ops, copy *into* tar, **rar and
+7z browsing** (via 7z/unrar), click-to-sort headers, and an MC alias
+batch (S-F4/S-F5/S-F6, C-x t/p, M-c quick cd…).
+
 ## Install & run
 
 ```sh
@@ -33,7 +51,9 @@ cargo run -p rcmd-tui                  # or: just run
 
 Release binaries for Linux are attached to GitHub releases (built by
 `.github/workflows/release.yml` on `v*` tags; macOS builds are
-temporarily suspended).
+temporarily suspended). Two tarballs per release: the glibc build and a
+**static musl build** (`x86_64-unknown-linux-musl`, C dependencies
+vendored) that runs on any distro with no shared-library requirements.
 
 ```
 usage: rcmd [-P FILE] [DIR1 [DIR2]]   (-V version, -h help)
