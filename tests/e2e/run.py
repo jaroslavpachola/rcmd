@@ -822,6 +822,16 @@ def test_editor():
     s.send(F10, wait=STEP * 2)
     check("editor: replace-all wrote", "BETA" in open(path).read())
 
+    # R4: $1 capture groups in the replacement
+    s.send(F4, wait=STEP * 2)
+    s.send(F4)                          # replace prompt
+    s.send(b"(BET)(A)\r")               # pattern with two groups
+    s.send(b"$2-$1\r")                  # replacement using both
+    s.send(b"a", wait=STEP)             # All
+    s.send(F2)                          # save
+    s.send(F10, wait=STEP * 2)
+    check("editor: capture groups", "A-BET" in open(path).read())
+
     s.send(F4, wait=STEP * 2)           # reopen
     s.send(b"junk")                     # modify
     s.send(F10)                         # quit -> unsaved-changes dialog

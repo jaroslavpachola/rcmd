@@ -2944,7 +2944,7 @@ impl App {
                                 if let Some(hl) = st.hl.as_mut() {
                                     hl.invalidate_from(m.pos.line);
                                 }
-                                st.ed.replace_match(m, &replacement);
+                                st.ed.replace_match_with_groups(m, &re, &replacement);
                                 count += 1;
                                 st.ed.cursor
                             }
@@ -2971,7 +2971,7 @@ impl App {
                             if let Some(hl) = st.hl.as_mut() {
                                 hl.invalidate_from(m.pos.line);
                             }
-                            st.ed.replace_match(m, &replacement);
+                            st.ed.replace_match_with_groups(m, &re, &replacement);
                             count += 1;
                             if count > 1_000_000 {
                                 break;

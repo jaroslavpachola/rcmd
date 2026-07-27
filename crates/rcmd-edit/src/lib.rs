@@ -674,6 +674,25 @@ impl Editor {
         self.splice(at, m.len, replacement, Kind::Other);
     }
 
+    /// Replace one found match, expanding `$1`..`$9` and `$0` in the
+    /// replacement to the match's capture groups (`$$` = a literal $).
+    pub fn replace_match_with_groups(&mut self, m: Match, re: &regex::Regex, replacement: &str) {
+        let text = self.line(m.pos.line);
+        let from_byte = text
+            .char_indices()
+            .nth(m.pos.col)
+            .map(|(b, _)| b)
+            .unwrap_or(text.len());
+        let expanded = match re.captures_at(&text, from_byte) {
+            // only trust captures for the exact match we highlighted
+            Some(caps) if caps.get(0).map(|g| g.start()) == Some(from_byte) => {
+                expand_replacement(&caps, replacement)
+            }
+            _ => replacement.to_string(),
+        };
+        self.replace_match(m, &expanded);
+    }
+
     /// Position just past a match — where the next search starts.
     pub fn after_match(&self, m: Match) -> Pos {
         let idx = self.char_idx(m.pos) + m.len.max(1);
@@ -684,6 +703,34 @@ impl Editor {
     pub(crate) fn line_with_nl(&self, idx: usize) -> String {
         self.rope.line(idx).to_string()
     }
+}
+
+/// `$0`..`$9` become capture groups (empty when the group didn't
+/// participate), `$$` a literal `$`; any other `$` stays verbatim.
+fn expand_replacement(caps: &regex::Captures, replacement: &str) -> String {
+    let mut out = String::with_capacity(replacement.len());
+    let mut chars = replacement.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '$' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            Some('$') => {
+                out.push('$');
+                chars.next();
+            }
+            Some(d) if d.is_ascii_digit() => {
+                let group = d.to_digit(10).unwrap() as usize;
+                if let Some(m) = caps.get(group) {
+                    out.push_str(m.as_str());
+                }
+                chars.next();
+            }
+            _ => out.push('$'),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -802,6 +849,25 @@ mod tests {
         }
         assert_eq!(e.text(), "bbbbbb");
         assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn replace_expands_capture_groups() {
+        let mut e = ed("John Smith\nAda Lovelace");
+        let re = Editor::compile(r"(\w+) (\w+)").unwrap();
+        let mut from = Pos { line: 0, col: 0 };
+        for _ in 0..2 {
+            let m = e.find_from(from, &re).unwrap();
+            e.replace_match_with_groups(m, &re, "$2, $1");
+            from = e.cursor;
+        }
+        assert_eq!(e.text(), "Smith, John\nLovelace, Ada");
+        // $$ is a literal dollar, unknown groups vanish, lone $ stays
+        let mut e = ed("x42");
+        let re = Editor::compile(r"x(\d+)").unwrap();
+        let m = e.find_from(Pos { line: 0, col: 0 }, &re).unwrap();
+        e.replace_match_with_groups(m, &re, "$$$1$7 $ end");
+        assert_eq!(e.text(), "$42 $ end");
     }
 
     #[test]
