@@ -94,9 +94,12 @@ pub enum ConnectEvent {
     AskHostKey {
         fingerprint: String,
     },
-    /// Password (or nothing else worked) — `prompt` names user@host.
+    /// A secret to type: password, key passphrase, or a
+    /// keyboard-interactive challenge. `echo` mirrors the server's wish
+    /// for that prompt (false = mask the input).
     AskPassword {
         prompt: String,
+        echo: bool,
     },
     /// Connected; `entries` is the listing of `start`, prefetched so the
     /// panel can switch over without blocking.
@@ -273,38 +276,202 @@ fn authenticate(
     tx: &Sender<ConnectEvent>,
     rx: &Receiver<ConnectReply>,
 ) -> Result<(), String> {
-    // agent first, then default unencrypted key files, then passwords
-    let _ = sess.userauth_agent(&url.user);
+    // The "none" probe behind auth_methods() tells us what the server
+    // accepts, so we only try (and only prompt for) methods that can
+    // work — OpenSSH order: publickey, keyboard-interactive, password.
+    let methods = sess
+        .auth_methods(&url.user)
+        .map(|m| m.to_string())
+        .unwrap_or_default();
     if sess.authenticated() {
-        return Ok(());
+        return Ok(()); // the "none" probe itself was accepted
     }
-    if let Some(home) = home_dir() {
-        for name in ["id_ed25519", "id_ecdsa", "id_rsa"] {
-            let key = home.join(".ssh").join(name);
-            if key.exists() {
-                let _ = sess.userauth_pubkey_file(&url.user, None, &key, None);
-                if sess.authenticated() {
-                    return Ok(());
+    let has = |m: &str| methods.is_empty() || methods.split(',').any(|x| x.trim() == m);
+
+    let mut last = String::from("authentication failed");
+    if has("publickey") {
+        // agent first, then default key files — encrypted ones prompt
+        // for their passphrase instead of silently falling through
+        let _ = sess.userauth_agent(&url.user);
+        if sess.authenticated() {
+            return Ok(());
+        }
+        if let Some(home) = home_dir() {
+            for name in ["id_ed25519", "id_ecdsa", "id_rsa"] {
+                let key = home.join(".ssh").join(name);
+                if !key.exists() {
+                    continue;
+                }
+                if key_needs_passphrase(&key) {
+                    for _ in 0..3 {
+                        let prompt = format!("Enter passphrase for ~/.ssh/{name}:");
+                        let phrase = ask_secret(tx, rx, prompt, false)?;
+                        if phrase.is_empty() {
+                            break; // skip this key, try the next method
+                        }
+                        match sess.userauth_pubkey_file(&url.user, None, &key, Some(&phrase)) {
+                            Ok(()) => return Ok(()),
+                            Err(e) => last = e.to_string(),
+                        }
+                        if sess.authenticated() {
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    let _ = sess.userauth_pubkey_file(&url.user, None, &key, None);
+                    if sess.authenticated() {
+                        return Ok(());
+                    }
                 }
             }
         }
     }
-    let mut last = String::from("authentication failed");
-    for _ in 0..3 {
-        let prompt = format!("{}@{}'s password:", url.user, url.host);
-        if tx.send(ConnectEvent::AskPassword { prompt }).is_err() {
-            return Err("cancelled".into());
-        }
-        let password = match rx.recv() {
-            Ok(ConnectReply::Password(p)) => p,
-            _ => return Err("cancelled".into()),
-        };
-        match sess.userauth_password(&url.user, &password) {
-            Ok(()) => return Ok(()),
-            Err(e) => last = e.to_string(),
+    if has("keyboard-interactive") {
+        for _ in 0..3 {
+            let mut prompter = Prompter {
+                tx,
+                rx,
+                cancelled: false,
+            };
+            let result = sess.userauth_keyboard_interactive(&url.user, &mut prompter);
+            if prompter.cancelled {
+                return Err("cancelled".into());
+            }
+            if sess.authenticated() {
+                return Ok(());
+            }
+            if let Err(e) = result {
+                last = e.to_string();
+            }
         }
     }
-    Err(format!("authentication failed: {last}"))
+    if has("password") {
+        for _ in 0..3 {
+            let prompt = format!("{}@{}'s password:", url.user, url.host);
+            let password = ask_secret(tx, rx, prompt, false)?;
+            match sess.userauth_password(&url.user, &password) {
+                Ok(()) => return Ok(()),
+                Err(e) => last = e.to_string(),
+            }
+        }
+    }
+    if methods.is_empty() {
+        Err(format!("authentication failed: {last}"))
+    } else {
+        Err(format!(
+            "authentication failed: {last} (server allows: {methods})"
+        ))
+    }
+}
+
+/// Send one masked (or echoed) prompt to the UI and wait for the answer.
+/// A closed channel or an explicit cancel aborts the whole connect.
+fn ask_secret(
+    tx: &Sender<ConnectEvent>,
+    rx: &Receiver<ConnectReply>,
+    prompt: String,
+    echo: bool,
+) -> Result<String, String> {
+    if tx.send(ConnectEvent::AskPassword { prompt, echo }).is_err() {
+        return Err("cancelled".into());
+    }
+    match rx.recv() {
+        Ok(ConnectReply::Password(p)) => Ok(p),
+        _ => Err("cancelled".into()),
+    }
+}
+
+/// Routes keyboard-interactive challenges through the connect dialogs.
+/// Servers may send several prompts per round — each becomes its own
+/// dialog, in order.
+struct Prompter<'a> {
+    tx: &'a Sender<ConnectEvent>,
+    rx: &'a Receiver<ConnectReply>,
+    cancelled: bool,
+}
+
+impl ssh2::KeyboardInteractivePrompt for Prompter<'_> {
+    fn prompt<'b>(
+        &mut self,
+        _username: &str,
+        instructions: &str,
+        prompts: &[ssh2::Prompt<'b>],
+    ) -> Vec<String> {
+        let mut out = Vec::with_capacity(prompts.len());
+        for p in prompts {
+            if self.cancelled {
+                out.push(String::new());
+                continue;
+            }
+            let text = if instructions.trim().is_empty() {
+                p.text.to_string()
+            } else {
+                format!("{} — {}", instructions.trim(), p.text)
+            };
+            match ask_secret(self.tx, self.rx, text, p.echo) {
+                Ok(answer) => out.push(answer),
+                Err(_) => {
+                    self.cancelled = true;
+                    out.push(String::new());
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Is this private key file encrypted? PEM keys carry an explicit
+/// header; the OpenSSH v1 format names its cipher ("none" = clear)
+/// right after the magic inside the base64 blob.
+fn key_needs_passphrase(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    if text.contains("Proc-Type: 4,ENCRYPTED") || text.contains("BEGIN ENCRYPTED PRIVATE KEY") {
+        return true;
+    }
+    let Some(body) = text
+        .split_once("-----BEGIN OPENSSH PRIVATE KEY-----")
+        .and_then(|(_, rest)| rest.split("-----END").next())
+    else {
+        return false;
+    };
+    const MAGIC: &[u8] = b"openssh-key-v1\0";
+    let blob = base64_decode(body);
+    let Some(rest) = blob.strip_prefix(MAGIC) else {
+        return false;
+    };
+    if rest.len() < 4 {
+        return false;
+    }
+    let n = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
+    rest.get(4..4 + n).is_some_and(|cipher| cipher != b"none")
+}
+
+/// Lenient base64 decoder (whitespace skipped, stops at padding) — just
+/// enough to peek inside OpenSSH-format key files.
+fn base64_decode(s: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut acc = 0u32;
+    let mut bits = 0;
+    for c in s.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'\n' | b'\r' | b' ' | b'\t' => continue,
+            _ => break, // '=' padding or junk ends the data
+        };
+        acc = acc << 6 | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    out
 }
 
 /// Unpadded base64, as OpenSSH prints SHA256 fingerprints.
@@ -583,5 +750,57 @@ mod tests {
         assert_eq!(base64(b"fo"), "Zm8");
         assert_eq!(base64(b"foo"), "Zm9v");
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn base64_decode_roundtrip() {
+        for data in [&b""[..], b"f", b"fo", b"foo", b"openssh-key-v1\0stuff"] {
+            assert_eq!(base64_decode(&base64(data)), data);
+        }
+        // whitespace is skipped, padding stops the data
+        assert_eq!(base64_decode("Zm 9\nv"), b"foo");
+        assert_eq!(base64_decode("Zm8="), b"fo");
+    }
+
+    fn openssh_key_file(dir: &Path, cipher: &str) -> PathBuf {
+        let mut blob = b"openssh-key-v1\0".to_vec();
+        blob.extend_from_slice(&(cipher.len() as u32).to_be_bytes());
+        blob.extend_from_slice(cipher.as_bytes());
+        blob.extend_from_slice(b"\0\0\0\x04none"); // kdfname, truncated rest
+        let path = dir.join(format!("key-{cipher}"));
+        std::fs::write(
+            &path,
+            format!(
+                "-----BEGIN OPENSSH PRIVATE KEY-----\n{}\n-----END OPENSSH PRIVATE KEY-----\n",
+                base64(&blob)
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn passphrase_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!key_needs_passphrase(&openssh_key_file(dir.path(), "none")));
+        assert!(key_needs_passphrase(&openssh_key_file(
+            dir.path(),
+            "aes256-ctr"
+        )));
+        let pem = dir.path().join("pem");
+        std::fs::write(
+            &pem,
+            "-----BEGIN EC PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,ABCD\n\nZm9v\n-----END EC PRIVATE KEY-----\n",
+        )
+        .unwrap();
+        assert!(key_needs_passphrase(&pem));
+        let clear = dir.path().join("clear");
+        std::fs::write(
+            &clear,
+            "-----BEGIN EC PRIVATE KEY-----\nZm9v\n-----END EC PRIVATE KEY-----\n",
+        )
+        .unwrap();
+        assert!(!key_needs_passphrase(&clear));
+        assert!(!key_needs_passphrase(&dir.path().join("missing")));
     }
 }

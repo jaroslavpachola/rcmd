@@ -2,7 +2,7 @@
 
 **Status:** R1 DONE (2026-07-06) — the persistent subshell is in,
 default-on with `subshell = false` as the escape hatch; now dogfooding.
-R2–R5 open. (Drafted 2026-07-06, alongside the 2.0 release.)
+R2 DONE (2026-07-27). R3–R5 open. (Drafted 2026-07-06, alongside the 2.0 release.)
 **Prerequisite:** PLAN2.md complete (it is). Baseline: 2.0 — MC-workflow
 parity and beyond, SFTP panels, built-in editor, openers/user menu;
 threads-not-async settled (D1); 82 unit tests + 82 pty e2e checks.
@@ -87,15 +87,27 @@ need synchronous completion. CI runs the e2e suite twice (subshell on
 and off) plus per-shell scenarios: sh, bash, zsh, fish.
 `RCMD_SUBSHELL_LOG=/path` traces the state machine while dogfooding.
 
-### R2 — SFTP auth depth (carried from 2.0's P7)
-- **Passphrase-protected keys**: when `~/.ssh/id_*` needs a passphrase,
-  prompt for it (masked) instead of silently falling through to
-  password auth; `ssh2` takes the passphrase directly.
-- **Keyboard-interactive auth**: route its prompts through the existing
-  ConnectEvent/ConnectReply dialogs; servers may send *several* prompts
-  per round — loop, never assume one password.
-- Exit: a passphrase key and a kbd-interactive-only sshd both connect;
-  e2e covers at least the passphrase path (paramiko can serve both).
+### R2 — SFTP auth depth (carried from 2.0's P7) — DONE
+
+Shipped 2026-07-27. As planned, plus one structural upgrade: the
+worker now asks the server for its allowed methods first (the "none"
+probe behind `auth_methods()`) and tries only what can work, in
+OpenSSH order — publickey, keyboard-interactive, password. So a
+kbd-interactive-only server never shows a passphrase prompt, and a
+pubkey-only server never asks for a password.
+
+- **Passphrase-protected keys**: encryption detected by peeking at the
+  key file (PEM `Proc-Type:`/PKCS#8 headers; the OpenSSH v1 format's
+  ciphername after the magic), then a masked prompt with 3 attempts;
+  empty input skips the key. Prompt shows `~/.ssh/<name>` so it fits
+  the 56-column dialog.
+- **Keyboard-interactive**: `ssh2`'s `KeyboardInteractivePrompt`
+  routed through the same AskPassword dialog, one dialog per prompt,
+  several prompts per round handled; per-prompt `echo` respected
+  (unmasked input when the server asks for it).
+- e2e covers both paths: paramiko serving pubkey-only auth against an
+  encrypted PEM ECDSA key (wrong passphrase retried), and a
+  kbd-interactive-only server sending two prompts in one round.
 
 ### R3 — workflow bells (cherry-pickable menu)
 - **Bulk rename via the editor**: marked files open as a text buffer in

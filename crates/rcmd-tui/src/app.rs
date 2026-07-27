@@ -53,8 +53,17 @@ pub struct ConnectState {
 }
 
 pub enum ConnectAsk {
-    HostKey { fingerprint: String, yes: bool },
-    Password { prompt: String, value: String },
+    HostKey {
+        fingerprint: String,
+        yes: bool,
+    },
+    /// Password / key passphrase / keyboard-interactive challenge;
+    /// `echo` shows the input unmasked (server's wish per prompt).
+    Password {
+        prompt: String,
+        value: String,
+        echo: bool,
+    },
 }
 
 /// A remote file being edited via a local scratch copy (F4 on an SFTP
@@ -977,10 +986,11 @@ impl App {
                         yes: false, // safe default
                     });
                 }
-                ConnectEvent::AskPassword { prompt } => {
+                ConnectEvent::AskPassword { prompt, echo } => {
                     connect.ask = Some(ConnectAsk::Password {
                         prompt,
                         value: String::new(),
+                        echo,
                     });
                 }
                 ConnectEvent::Ok { fs, start, entries } => {

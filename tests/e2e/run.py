@@ -796,6 +796,86 @@ def test_sftp():
     shutil.rmtree(root)
 
 
+def test_sftp_auth():
+    """R2: passphrase-protected key + keyboard-interactive auth."""
+    if os.environ.get("RCMD_E2E_SFTP") == "0":
+        print("SKIP sftp-auth (RCMD_E2E_SFTP=0)")
+        return
+    py = sftp_python()
+    if py is None:
+        print("SKIP sftp-auth (no python with paramiko — pip install paramiko)")
+        return
+    keygen = shutil.which("ssh-keygen")
+    if keygen is None:
+        print("SKIP sftp-auth (no ssh-keygen)")
+        return
+    root, play, home = sandbox()
+    remote = os.path.join(root, "remote")
+    os.makedirs(remote)
+    open(os.path.join(remote, "server.txt"), "w").write("from the server\n")
+
+    # an encrypted PEM key in the sandbox home — rcmd must ask for its
+    # passphrase instead of falling through to password auth
+    sshdir = os.path.join(home, ".ssh")
+    os.makedirs(sshdir)
+    key = os.path.join(sshdir, "id_ecdsa")
+    subprocess.run(
+        [keygen, "-q", "-t", "ecdsa", "-m", "PEM", "-N", "opensesame", "-f", key],
+        check=True,
+    )
+
+    def serve(auth, extra_env=None):
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        server = subprocess.Popen(
+            [py, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "sftp_server.py"), str(port)],
+            env={**os.environ, "RCMD_SFTP_AUTH": auth, **(extra_env or {})},
+            stdout=subprocess.PIPE,
+        )
+        assert server.stdout.readline().strip() == b"READY", "sftp server failed to start"
+        return server, port
+
+    server, port = serve("pubkey", {"RCMD_SFTP_PUBKEY": key + ".pub"})
+    try:
+        s = Session(play, home)
+        s.send(f"cd sftp://tester@127.0.0.1:{port}{remote}\r".encode(), wait=STEP * 2)
+        check("sftp auth: host key dialog", wait_for(s, "Unknown host"))
+        s.send(b"y")
+        check("sftp auth: passphrase prompt", wait_for(s, "passphrase for"))
+        s.send(b"wrong\r", wait=STEP * 2)    # rejected — the prompt returns
+        s.send(b"opensesame\r")
+        check("sftp auth: key connected after retry",
+              wait_for(s, "server.txt", timeout=15))
+        s.quit()
+    finally:
+        server.terminate()
+        server.wait()
+
+    server, port = serve("interactive")
+    try:
+        s = Session(play, home)
+        s.send(f"cd sftp://tester@127.0.0.1:{port}{remote}\r".encode(), wait=STEP * 2)
+        check("sftp auth: interactive host key", wait_for(s, "Unknown host"))
+        s.send(b"y")
+        # server sends two prompts in one round; each gets its own dialog
+        # (and no passphrase prompt — publickey is not on offer)
+        check("sftp auth: first challenge", wait_for(s, "Word one:"))
+        check("sftp auth: no passphrase detour", "passphrase" not in s.screen())
+        s.send(b"fish\r")
+        check("sftp auth: second challenge", wait_for(s, "Word two:"))
+        s.send(b"chips\r")
+        check("sftp auth: interactive connected",
+              wait_for(s, "server.txt", timeout=15))
+        s.quit()
+    finally:
+        server.terminate()
+        server.wait()
+    shutil.rmtree(root)
+
+
 def test_scale():
     if os.environ.get("RCMD_E2E_SCALE") == "0":
         print("SKIP scale (RCMD_E2E_SCALE=0)")
@@ -916,6 +996,7 @@ def main():
         test_editor,
         test_subshell,
         test_sftp,
+        test_sftp_auth,
         test_scale,
     ):
         test()

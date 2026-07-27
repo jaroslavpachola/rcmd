@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **SFTP auth depth** (3.0 R2): the connect worker now asks the server
+  which auth methods it accepts and tries only those, in OpenSSH order
+  (publickey, keyboard-interactive, password). Passphrase-protected
+  keys get a masked prompt (3 attempts, empty input skips the key)
+  instead of silently falling through to password auth; encryption is
+  detected for both PEM and OpenSSH-format key files.
+  Keyboard-interactive servers work: each challenge becomes its own
+  dialog (several per round supported), masked or echoed as the server
+  requests. e2e drives both against paramiko — an encrypted key with a
+  wrong-then-right passphrase, and a two-prompt kbd-interactive round.
+
 - **Persistent subshell** (3.0 R1, the flagship): a long-lived `$SHELL`
   on its own pty, like MC's. Ctrl+O toggles panels ↔ the shell's screen
   (the last output survives the trip), typed commands run *inside* the

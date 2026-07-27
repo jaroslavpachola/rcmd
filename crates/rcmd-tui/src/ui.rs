@@ -1864,7 +1864,11 @@ fn draw_connect_ask(frame: &mut Frame, ask: &ConnectAsk) {
             let selected = usize::from(!*yes);
             frame.render_widget(buttons_line(&["Yes", "No"], selected, style, sel), row(5));
         }
-        ConnectAsk::Password { prompt, value } => {
+        ConnectAsk::Password {
+            prompt,
+            value,
+            echo,
+        } => {
             let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
             let area = centered(56, 6, frame.area());
             let inner = popup(frame, area, " SSH authentication ", style);
@@ -1878,8 +1882,12 @@ fn draw_connect_ask(frame: &mut Frame, ask: &ConnectAsk) {
                 Line::from(tail(prompt, inner.width.saturating_sub(2) as usize)),
                 row(0),
             );
-            let masked = "*".repeat(value.chars().count());
-            field_row(frame, row(1), &masked, Some(masked.chars().count()));
+            let shown = if *echo {
+                value.clone()
+            } else {
+                "*".repeat(value.chars().count())
+            };
+            field_row(frame, row(1), &shown, Some(shown.chars().count()));
             frame.render_widget(
                 Line::from("Enter — send   Esc — cancel")
                     .centered()

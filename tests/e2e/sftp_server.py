@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Minimal SFTP server for the e2e suite (paramiko), serving the real
-filesystem with password auth.
+filesystem.
 
 Usage: sftp_server.py PORT   (binds 127.0.0.1, prints READY when up)
-The accepted password comes from $RCMD_SFTP_PASSWORD (default "secret").
+$RCMD_SFTP_AUTH picks the accepted method:
+  password (default) — $RCMD_SFTP_PASSWORD (default "secret")
+  pubkey             — the OpenSSH .pub file at $RCMD_SFTP_PUBKEY
+  interactive        — keyboard-interactive, two prompts ("fish", "chips")
 """
+import base64
 import os
 import socket
 import sys
@@ -23,17 +27,42 @@ from paramiko import (
 )
 
 PASSWORD = os.environ.get("RCMD_SFTP_PASSWORD", "secret")
+AUTH = os.environ.get("RCMD_SFTP_AUTH", "password")
+PUBKEY = os.environ.get("RCMD_SFTP_PUBKEY")
 
 
 class Server(ServerInterface):
     def check_auth_password(self, username, password):
+        if AUTH != "password":
+            return AUTH_FAILED
         return AUTH_SUCCESSFUL if password == PASSWORD else AUTH_FAILED
+
+    def check_auth_publickey(self, username, key):
+        if AUTH != "pubkey" or not PUBKEY:
+            return AUTH_FAILED
+        blob = base64.b64decode(open(PUBKEY).read().split()[1])
+        return AUTH_SUCCESSFUL if key.asbytes() == blob else AUTH_FAILED
+
+    def check_auth_interactive(self, username, submethods):
+        if AUTH != "interactive":
+            return AUTH_FAILED
+        q = paramiko.server.InteractiveQuery("rcmd", "two words open the door")
+        q.add_prompt("Word one:", False)
+        q.add_prompt("Word two:", False)
+        return q
+
+    def check_auth_interactive_response(self, responses):
+        return AUTH_SUCCESSFUL if list(responses) == ["fish", "chips"] else AUTH_FAILED
 
     def check_channel_request(self, kind, chanid):
         return OPEN_SUCCEEDED
 
     def get_allowed_auths(self, username):
-        return "password"
+        return {
+            "password": "password",
+            "pubkey": "publickey",
+            "interactive": "keyboard-interactive",
+        }[AUTH]
 
 
 class Handle(SFTPHandle):
