@@ -299,6 +299,48 @@ def test_archive():
     shutil.rmtree(root)
 
 
+def test_cmdarchive():
+    """rar/7z browsing through external tools (7z family / unrar)."""
+    packer = None
+    if shutil.which("rar"):
+        packer, ext = "rar", "rar"
+    elif shutil.which("7za") or shutil.which("7z"):
+        packer, ext = (shutil.which("7za") and "7za") or "7z", "7z"
+    if packer is None:
+        print("SKIP cmdarchive (no rar/7z binary)")
+        return
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "out"))
+    src = os.path.join(root, "src")
+    os.makedirs(os.path.join(src, "sub"))
+    open(os.path.join(src, "hello.txt"), "w").write("packed content\n")
+    open(os.path.join(src, "sub", "inner.txt"), "w").write("deep\n")
+    box = os.path.join(play, "box." + ext)
+    args = ["a", "-idq"] if packer == "rar" else ["a", "-bd"]
+    subprocess.run([packer, *args, box, "hello.txt", "sub"],
+                   cwd=src, check=True, capture_output=True)
+
+    s = Session(play, home, args=(play, os.path.join(play, "out")))
+    s.send(b"\x13box\r", wait=STEP)     # quick search -> box.rar/.7z
+    s.send(b"\r", wait=STEP * 3)        # enter the archive
+    scr = s.screen()
+    check("cmdarchive: entered", ("box." + ext + "://") in scr)
+    check("cmdarchive: listing", "hello.txt" in scr and "sub" in scr)
+    s.send(F8)                          # must refuse
+    check("cmdarchive: read-only", "read-only" in s.screen())
+    s.send(b"\x13hello\r", wait=STEP)   # -> hello.txt
+    s.send(F3, wait=STEP * 2)
+    check("cmdarchive: F3 views member", "packed content" in s.screen())
+    s.send(b"q")
+    s.send(F5)
+    s.send(b"\r", wait=STEP * 3)        # extract into out/
+    extracted = os.path.join(play, "out", "hello.txt")
+    check("cmdarchive: F5 extracts",
+          wait_for(s, "done —") and open(extracted).read() == "packed content\n")
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_find():
     root, play, home = sandbox()
     os.makedirs(os.path.join(play, "sub"))
@@ -1290,6 +1332,7 @@ def main():
         test_cmdline,
         test_viewer,
         test_archive,
+        test_cmdarchive,
         test_find,
         test_compare,
         test_watch,

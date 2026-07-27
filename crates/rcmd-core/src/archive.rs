@@ -1,4 +1,6 @@
-//! Read-only archive VFS: zip, tar, tar.gz/tgz.
+//! Read-only archive VFS: zip, tar, tar.gz/xz/bz2 natively; rar and 7z
+//! through an external tool (the 7z family, or unrar for .rar) — listed
+//! once at open, members streamed out per read.
 //!
 //! The entry table is indexed once at open; `open_read` re-opens the
 //! archive and decodes just the requested member into memory (compressed
@@ -23,11 +25,27 @@ enum Kind {
     TarGz,
     TarXz,
     TarBz2,
+    /// rar / 7z via an external lister+extractor.
+    Cmd,
+}
+
+/// Which external tool serves a [`Kind::Cmd`] archive.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct CmdBackend {
+    program: &'static str,
+    flavor: CmdFlavor,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CmdFlavor {
+    SevenZip,
+    Unrar,
 }
 
 pub struct ArchiveFs {
     path: PathBuf,
     kind: Kind,
+    cmd: Option<CmdBackend>,
     /// Directory (relative, "" = archive root) → its entries.
     index: HashMap<PathBuf, Vec<Entry>>,
 }
@@ -49,6 +67,8 @@ impl ArchiveFs {
             Kind::TarXz
         } else if name.ends_with(".tar.bz2") || name.ends_with(".tbz2") || name.ends_with(".tbz") {
             Kind::TarBz2
+        } else if name.ends_with(".rar") || name.ends_with(".7z") {
+            Kind::Cmd
         } else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -58,10 +78,12 @@ impl ArchiveFs {
         let mut fs = ArchiveFs {
             path: path.to_path_buf(),
             kind,
+            cmd: None,
             index: HashMap::from([(PathBuf::new(), Vec::new())]),
         };
         match kind {
             Kind::Zip => fs.index_zip()?,
+            Kind::Cmd => fs.index_cmd(name.ends_with(".rar"))?,
             _ => fs.index_tar()?,
         }
         Ok(fs)
@@ -175,6 +197,100 @@ impl ArchiveFs {
         }
     }
 
+    /// List a rar/7z through the first working tool: the 7z family
+    /// reads both formats (rar needs its nonfree codec), unrar covers
+    /// .rar where 7z can't.
+    fn index_cmd(&mut self, is_rar: bool) -> io::Result<()> {
+        const SEVENS: [&str; 3] = ["7z", "7zz", "7za"];
+        let mut candidates: Vec<CmdBackend> = SEVENS
+            .iter()
+            .map(|p| CmdBackend {
+                program: p,
+                flavor: CmdFlavor::SevenZip,
+            })
+            .collect();
+        if is_rar {
+            candidates.push(CmdBackend {
+                program: "unrar",
+                flavor: CmdFlavor::Unrar,
+            });
+        }
+        let mut last = io::Error::new(
+            io::ErrorKind::NotFound,
+            if is_rar {
+                "browsing .rar needs 7z (p7zip + rar codec) or unrar installed"
+            } else {
+                "browsing .7z needs 7z / 7za (p7zip) installed"
+            },
+        );
+        for backend in candidates {
+            let output = std::process::Command::new(backend.program)
+                .args(match backend.flavor {
+                    CmdFlavor::SevenZip => &["l", "-ba", "-slt"][..],
+                    CmdFlavor::Unrar => &["vt", "-p-"][..],
+                })
+                .arg(&self.path)
+                .env("LC_ALL", "C")
+                .stdin(std::process::Stdio::null())
+                .output();
+            let output = match output {
+                Ok(out) => out,
+                Err(_) => continue, // tool not installed: try the next
+            };
+            if !output.status.success() {
+                let err = String::from_utf8_lossy(&output.stderr);
+                let first = err
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("listing failed")
+                    .trim();
+                last = io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{}: {first}", backend.program),
+                );
+                continue;
+            }
+            let text = String::from_utf8_lossy(&output.stdout);
+            let members = match backend.flavor {
+                CmdFlavor::SevenZip => parse_7z_slt(&text),
+                CmdFlavor::Unrar => parse_unrar_vt(&text),
+            };
+            for m in members {
+                self.add(&m.path, m.kind, m.size, m.mode, m.link, m.mtime);
+            }
+            self.cmd = Some(backend);
+            return Ok(());
+        }
+        Err(last)
+    }
+
+    /// Stream one member out through the resolved tool.
+    fn read_cmd(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
+        let backend = self
+            .cmd
+            .ok_or_else(|| io::Error::other("archive tool went away"))?;
+        let output = std::process::Command::new(backend.program)
+            .args(match backend.flavor {
+                CmdFlavor::SevenZip => &["x", "-so"][..],
+                CmdFlavor::Unrar => &["p", "-inul", "-p-"][..],
+            })
+            .arg(&self.path)
+            .arg(rel)
+            .env("LC_ALL", "C")
+            .stdin(std::process::Stdio::null())
+            .output()?;
+        if !output.status.success() && output.stdout.is_empty() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            let first = err
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("extraction failed")
+                .trim();
+            return Err(io::Error::other(format!("{}: {first}", backend.program)));
+        }
+        Ok(Box::new(Cursor::new(output.stdout)))
+    }
+
     fn raw_reader(&self) -> io::Result<Box<dyn Read>> {
         let file = File::open(&self.path)?;
         Ok(match self.kind {
@@ -182,7 +298,7 @@ impl ArchiveFs {
             Kind::TarGz => Box::new(GzDecoder::new(file)),
             Kind::TarXz => Box::new(xz2::read::XzDecoder::new(file)),
             Kind::TarBz2 => Box::new(bzip2::read::BzDecoder::new(file)),
-            Kind::Zip => unreachable!("zip uses the zip reader"),
+            Kind::Zip | Kind::Cmd => unreachable!("zip/cmd use their own readers"),
         })
     }
 }
@@ -212,6 +328,7 @@ impl FsProvider for ArchiveFs {
     fn open_read(&self, path: &Path) -> io::Result<Box<dyn Read + Send>> {
         let rel = normalize_rel(path);
         match self.kind {
+            Kind::Cmd => self.read_cmd(&rel),
             Kind::Zip => {
                 let mut zip = zip::ZipArchive::new(File::open(&self.path)?).map_err(zip_err)?;
                 for i in 0..zip.len() {
@@ -248,6 +365,167 @@ impl FsProvider for ArchiveFs {
             }
         }
     }
+}
+
+/// One member as reported by an external lister.
+struct CmdMember {
+    path: PathBuf,
+    kind: EntryKind,
+    size: u64,
+    mode: u32,
+    mtime: Option<std::time::SystemTime>,
+    link: Option<PathBuf>,
+}
+
+/// `7z l -ba -slt`: blank-line separated `Key = Value` records.
+fn parse_7z_slt(text: &str) -> Vec<CmdMember> {
+    let mut out = Vec::new();
+    for record in text.split("\n\n") {
+        let mut path = None;
+        let mut folder = false;
+        let mut attrs = String::new();
+        let mut size = 0u64;
+        let mut mtime = None;
+        let mut link = None;
+        for line in record.lines() {
+            let Some((key, value)) = line.split_once(" = ") else {
+                continue;
+            };
+            match key.trim() {
+                "Path" => path = Some(PathBuf::from(value)),
+                "Folder" => folder = value.trim() == "+",
+                "Attributes" => attrs = value.trim().to_string(),
+                "Size" => size = value.trim().parse().unwrap_or(0),
+                "Modified" => mtime = parse_datetime(value),
+                "Symbolic Link" if !value.trim().is_empty() => {
+                    link = Some(PathBuf::from(value.trim()));
+                }
+                _ => {}
+            }
+        }
+        let Some(path) = path else { continue };
+        // "D drwxrwxr-x" (7z) or a bare unix string (rar)
+        let unix = attrs
+            .split_whitespace()
+            .find(|t| t.len() == 10 && t.starts_with(['-', 'd', 'l']));
+        let is_dir = folder
+            || attrs
+                .split_whitespace()
+                .next()
+                .is_some_and(|t| t.chars().all(|c| c.is_ascii_uppercase()) && t.contains('D'))
+            || unix.is_some_and(|u| u.starts_with('d'));
+        let kind = if link.is_some() {
+            EntryKind::SymlinkFile
+        } else if is_dir {
+            EntryKind::Dir
+        } else {
+            EntryKind::File
+        };
+        out.push(CmdMember {
+            path,
+            kind,
+            size,
+            mode: unix.map(parse_unix_mode).unwrap_or(0o644),
+            mtime,
+            link,
+        });
+    }
+    out
+}
+
+/// `unrar vt`: blank-line separated `Key: Value` records (with a
+/// banner up front, filtered out by requiring a Name field).
+fn parse_unrar_vt(text: &str) -> Vec<CmdMember> {
+    let mut out = Vec::new();
+    for record in text.split("\n\n") {
+        let mut name = None;
+        let mut is_dir = false;
+        let mut size = 0u64;
+        let mut mode = 0o644;
+        let mut mtime = None;
+        let mut link = None;
+        for line in record.lines() {
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
+            let value = value.trim();
+            match key.trim() {
+                "Name" => name = Some(PathBuf::from(value)),
+                "Type" => is_dir = value == "Directory",
+                "Size" => size = value.parse().unwrap_or(0),
+                "mtime" => mtime = parse_datetime(value),
+                "Attributes" => {
+                    if value.len() == 10 {
+                        mode = parse_unix_mode(value);
+                    }
+                }
+                "Target" => link = Some(PathBuf::from(value)),
+                _ => {}
+            }
+        }
+        let Some(path) = name else { continue };
+        let kind = if link.is_some() {
+            EntryKind::SymlinkFile
+        } else if is_dir {
+            EntryKind::Dir
+        } else {
+            EntryKind::File
+        };
+        out.push(CmdMember {
+            path,
+            kind,
+            size,
+            mode,
+            mtime,
+            link,
+        });
+    }
+    out
+}
+
+/// "-rw-rw-r--" / "drwxrwxr-x" → permission bits (setuid/sticky
+/// letters count as plain execute — close enough for a listing).
+fn parse_unix_mode(s: &str) -> u32 {
+    let mut mode = 0u32;
+    for (i, c) in s.chars().skip(1).take(9).enumerate() {
+        if c != '-' {
+            mode |= 1 << (8 - i);
+        }
+    }
+    mode
+}
+
+/// "YYYY-MM-DD HH:MM:SS[.,frac]" (what 7z and unrar print under
+/// LC_ALL=C) → SystemTime, treated as UTC — close enough for a column.
+fn parse_datetime(s: &str) -> Option<std::time::SystemTime> {
+    let (date, time) = s.trim().split_once(' ')?;
+    let mut d = date.split('-');
+    let (y, m, day): (i64, u32, u32) = (
+        d.next()?.parse().ok()?,
+        d.next()?.parse().ok()?,
+        d.next()?.parse().ok()?,
+    );
+    let mut t = time.split(':');
+    let (h, min): (u64, u64) = (t.next()?.parse().ok()?, t.next()?.parse().ok()?);
+    let sec: u64 = t
+        .next()
+        .unwrap_or("0")
+        .split(['.', ','])
+        .next()?
+        .parse()
+        .ok()?;
+    // days-from-civil (Howard Hinnant), valid for the Gregorian calendar
+    let y = y - i64::from(m <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64;
+    let mp = u64::from((m + 9) % 12);
+    let doy = (153 * mp + 2) / 5 + u64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe as i64 - 719_468;
+    if days < 0 {
+        return None;
+    }
+    Some(UNIX_EPOCH + Duration::from_secs(days as u64 * 86_400 + h * 3_600 + min * 60 + sec))
 }
 
 /// Keep only normal components: strips "./", trailing slashes, and any
@@ -408,6 +686,124 @@ mod tests {
         let bogus = tmp.path().join("not-an-archive.zip");
         std::fs::write(&bogus, b"this is not a zip").unwrap();
         assert!(ArchiveFs::open(&bogus).is_err());
-        assert!(ArchiveFs::open(Path::new("file.rar")).is_err());
+        assert!(ArchiveFs::open(Path::new("file.lha")).is_err());
+    }
+
+    #[test]
+    fn parses_7z_slt_listings() {
+        let text = "Path = sub\nSize = 0\nModified = 2026-07-27 14:51:57.7878693\nAttributes = D drwxrwxr-x\n\nPath = file.txt\nFolder = -\nSize = 10\nModified = 2026-07-27 14:51:57.787869360\nAttributes =  -rw-rw-r--\nSymbolic Link = \n";
+        let members = parse_7z_slt(text);
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].path, PathBuf::from("sub"));
+        assert_eq!(members[0].kind, EntryKind::Dir);
+        assert_eq!(members[1].path, PathBuf::from("file.txt"));
+        assert_eq!(members[1].kind, EntryKind::File);
+        assert_eq!(members[1].size, 10);
+        assert_eq!(members[1].mode, 0o664);
+        assert!(members[1].mtime.is_some());
+    }
+
+    #[test]
+    fn parses_unrar_vt_listings() {
+        let text = "UNRAR 7.00 freeware\n\nArchive: test.rar\nDetails: RAR 5\n\n        Name: file.txt\n        Type: File\n        Size: 10\n       mtime: 2026-07-27 14:51:57,787869360\n  Attributes: -rw-rw-r--\n\n        Name: sub\n        Type: Directory\n  Attributes: drwxrwxr-x\n";
+        let members = parse_unrar_vt(text);
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].path, PathBuf::from("file.txt"));
+        assert_eq!(members[0].kind, EntryKind::File);
+        assert_eq!(members[0].size, 10);
+        assert_eq!(members[0].mode, 0o664);
+        assert_eq!(members[1].kind, EntryKind::Dir);
+    }
+
+    #[test]
+    fn datetime_and_mode_helpers() {
+        let t = parse_datetime("1970-01-01 00:00:00").unwrap();
+        assert_eq!(t, UNIX_EPOCH);
+        let t = parse_datetime("2001-09-09 01:46:40.5").unwrap();
+        assert_eq!(t, UNIX_EPOCH + Duration::from_secs(1_000_000_000));
+        assert!(parse_datetime("junk").is_none());
+        assert_eq!(parse_unix_mode("-rw-r--r--"), 0o644);
+        assert_eq!(parse_unix_mode("drwxr-xr-x"), 0o755);
+        assert_eq!(parse_unix_mode("-rwxrwxrwx"), 0o777);
+    }
+
+    fn tool_available(program: &str, probe: &str) -> bool {
+        std::process::Command::new(program)
+            .arg(probe)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+    }
+
+    #[test]
+    fn rar_round_trip_via_external_tools() {
+        if !tool_available("rar", "-iver") {
+            eprintln!("skipping: no rar binary to build the fixture");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        std::fs::write(tmp.path().join("hello.txt"), b"hello rar\n").unwrap();
+        std::fs::write(tmp.path().join("sub/inner.txt"), b"deep\n").unwrap();
+        let status = std::process::Command::new("rar")
+            .args(["a", "-idq", "box.rar", "hello.txt", "sub"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let fs = match ArchiveFs::open(&tmp.path().join("box.rar")) {
+            Ok(fs) => fs,
+            Err(err) => {
+                eprintln!("skipping: no rar-capable lister ({err})");
+                return;
+            }
+        };
+        let root = fs.read_dir(Path::new("")).unwrap();
+        let names: Vec<_> = root
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"hello.txt".into()), "{names:?}");
+        assert!(names.contains(&"sub".into()));
+        let mut content = String::new();
+        fs.open_read(Path::new("sub/inner.txt"))
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        assert_eq!(content, "deep\n");
+    }
+
+    #[test]
+    fn sevenz_round_trip_via_external_tools() {
+        if !tool_available("7za", "-h") && !tool_available("7z", "-h") {
+            eprintln!("skipping: no 7z binary");
+            return;
+        }
+        let packer = if tool_available("7za", "-h") {
+            "7za"
+        } else {
+            "7z"
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("hello.txt"), b"hello 7z\n").unwrap();
+        let status = std::process::Command::new(packer)
+            .args(["a", "-bd", "box.7z", "hello.txt"])
+            .current_dir(tmp.path())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let fs = ArchiveFs::open(&tmp.path().join("box.7z")).unwrap();
+        let mut content = String::new();
+        fs.open_read(Path::new("hello.txt"))
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        assert_eq!(content, "hello 7z\n");
+        let entry = fs.stat(Path::new("hello.txt")).unwrap();
+        assert_eq!(entry.size, 9);
     }
 }

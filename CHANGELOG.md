@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **rar and 7z browsing**: Enter on a `.rar` or `.7z` opens it like any
+  archive — read-only listing, F3 views members, F5 copies out,
+  Ctrl+Space sizes directories. Served by the first working external
+  tool (`7z`/`7zz`/`7za`, or `unrar` for rar when 7z lacks the codec),
+  with a clear status message when none is installed. Listings are
+  parsed from the machine-readable `-slt` / `vt` outputs under
+  `LC_ALL=C`; members stream out per read.
 - **View filters** (`[[view]]` in the config): F3 can now pipe a file
   through a command and show its stdout in the internal viewer —
   `match = "*.pdf"` / `run = "pdftotext %f -"` — with search, wrap and

@@ -205,6 +205,8 @@ const HELP_TEXT: &[&str] = &[
     "# Archives",
     "  Enter on zip/tar/tar.{gz,xz,bz2} browses it; F5 copies out,",
     "  F3 views members. Move/delete/mkdir are disabled inside.",
+    "  rar and 7z browse too, through an installed 7z (p7zip; rar",
+    "  needs its codec) or unrar — read-only, streamed per member.",
     "  Copy INTO an archive: F5 with the other panel inside it, or a",
     "  destination written as archive.zip://dir — zip appends in place,",
     "  tar (plain or .gz/.xz/.bz2) is rewritten with the new entries.",
