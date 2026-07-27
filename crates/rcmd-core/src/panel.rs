@@ -665,6 +665,23 @@ impl Panel {
 
     /// Paths the next file operation applies to: the marked entries if any,
     /// otherwise the cursor entry (".." is never a target).
+    /// Tagged names (or the cursor entry) as typed-in-place strings —
+    /// what C-x t pastes onto the command line.
+    pub fn target_names(&self) -> Vec<std::ffi::OsString> {
+        if !self.marked.is_empty() {
+            self.entries
+                .iter()
+                .filter(|e| self.marked.contains(&e.name))
+                .map(|e| e.name.clone())
+                .collect()
+        } else {
+            self.selected()
+                .filter(|e| !e.is_parent())
+                .map(|e| vec![e.name.clone()])
+                .unwrap_or_default()
+        }
+    }
+
     pub fn targets(&self) -> Vec<PathBuf> {
         if !self.marked.is_empty() {
             self.entries

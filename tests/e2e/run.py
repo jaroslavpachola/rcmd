@@ -582,6 +582,52 @@ def test_escmeta():
     shutil.rmtree(root)
 
 
+def test_aliases():
+    """R3 MC alias batch: M-c, M-y, S-F4, S-F5, C-x t/p, C-l."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "sub"))
+    open(os.path.join(play, "aaa-first.txt"), "w").write("x\n")
+    s = Session(play, home)
+
+    s.send(b"\x1bc", wait=STEP)             # M-c
+    check("aliases: M-c opens quick cd", "Quick cd" in s.screen())
+    s.send(b"sub\r", wait=STEP)
+    check("aliases: quick cd lands", play + "/sub" in s.screen())
+    s.send(b"\x1by", wait=STEP)             # M-y = history back
+    check("aliases: M-y goes back", play + "/sub" not in s.screen())
+
+    s.send(b"\x1b[14;2~", wait=STEP)        # Shift+F4
+    check("aliases: S-F4 prompts for a name", "Edit new file" in s.screen())
+    s.send(b"fresh.txt\r", wait=STEP)
+    s.send(b"hello")
+    s.send(F2, wait=STEP)                   # save
+    s.send(F10, wait=STEP * 2)              # close the editor
+    fresh = os.path.join(play, "fresh.txt")
+    check("aliases: S-F4 created the file",
+          os.path.isfile(fresh) and open(fresh).read() == "hello")
+
+    s.send(END)                             # -> fresh.txt (last entry)
+    s.send(b"\x1b[15;2~", wait=STEP)        # Shift+F5
+    check("aliases: S-F5 in-place dialog", "in place" in s.screen())
+    s.send(b"\x15")                         # clear the prefilled name
+    s.send(b"fresh-copy.txt\r", wait=STEP * 3)
+    copy = os.path.join(play, "fresh-copy.txt")
+    check("aliases: in-place copy", os.path.isfile(copy)
+          and open(copy).read() == "hello")
+
+    s.send(END)                             # -> fresh.txt again
+    s.send(b"echo ")
+    s.send(b"\x18t", wait=STEP)             # C-x t: tagged names
+    check("aliases: C-x t pastes the name", "echo fresh.txt" in s.screen())
+    s.send(b"\x18p", wait=STEP)             # C-x p: panel path
+    check("aliases: C-x p pastes the path",
+          "echo fresh.txt " + play in s.screen())
+    s.send(b"\x0c", wait=STEP)              # C-l repaint
+    check("aliases: C-l keeps the screen", "echo fresh.txt" in s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_extensibility():
     root, play, home = sandbox()
     cfgdir = os.path.join(home, ".config", "rcmd")
@@ -1026,6 +1072,7 @@ def main():
         test_mouse,
         test_mcdepth,
         test_escmeta,
+        test_aliases,
         test_extensibility,
         test_git,
         test_editor,

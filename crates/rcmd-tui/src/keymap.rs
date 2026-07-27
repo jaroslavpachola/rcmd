@@ -36,6 +36,17 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+4", "hotlist"), // Ctrl+\ (0x1C) on legacy terminals arrives as Ctrl+4
     ("alt+left", "history-back"),
     ("alt+right", "history-forward"),
+    ("alt+y", "history-back"), // MC: M-y / M-u walk the history
+    ("alt+u", "history-forward"),
+    ("alt+?", "find-file"), // MC: M-? find file
+    ("alt+c", "quick-cd"),  // MC: M-c quick cd
+    ("ctrl+l", "repaint"),
+    ("shift+f4", "edit-new"),
+    ("f16", "edit-new"), // S-F4 on legacy terminals
+    ("shift+f5", "copy-here"),
+    ("f17", "copy-here"), // S-F5 on legacy terminals
+    ("shift+f6", "move-here"),
+    ("f18", "move-here"), // S-F6 on legacy terminals
     ("alt+up", "hotlist"),
     ("alt+i", "other-same-dir"),
     ("alt+o", "other-open-dir"),
@@ -186,6 +197,13 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "dir-size" => Action::DirSize,
         "up-dir" => Action::UpDir,
         "enter" => Action::Enter,
+        "edit-new" => Action::EditNew,
+        "copy-here" => Action::CopyHere,
+        "move-here" => Action::MoveHere,
+        "paste-tags" => Action::PasteTags,
+        "paste-path" => Action::PastePath,
+        "quick-cd" => Action::QuickCd,
+        "repaint" => Action::Repaint,
         _ => return None,
     })
 }

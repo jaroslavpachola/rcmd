@@ -42,6 +42,10 @@ pub enum InputAction {
     Panelize,
     /// F9 → Command → SFTP link: the value is an sftp:// URL.
     SftpConnect,
+    /// S-F4: the value is the file to edit (created on first save).
+    EditNew,
+    /// M-c: the value is a cd target (path or sftp:// URL).
+    QuickCd,
 }
 
 /// An SFTP connection attempt on its worker thread; `ask` is the
@@ -387,6 +391,19 @@ pub enum Action {
     Options,
     Sort(SortKey),
     SortReverse,
+    /// S-F4: open the editor on a file that need not exist yet.
+    EditNew,
+    /// S-F5 / S-F6: copy / rename the cursor file in place — the
+    /// dialog prefills the bare name, targeting the same directory.
+    CopyHere,
+    MoveHere,
+    /// C-x t / C-x p: tagged names / the panel path → command line.
+    PasteTags,
+    PastePath,
+    /// M-c: MC's quick cd dialog.
+    QuickCd,
+    /// C-l: redraw the screen from scratch.
+    Repaint,
 }
 
 /// None = separator line. `&` in a label marks its hotkey letter,
@@ -625,6 +642,8 @@ pub struct App {
     watch: Option<WatchState>,
     /// Ctrl+X was pressed; the next key completes the chord.
     prefix_cx: bool,
+    /// C-l: clear the terminal before the next draw.
+    repaint: bool,
     pub areas: Areas,
     /// Last left-button press, for double-click detection.
     last_click: Option<(Instant, u16, u16)>,
@@ -725,6 +744,7 @@ impl App {
             du: None,
             watch,
             prefix_cx: false,
+            repaint: false,
             areas: Areas::default(),
             last_click: None,
             esc_at: None,
@@ -760,6 +780,10 @@ impl App {
             {
                 self.esc_at = None;
                 self.dispatch_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            }
+            if self.repaint {
+                self.repaint = false;
+                terminal.clear()?;
             }
             terminal.draw(|frame| ui::draw(frame, self))?;
             let loading = self.panels.iter().any(Panel::is_loading);
@@ -1962,6 +1986,23 @@ impl App {
                 panel.sort_reverse = !panel.sort_reverse;
                 panel.resort();
             }
+            Action::EditNew => self.open_edit_new(),
+            Action::CopyHere => self.open_transfer_here(false),
+            Action::MoveHere => self.open_transfer_here(true),
+            Action::PasteTags => self.insert_tagged_names(),
+            Action::PastePath => {
+                let text = format!("{} ", shell_quote(&self.panels[self.active].display_path()));
+                self.insert_cmdline(&text);
+            }
+            Action::QuickCd => {
+                self.dialog = Some(Dialog::Input(InputDialog {
+                    title: " Quick cd ".into(),
+                    value: String::new(),
+                    cursor: 0,
+                    action: InputAction::QuickCd,
+                }));
+            }
+            Action::Repaint => self.repaint = true,
         }
     }
 
@@ -3404,6 +3445,17 @@ impl App {
             InputAction::Filter => unreachable!("handled above"),
             InputAction::Panelize => self.run_panelize(&value),
             InputAction::SftpConnect => self.connect_sftp(&value),
+            InputAction::EditNew => {
+                let name = value.trim();
+                if !name.is_empty() {
+                    self.edit_new(self.resolve(name));
+                }
+            }
+            InputAction::QuickCd => {
+                if !value.trim().is_empty() {
+                    self.do_cd(value.trim());
+                }
+            }
         }
     }
 
@@ -3685,13 +3737,19 @@ impl App {
                 KeyCode::Char('d' | 'D') => self.run_action(Action::CompareDirs),
                 KeyCode::Char('q' | 'Q') => self.run_action(Action::QuickView),
                 KeyCode::Char('i' | 'I') => self.run_action(Action::InfoView),
+                KeyCode::Char('t' | 'T') => self.run_action(Action::PasteTags),
+                KeyCode::Char('p' | 'P') => self.run_action(Action::PastePath),
                 _ => {}
             }
             return;
         }
         if ctrl && key.code == KeyCode::Char('x') {
             self.prefix_cx = true;
-            self.status = Some(" C-x  (d = compare dirs, q = quick view, i = info panel) ".into());
+            self.status = Some(
+                " C-x  (d = compare dirs, q = quick view, i = info panel, \
+                 t = paste tags, p = paste path) "
+                    .into(),
+            );
             return;
         }
         // Focused preview pane: a reduced key set (scrolling, Tab back,
@@ -3849,32 +3907,29 @@ impl App {
         }
         self.cmdline.push_history(&cmd);
         if let Some(dir) = parse_cd(&cmd) {
-            if dir.starts_with("sftp://") {
-                let dir = dir.to_string();
-                self.connect_sftp(&dir);
-                return;
-            }
-            let panel = &mut self.panels[self.active];
-            if panel.is_remote() {
-                // relative/absolute stays on the server; bare `cd` or a
-                // `~` path returns to the local filesystem
-                if !dir.is_empty() && !dir.starts_with('~') {
-                    let raw = if Path::new(dir).is_absolute() {
-                        PathBuf::from(dir)
-                    } else {
-                        panel.cwd.join(dir)
-                    };
-                    if let Err(err) = panel.cd(normalize(&raw)) {
-                        self.status = Some(format!(" cd: {err} "));
-                    }
-                    return;
-                }
-                let target = if dir.is_empty() {
-                    home_dir()
+            self.do_cd(dir);
+        } else {
+            self.pending_exec = Some(Exec::Command(cmd));
+        }
+    }
+
+    /// `cd <dir>` — from the command line or the M-c quick-cd dialog.
+    fn do_cd(&mut self, dir: &str) {
+        if dir.starts_with("sftp://") {
+            self.connect_sftp(dir);
+            return;
+        }
+        let panel = &mut self.panels[self.active];
+        if panel.is_remote() {
+            // relative/absolute stays on the server; bare `cd` or a
+            // `~` path returns to the local filesystem
+            if !dir.is_empty() && !dir.starts_with('~') {
+                let raw = if Path::new(dir).is_absolute() {
+                    PathBuf::from(dir)
                 } else {
-                    self.resolve(dir)
+                    panel.cwd.join(dir)
                 };
-                if let Err(err) = self.panels[self.active].to_local(target) {
+                if let Err(err) = panel.cd(normalize(&raw)) {
                     self.status = Some(format!(" cd: {err} "));
                 }
                 return;
@@ -3884,11 +3939,18 @@ impl App {
             } else {
                 self.resolve(dir)
             };
-            if let Err(err) = self.panels[self.active].cd(target) {
+            if let Err(err) = self.panels[self.active].to_local(target) {
                 self.status = Some(format!(" cd: {err} "));
             }
+            return;
+        }
+        let target = if dir.is_empty() {
+            home_dir()
         } else {
-            self.pending_exec = Some(Exec::Command(cmd));
+            self.resolve(dir)
+        };
+        if let Err(err) = self.panels[self.active].cd(target) {
+            self.status = Some(format!(" cd: {err} "));
         }
     }
 
@@ -3923,8 +3985,23 @@ impl App {
             return;
         };
         let text = format!("{} ", shell_quote(&entry.name.to_string_lossy()));
+        self.insert_cmdline(&text);
+    }
+
+    /// C-x t: append every tagged name (or the cursor entry),
+    /// shell-quoted, to the command line.
+    fn insert_tagged_names(&mut self) {
+        let text: String = self.panels[self.active]
+            .target_names()
+            .iter()
+            .map(|n| format!("{} ", shell_quote(&n.to_string_lossy())))
+            .collect();
+        self.insert_cmdline(&text);
+    }
+
+    fn insert_cmdline(&mut self, text: &str) {
         let idx = byte_index(&self.cmdline.value, self.cmdline.cursor);
-        self.cmdline.value.insert_str(idx, &text);
+        self.cmdline.value.insert_str(idx, text);
         self.cmdline.cursor += text.chars().count();
         self.cmdline.hist_pos = None;
     }
@@ -3994,6 +4071,76 @@ impl App {
             value: dest,
             action,
         }));
+    }
+
+    /// S-F5 / S-F6: copy or rename the cursor file without leaving the
+    /// directory — the dialog prefills the bare name for editing.
+    fn open_transfer_here(&mut self, is_move: bool) {
+        if !self.require_local() {
+            return;
+        }
+        let panel = &self.panels[self.active];
+        let Some(entry) = panel.selected().filter(|e| !e.is_parent()) else {
+            self.status = Some(" nothing selected ".into());
+            return;
+        };
+        let name = entry.name.to_string_lossy().into_owned();
+        let sources = vec![panel.cwd.join(&entry.name)];
+        let (verb, action) = if is_move {
+            ("Rename", InputAction::MoveTo { sources })
+        } else {
+            ("Copy", InputAction::CopyTo { sources })
+        };
+        self.dialog = Some(Dialog::Input(InputDialog {
+            title: format!(" {verb} \"{name}\" in place to: "),
+            cursor: name.chars().count(),
+            value: name,
+            action,
+        }));
+    }
+
+    /// S-F4: prompt for a file name, then edit it — existing or not.
+    fn open_edit_new(&mut self) {
+        if !self.require_local() {
+            return;
+        }
+        self.dialog = Some(Dialog::Input(InputDialog {
+            title: " Edit new file ".into(),
+            value: String::new(),
+            cursor: 0,
+            action: InputAction::EditNew,
+        }));
+    }
+
+    /// Open the editor on `path`; a missing file becomes an empty
+    /// buffer that only lands on disk when saved.
+    fn edit_new(&mut self, path: PathBuf) {
+        if self.config.editor == "external" {
+            let editor = std::env::var("VISUAL")
+                .or_else(|_| std::env::var("EDITOR"))
+                .unwrap_or_else(|_| "vi".to_string());
+            self.pending_exec = Some(Exec::Quiet(format!(
+                "{editor} {}",
+                shell_quote(&path.to_string_lossy())
+            )));
+            return;
+        }
+        let title = path.display().to_string();
+        if path.exists() {
+            self.open_internal_editor(&path, title);
+        } else {
+            self.editor = Some(EditorState {
+                hl: rcmd_edit::Highlighter::new(&path, 0),
+                ed: rcmd_edit::Editor::create(&path),
+                title,
+                top: 0,
+                left: 0,
+                rows: 1,
+                cols: 1,
+                prompt: None,
+                note: None,
+            });
+        }
     }
 
     fn open_mkdir(&mut self) {
