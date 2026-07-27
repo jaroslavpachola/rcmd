@@ -1649,15 +1649,19 @@ impl App {
                 self.areas.right
             };
             if area.contains(pos) {
-                self.panel_click(side, area, y, double);
+                self.panel_click(side, area, x, y, double);
                 return;
             }
         }
     }
 
-    fn panel_click(&mut self, side: usize, area: Rect, y: u16, double: bool) {
+    fn panel_click(&mut self, side: usize, area: Rect, x: u16, y: u16, double: bool) {
         self.active = side;
         if self.quick_view.as_ref().is_some_and(|q| q.side == side) || self.info == Some(side) {
+            return;
+        }
+        if y == area.y + 1 {
+            self.header_click(side, area, x);
             return;
         }
         // 2 border+header rows on top, 1 border row at the bottom
@@ -1671,6 +1675,45 @@ impl App {
             if double {
                 self.enter_or_open();
             }
+        }
+    }
+
+    /// Click on the column-header row: sort by that column, a second
+    /// click reverses — mirroring the F9 > Sort menu. Column x-ranges
+    /// re-derive the table layout (fixed widths + 1 spacing).
+    fn header_click(&mut self, side: usize, area: Rect, x: u16) {
+        let inner_w = area.width.saturating_sub(2) as usize;
+        let rel = x.saturating_sub(area.x + 1) as usize;
+        if rel >= inner_w {
+            return;
+        }
+        let panel = &mut self.panels[side];
+        let key = match panel.list_mode {
+            ListMode::Brief => Some(SortKey::Name),
+            ListMode::Full => {
+                // [Name (fill), Size 7, Modify time 12], spacing 1
+                let name_w = inner_w.saturating_sub(21);
+                if rel < name_w {
+                    Some(SortKey::Name)
+                } else if rel < name_w + 8 {
+                    Some(SortKey::Size)
+                } else {
+                    Some(SortKey::Mtime)
+                }
+            }
+            ListMode::Long => {
+                // [Perms 10, Owner 8, Group 8, Size 7, Name (fill)]
+                if rel < 29 {
+                    None // perms/owner/group have no sort key
+                } else if rel < 37 {
+                    Some(SortKey::Size)
+                } else {
+                    Some(SortKey::Name)
+                }
+            }
+        };
+        if let Some(key) = key {
+            panel.set_sort(key);
         }
     }
 

@@ -465,6 +465,27 @@ def test_mouse():
     shutil.rmtree(root)
 
 
+def test_sortclick():
+    """R4: clicking a column header sorts by it, again reverses."""
+    root, play, home = sandbox()
+    open(os.path.join(play, "aaa.txt"), "w").write("x" * 4000)
+    open(os.path.join(play, "zzz.txt"), "w").write("tiny\n")
+    s = Session(play, home)
+
+    def row(n):
+        return s.screen().split("\n")[n]
+
+    check("sortclick: name order first", "aaa.txt" in row(3) and "zzz.txt" in row(4))
+    s.send(click(42, 2), wait=STEP)     # Size header (left panel)
+    check("sortclick: size ascending", "zzz.txt" in row(3))
+    s.send(click(42, 2), wait=STEP)     # same header again: reverse
+    check("sortclick: size reversed", "aaa.txt" in row(3))
+    s.send(click(10, 2), wait=STEP)     # Name header restores name order
+    check("sortclick: back to name", "aaa.txt" in row(3) and "zzz.txt" in row(4))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def status_line(s):
     return s.screen().split("\n")[-3]
 
@@ -1183,6 +1204,7 @@ def main():
         test_history,
         test_quickview,
         test_mouse,
+        test_sortclick,
         test_mcdepth,
         test_escmeta,
         test_aliases,
