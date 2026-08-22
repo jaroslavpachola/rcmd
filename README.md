@@ -60,7 +60,15 @@ vendored) that runs on any distro with no shared-library requirements.
 
 ```
 usage: rcmd [-P FILE] [DIR1 [DIR2]]   (-V version, -h help)
+       rcmd --import-mc [MC_CONFIG_DIR]
 ```
+
+Coming from mc? `rcmd --import-mc` reads your `menu`, `mc.ext` and
+`mc.keymap` and prints the equivalent rcmd config on stdout - user menu
+entries, openers, view filters and panel key bindings. It never touches
+your `config.toml`; review what it prints and paste what you want.
+Anything with no rcmd equivalent (`type/` matchers, `%cd` commands,
+unsupported macros) is reported on stderr rather than guessed at.
 
 To make your shell follow rcmd's last directory on exit (the mc-wrapper
 trick), add this to your shell config:

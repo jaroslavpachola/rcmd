@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Import from Midnight Commander** (4.0 S0, completes it):
+  `rcmd --import-mc [DIR]` reads mc's `menu`, `mc.ext` (or the newer
+  `mc.ext.ini`) and `mc.keymap` and prints an rcmd config fragment on
+  stdout - user menu entries become `[[commands]]`, `Open=` becomes
+  `[[open]]`, `View=` becomes `[[view]]`, and panel key bindings become
+  `[keys]`. It never writes `config.toml`: that file is yours, so the
+  conversion is yours to paste. Simple `regex/` matchers convert to
+  globs (including one alternation group, so `\.(png|jpg)$` becomes two
+  rules); `type/` matchers, `%cd` commands, unsupported macros and
+  unmappable keys are reported on stderr instead of being guessed at.
+
+## Unreleased
+
 - **Per-context key bindings** (4.0 S0): `[keys.viewer]` and
   `[keys.editor]` rebind keys inside the F3 viewer and the F4 editor,
   which were hardcoded until now; bare `[keys]` entries still bind in

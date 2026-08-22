@@ -1,0 +1,697 @@
+//! Reading Midnight Commander's own config files (PLAN4 S0).
+//!
+//! TOML stays canonical: this module never writes `config.toml`. It
+//! parses mc's `menu`, `mc.ext` / `mc.ext.ini` and keymap files and
+//! emits an rcmd config fragment on stdout (`rcmd --import-mc`), so the
+//! user decides what to keep. Anything that cannot be expressed in
+//! rcmd's vocabulary becomes a warning rather than a silent drop.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use crate::config::{OpenRule, UserCommand};
+
+#[derive(Default, Debug)]
+pub struct Imported {
+    pub commands: Vec<UserCommand>,
+    pub open: Vec<OpenRule>,
+    pub view: Vec<OpenRule>,
+    pub keys: BTreeMap<String, String>,
+    pub warnings: Vec<String>,
+}
+
+/// mc's config directory, `~/.config/mc` unless told otherwise.
+pub fn default_dir() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
+        return Some(Path::new(&dir).join("mc"));
+    }
+    std::env::var_os("HOME").map(|home| Path::new(&home).join(".config/mc"))
+}
+
+/// Import every mc file found in `dir`. Missing files are not an error:
+/// an mc setup rarely has all of them.
+pub fn import_dir(dir: &Path) -> Imported {
+    let mut out = Imported::default();
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
+
+    match read("menu") {
+        Some(text) => {
+            let (commands, warnings) = parse_menu(&text);
+            out.commands = commands;
+            out.warnings.extend(warnings);
+        }
+        None => out.warnings.push("no menu file".into()),
+    }
+
+    // mc 4.8.28+ ships mc.ext.ini; older versions the line-based mc.ext
+    if let Some(text) = read("mc.ext.ini") {
+        let (open, view, warnings) = parse_ext_ini(&text);
+        out.open.extend(open);
+        out.view.extend(view);
+        out.warnings.extend(warnings);
+    } else if let Some(text) = read("mc.ext") {
+        let (open, view, warnings) = parse_ext(&text);
+        out.open.extend(open);
+        out.view.extend(view);
+        out.warnings.extend(warnings);
+    } else {
+        out.warnings.push("no mc.ext / mc.ext.ini".into());
+    }
+
+    if let Some(text) = read("mc.keymap") {
+        let (keys, warnings) = parse_keymap(&text);
+        out.keys = keys;
+        out.warnings.extend(warnings);
+    }
+    out
+}
+
+/// mc's user menu: an entry is a hotkey character in column 0 followed
+/// by its title, then indented shell lines. `#` comments, `+`/`=`
+/// condition lines. rcmd has no conditions yet, so a condition is kept
+/// as a comment on the emitted entry.
+pub fn parse_menu(text: &str) -> (Vec<UserCommand>, Vec<String>) {
+    let mut commands: Vec<UserCommand> = Vec::new();
+    let mut warnings = Vec::new();
+    let mut body: Vec<String> = Vec::new();
+    let mut pending_condition: Option<String> = None;
+    let mut current: Option<(String, Option<String>)> = None; // title, condition
+
+    let flush = |current: &mut Option<(String, Option<String>)>,
+                 body: &mut Vec<String>,
+                 commands: &mut Vec<UserCommand>| {
+        if let Some((title, condition)) = current.take() {
+            let run = body.join("\n");
+            body.clear();
+            if run.trim().is_empty() {
+                return;
+            }
+            let name = match condition {
+                Some(cond) => format!("{title}  (mc condition: {cond})"),
+                None => title,
+            };
+            commands.push(UserCommand {
+                name,
+                run,
+                key: None,
+            });
+        } else {
+            body.clear();
+        }
+    };
+
+    for line in text.lines() {
+        if line.trim_start().starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let first = line.chars().next().expect("non-empty");
+        if first.is_whitespace() {
+            if current.is_some() {
+                body.push(line.trim().to_string());
+            }
+            continue;
+        }
+        if first == '+' || first == '=' {
+            // condition for the entry that follows
+            pending_condition = Some(line[1..].trim().to_string());
+            continue;
+        }
+        flush(&mut current, &mut body, &mut commands);
+        let title = line[first.len_utf8()..].trim().to_string();
+        current = Some((
+            if title.is_empty() {
+                format!("menu entry {first}")
+            } else {
+                title
+            },
+            pending_condition.take(),
+        ));
+    }
+    flush(&mut current, &mut body, &mut commands);
+
+    for cmd in &commands {
+        warnings.extend(macro_warnings(&cmd.run, &cmd.name));
+    }
+    (commands, warnings)
+}
+
+/// The classic line-based `mc.ext`: a matcher line at column 0, then
+/// indented `Open=` / `View=` / `Edit=` lines.
+pub fn parse_ext(text: &str) -> (Vec<OpenRule>, Vec<OpenRule>, Vec<String>) {
+    let mut open = Vec::new();
+    let mut view = Vec::new();
+    let mut warnings = Vec::new();
+    let mut patterns: Vec<String> = Vec::new();
+
+    for line in text.lines() {
+        if line.trim_start().starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        if !line.starts_with(char::is_whitespace) {
+            let (globs, warning) = matcher_to_globs(line.trim());
+            warnings.extend(warning);
+            patterns = globs;
+            continue;
+        }
+        let body = line.trim();
+        let Some((verb, command)) = body.split_once('=') else {
+            continue;
+        };
+        let Some(run) = convert_command(command.trim()) else {
+            warnings.push(format!("skipped '{}': no rcmd equivalent", body.trim()));
+            continue;
+        };
+        for pattern in &patterns {
+            let rule = OpenRule {
+                pattern: pattern.clone(),
+                run: run.clone(),
+            };
+            match verb.trim() {
+                "Open" => open.push(rule),
+                "View" => view.push(rule),
+                "Edit" => {} // rcmd's F4 is the editor; nothing to bind
+                other => warnings.push(format!("unknown mc.ext verb '{other}'")),
+            }
+        }
+    }
+    (open, view, warnings)
+}
+
+/// mc 4.8.28+ `mc.ext.ini`: `[section]` with `Regex=`/`Shell=`/`Type=`
+/// plus the same Open/View/Edit verbs.
+pub fn parse_ext_ini(text: &str) -> (Vec<OpenRule>, Vec<OpenRule>, Vec<String>) {
+    let mut open = Vec::new();
+    let mut view = Vec::new();
+    let mut warnings = Vec::new();
+    let mut patterns: Vec<String> = Vec::new();
+
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') {
+            patterns.clear();
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let (key, value) = (key.trim(), value.trim());
+        match key {
+            "Regex" | "Shell" | "Type" | "Directory" => {
+                let matcher = format!("{}/{value}", key.to_lowercase());
+                let (globs, warning) = matcher_to_globs(&matcher);
+                warnings.extend(warning);
+                patterns = globs;
+            }
+            "Open" | "View" | "Edit" => {
+                let Some(run) = convert_command(value) else {
+                    warnings.push(format!("skipped '{key}={value}': no rcmd equivalent"));
+                    continue;
+                };
+                for pattern in &patterns {
+                    let rule = OpenRule {
+                        pattern: pattern.clone(),
+                        run: run.clone(),
+                    };
+                    match key {
+                        "Open" => open.push(rule),
+                        "View" => view.push(rule),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (open, view, warnings)
+}
+
+/// An mc.ext matcher line to rcmd globs. `shell/.txt` is an extension
+/// match; `regex/...` is converted when it is simple enough; `type/`
+/// (file(1) output) and `directory/` have no rcmd equivalent.
+fn matcher_to_globs(line: &str) -> (Vec<String>, Option<String>) {
+    let (kind, value) = match line.split_once('/') {
+        Some(pair) => pair,
+        None => return (Vec::new(), Some(format!("unknown matcher '{line}'"))),
+    };
+    // mc allows a case-insensitivity flag: shell/i/.txt
+    let value = value.strip_prefix("i/").unwrap_or(value);
+    match kind {
+        "shell" => {
+            let glob = if let Some(ext) = value.strip_prefix('.') {
+                format!("*.{ext}")
+            } else {
+                value.to_string()
+            };
+            (vec![glob], None)
+        }
+        "regex" => match regex_to_globs(value) {
+            Some(globs) => (globs, None),
+            None => (
+                Vec::new(),
+                Some(format!("regex '{value}' is too complex for a glob")),
+            ),
+        },
+        "type" => (
+            Vec::new(),
+            Some(format!("type/ matcher '{value}' needs file(1); skipped")),
+        ),
+        "directory" => (
+            Vec::new(),
+            Some(format!("directory/ matcher '{value}' skipped")),
+        ),
+        other => (Vec::new(), Some(format!("unknown matcher kind '{other}'"))),
+    }
+}
+
+/// Convert the simple, common mc.ext regexes to globs: anchors, escaped
+/// dots, `.` wildcards and one alternation group. Anything else is
+/// refused rather than mistranslated.
+pub fn regex_to_globs(re: &str) -> Option<Vec<String>> {
+    let anchored_end = re.ends_with('$');
+    let anchored_start = re.starts_with('^');
+    let core = re.trim_start_matches('^').trim_end_matches('$').to_string();
+
+    // expand a single (a|b|c) group
+    let variants: Vec<String> = match (core.find('('), core.find(')')) {
+        (Some(open), Some(close)) if open < close => {
+            let inner = &core[open + 1..close];
+            if inner.contains('(') || inner.contains(')') {
+                return None;
+            }
+            inner
+                .split('|')
+                .map(|alt| format!("{}{alt}{}", &core[..open], &core[close + 1..]))
+                .collect()
+        }
+        (None, None) => vec![core.clone()],
+        _ => return None,
+    };
+
+    let mut globs = Vec::new();
+    for variant in variants {
+        let mut glob = String::new();
+        let mut chars = variant.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => match chars.next() {
+                    // an escaped literal: keep it, unless glob-special
+                    // an escaped glob metacharacter cannot survive the trip
+                    Some('*' | '?' | '[' | ']') => return None,
+                    Some(esc) => glob.push(esc),
+                    None => return None,
+                },
+                '.' => {
+                    if chars.peek() == Some(&'*') {
+                        chars.next();
+                        glob.push('*');
+                    } else {
+                        glob.push('?');
+                    }
+                }
+                '[' | ']' | '{' | '}' | '+' | '*' | '?' | '|' | '^' | '$' => return None,
+                other => glob.push(other),
+            }
+        }
+        if glob.is_empty() {
+            return None;
+        }
+        // an unanchored end matches anywhere: mc.ext patterns are
+        // overwhelmingly "ends with", so anchor accordingly
+        let glob = match (anchored_start, anchored_end) {
+            (true, true) => glob,
+            (true, false) => format!("{glob}*"),
+            (false, true) => format!("*{glob}"),
+            (false, false) => format!("*{glob}*"),
+        };
+        globs.push(glob);
+    }
+    Some(globs)
+}
+
+/// mc's command macros to rcmd's. `%cd` (an internal VFS chdir) has no
+/// equivalent, so such a rule is dropped rather than half-translated.
+fn convert_command(command: &str) -> Option<String> {
+    if command.contains("%cd") {
+        return None;
+    }
+    // "%view{ascii}" means "show it in the viewer" - that is exactly
+    // what a [[view]] rule does, so the prefix just goes away
+    let mut out = String::new();
+    let mut rest = command.trim();
+    if let Some(after) = rest.strip_prefix("%view") {
+        rest = after.trim_start();
+        if rest.starts_with('{') {
+            match rest.find('}') {
+                Some(end) => rest = rest[end + 1..].trim_start(),
+                None => return None,
+            }
+        }
+    }
+    let mut chars = rest.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // %p and %f are both "the current file"
+            Some('f' | 'p') => out.push_str("%f"),
+            Some('d') => out.push_str("%d"),
+            Some('D') => out.push_str("%D"),
+            Some('s' | 't') => out.push_str("%t"),
+            Some('%') => out.push('%'),
+            Some(other) => {
+                out.push('%');
+                out.push(other);
+            }
+            None => out.push('%'),
+        }
+    }
+    let out = out.trim().to_string();
+    (!out.is_empty()).then_some(out)
+}
+
+/// Macros rcmd does not expand, so the user can fix them by hand.
+fn macro_warnings(run: &str, where_: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut chars = run.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            continue;
+        }
+        match chars.next() {
+            Some('f' | 'd' | 'D' | 't' | '%') => {}
+            Some(other) => out.push(format!("'{where_}': macro %{other} is not supported")),
+            None => {}
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// mc keymap ini: `[panel]` sections with `Action = key; key`. Only the
+/// actions rcmd has are mapped; the rest are reported.
+pub fn parse_keymap(text: &str) -> (BTreeMap<String, String>, Vec<String>) {
+    let mut keys = BTreeMap::new();
+    let mut warnings = Vec::new();
+    let mut in_panel = false;
+
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_panel = line.eq_ignore_ascii_case("[panel]");
+            continue;
+        }
+        if !in_panel {
+            continue;
+        }
+        let Some((action, binding)) = line.split_once('=') else {
+            continue;
+        };
+        let Some(rcmd_action) = mc_action(action.trim()) else {
+            warnings.push(format!("no rcmd action for mc's '{}'", action.trim()));
+            continue;
+        };
+        for key in binding.split(';') {
+            match mc_key(key.trim()) {
+                Some(key) => {
+                    keys.insert(key, rcmd_action.to_string());
+                }
+                None => warnings.push(format!("cannot map mc key '{}'", key.trim())),
+            }
+        }
+    }
+    (keys, warnings)
+}
+
+/// mc panel action names to rcmd's.
+fn mc_action(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Help" => "help",
+        "View" => "view",
+        "ViewRaw" => "view-raw",
+        "Edit" => "edit",
+        "Copy" => "copy",
+        "Move" => "move",
+        "MakeDir" => "mkdir",
+        "Delete" => "delete",
+        "Menu" => "menu",
+        "Quit" | "QuitQuiet" => "quit",
+        "Select" => "select-group",
+        "Unselect" => "unselect-group",
+        "SelectInvert" => "invert-selection",
+        "Reread" => "reload",
+        "Swap" => "swap-panels",
+        "ShowHidden" => "toggle-hidden",
+        "Search" => "quick-search",
+        "Filter" => "filter",
+        "DirSize" => "dir-size",
+        "History" => "history-list",
+        "Find" => "find-file",
+        "CompareDirs" => "compare-dirs",
+        "PanelListingSwitch" => "listing-cycle",
+        "QuickView" => "quick-view",
+        "Info" => "info-view",
+        "Shell" => "shell",
+        "UserMenu" => "user-menu",
+        "HotList" => "hotlist",
+        "Sort" => "sort-name",
+        _ => return None,
+    })
+}
+
+/// mc key syntax ("ctrl-f5", "alt-o", "shift-f3") to rcmd's ("ctrl+f5").
+fn mc_key(key: &str) -> Option<String> {
+    if key.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for part in key.split('-') {
+        let part = part.trim().to_lowercase();
+        let mapped = match part.as_str() {
+            "ctrl" | "control" => "ctrl",
+            "alt" | "meta" => "alt",
+            "shift" => "shift",
+            // mc spells punctuation out; rcmd wants the character
+            "dot" | "period" => ".",
+            "question" => "?",
+            "slash" => "/",
+            "backslash" => "\\",
+            "comma" => ",",
+            "semicolon" => ";",
+            "colon" => ":",
+            "star" | "asterisk" => "*",
+            "plus" => "+",
+            "minus" | "dash" => "-",
+            "equal" | "equals" => "=",
+            "escape" => "esc",
+            "return" => "enter",
+            "" => return None,
+            other => other,
+        };
+        parts.push(mapped.to_string());
+    }
+    let spec = parts.join("+");
+    // reuse rcmd's own parser as the validator
+    crate::keymap::parse_key(&spec).is_some().then_some(spec)
+}
+
+/// The imported settings as an rcmd config fragment.
+pub fn to_toml(imported: &Imported) -> String {
+    let mut out = String::new();
+    out.push_str("# Imported from Midnight Commander by `rcmd --import-mc`.\n");
+    out.push_str("# Review it, then paste what you want into your config.\n");
+
+    if !imported.keys.is_empty() {
+        out.push_str("\n[keys]\n");
+        for (key, action) in &imported.keys {
+            out.push_str(&format!("{} = {}\n", toml_str(key), toml_str(action)));
+        }
+    }
+    for rule in &imported.open {
+        out.push_str(&format!(
+            "\n[[open]]\nmatch = {}\nrun = {}\n",
+            toml_str(&rule.pattern),
+            toml_str(&rule.run)
+        ));
+    }
+    for rule in &imported.view {
+        out.push_str(&format!(
+            "\n[[view]]\nmatch = {}\nrun = {}\n",
+            toml_str(&rule.pattern),
+            toml_str(&rule.run)
+        ));
+    }
+    for cmd in &imported.commands {
+        out.push_str(&format!(
+            "\n[[commands]]\nname = {}\nrun = {}\n",
+            toml_str(&cmd.name),
+            toml_str(&cmd.run)
+        ));
+    }
+    out
+}
+
+/// A TOML string literal: multi-line commands get a triple-quoted one.
+fn toml_str(value: &str) -> String {
+    if value.contains('\n') {
+        format!("\"\"\"\n{}\"\"\"", value.replace('\\', "\\\\"))
+    } else {
+        format!("{:?}", value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // shaped like a real ~/.config/mc/menu
+    const MENU: &str = r#"# comment line
++ f \.tar\.gz$ | f \.tgz$
+a       Extract the tar file
+        tar xzf %f
+
+b       Count lines in the tagged files
+        wc -l %t
+        echo done
+
+c       Uses an unsupported macro
+        echo %q
+"#;
+
+    #[test]
+    fn menu_entries_become_commands() {
+        let (commands, warnings) = parse_menu(MENU);
+        assert_eq!(commands.len(), 3);
+        assert!(commands[0].name.starts_with("Extract the tar file"));
+        // the condition is preserved as a note, since rcmd has none yet
+        assert!(commands[0].name.contains("f \\.tar\\.gz$"));
+        assert_eq!(commands[0].run, "tar xzf %f");
+        // multi-line bodies stay multi-line
+        assert_eq!(commands[1].run, "wc -l %t\necho done");
+        assert!(commands[1].name.starts_with("Count lines"));
+        // and an unsupported macro is reported, not silently kept
+        assert!(warnings.iter().any(|w| w.contains("%q")), "{warnings:?}");
+    }
+
+    #[test]
+    fn ext_lines_become_open_and_view_rules() {
+        let text = "\
+shell/.txt\n\
+\tOpen=less %f\n\
+\tView=%view{ascii} cat %f\n\
+regex/\\.(png|jpg)$\n\
+\tOpen=feh %f\n\
+type/^ELF\n\
+\tOpen=objdump -d %f\n";
+        let (open, view, warnings) = parse_ext(text);
+        assert_eq!(open[0].pattern, "*.txt");
+        assert_eq!(open[0].run, "less %f");
+        // %view{...} is what a [[view]] rule means, so the prefix goes
+        assert_eq!(view[0].run, "cat %f");
+        // one alternation regex expands into two globs
+        let pngs: Vec<&str> = open.iter().map(|r| r.pattern.as_str()).collect();
+        assert!(
+            pngs.contains(&"*.png") && pngs.contains(&"*.jpg"),
+            "{pngs:?}"
+        );
+        // type/ needs file(1): reported, not guessed at
+        assert!(warnings.iter().any(|w| w.contains("type/")), "{warnings:?}");
+    }
+
+    #[test]
+    fn ext_ini_is_understood_too() {
+        let text = "\
+[pdf]\n\
+Regex=\\.pdf$\n\
+Open=zathura %f\n\
+View=pdftotext %f -\n";
+        let (open, view, warnings) = parse_ext_ini(text);
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].pattern, "*.pdf");
+        assert_eq!(view[0].run, "pdftotext %f -");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn cd_rules_are_dropped_not_mistranslated() {
+        let text = "shell/.tar\n\tOpen=%cd %p#utar\n";
+        let (open, _, warnings) = parse_ext(text);
+        assert!(open.is_empty());
+        assert!(warnings.iter().any(|w| w.contains("no rcmd equivalent")));
+    }
+
+    #[test]
+    fn regexes_convert_only_when_unambiguous() {
+        assert_eq!(regex_to_globs("\\.txt$"), Some(vec!["*.txt".into()]));
+        assert_eq!(
+            regex_to_globs("\\.(gz|xz)$"),
+            Some(vec!["*.gz".into(), "*.xz".into()])
+        );
+        assert_eq!(regex_to_globs("^README$"), Some(vec!["README".into()]));
+        // a character class or a quantifier is a refusal, not a guess
+        assert_eq!(regex_to_globs("\\.[ch]$"), None);
+        assert_eq!(regex_to_globs("a+b"), None);
+    }
+
+    #[test]
+    fn keymap_maps_known_panel_actions() {
+        let text = "\
+[panel]\n\
+Copy = f5; ctrl-c\n\
+ShowHidden = alt-dot\n\
+Reread = ctrl-r\n\
+SomethingElse = f12\n\
+[editor]\n\
+Save = f2\n";
+        let (keys, warnings) = parse_keymap(text);
+        assert_eq!(keys["f5"], "copy");
+        assert_eq!(keys["ctrl+c"], "copy");
+        assert_eq!(keys["ctrl+r"], "reload");
+        // [editor] is not the panel section, so Save is not picked up
+        assert!(!keys.values().any(|v| v == "save"));
+        assert!(warnings.iter().any(|w| w.contains("SomethingElse")));
+        // mc spells punctuation out: alt-dot is rcmd's alt+.
+        assert_eq!(keys["alt+."], "toggle-hidden");
+    }
+
+    #[test]
+    fn mc_key_names_convert() {
+        assert_eq!(mc_key("f5").as_deref(), Some("f5"));
+        assert_eq!(mc_key("ctrl-r").as_deref(), Some("ctrl+r"));
+        assert_eq!(mc_key("alt-question").as_deref(), Some("alt+?"));
+        assert_eq!(mc_key("ctrl-backslash").as_deref(), Some("ctrl+\\"));
+        assert_eq!(mc_key("alt-dot").as_deref(), Some("alt+."));
+        assert_eq!(mc_key("shift-f3").as_deref(), Some("shift+f3"));
+        // something rcmd has no key for stays unmapped
+        assert_eq!(mc_key("kpplus"), None);
+        assert_eq!(mc_key(""), None);
+    }
+
+    #[test]
+    fn emitted_toml_parses_back_as_config() {
+        let imported = Imported {
+            commands: vec![UserCommand {
+                name: "two lines".into(),
+                run: "echo one\necho two\n".into(),
+                key: None,
+            }],
+            open: vec![OpenRule {
+                pattern: "*.pdf".into(),
+                run: "zathura %f &".into(),
+            }],
+            ..Imported::default()
+        };
+        let text = to_toml(&imported);
+        let config: crate::config::Config = toml::from_str(&text).expect("emits valid TOML");
+        assert_eq!(config.open[0].pattern, "*.pdf");
+        assert_eq!(config.commands[0].run, "echo one\necho two\n");
+    }
+}

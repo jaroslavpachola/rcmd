@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod git;
 mod keymap;
+mod mcimport;
 mod state;
 mod subshell;
 mod ui;
@@ -13,10 +14,16 @@ use anyhow::{Context, Result};
 struct Args {
     printwd: Option<PathBuf>,
     dirs: Vec<PathBuf>,
+    /// --import-mc [DIR]: print an rcmd config fragment built from mc's
+    /// files instead of starting the UI.
+    import_mc: Option<Option<PathBuf>>,
 }
 
 fn main() -> Result<()> {
     let args = parse_args()?;
+    if let Some(dir) = &args.import_mc {
+        return import_mc(dir.clone());
+    }
     let (cfg, load_warning) = config::load();
     let theme_warning = ui::init_theme(&cfg.theme);
     let mouse = cfg.mouse;
@@ -68,8 +75,36 @@ fn run(
     result
 }
 
+/// `rcmd --import-mc [DIR]`: convert mc's menu / mc.ext / keymap files
+/// into an rcmd config fragment on stdout. Never writes config.toml -
+/// that file is the user's, so the conversion is theirs to paste.
+fn import_mc(dir: Option<PathBuf>) -> Result<()> {
+    let dir = match dir.or_else(mcimport::default_dir) {
+        Some(dir) => dir,
+        None => anyhow::bail!("cannot locate mc's config directory (pass it explicitly)"),
+    };
+    if !dir.is_dir() {
+        anyhow::bail!("{} is not a directory", dir.display());
+    }
+    let imported = mcimport::import_dir(&dir);
+    print!("{}", mcimport::to_toml(&imported));
+    for warning in &imported.warnings {
+        eprintln!("rcmd: {warning}");
+    }
+    eprintln!(
+        "rcmd: imported {} command(s), {} opener(s), {} view filter(s), {} key(s) from {}",
+        imported.commands.len(),
+        imported.open.len(),
+        imported.view.len(),
+        imported.keys.len(),
+        dir.display()
+    );
+    Ok(())
+}
+
 fn parse_args() -> Result<Args> {
     let mut printwd = None;
+    let mut import_mc = None;
     let mut dirs = Vec::new();
     let mut it = std::env::args_os().skip(1);
     while let Some(arg) = it.next() {
@@ -78,11 +113,19 @@ fn parse_args() -> Result<Args> {
                 let path = it.next().context("-P requires a file argument")?;
                 printwd = Some(PathBuf::from(path));
             }
+            Some("--import-mc") => {
+                // an optional directory argument, but not the next flag
+                let next = it.next();
+                import_mc = Some(next.map(PathBuf::from));
+            }
             Some("-h") | Some("--help") => {
                 println!(
-                    "usage: rcmd [-P FILE] [DIR1 [DIR2]]\n\n\
+                    "usage: rcmd [-P FILE] [DIR1 [DIR2]]\n\
+                     \x20      rcmd --import-mc [MC_CONFIG_DIR]\n\n\
                      -P FILE   write the last active directory to FILE on exit\n\
-                     DIR1/DIR2 starting directories for the left/right panel"
+                     DIR1/DIR2 starting directories for the left/right panel\n\
+                     --import-mc  print an rcmd config built from mc's menu,\n\
+                     \x20            mc.ext and keymap files (default ~/.config/mc)"
                 );
                 std::process::exit(0);
             }
@@ -94,5 +137,9 @@ fn parse_args() -> Result<Args> {
             _ => dirs.push(PathBuf::from(arg)),
         }
     }
-    Ok(Args { printwd, dirs })
+    Ok(Args {
+        printwd,
+        dirs,
+        import_mc,
+    })
 }

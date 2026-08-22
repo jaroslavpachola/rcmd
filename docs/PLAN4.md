@@ -24,7 +24,7 @@ only way to script), rcmd keeps its own shape and imports mc's data.
 
 ## Phases
 
-### S0 - foundations (blocks most of the rest)
+### S0 - foundations (blocks most of the rest) - DONE (2026-08-22)
 
 - **Config/state split**: `config.toml` becomes read-only from rcmd's
   side (user comments and formatting survive verbatim); panel state,
@@ -34,8 +34,12 @@ only way to script), rcmd keeps its own shape and imports mc's data.
   setting surface - panel, layout, confirmations, appearance, VFS. Exit
   confirmation exists, default off; delete/overwrite confirmations exist,
   default on.
-- **mc import layer**: `menu` / `.mc.menu`, `mc.ext`, mc keymap files
-  read and converted into TOML; a one-shot importer on first run.
+- **mc import layer**: done, as `rcmd --import-mc` rather than a
+  first-run importer - `config.toml` is the user's file now, so the
+  conversion prints to stdout for them to paste instead of writing it.
+  Covers `menu`, `mc.ext` / `mc.ext.ini` and `mc.keymap`. Per-directory
+  `.mc.menu` is not read yet; it belongs with the user-menu conditions
+  in a later phase.
 - **Per-context keymaps**: `[keys.panel|viewer|editor]` - done. The
   `dialog` context is deferred: rebinding OK/Cancel/next-field means
   routing every dialog's keys through a table first, which belongs with

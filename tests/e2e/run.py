@@ -928,6 +928,55 @@ def test_extensibility():
     shutil.rmtree(root)
 
 
+def test_mcimport():
+    """PLAN4 S0: `rcmd --import-mc DIR` converts mc's menu, mc.ext and
+    keymap into an rcmd config fragment on stdout, warning on stderr
+    about anything it cannot express."""
+    root, play, home = sandbox()
+    mcdir = os.path.join(home, "mc")
+    os.makedirs(mcdir)
+    open(os.path.join(mcdir, "menu"), "w").write(
+        "# menu\n"
+        "+ f \\.tar\\.gz$\n"
+        "a\tExtract here\n"
+        "\ttar xzf %f\n"
+    )
+    open(os.path.join(mcdir, "mc.ext"), "w").write(
+        "shell/.md\n"
+        "\tOpen=glow %f\n"
+        "\tView=%view{ascii} cat %f\n"
+        "type/^ELF\n"
+        "\tOpen=objdump -d %f\n"
+    )
+    open(os.path.join(mcdir, "mc.keymap"), "w").write(
+        "[panel]\nCopy = f5; ctrl-c\nShowHidden = alt-dot\n"
+    )
+    proc = subprocess.run([BIN, "--import-mc", mcdir], capture_output=True, text=True)
+    out, err = proc.stdout, proc.stderr
+    check("mcimport: exits cleanly", proc.returncode == 0, err)
+    check("mcimport: menu entry became a command",
+          '[[commands]]' in out and "Extract here" in out and "tar xzf %f" in out, out)
+    check("mcimport: mc.ext became an opener", 'match = "*.md"' in out and "glow %f" in out, out)
+    check("mcimport: View became a [[view]] rule", "[[view]]" in out and "cat %f" in out, out)
+    check("mcimport: keymap converted", '"f5" = "copy"' in out and '"alt+." =' in out, out)
+    check("mcimport: warns about type/ matchers", "type/" in err, err)
+    check("mcimport: config.toml untouched",
+          not os.path.exists(os.path.join(home, ".config", "rcmd", "config.toml")))
+
+    # what it prints must be loadable as an rcmd config
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir, exist_ok=True)
+    open(os.path.join(cfgdir, "config.toml"), "w").write(out)
+    s = Session(play, home)
+    check("mcimport: output loads as a config", "Modify time" in s.screen())
+    s.send(b"\x1b[12~", wait=STEP)          # F2 user menu
+    check("mcimport: imported command is in the F2 menu", "Extract here" in s.screen(), s.screen())
+    s.send(b"\x1b", wait=STEP)
+    s.send(b"\x1b", wait=STEP)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_keycontexts():
     """PLAN4 S0: [keys.viewer] / [keys.editor] rebind inside the viewer
     and the editor; bare [keys] entries still bind in the panel."""
@@ -1610,6 +1659,7 @@ def main():
         test_jobs,
         test_cxops,
         test_extensibility,
+        test_mcimport,
         test_keycontexts,
         test_options,
         test_keysbatch,
