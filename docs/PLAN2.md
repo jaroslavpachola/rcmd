@@ -1,6 +1,6 @@
-# rcmd 2.0 — beyond Midnight Commander
+# rcmd 2.0 - beyond Midnight Commander
 
-**Status: COMPLETE — v2.0.0 released 2026-07-06.** P7's SFTP-auth items
+**Status: COMPLETE - v2.0.0 released 2026-07-06.** P7's SFTP-auth items
 were moved to the 3.0 roadmap (docs/PLAN3.md) at the user's ship-now
 call. See the retrospective at the end.
 **Prerequisite:** PLAN.md complete (it is). Baseline: MC-parity dual-pane
@@ -9,7 +9,7 @@ manager, ~43 tests, pty-verified, no async runtime, `FsProvider` seam.
 ## Vision
 
 1.0 answered "can rcmd replace mc?". 2.0 answers "can rcmd be *better*
-than mc ever was?" — same orthodox soul, but: instant on huge and remote
+than mc ever was?" - same orthodox soul, but: instant on huge and remote
 filesystems, one tool for find/compare/sync workflows, editable in-place,
 scriptable, and installable everywhere with one command. The measure of
 done shifts from feature parity to *workflow ownership*: the terminal
@@ -25,7 +25,7 @@ requiring a departure.
 
 ## Phases
 
-### P0 — 1.0 release engineering (small, do first)
+### P0 - 1.0 release engineering (small, do first)
 The project graduates from "a repo on one laptop".
 - GitHub remote; CI: fmt + clippy -D warnings + test on Linux/macOS.
 - The Python pty harness moves in-repo as `tests/e2e/` (or is rewritten
@@ -35,21 +35,21 @@ The project graduates from "a repo on one laptop".
   `rcmd --version`; CHANGELOG from the commit log. Tag **v1.0.0**.
 - Exit: a stranger installs a release binary on a clean box and browses.
 
-### P1 — power tools (the find/compare replacement)
+### P1 - power tools (the find/compare replacement)
 - **Find file** (Alt+F7): name glob + optional content substring/regex,
   streamed results into a panelized listing (a `Panel` whose entries come
-  from a result set, not `read_dir` — groundwork: entries already carry
+  from a result set, not `read_dir` - groundwork: entries already carry
   full paths for targets).
 - **Panelize from command** (F9 → Command): run a command, its stdout
   lines become the panel listing (`git ls-files -m`, `rg -l TODO`...).
 - **Directory compare** (Ctrl+X D): mark differing files in both panels
   (size/mtime quick mode, content-hash thorough mode as a job).
 - **Compare-driven sync**: with compare marks in place, F5 already does
-  the rest — document the workflow.
+  the rest - document the workflow.
 - Exit: `find | xargs`, `diff -rq` and "which files changed?" round trips
   happen inside rcmd.
 
-### P2 — responsiveness at scale (prereq for remote)
+### P2 - responsiveness at scale (prereq for remote)
 - Directory listing becomes interruptible: >~20k entries or >100 ms
   moves to a worker with a spinner in the panel title; typing never
   blocks. (This machinery is exactly what slow remote listings need.)
@@ -60,22 +60,22 @@ The project graduates from "a repo on one laptop".
 - Benchmark fixtures: 100k-entry directory in the e2e suite.
 - Exit: a 100k-entry directory and a cold NFS mount never freeze the UI.
 
-### P3 — remote VFS over SSH (the flagship)
+### P3 - remote VFS over SSH (the flagship)
 - Split the seam: `FsProvider` (read) + new `FsWrite` (mkdir, remove,
   rename, open_write, set_permissions). `LocalFs` implements both;
   archives stay read-only+append as today.
-- **SftpFs** on `ssh2` (blocking — fits the worker-thread model; agent,
+- **SftpFs** on `ssh2` (blocking - fits the worker-thread model; agent,
   key, and password auth; known_hosts respected).
 - `cd sftp://user@host/path` on the command line + a connection dialog
   in F9 → Command; panel title shows the remote URL; hotlist can hold
   remote entries.
 - Jobs generalize to provider→provider streaming (upload, download,
   remote-to-remote via local relay). Progress/overwrite/retry dialogs
-  unchanged — that protocol was built for this.
+  unchanged - that protocol was built for this.
 - **Decision D1 lands here**: if blocking SFTP on worker threads (with
   P2's interruptible listings) feels right, threads win permanently; if
   connection multiplexing demands it, this is the one sanctioned moment
-  to introduce async — confined to the VFS layer, never the UI loop.
+  to introduce async - confined to the VFS layer, never the UI loop.
 - Exit: a week of real server work (edit remote configs via F4-to-temp,
   push release artifacts) without typing `scp` or `sftp`.
 
@@ -89,15 +89,15 @@ F7/F8, local-vs-remote compare, hotlist remote entries, connection
 sharing between panels via a weak cache. E2e drives a real SFTP server
 (paramiko) through the full flow.
 
-**Decision D1 — resolved: threads win, permanently.** Blocking libssh2
+**Decision D1 - resolved: threads win, permanently.** Blocking libssh2
 calls on worker threads compose cleanly with P2's pending loads, and the
 connect worker prefetches the first listing, so the UI never blocks. One
 mutex-serialized session per host is imperceptible next to network RTT,
 and jobs/panels share it safely. No async runtime enters the codebase;
 the question is closed for 2.0.
 
-### P4 — the internal editor (the deferred beast, now on purpose)
-1.0 proved $EDITOR is a fine crutch; 2.0 builds the mcedit successor —
+### P4 - the internal editor (the deferred beast, now on purpose)
+1.0 proved $EDITOR is a fine crutch; 2.0 builds the mcedit successor -
 last, with the most caution, behind its own crate:
 - `rcmd-edit`: `ropey` buffer, multi-cursor-free (keep it simple),
   unlimited undo/redo, incremental regex search/replace, block
@@ -117,18 +117,18 @@ and interactive replace (F4: Replace/Skip/All/Quit), auto-indent Enter,
 atomic save preserving permissions and CRLF, binary files refused.
 Syntect highlighting behind the `syntax` feature (default on): parse
 states checkpointed every 32 lines, invalidated from the edited line,
-skipped for files >2 MB or lines >2000 chars. F4 opens it everywhere —
+skipped for files >2 MB or lines >2000 chars. F4 opens it everywhere -
 including sftp panels via the scratch-copy/upload-on-close path;
 `editor = "external"` restores $VISUAL/$EDITOR.
 Measured (release, through a pty): 50 MB log opens in ~215 ms
-(the 100 ms goal was optimistic for full rope construction — accepted),
+(the 100 ms goal was optimistic for full rope construction - accepted),
 Ctrl+End and typing at EOF ~60 ms, dominated by poll granularity.
 Scope cuts vs the sketch: soft-wrap deferred (horizontal scroll, like
 mcedit's default) and "block selection" delivered as mcedit-style
 stream marking, not rectangular columns; replacement strings are
 literal (no $1 groups). No LSP, no splits, as decreed.
 
-### P5 — UX depth
+### P5 - UX depth
 - **Mouse**: click to focus/move cursor, double-click Enter, wheel
   scroll, clickable menu/keybar. Additive only.
 - **Panel history**: Alt+←/→ walk each panel's directory history;
@@ -150,7 +150,7 @@ config key (default on). History: locations stored as display paths in
 matching listing lands so failed/abandoned navigations self-correct;
 sftp:// entries reconnect via the connection cache. Quick view: reuses
 `FileView`, refreshed per loop tick, reduced key set while the preview
-pane is focused (scroll/Tab/quit only — nothing acts on the hidden
+pane is focused (scroll/Tab/quit only - nothing acts on the hidden
 listing). Git: `git2` without default features (no openssl), scans on
 throwaway threads keyed by (side, cwd) with results dropped when stale;
 rescans on job-done/shell-return/editor-close/watcher-reload; deep
@@ -160,14 +160,14 @@ detached and unborn HEADs. Scope cuts: no drag-and-drop or mouse marking
 text-only (no hex), git column is per-directory status, not per-panel
 refresh on every keystroke.
 
-### P6 — extensibility (revised: no Lua)
+### P6 - extensibility (revised: no Lua)
 - **Openers first** (no scripting needed): `[open]` config section maps
   globs to commands (`"*.pdf" = "zathura %f"`); Enter on a file consults
   it (MC's mc.ext, but sane TOML).
-- **User commands**: `[commands]` — named shell templates with `%f`
+- **User commands**: `[commands]` - named shell templates with `%f`
   `%d` `%t` (tagged files) macros, bindable to keys and listed in a
   F2-style user menu.
-- ~~Lua~~ — **cut from 2.0** (decision D3, resolved 2026-07-05): openers
+- ~~Lua~~ - **cut from 2.0** (decision D3, resolved 2026-07-05): openers
   + user commands are the extensibility story. `mlua` returns post-2.0
   only if `[commands]` demonstrably can't express a real workflow.
 - Openers respect lynx motion: in the `modern` keymap Right stays
@@ -176,11 +176,11 @@ refresh on every keystroke.
   workflow automated without recompiling.
 
 **DONE (2026-07-05).** Shipped as `[[open]]` / `[[commands]]` arrays of
-tables rather than the sketched inline tables — TOML arrays preserve
+tables rather than the sketched inline tables - TOML arrays preserve
 file order, so "first matching rule wins" is real instead of
 alphabetical. Openers: matched case-insensitively against the cursor
 file on Enter (and double-click), run through a new `Exec::Quiet` path
-(the old editor exec, renamed) — no "press Enter" pause, GUI apps take
+(the old editor exec, renamed) - no "press Enter" pause, GUI apps take
 a trailing `&`; local panels only; the `enter` keymap action (modern
 Right) never consults them. User commands: F2 menu (digit hotkeys 1-9,
 Enter runs) + optional `key = "..."` per command bound straight into
@@ -188,11 +188,11 @@ the keymap at startup; they run as ordinary commands (with pause).
 Macros `%f %d %D %t %%`, shell-quoted, expanded against the active
 panel. e2e: opener-on-Enter, menu, `%d`, and `%t`-with-binding checks
 (suite 76); test_find needed a menu-navigation fix (the new "User
-menu..." row shifted Command-menu positions — position-coupled e2e
+menu..." row shifted Command-menu positions - position-coupled e2e
 navigation is fragile, noted). Lua stays out, as decided.
 
-### P7 — depth & polish (revised 2026-07-05: + MC depth)
-**SFTP auth** — the deliberate P3 scope cuts held up in practice except
+### P7 - depth & polish (revised 2026-07-05: + MC depth)
+**SFTP auth** - the deliberate P3 scope cuts held up in practice except
 where they lock users out entirely:
 - **Passphrase-protected keys**: when `~/.ssh/id_*` needs a passphrase,
   prompt for it (masked, like the password dialog) instead of silently
@@ -200,12 +200,12 @@ where they lock users out entirely:
 - **Keyboard-interactive auth**: servers that disable `password` in
   favor of `keyboard-interactive` (default on some distros) currently
   fail; route its prompts through the existing ConnectAsk dialog.
-- Both reuse the ConnectEvent/ConnectReply protocol — no new UI.
+- Both reuse the ConnectEvent/ConnectReply protocol - no new UI.
 
-**MC depth** — the properties/format features MC hands miss most:
+**MC depth** - the properties/format features MC hands miss most:
 - **Info panel** (Ctrl+X i): the other panel shows the full stat of the
-  cursor file — perms, owner, group, size, all three times, inode,
-  links, symlink target — reusing the quick-view pane pattern. Needs an
+  cursor file - perms, owner, group, size, all three times, inode,
+  links, symlink target - reusing the quick-view pane pattern. Needs an
   `Entry` stat extension (uid/gid/atime/ctime) across the providers
   (local + sftp; archives best-effort).
 - **Free space** in the panel footer (statvfs; local always, sftp where
@@ -216,14 +216,14 @@ where they lock users out entirely:
 - Nitpicks while in there: Alt+i (other panel → same directory),
   Alt+o (other panel → directory under cursor).
 - Exit: a passphrase key and a kbd-interactive-only sshd both connect
-  (e2e covers at least the passphrase path — paramiko can serve both);
+  (e2e covers at least the passphrase path - paramiko can serve both);
   info panel, free space, and all three listing modes pty-verified.
 
-**SFTP auth: moved to 3.0 (2026-07-06)** — the ship-now call for 2.0;
+**SFTP auth: moved to 3.0 (2026-07-06)** - the ship-now call for 2.0;
 carried into PLAN3 unchanged. **MC depth DONE (2026-07-05, ahead of
 schedule at user request).**
 `Entry` grew an `EntryStat` (uid/gid/atime/ctime/nlink/inode; local
-fills all, sftp what the protocol carries, archives none — the UI says
+fills all, sftp what the protocol carries, archives none - the UI says
 "n/a"). Ctrl+X i info pane reuses the quick-view pane slot (mutually
 exclusive), owner/group resolved through cached getpwuid_r/getgrgid_r
 (numeric on remote panels). Free space via statvfs, cached per side
@@ -231,15 +231,15 @@ with a 3 s TTL, shown in local panel footers (when no filter label) and
 the info pane; sftp skipped (ssh2 only exposes fstatvfs on handles).
 Listing modes live on `Panel` (`list_mode`), rendered as different
 Table column sets; new F9 "View" menu (appended after Sort so existing
-menu geometry — and the mouse e2e — kept their coordinates). Alt+i and
+menu geometry - and the mouse e2e - kept their coordinates). Alt+i and
 Alt+o shipped as planned, local panels only. e2e suite now 72 checks.
 Remaining in P7: the SFTP auth items above.
 
-### P8 — 2.0 release engineering
+### P8 - 2.0 release engineering
 - Version 2.0.0, CHANGELOG, tag; release tarball as in 1.1.
 - **Install story**: `cargo install --git <repo> rcmd-tui` documented as
   the one-command install (works today, no renames needed). Full
-  crates.io publish is decision D4 — the names `rcmd` *and* `rcmd-core`
+  crates.io publish is decision D4 - the names `rcmd` *and* `rcmd-core`
   are already squatted by unrelated crates, so publishing means renaming
   the library crates (`rcmd-tui` itself is free); do it only if there is
   demand beyond the git install.
@@ -259,14 +259,14 @@ CI-verified before the next began. Final counts: 4 crates, 82 unit
 tests + 82 e2e checks driving the real binary in a pseudo-terminal.
 
 What the plan got right: the phase order (responsiveness before remote,
-editor last behind its own crate), the D1 bet (threads everywhere —
+editor last behind its own crate), the D1 bet (threads everywhere -
 blocking ssh2 on workers composed perfectly with the pending-load
 machinery; no async ever entered), and the standing rule that every
-phase ends pty-verified — the e2e suite caught real regressions
+phase ends pty-verified - the e2e suite caught real regressions
 (menu-position coupling, ESC-prefix breaking dialog closes) the unit
 tests never would have.
 
-What changed along the way: Lua was cut (D3 — `[[open]]`+`[[commands]]`
+What changed along the way: Lua was cut (D3 - `[[open]]`+`[[commands]]`
 cover it), Windows moved out entirely, `[open]` became ordered arrays
 of tables, the editor's 100 ms open goal was missed honestly (215 ms,
 accepted), MC depth (info panel, listing modes, free space) was pulled
@@ -294,7 +294,7 @@ P6 (~1 wk) → P7 (~1 wk) → P8 (days).
 - Copy *into* tar archives (zip-append exists; tar needs a rewrite).
 - Quick-view hex mode; click-to-sort column headers; mouse marking.
 - chmod / chown / create-symlink dialogs (C-x c/o/s; `FsWrite` already
-  has set_mode and symlink — mostly dialog work).
+  has set_mode and symlink - mostly dialog work).
 - Directory tree view (MC's tree panel).
 - Jobs queue UI (still just one job + viewer).
 - FsProvider dir-size over sftp (Ctrl+Space stays local-only).
@@ -313,24 +313,24 @@ P6 (~1 wk) → P7 (~1 wk) → P8 (days).
 
 ## Risks
 
-- ~~P3 auth/UX rabbit hole~~ — held: agent + key + password shipped;
+- ~~P3 auth/UX rabbit hole~~ - held: agent + key + password shipped;
   P7 adds exactly two more methods and then the line holds again
   (jump hosts and 2FA stay post-2.0).
-- ~~P4 editor~~ — shipped within its ceiling; the ceiling stays law.
-- ~~Lua API regret~~ — resolved by not building it.
-- ~~Watcher storms~~ — debounce shipped in P2, no incidents.
+- ~~P4 editor~~ - shipped within its ceiling; the ceiling stays law.
+- ~~Lua API regret~~ - resolved by not building it.
+- ~~Watcher storms~~ - debounce shipped in P2, no incidents.
 - **kbd-interactive protocol quirks** (P7): servers can send multiple
   prompts per round; the dialog must loop, not assume one password.
 - **crates.io naming** (P8/D4): `rcmd` and `rcmd-core` are squatted;
-  publishing requires library renames — default is to not publish.
+  publishing requires library renames - default is to not publish.
 
 ## Decision points
 
-- **D1 (P3): threads vs async** — RESOLVED: threads, permanently.
-- **D2 (P4): build vs embed editor** — RESOLVED: built (`rcmd-edit`).
-- **D3 (P6): how much Lua** — RESOLVED 2026-07-05: none in 2.0;
+- **D1 (P3): threads vs async** - RESOLVED: threads, permanently.
+- **D2 (P4): build vs embed editor** - RESOLVED: built (`rcmd-edit`).
+- **D3 (P6): how much Lua** - RESOLVED 2026-07-05: none in 2.0;
   `[open]` + `[commands]` carry extensibility.
-- **D4 (P8): crates.io publish** — OPEN: default no (name squatting
+- **D4 (P8): crates.io publish** - OPEN: default no (name squatting
   forces renames); `cargo install --git` is the documented install.
 
 ## What 2.0 still refuses to do

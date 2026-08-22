@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Record the README demo as an asciicast (v2) by driving the real rcmd
-binary in a pty — the same trick as the e2e harness, plus timestamps.
+binary in a pty - the same trick as the e2e harness, plus timestamps.
 
 Usage:  python3 tests/e2e/record_demo.py [binary] > docs/demo.cast
         agg --font-size 16 docs/demo.cast docs/demo.gif
@@ -115,7 +115,7 @@ def main():
     open(os.path.join(play, "README.md"), "w").write("# demo project\n")
     open(os.path.join(play, "Cargo.toml"), "w").write("[package]\nname = \"demo\"\n")
     open(os.path.join(play, "notes.txt"), "w").write(
-        "rcmd — an orthodox file manager in Rust\n"
+        "rcmd - an orthodox file manager in Rust\n"
     )
 
     r = Recorder(play, home, (play, dest))

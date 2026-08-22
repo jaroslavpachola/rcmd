@@ -1,8 +1,8 @@
-# rcmd 4.0 — the parity release
+# rcmd 4.0 - the parity release
 
 **Status:** drafted 2026-08-22 from the decisions in
 [MC-DIFF.md](MC-DIFF.md). **Prerequisite:** the 3.0.0 tag (R1 dogfooding
-window). Baseline: 2.5.0 — subshell, SFTP, built-in editor, job queue,
+window). Baseline: 2.5.0 - subshell, SFTP, built-in editor, job queue,
 archive browsing, git awareness.
 
 ## Vision
@@ -24,14 +24,14 @@ only way to script), rcmd keeps its own shape and imports mc's data.
 
 ## Phases
 
-### S0 — foundations (blocks most of the rest)
+### S0 - foundations (blocks most of the rest)
 
 - **Config/state split**: `config.toml` becomes read-only from rcmd's
   side (user comments and formatting survive verbatim); panel state,
   sort, hotlist, command history and find/panelize presets move to an
   rcmd-owned `state.toml`. Merge-on-write semantics stay.
 - **Grouped options dialog**: one sectioned form covering mc's whole
-  setting surface — panel, layout, confirmations, appearance, VFS. Exit
+  setting surface - panel, layout, confirmations, appearance, VFS. Exit
   confirmation exists, default off; delete/overwrite confirmations exist,
   default on.
 - **mc import layer**: `menu` / `.mc.menu`, `mc.ext`, mc keymap files
@@ -41,7 +41,7 @@ only way to script), rcmd keeps its own shape and imports mc's data.
   history aliases + `M-h` list, `M-a`, `cd -`/CDPATH, `C-x !`,
   command-line `%` macros, persisted command history.
 
-### S1 — panel & layout (first user-visible milestone)
+### S1 - panel & layout (first user-visible milestone)
 
 - Layout dialog: split direction, unequal split, hide
   menubar/keybar/command line/hint bar.
@@ -50,9 +50,9 @@ only way to script), rcmd keeps its own shape and imports mc's data.
 - Multi-column brief listing; user-defined listing format.
 - Per-extension/type file highlighting rules.
 - Per-panel Left/Right menus (listing mode, sort, filter, panelize,
-  rescan, encoding, links) — the mc menu structure.
+  rescan, encoding, links) - the mc menu structure.
 
-### S2 — file-operation dialogs
+### S2 - file-operation dialogs
 
 - Copy/move dialog: source file masks, preserve attributes, dive into
   subdirs, follow links, stable symlinks, Background button.
@@ -66,16 +66,16 @@ only way to script), rcmd keeps its own shape and imports mc's data.
 - `C-x l` hard link, `C-x C-s` edit symlink, relative-symlink option.
 - Wire the confirmation toggles from S0 through every prompt.
 
-### S3 — VFS breadth
+### S3 - VFS breadth
 
 - `fish://` and `ftp://` (the 3.0 refusal is overturned for these two).
 - extfs-class formats: deb, rpm, iso9660, cpio, lha/arj/cab, patchfs,
-  mailfs — read first, write where the format allows.
+  mailfs - read first, write where the format allows.
 - Writable archives: move/delete/mkdir inside, and zip member *replace*
   instead of today's shadowing append.
 - Active VFS list dialog + VFS settings.
 
-### S4 — viewer & editor depth
+### S4 - viewer & editor depth
 
 - Viewer: goto line/offset, regex search with case/backwards/whole-word
   options, raw/parsed toggle, format/unformat, ruler, next/previous
@@ -88,25 +88,25 @@ only way to script), rcmd keeps its own shape and imports mc's data.
   command, column/rectangular blocks.
 - Screens: several editors/viewers open at once with mc's screen list.
 
-### S5 — encoding
+### S5 - encoding
 
 Full parity, all three surfaces: per-panel codepage (`M-e`), recoding on
 read/write in viewer and editor, and correct round-tripping of non-UTF-8
 filenames (no more lossy display).
 
-### S6 — search, compare, panelize
+### S6 - search, compare, panelize
 
 - Select/unselect and filter dialogs: files only, case sensitive, shell
   patterns or regex.
 - Find dialog: regex content, case, whole words, skip hidden, follow
-  symlinks, start directory, charsets — keeping the gitignore checkbox.
+  symlinks, start directory, charsets - keeping the gitignore checkbox.
 - Find **results window** (Chdir/Again/Panelize/View/Edit) as the
   default; today's stream-into-the-panel stays behind a setting.
 - Panelize presets, saved and async.
 - Compare directories: quick / size-only / thorough.
 - Internal diff viewer + "Compare files".
 
-### S7 — packaging & the wider world
+### S7 - packaging & the wider world
 
 - `-e FILE` / `-v FILE`, argv0 dispatch (`rcedit`/`rcview`/`rcdiff`
   symlinks), the missing mc flags (`-b -c -C -S -d -u/-U -l`).
@@ -116,7 +116,7 @@ filenames (no more lossy display).
 
 ## Sequencing
 
-S0 first — it unblocks the options surface everything else needs. Then
+S0 first - it unblocks the options surface everything else needs. Then
 **S1, S2 and S3 in parallel-ish order** (the chosen first milestone),
 followed by S4, S5, S6, S7. S5 and S6 do not block anything; S7 rides
 along with whatever release cuts.
@@ -126,7 +126,7 @@ along with whatever release cuts.
 - **S0's config split is a migration.** Existing `config.toml` files
   carry state keys that must move without a user noticing. Mitigation:
   read both locations for one release, write only the new one.
-- **S3 is the biggest surface in the whole plan** — extfs-class formats
+- **S3 is the biggest surface in the whole plan** - extfs-class formats
   are a long tail. Ship read-only support format by format; each one is
   its own green commit, none of them block a release.
 - **S5 touches every string path in the program.** Do filenames last,

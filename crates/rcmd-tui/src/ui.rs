@@ -149,7 +149,7 @@ const HELP_TEXT: &[&str] = &[
     "  Alt+Left/Right  walk the panel's directory history (back/forward)",
     "  F9 > Options    panel options form (MC-style checkboxes): hidden",
     "                  files, lynx-like motion (Left/Right = parent/enter),",
-    "                  mouse, auto-reload, git, subshell, editor, theme —",
+    "                  mouse, auto-reload, git, subshell, editor, theme -",
     "                  applied live, saved to the config on exit",
     "  In menus the highlighted letter runs the entry (F9 o p = options)",
     "  Alt+Up          directory hotlist (same as Ctrl+\\)",
@@ -163,7 +163,7 @@ const HELP_TEXT: &[&str] = &[
     "  Alt+C           quick cd dialog   Alt+?  find file   Ctrl+L  redraw",
     "  Ctrl+X t / p    paste tagged names / the panel path to the cmdline",
     "  Ctrl+X c / o    chmod (octal) / chown (user[:group]) the marked",
-    "                  entries — both work on sftp panels too",
+    "                  entries - both work on sftp panels too",
     "  Ctrl+X s        create a symlink to the cursor entry",
     "  F9 > View       listing format: brief (names), full, long (ls -l,",
     "                  full-width); the panel footer shows free space",
@@ -192,7 +192,7 @@ const HELP_TEXT: &[&str] = &[
     "  Shift+F4        edit a new file (created on first save)",
     "  Shift+F5/F6     copy / rename the cursor file in place",
     "  F9 > File > Bulk rename   edit the marked names as text: each",
-    "                  line is \"number TAB name\" — change names to",
+    "                  line is \"number TAB name\" - change names to",
     "                  rename (swaps are fine), delete lines to delete;",
     "                  save, close, and confirm the preview",
     "  Esc             cancel a running operation",
@@ -206,9 +206,9 @@ const HELP_TEXT: &[&str] = &[
     "  Enter on zip/tar/tar.{gz,xz,bz2} browses it; F5 copies out,",
     "  F3 views members. Move/delete/mkdir are disabled inside.",
     "  rar and 7z browse too, through an installed 7z (p7zip; rar",
-    "  needs its codec) or unrar — read-only, streamed per member.",
+    "  needs its codec) or unrar - read-only, streamed per member.",
     "  Copy INTO an archive: F5 with the other panel inside it, or a",
-    "  destination written as archive.zip://dir — zip appends in place,",
+    "  destination written as archive.zip://dir - zip appends in place,",
     "  tar (plain or .gz/.xz/.bz2) is rewritten with the new entries.",
     "",
     "# SFTP (remote panels)",
@@ -242,7 +242,7 @@ const HELP_TEXT: &[&str] = &[
     "      run = \"git status | less\"",
     "      key = \"ctrl+g\"        # optional direct binding",
     "  Macros: %f cursor file, %d this dir, %D other panel's dir,",
-    "  %t marked files, %% literal percent — all shell-quoted.",
+    "  %t marked files, %% literal percent - all shell-quoted.",
     "",
     "# Command line",
     "  (type)          compose a command; Enter runs it in the panel dir",
@@ -288,7 +288,7 @@ const HELP_TEXT: &[&str] = &[
     "  rcmd -P FILE    write last directory to FILE on exit",
     "                  (see README for the rc() shell wrapper)",
     "",
-    "# Config  (~/.config/rcmd/config.toml — yours, never rewritten;",
+    "# Config  (~/.config/rcmd/config.toml - yours, never rewritten;",
     "#          rcmd's own state lives in ~/.local/state/rcmd/state.toml)",
     "  theme = \"mc\" | \"dark\"      keymap = \"mc\" | \"modern\" (= lynx on)",
     "  [keys] section adds custom bindings, e.g. \"ctrl+y\" = \"swap-panels\"",
@@ -323,7 +323,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // the ACTIVE side shows one, only that panel is drawn, full-width (the
     // hidden side gets a zero area so mouse hit-testing skips it). Only the
     // active side counts: an off-side long panel renders squeezed in the
-    // split rather than invisibly forcing fullscreen — the state stays
+    // split rather than invisibly forcing fullscreen - the state stays
     // visible and Alt+T on either side always behaves predictably.
     let qv_side = app.quick_view.as_ref().map(|q| q.side);
     let listing_long = |i: usize| {
@@ -485,7 +485,7 @@ fn draw_panel(
         let frame_ch = FRAMES[(tick % FRAMES.len() as u128) as usize];
         block = block.title_bottom(
             Line::from(Span::styled(
-                format!(" {frame_ch} loading — Esc cancels "),
+                format!(" {frame_ch} loading - Esc cancels "),
                 Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD),
             ))
             .centered(),
@@ -927,7 +927,7 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         });
         let pct = (done * 100).checked_div(total).unwrap_or(0);
         Line::from(format!(
-            " {} job(s) running — {pct}% — C-x j lists them ",
+            " {} job(s) running - {pct}% - C-x j lists them ",
             app.jobs.len()
         ))
         .style(Style::new().fg(th().select_fg).bg(th().select_bg))
@@ -1042,7 +1042,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
     let base = Style::new().fg(th().help_fg).bg(th().help_bg);
     let width = content.width as usize;
     frame.render_widget(
-        Line::from(format!("{:<width$}", " Help — rcmd")).style(base.add_modifier(Modifier::BOLD)),
+        Line::from(format!("{:<width$}", " Help - rcmd")).style(base.add_modifier(Modifier::BOLD)),
         title_area,
     );
     frame.render_widget(Block::new().style(base), content);
@@ -1074,7 +1074,7 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
     );
 }
 
-/// Screen column of character `col` in `text`, with 8-wide tab stops —
+/// Screen column of character `col` in `text`, with 8-wide tab stops -
 /// must match how [`draw_editor`] expands lines.
 pub fn screen_col(text: &str, col: usize) -> usize {
     let mut scol = 0usize;
@@ -1575,7 +1575,7 @@ fn expand_with_map(text: &str) -> (String, Vec<usize>) {
 }
 
 /// Case-insensitive occurrences of `needle` in `text`, as char ranges
-/// (char-wise lowercase — the same approximation the search itself
+/// (char-wise lowercase - the same approximation the search itself
 /// uses).
 fn match_ranges(text: &str, needle: &str) -> Vec<(usize, usize)> {
     let ned: Vec<char> = needle
@@ -1686,7 +1686,7 @@ fn hex_row(offset: u64, bytes: &[u8]) -> String {
 }
 
 /// Menu-bar geometry: (x, width) of every title in the top bar plus the
-/// dropdown rect of the open menu — shared by drawing and mouse clicks.
+/// dropdown rect of the open menu - shared by drawing and mouse clicks.
 /// Rendered length of a menu label, without its `&` hotkey marker.
 fn label_len(label: &str) -> usize {
     let (pre, hot, post) = menu_label(label);
@@ -1881,7 +1881,7 @@ fn field_row(frame: &mut Frame, field: Rect, value: &str, cursor: Option<usize>)
     }
 }
 
-/// F9 > Options > Panel options — the MC-style checkbox form.
+/// F9 > Options > Panel options - the MC-style checkbox form.
 fn draw_options(frame: &mut Frame, d: &OptionsDialog) {
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
@@ -1970,7 +1970,7 @@ fn draw_find(frame: &mut Frame, d: &FindDialog) {
         row(5),
     );
     frame.render_widget(
-        Line::from("Tab — switch   Space — toggle   Enter — search   Esc — cancel")
+        Line::from("Tab - switch   Space - toggle   Enter - search   Esc - cancel")
             .centered()
             .style(style),
         row(6),
@@ -2068,7 +2068,7 @@ fn draw_hotlist(frame: &mut Frame, entries: &[HotEntry], recent: &[String], sele
 
     if lines.is_empty() {
         frame.render_widget(
-            Line::from(" empty — press 'a' to add the current directory ").centered(),
+            Line::from(" empty - press 'a' to add the current directory ").centered(),
             inner,
         );
         return;
@@ -2102,7 +2102,7 @@ fn draw_hotlist(frame: &mut Frame, entries: &[HotEntry], recent: &[String], sele
 }
 
 /// Bulk-rename preview: every rename and delete the edited buffer asks
-/// for, awaiting Yes/No — nothing has happened yet.
+/// for, awaiting Yes/No - nothing has happened yet.
 fn draw_rename_preview(frame: &mut Frame, d: &crate::app::RenamePreview) {
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
@@ -2130,7 +2130,7 @@ fn draw_rename_preview(frame: &mut Frame, d: &crate::app::RenamePreview) {
     frame.render_widget(Clear, area);
     let block = Block::bordered()
         .title(format!(
-            " Bulk rename — {} rename(s), {} delete(s) ",
+            " Bulk rename - {} rename(s), {} delete(s) ",
             d.renames.len(),
             d.deletes.len()
         ))
@@ -2242,7 +2242,7 @@ fn draw_connect_ask(frame: &mut Frame, ask: &ConnectAsk) {
             };
             field_row(frame, row(1), &shown, Some(shown.chars().count()));
             frame.render_widget(
-                Line::from("Enter — send   Esc — cancel")
+                Line::from("Enter - send   Esc - cancel")
                     .centered()
                     .style(style),
                 row(3),
@@ -2333,7 +2333,7 @@ fn draw_job(frame: &mut Frame, job: &Job) {
         );
     }
     frame.render_widget(
-        Line::from("Esc — cancel   b — background")
+        Line::from("Esc - cancel   b - background")
             .centered()
             .style(style),
         row(4),
@@ -2351,7 +2351,7 @@ fn draw_ask(frame: &mut Frame, ask: &Ask, button: usize) {
             " File exists ",
             vec![
                 tail(&path.display().to_string(), width),
-                "Target already exists — overwrite?".to_string(),
+                "Target already exists - overwrite?".to_string(),
             ],
         ),
         Ask::Error { path, message } => (

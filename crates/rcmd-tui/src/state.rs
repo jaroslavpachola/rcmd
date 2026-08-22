@@ -1,9 +1,9 @@
 //! Runtime state rcmd owns and writes: panel state, the hotlist, and
 //! whatever the options form toggles. Split out of `config.toml`
-//! (PLAN4 S0) so the user's own file is never rewritten — comments and
+//! (PLAN4 S0) so the user's own file is never rewritten - comments and
 //! hand formatting survive because rcmd only ever *reads* it.
 //!
-//! Layering: defaults < `config.toml` < `state.toml`. State is sparse —
+//! Layering: defaults < `config.toml` < `state.toml`. State is sparse -
 //! only keys rcmd actually changed are stored, so a config edit keeps
 //! working for everything the user never touched in the UI.
 
@@ -125,7 +125,7 @@ pub fn apply(state: &State, config: &mut Config) {
 
 /// One-release migration: the keys rcmd used to write into
 /// `config.toml`. Seeds an empty state from whichever of them are
-/// actually present in the user's file — absent keys stay `None` so
+/// actually present in the user's file - absent keys stay `None` so
 /// they keep following the config/defaults. A later release drops this.
 pub fn seed_from_config(config_text: &str) -> State {
     let mut state = State::default();

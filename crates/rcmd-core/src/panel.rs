@@ -18,7 +18,7 @@ use crate::vfs::{FsProvider, LocalFs, is_archive_name};
 /// non-blocking pending load (spinner, old listing stays visible).
 const LOAD_GRACE: Duration = Duration::from_millis(100);
 
-/// What triggered a listing request — decides where the cursor lands.
+/// What triggered a listing request - decides where the cursor lands.
 pub enum LoadKind {
     Reload,
     Enter,
@@ -42,7 +42,7 @@ pub enum SortKey {
 }
 
 /// Panel listing format: name-only, the classic three columns, or an
-/// ls -l style long format. Pure presentation — rendering reads it.
+/// ls -l style long format. Pure presentation - rendering reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListMode {
     Brief,
@@ -79,7 +79,7 @@ pub struct Panel {
     pending: Option<PendingLoad>,
     /// Visited locations as display paths (`/dir` or `sftp://…/dir`);
     /// `history[hist_pos]` is the current one. Archive stops are not
-    /// recorded — leaving the archive returns to its parent directory.
+    /// recorded - leaving the archive returns to its parent directory.
     history: Vec<String>,
     hist_pos: usize,
     /// Target index of an in-flight Alt+←/→ navigation; committed by
@@ -123,7 +123,7 @@ impl Panel {
     }
 
     /// List `target` on a worker thread. Fast results (within the grace
-    /// window) apply before returning — Ok(true) — so ordinary local
+    /// window) apply before returning - Ok(true) - so ordinary local
     /// navigation feels synchronous. Slow filesystems leave the panel
     /// untouched with a pending load (Ok(false)), resolved later by
     /// [`poll_pending`]; typing never blocks.
@@ -252,7 +252,7 @@ impl Panel {
         self.hist_pos = self.history.len() - 1;
     }
 
-    /// History locations, newest first — feeds the hotlist's recent
+    /// History locations, newest first - feeds the hotlist's recent
     /// list (local paths and sftp:// URLs alike).
     pub fn recent_locations(&self) -> impl Iterator<Item = &str> {
         self.history.iter().rev().map(String::as_str)
@@ -665,7 +665,7 @@ impl Panel {
 
     /// Paths the next file operation applies to: the marked entries if any,
     /// otherwise the cursor entry (".." is never a target).
-    /// Tagged names (or the cursor entry) as typed-in-place strings —
+    /// Tagged names (or the cursor entry) as typed-in-place strings -
     /// what C-x t pastes onto the command line.
     pub fn target_names(&self) -> Vec<std::ffi::OsString> {
         if !self.marked.is_empty() {
@@ -698,7 +698,7 @@ impl Panel {
     }
 }
 
-/// Listing + filtering + sorting, without touching panel state — safe to
+/// Listing + filtering + sorting, without touching panel state - safe to
 /// run on a worker thread.
 fn prepare_listing(
     fs: &dyn FsProvider,

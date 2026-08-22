@@ -1,4 +1,4 @@
-# rcmd vs mc — every difference, and what we decided about it
+# rcmd vs mc - every difference, and what we decided about it
 
 Baseline: rcmd 2.5.0 (3.0 feature set, tag pending) against GNU Midnight
 Commander 4.8.x. Everything below is from a *user's* seat: if it can't be
@@ -9,7 +9,7 @@ noticed while using the program, it isn't here. Decided 2026-08-22.
 These four answers resolve every row that has no note of its own.
 
 1. **Gaps → adopt.** An mc feature rcmd lacks is parity work, planned in
-   [PLAN4.md](PLAN4.md) — not a shrug. The exceptions are the four
+   [PLAN4.md](PLAN4.md) - not a shrug. The exceptions are the four
    Refused rows in §13.
 2. **Divergences → keep, and say so.** Where rcmd does the same job
    differently on purpose, rcmd's behaviour stands and this document is
@@ -21,7 +21,7 @@ These four answers resolve every row that has no note of its own.
    on the menu. Windows, Lua/plugins, in-terminal images and tabs stay
    refused.
 
-**Legend** — `Keep`: rcmd's behaviour stands · `Keep+`: rcmd's default
+**Legend** - `Keep`: rcmd's behaviour stands · `Keep+`: rcmd's default
 stands, mc's variant added alongside · `Adopt`: parity work, PLAN4 ·
 `Change`: neither, a new decision · `Refused`: non-goal.
 
@@ -34,7 +34,7 @@ stands, mc's variant added alongside · `Adopt`: parity work, PLAN4 ·
 | Flags missing: `-b -c -C -S skin -d -u/-U -l` | Adopt | mirror the config toggles as flags |
 | No shipped shell wrapper (mc-wrapper.sh) | Adopt | ship `rc.sh` / `rc.fish` from the README |
 | `-P FILE` last-dir export | Keep | same idea as mc's `-P` |
-| config.toml regenerated on save — comments lost | **Change** | split: user `config.toml` read-only, rcmd-owned `state.toml` for panel/sort/hotlist/history |
+| config.toml regenerated on save - comments lost | **Change** | split: user `config.toml` read-only, rcmd-owned `state.toml` for panel/sort/hotlist/history |
 | One TOML vs mc's ini + panels.ini + hotlist + history + menu + mc.ext + filehighlight + keymap | Keep+ | TOML canonical, mc files importable (policy 3) |
 | No skins | Adopt | theme files; mc skin import optional |
 | Options/hotlist saved instantly, merge-on-write | Keep | rcmd-only; beats mc's "Save setup" |
@@ -103,7 +103,7 @@ stands, mc's variant added alongside · `Adopt`: parity work, PLAN4 ·
 |---|---|---|
 | **F8 deletes to trash**, `S-F8` permanent (mc: F8 is permanent) | **Keep** | the confirm dialog names which one it is; remote F8 is always permanent |
 | Copy/move dialog is a single destination field | Adopt | file masks, preserve attributes, dive into subdirs, follow links, stable symlinks, Background button |
-| Attribute policy fixed and implicit | Adopt, **safest defaults** | preserve attributes on, follow links off, stable symlinks on — whichever loses least information, mc-compatible or not |
+| Attribute policy fixed and implicit | Adopt, **safest defaults** | preserve attributes on, follow links off, stable symlinks on - whichever loses least information, mc-compatible or not |
 | Overwrite prompt: Overwrite/All/Skip/Skip all/Abort, no file stats shown | Adopt | add Update (if newer), Size differs, Append, Reget, and both files' size + date |
 | Error prompt: Retry/Skip/Skip all/Abort | Keep | already equivalent |
 | Progress dialog: one gauge, no ETA or throughput | Adopt | ETA, speed, per-file bar |
@@ -114,7 +114,7 @@ stands, mc's variant added alongside · `Adopt`: parity work, PLAN4 ·
 | `mkdir` creates parents | Keep | rcmd-only convenience |
 | Bulk rename through the editor (numbered buffer, preview) | Keep | rcmd-only |
 | Cross-device move degrades to copy+delete with recalculated totals | Keep | |
-| No ext2 undelete | **Drop (proposed)** | obsolete on modern filesystems — the one gap I recommend not closing; say the word and it goes back in |
+| No ext2 undelete | **Drop (proposed)** | obsolete on modern filesystems - the one gap I recommend not closing; say the word and it goes back in |
 
 ## 7. Viewer (F3)
 
@@ -132,7 +132,7 @@ stands, mc's variant added alongside · `Adopt`: parity work, PLAN4 ·
 
 | Difference | Decision | Note |
 |---|---|---|
-| No editor menu bar, no editor options (tab size, auto-indent, wrap column…) | **Adopt — first** | the chosen head of the editor milestone |
+| No editor menu bar, no editor options (tab size, auto-indent, wrap column…) | **Adopt - first** | the chosen head of the editor milestone |
 | No goto line, no bookmarks | Adopt | |
 | No macros, insert-file, sort block, pipe-block-through-command | Adopt | later phase |
 | Stream marking only, no column/rectangular blocks | Adopt | later phase |
@@ -200,7 +200,7 @@ hotlist · merge-on-write config · a single static musl binary.
 
 | Item | Decision |
 |---|---|
-| macOS builds (currently suspended) | Adopt — restore CI and release artifacts |
+| macOS builds (currently suspended) | Adopt - restore CI and release artifacts |
 | Windows | **Refused** |
 | Lua / plugin system | **Refused** |
 | In-terminal image rendering | **Refused** |

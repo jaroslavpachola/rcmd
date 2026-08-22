@@ -1,6 +1,6 @@
 //! Git awareness (feature `git`): [`scan`] computes a branch name and
 //! one-character status marks for one directory of a work tree. It runs
-//! on a background thread per directory change — libgit2 status walks
+//! on a background thread per directory change - libgit2 status walks
 //! can take a while in big repositories and must never block the UI.
 //!
 //! Without the feature the module still compiles and [`scan`] returns
@@ -26,7 +26,7 @@ pub fn scan(_dir: &Path) -> Option<GitStatus> {
 
 /// A skip predicate for find (R3): true for gitignored paths and the
 /// `.git` directory itself. `None` when `root` is not inside a work
-/// tree (or the feature is off) — find then walks everything.
+/// tree (or the feature is off) - find then walks everything.
 #[cfg(not(feature = "git"))]
 pub fn ignore_filter(_root: &Path) -> Option<rcmd_core::find::SkipFn> {
     None
@@ -55,7 +55,7 @@ fn rank(mark: char) -> u8 {
     }
 }
 
-/// None when `dir` is not inside a git work tree (or anything fails —
+/// None when `dir` is not inside a git work tree (or anything fails -
 /// the panel then simply shows no git column).
 #[cfg(feature = "git")]
 pub fn scan(dir: &Path) -> Option<GitStatus> {
@@ -234,7 +234,7 @@ mod tests {
         // tempdirs can live under a repo-owned path in odd setups; a
         // subdir of / is the closest we get to "definitely no repo"
         if git2::Repository::discover(dir.path()).is_ok() {
-            return; // environment has a repo above tmp — nothing to assert
+            return; // environment has a repo above tmp - nothing to assert
         }
         assert!(scan(dir.path()).is_none());
     }

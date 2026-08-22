@@ -30,7 +30,7 @@ impl FindHandle {
     }
 }
 
-/// "Skip this path?" — supplied by the caller (e.g. a gitignore check);
+/// "Skip this path?" - supplied by the caller (e.g. a gitignore check);
 /// a skipped directory is not descended into.
 pub type SkipFn = Box<dyn Fn(&Path) -> bool + Send>;
 

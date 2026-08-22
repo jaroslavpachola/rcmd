@@ -99,7 +99,7 @@ fn bind(map: &mut Keymap, key: &str, action: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// "ctrl+shift+f8", "alt+.", "+", "ctrl++" — modifiers then one key.
+/// "ctrl+shift+f8", "alt+.", "+", "ctrl++" - modifiers then one key.
 pub fn parse_key(spec: &str) -> Option<(KeyCode, KeyModifiers)> {
     let spec = spec.trim().to_lowercase();
     let (mods_part, key_part): (&str, &str) = if let Some(stripped) = spec.strip_suffix('+') {

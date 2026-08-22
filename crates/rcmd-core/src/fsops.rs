@@ -180,7 +180,7 @@ pub fn spawn_transfer(
             return ctx.error(&dest, "destination is read-only");
         }
         if move_mode && src_fs.writer().is_none() {
-            return ctx.error(&dest, "source is read-only — copy instead");
+            return ctx.error(&dest, "source is read-only - copy instead");
         }
         let same_fs = Arc::ptr_eq(&src_fs, &dst_fs);
         let into_dir = sources.len() > 1 || dst_fs.stat(&dest).map(|e| e.is_dir()).unwrap_or(false);
@@ -226,7 +226,7 @@ pub fn spawn_transfer(
     })
 }
 
-/// Delete through a provider's write half (always permanent — there is
+/// Delete through a provider's write half (always permanent - there is
 /// no remote trash).
 pub fn spawn_delete_fs(fs: Arc<dyn FsProvider>, paths: Vec<PathBuf>) -> JobHandle {
     spawn(move |ctx| {
@@ -1020,7 +1020,7 @@ fn try_extract_file(
 
 /// Copy local files INTO a zip archive by appending members. Only zip
 /// supports in-place append; tar would need a full rewrite. Existing
-/// members are never touched — a same-named member is appended and
+/// members are never touched - a same-named member is appended and
 /// shadows the old one for readers that pick the latest entry.
 pub fn spawn_pack_zip(sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) -> JobHandle {
     spawn(move |ctx| {
@@ -1060,7 +1060,7 @@ pub fn spawn_pack_zip(sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) 
 }
 
 /// Copy INTO a tar archive (R4): tars cannot append in place across
-/// compressors, so the whole archive is rewritten — existing entries
+/// compressors, so the whole archive is rewritten - existing entries
 /// stream into a temp file with the same compression, the new trees
 /// are appended behind them, and the temp renames over the original.
 pub fn spawn_pack_tar(sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) -> JobHandle {
@@ -1220,7 +1220,7 @@ fn rewrite_tar(
 }
 
 /// Append one tree to the tar builder. Progress and cancel are
-/// per-item (unlike the chunked zip path) — the whole temp archive is
+/// per-item (unlike the chunked zip path) - the whole temp archive is
 /// discarded on cancel, so finer granularity buys nothing.
 fn tar_tree(
     ctx: &mut Ctx,

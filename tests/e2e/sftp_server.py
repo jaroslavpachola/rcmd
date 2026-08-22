@@ -4,9 +4,9 @@ filesystem.
 
 Usage: sftp_server.py PORT   (binds 127.0.0.1, prints READY when up)
 $RCMD_SFTP_AUTH picks the accepted method:
-  password (default) — $RCMD_SFTP_PASSWORD (default "secret")
-  pubkey             — the OpenSSH .pub file at $RCMD_SFTP_PUBKEY
-  interactive        — keyboard-interactive, two prompts ("fish", "chips")
+  password (default) - $RCMD_SFTP_PASSWORD (default "secret")
+  pubkey             - the OpenSSH .pub file at $RCMD_SFTP_PUBKEY
+  interactive        - keyboard-interactive, two prompts ("fish", "chips")
 """
 import base64
 import os

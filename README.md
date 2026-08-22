@@ -3,7 +3,7 @@
 A Midnight Commander replacement in Rust: orthodox dual-pane file manager
 with MC keybindings, built on ratatui. The 1.0
 ([docs/PLAN.md](docs/PLAN.md)), 2.0 ([docs/PLAN2.md](docs/PLAN2.md)) and
-3.0 ([docs/PLAN3.md](docs/PLAN3.md)) roadmaps are complete — 3.0's
+3.0 ([docs/PLAN3.md](docs/PLAN3.md)) roadmaps are complete - 3.0's
 flagship is the **persistent subshell** behind Ctrl+O. Next up: 4.0, the
 parity release ([docs/PLAN4.md](docs/PLAN4.md)), whose scope comes from
 a decision-by-decision comparison against mc
@@ -12,13 +12,13 @@ a decision-by-decision comparison against mc
 ![rcmd demo: browsing, the syntax-highlighted viewer, marking and
 copying, the persistent subshell](docs/demo.gif)
 
-*(recorded by [tests/e2e/record_demo.py](tests/e2e/record_demo.py) —
-the same pty harness that runs the test suite — and rendered with
+*(recorded by [tests/e2e/record_demo.py](tests/e2e/record_demo.py) -
+the same pty harness that runs the test suite - and rendered with
 [agg](https://github.com/asciinema/agg))*
 
 ## Status
 
-**2.0** — complete MC-workflow parity and beyond: marking and F5–F8
+**2.0** - complete MC-workflow parity and beyond: marking and F5–F8
 operations with MC-style dialogs (mtimes preserved, F8 goes to trash),
 command line + shell integration with real job control, F3 chunked
 viewer with wrap and hex modes, F9 menu, F1 help, config file with
@@ -28,10 +28,10 @@ copy-into-zip; find file / panelize / directory compare, non-blocking
 listings with filesystem watching, **SFTP remote panels**, a **built-in
 editor** with syntax highlighting, mouse support, per-panel directory
 history, quick view, info panel, listing formats, git status in the
-panels, **openers and an F2 user menu**, and MC's ESC-prefix — see
+panels, **openers and an F2 user menu**, and MC's ESC-prefix - see
 below.
 
-**3.0** — the live commander: the persistent **subshell**
+**3.0** - the live commander: the persistent **subshell**
 (Ctrl+O), SFTP auth depth (passphrase keys, keyboard-interactive),
 bulk rename via the editor, viewer follow mode (tail&nbsp;-f) with
 syntax highlighting and precise search-match highlighting, `[[view]]`
@@ -137,7 +137,7 @@ empty.
 
 **The subshell** (Ctrl+O): a persistent `$SHELL` runs on its own pty for
 the whole session, exactly like MC's. Ctrl+O flips between the panels
-and its screen — the last command's output is still there — and typed
+and its screen - the last command's output is still there - and typed
 commands run *inside* it, so aliases, functions, history and `$?`
 survive between commands. cd sync goes both ways: the panels follow a
 `cd` typed in the subshell, and the subshell is moved to the active
@@ -151,7 +151,7 @@ In dialogs: arrows/Tab move between buttons, Enter confirms, Esc cancels;
 overwrite and error prompts also take hotkeys (o/a/s/S, r/s/S).
 
 Esc doubles as MC's meta prefix everywhere: after a lone Esc, a digit is
-an F-key (Esc 1 = F1 … Esc 0 = F10) and any other key gets Alt added —
+an F-key (Esc 1 = F1 … Esc 0 = F10) and any other key gets Alt added -
 handy on terminals without working F-keys or Alt. Esc Esc is a real
 Escape; an unanswered Esc acts as one after a second.
 
@@ -162,28 +162,28 @@ lazily, so huge files open instantly; very long lines are broken at 4096
 columns.
 
 **Responsiveness**: directory listings that take longer than ~100 ms
-(huge directories, cold network mounts) load in the background — the old
+(huge directories, cold network mounts) load in the background - the old
 listing stays up with a spinner, typing never blocks, Esc cancels.
 Panels also auto-reload when their directory changes on disk (debounced;
 `watch = false` in the config disables it).
 
-**Power tools**: Alt+F7 opens find file — a filename glob plus an
+**Power tools**: Alt+F7 opens find file - a filename glob plus an
 optional case-insensitive content substring; matches stream live into
 the active panel as a *panelized* listing (paths relative to the panel
 dir), where marking and F5/F6/F8 work as usual. *Panelize command…*
 (F9 → Command) turns any command's stdout lines into such a listing
 (`git ls-files -m`, `rg -l TODO`, …). *Compare directories* (Ctrl+X d)
 marks files that are missing on the other side or differ in size/mtime
-in both panels — then a plain F5 copies the marked differences across.
+in both panels - then a plain F5 copies the marked differences across.
 
 **Mouse**: click focuses a panel and moves the cursor, double-click
 enters, the wheel scrolls whatever it hovers (panels, viewer, editor,
 quick view), the bottom keybar and the F9 menu are clickable, and a
-click in the editor places the cursor. All additive — every feature
+click in the editor places the cursor. All additive - every feature
 stays keyboard-reachable. Hold Shift to select terminal text as usual;
 `mouse = false` in the config turns capture off entirely.
 
-**Panel history**: each panel remembers where it has been —
+**Panel history**: each panel remembers where it has been -
 Alt+←/Alt+→ walk back and forward browser-style (sftp:// locations
 reconnect through the connection cache), Alt+↑ opens the hotlist.
 
@@ -193,7 +193,7 @@ chunked reader, so previewing a multi-GB log is instant. Tab focuses
 the preview for scrolling (arrows/PgUp/PgDn); Ctrl+X q turns it off.
 
 **Openers & user commands**: `[[open]]` rules in the config make Enter
-open files by type — the first matching glob wins (case-insensitive):
+open files by type - the first matching glob wins (case-insensitive):
 
 ```toml
 [[open]]
@@ -203,7 +203,7 @@ run = "zathura %f >/dev/null 2>&1 &"
 
 Openers run without a "press Enter" pause, so terminal programs (mpv,
 less) feel native and GUI programs just need a trailing `&`. With
-lynx-like motion on, Right still only enters directories — Enter opens.
+lynx-like motion on, Right still only enters directories - Enter opens.
 `[[commands]]` are named shell templates listed in the **F2 user menu**
 (first nine get digit hotkeys) and optionally bound directly:
 
@@ -216,24 +216,24 @@ key = "ctrl+g"
 
 Both expand macros before running in the active panel's directory:
 `%f` the cursor file, `%d` this directory, `%D` the other panel's
-directory, `%t` all marked files, `%%` a literal percent — everything
+directory, `%t` all marked files, `%%` a literal percent - everything
 shell-quoted.
 
 **File properties**: the info panel (Ctrl+X i) turns the other panel
-into a live stat display of the file under the cursor — type, size,
+into a live stat display of the file under the cursor - type, size,
 permissions, owner and group (resolved locally, numeric on SFTP),
-hard links, inode, and all three timestamps — plus the filesystem's
+hard links, inode, and all three timestamps - plus the filesystem's
 free space, which also shows in every local panel's footer. Listing
 formats are switchable per panel from F9 → View: *brief* (names only,
 full width), *full* (the classic name/size/mtime), and *long*
 (ls-style perms/owner/group/size/name). A long listing needs room, so
 while the *active* panel is long it takes the whole width and the
-other panel is hidden — MC's one-panel view; Tab to the other panel
+other panel is hidden - MC's one-panel view; Tab to the other panel
 (or cycle the format back) and the split returns. The choice persists
 in the config (`listing`).
 
 **Git awareness**: inside a git work tree the panel title shows the
-branch (`[main]`) and each entry gets a one-cell status column —
+branch (`[main]`) and each entry gets a one-cell status column -
 `M` modified, `A` added, `?` untracked, `!` ignored (ignored entries
 are dimmed); changes deep inside a subdirectory mark the subdirectory.
 Statuses are computed on a background thread so huge repositories never
@@ -245,7 +245,7 @@ block the UI. Built behind the default-on `git` cargo feature;
 (the panel title shows `archive://path`). F5 copies members out with the
 usual progress/overwrite dialogs, F3 views them; move, delete, and mkdir
 are disabled inside. Copying **into** an archive works for zip only
-(members are appended in place — tar formats would need a full rewrite):
+(members are appended in place - tar formats would need a full rewrite):
 F5 with the destination panel inside a zip, or any destination written
 as `path/to/archive.zip://dir`. The archive index loads once at open;
 each member read decodes only that member.
@@ -258,13 +258,13 @@ smartcase regex and Shift+F7 repeats, F4 replaces interactively
 (Replace / Skip / All / Quit), F8 deletes the selection or line, Enter
 auto-indents, Ctrl+arrows hop words, and F10/Esc quits (asking
 Save/Discard/Cancel when modified). Known file types get syntect syntax
-colors (skipped for files over 2 MB — a 50 MB log still opens in about
+colors (skipped for files over 2 MB - a 50 MB log still opens in about
 0.2 s). On an SFTP panel F4 edits a local scratch copy and uploads it
 back when you close the editor. Set `editor = "external"` in the config
 to keep using $VISUAL/$EDITOR.
 
 **Remote filesystems (SFTP)**: `cd sftp://[user@]host[:port][/path]`
-(or F9 → Command → SFTP link) connects a panel to a server — user
+(or F9 → Command → SFTP link) connects a panel to a server - user
 defaults to your login, path to the remote home. Authentication tries
 your ssh-agent, then the default `~/.ssh/id_*` keys, then asks for a
 password; host keys are checked against `~/.ssh/known_hosts`, and
@@ -272,32 +272,32 @@ unknown hosts show a fingerprint dialog before being saved. The panel
 title shows the URL. Everything works panel-normally: F5/F6 transfer
 between local and remote (or between two remote directories) with the
 usual progress/overwrite dialogs, F7 creates server directories, F8
-deletes on the server (permanently — there is no remote trash), F3
+deletes on the server (permanently - there is no remote trash), F3
 views, and F4 edits a local scratch copy that is uploaded back when the
 editor saved it. `cd path` stays on the server; plain `cd` (or any `~`
 path) returns the panel to the local filesystem, and closing the last
 remote panel closes the connection. Both panels can share one
-connection — put the same host on both sides, or compare a local tree
+connection - put the same host on both sides, or compare a local tree
 against a remote one with Ctrl+X d and F5 the differences across. The
 hotlist stores sftp:// entries, so `Ctrl+\` + Enter reconnects.
 
 ## Configuration
 
-`~/.config/rcmd/config.toml` is **yours** — rcmd only ever reads it, so
+`~/.config/rcmd/config.toml` is **yours** - rcmd only ever reads it, so
 comments and hand formatting survive. Everything rcmd changes itself
 (panel sort mode, hidden files, listing format, the hotlist, and every
 options-form toggle) goes to `$XDG_STATE_HOME/rcmd/state.toml`
 (`~/.local/state/rcmd/state.toml` by default) and takes precedence over
-the config file. State is sparse — only keys you actually changed in the
-UI are stored, so a config edit keeps working for everything else — and
+the config file. State is sparse - only keys you actually changed in the
+UI are stored, so a config edit keeps working for everything else - and
 writes merge into the on-disk file, so several rcmd instances never
 clobber each other. Upgrading from 3.x: state keys still in your
 `config.toml` (`show_hidden`, `sort_key`, `sort_reverse`, `listing`,
 `[[hotlist]]`) are migrated once on first start; they stay honoured for
 one release, then stop being read.
 
-The everyday toggles — hidden files, lynx-like motion, mouse,
-auto-reload, git, subshell, editor, theme — live in an MC-style
+The everyday toggles - hidden files, lynx-like motion, mouse,
+auto-reload, git, subshell, editor, theme - live in an MC-style
 checkbox form under **F9 → Options → Panel options**, applied live:
 
 ```toml

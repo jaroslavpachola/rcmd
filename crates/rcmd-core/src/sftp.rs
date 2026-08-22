@@ -2,7 +2,7 @@
 //! `ssh2` session (decision D1: worker threads, no async runtime).
 //!
 //! Connecting is interactive (host-key confirmation, password prompts),
-//! so it runs on a worker thread speaking [`ConnectEvent`]s to the UI —
+//! so it runs on a worker thread speaking [`ConnectEvent`]s to the UI -
 //! the same ask/reply shape as the job engine. All session use is
 //! serialized behind one mutex; SFTP round-trips dominate, the lock is
 //! noise. One connection is shared by both panels and any jobs on it.
@@ -61,7 +61,7 @@ impl SftpUrl {
         })
     }
 
-    /// `sftp://user@host[:port]` — the connection identity, also the
+    /// `sftp://user@host[:port]` - the connection identity, also the
     /// panel title prefix and the connection-cache key.
     pub fn prefix(&self) -> String {
         if self.port == 22 {
@@ -236,7 +236,7 @@ fn check_host_key(
     match kh.check_port(&url.host, url.port, key) {
         CheckResult::Match => Ok(()),
         CheckResult::Mismatch => Err(format!(
-            "HOST KEY MISMATCH for {} — possible man-in-the-middle attack. \
+            "HOST KEY MISMATCH for {} - possible man-in-the-middle attack. \
              Remove the old key from ~/.ssh/known_hosts if the host really changed.",
             url.host
         )),
@@ -278,7 +278,7 @@ fn authenticate(
 ) -> Result<(), String> {
     // The "none" probe behind auth_methods() tells us what the server
     // accepts, so we only try (and only prompt for) methods that can
-    // work — OpenSSH order: publickey, keyboard-interactive, password.
+    // work - OpenSSH order: publickey, keyboard-interactive, password.
     let methods = sess
         .auth_methods(&url.user)
         .map(|m| m.to_string())
@@ -290,7 +290,7 @@ fn authenticate(
 
     let mut last = String::from("authentication failed");
     if has("publickey") {
-        // agent first, then default key files — encrypted ones prompt
+        // agent first, then default key files - encrypted ones prompt
         // for their passphrase instead of silently falling through
         let _ = sess.userauth_agent(&url.user);
         if sess.authenticated() {
@@ -382,7 +382,7 @@ fn ask_secret(
 }
 
 /// Routes keyboard-interactive challenges through the connect dialogs.
-/// Servers may send several prompts per round — each becomes its own
+/// Servers may send several prompts per round - each becomes its own
 /// dialog, in order.
 struct Prompter<'a> {
     tx: &'a Sender<ConnectEvent>,
@@ -406,7 +406,7 @@ impl ssh2::KeyboardInteractivePrompt for Prompter<'_> {
             let text = if instructions.trim().is_empty() {
                 p.text.to_string()
             } else {
-                format!("{} — {}", instructions.trim(), p.text)
+                format!("{} - {}", instructions.trim(), p.text)
             };
             match ask_secret(self.tx, self.rx, text, p.echo) {
                 Ok(answer) => out.push(answer),
@@ -448,7 +448,7 @@ fn key_needs_passphrase(path: &Path) -> bool {
     rest.get(4..4 + n).is_some_and(|cipher| cipher != b"none")
 }
 
-/// Lenient base64 decoder (whitespace skipped, stops at padding) — just
+/// Lenient base64 decoder (whitespace skipped, stops at padding) - just
 /// enough to peek inside OpenSSH-format key files.
 fn base64_decode(s: &str) -> Vec<u8> {
     let mut out = Vec::new();
@@ -509,7 +509,7 @@ pub struct SftpFs {
 }
 
 impl SftpFs {
-    /// `sftp://user@host[:port]` — panel title prefix / cache key.
+    /// `sftp://user@host[:port]` - panel title prefix / cache key.
     pub fn prefix(&self) -> &str {
         &self.prefix
     }

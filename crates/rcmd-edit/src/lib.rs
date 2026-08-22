@@ -1,5 +1,5 @@
 //! The internal editor core: a ropey text buffer with cursor, selection,
-//! unlimited undo/redo, regex search and atomic save. TUI-free — the
+//! unlimited undo/redo, regex search and atomic save. TUI-free - the
 //! frontend renders lines and maps keys; everything stateful lives here.
 //!
 //! Scope (per PLAN2 P4): no multi-cursor, no LSP, no splits. Files are
@@ -100,7 +100,7 @@ impl Editor {
         if bytes[..bytes.len().min(8192)].contains(&0) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "binary file — use the F3 viewer",
+                "binary file - use the F3 viewer",
             ));
         }
         let text = String::from_utf8_lossy(&bytes);
@@ -750,7 +750,7 @@ impl Editor {
         self.replace_match(m, &expanded);
     }
 
-    /// Position just past a match — where the next search starts.
+    /// Position just past a match - where the next search starts.
     pub fn after_match(&self, m: Match) -> Pos {
         let idx = self.char_idx(m.pos) + m.len.max(1);
         self.pos_at(idx.min(self.rope.len_chars()))
@@ -758,7 +758,7 @@ impl Editor {
 }
 
 /// Anything that can hand the highlighter its lines: the editor's rope
-/// or the viewer's lazily-indexed file (hence `&mut self` — lazy
+/// or the viewer's lazily-indexed file (hence `&mut self` - lazy
 /// sources index on demand).
 pub trait LineSource {
     fn line_count(&mut self) -> usize;

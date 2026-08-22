@@ -39,7 +39,7 @@ pub struct Highlighter {
 
 impl Highlighter {
     /// None when the file is too big, has no known syntax, or is plain
-    /// text — callers then render plain, which is also the fast path.
+    /// text - callers then render plain, which is also the fast path.
     pub fn new(path: &Path, len_bytes: usize) -> Option<Highlighter> {
         if len_bytes > MAX_BYTES {
             return None;
@@ -72,7 +72,7 @@ impl Highlighter {
     }
 
     /// Foreground-color spans (as char ranges) for `count` lines starting
-    /// at `start` — one call per frame, one state replay per call. An
+    /// at `start` - one call per frame, one state replay per call. An
     /// empty inner vec means "render that line plain".
     pub fn range_spans<S: LineSource>(
         &mut self,

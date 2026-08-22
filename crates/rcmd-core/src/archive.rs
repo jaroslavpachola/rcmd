@@ -1,5 +1,5 @@
 //! Read-only archive VFS: zip, tar, tar.gz/xz/bz2 natively; rar and 7z
-//! through an external tool (the 7z family, or unrar for .rar) — listed
+//! through an external tool (the 7z family, or unrar for .rar) - listed
 //! once at open, members streamed out per read.
 //!
 //! The entry table is indexed once at open; `open_read` re-opens the
@@ -174,7 +174,7 @@ impl ArchiveFs {
     }
 
     /// Archives may contain "a/b/file" without explicit entries for a/ and
-    /// a/b/ — materialize the whole chain.
+    /// a/b/ - materialize the whole chain.
     fn ensure_dir_chain(&mut self, dir: &Path) {
         if dir.as_os_str().is_empty() || self.index.contains_key(dir) {
             return;
@@ -484,7 +484,7 @@ fn parse_unrar_vt(text: &str) -> Vec<CmdMember> {
 }
 
 /// "-rw-rw-r--" / "drwxrwxr-x" → permission bits (setuid/sticky
-/// letters count as plain execute — close enough for a listing).
+/// letters count as plain execute - close enough for a listing).
 fn parse_unix_mode(s: &str) -> u32 {
     let mut mode = 0u32;
     for (i, c) in s.chars().skip(1).take(9).enumerate() {
@@ -496,7 +496,7 @@ fn parse_unix_mode(s: &str) -> u32 {
 }
 
 /// "YYYY-MM-DD HH:MM:SS[.,frac]" (what 7z and unrar print under
-/// LC_ALL=C) → SystemTime, treated as UTC — close enough for a column.
+/// LC_ALL=C) → SystemTime, treated as UTC - close enough for a column.
 fn parse_datetime(s: &str) -> Option<std::time::SystemTime> {
     let (date, time) = s.trim().split_once(' ')?;
     let mut d = date.split('-');
@@ -563,7 +563,7 @@ mod tests {
         tar.append_data(&mut header, "top.txt", &b"hello\n"[..])
             .unwrap();
 
-        // nested file with NO explicit dir entries — chain must materialize
+        // nested file with NO explicit dir entries - chain must materialize
         let mut header = tar::Header::new_gnu();
         header.set_size(5);
         header.set_mode(0o755);

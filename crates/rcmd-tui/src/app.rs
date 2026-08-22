@@ -159,7 +159,7 @@ pub enum Dialog {
     Jobs(usize),
 }
 
-/// The confirmation step of a bulk rename — nothing has touched the
+/// The confirmation step of a bulk rename - nothing has touched the
 /// filesystem yet when this is on screen.
 pub struct RenamePreview {
     pub dir: PathBuf,
@@ -176,7 +176,7 @@ struct BulkRename {
     temp: PathBuf,
 }
 
-/// F9 > Options > Panel options — MC-style checkbox form over the
+/// F9 > Options > Panel options - MC-style checkbox form over the
 /// config toggles. OK applies everything live and writes the config
 /// file immediately (exit-time saves only cover panel state, so a
 /// second running instance cannot clobber applied options).
@@ -262,7 +262,7 @@ pub struct Job {
 
 enum Exec {
     Command(String),
-    /// Like Command, but without the "Press Enter" pause — for editors
+    /// Like Command, but without the "Press Enter" pause - for editors
     /// and [[open]] rules (append `&` in the rule for GUI apps).
     Quiet(String),
     Shell,
@@ -438,7 +438,7 @@ pub enum Action {
     SortReverse,
     /// S-F4: open the editor on a file that need not exist yet.
     EditNew,
-    /// S-F5 / S-F6: copy / rename the cursor file in place — the
+    /// S-F5 / S-F6: copy / rename the cursor file in place - the
     /// dialog prefills the bare name, targeting the same directory.
     CopyHere,
     MoveHere,
@@ -534,7 +534,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
     ),
 ];
 
-/// The character after `&` in a menu label — its hotkey, lowercased.
+/// The character after `&` in a menu label - its hotkey, lowercased.
 pub fn menu_hotkey(label: &str) -> Option<char> {
     let mut chars = label.chars();
     while let Some(c) = chars.next() {
@@ -888,7 +888,7 @@ impl App {
             if self.quit && !self.jobs.is_empty() {
                 self.quit = false;
                 self.status = Some(format!(
-                    " {} job(s) still running — C-x j lists them (Esc/c cancels) ",
+                    " {} job(s) still running - C-x j lists them (Esc/c cancels) ",
                     self.jobs.len()
                 ));
             }
@@ -1027,7 +1027,7 @@ impl App {
                 ));
             }
             None => {
-                self.status = Some(format!(" searching… {} found — Esc cancels ", find.count));
+                self.status = Some(format!(" searching… {} found - Esc cancels ", find.count));
             }
         }
     }
@@ -1039,7 +1039,7 @@ impl App {
             return;
         }
         let Some(url) = SftpUrl::parse(input) else {
-            self.status = Some(" bad URL — sftp://[user@]host[:port][/path] ".into());
+            self.status = Some(" bad URL - sftp://[user@]host[:port][/path] ".into());
             return;
         };
         let handle = match self.connection(&url.prefix()) {
@@ -1047,7 +1047,7 @@ impl App {
             None => sftp::spawn_connect(url),
         };
         self.status = Some(format!(
-            " connecting to {}… — Esc cancels ",
+            " connecting to {}… - Esc cancels ",
             handle.url.host
         ));
         self.connect = Some(ConnectState {
@@ -1182,7 +1182,7 @@ impl App {
             self.status = Some(match &uploaded {
                 Ok(()) => format!(" uploaded {} ", edit.remote_path.display()),
                 Err(err) => format!(
-                    " upload failed: {err} — local copy kept at {} ",
+                    " upload failed: {err} - local copy kept at {} ",
                     edit.temp.display()
                 ),
             });
@@ -1253,7 +1253,7 @@ impl App {
                         unsafe {
                             libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpgrp());
                         }
-                        println!("[rcmd has no job control — resuming]");
+                        println!("[rcmd has no job control - resuming]");
                         unsafe {
                             libc::tcsetpgrp(libc::STDIN_FILENO, pid);
                             libc::kill(-pid, libc::SIGCONT);
@@ -1314,7 +1314,7 @@ impl App {
     }
 
     /// Ctrl+O or a typed command while the persistent subshell lives:
-    /// leave the alternate screen (the shell owns the primary one — its
+    /// leave the alternate screen (the shell owns the primary one - its
     /// scrollback IS MC's "output screen") and pass keys through raw
     /// until Ctrl+O comes back or the fed command finishes.
     fn subshell_session(&mut self, terminal: &mut DefaultTerminal, exec: Exec) -> Result<()> {
@@ -1331,9 +1331,9 @@ impl App {
         };
         // a busy shell can't take a command (MC says the same); a shell
         // still starting up (slow rc files, compinit) is worth waiting
-        // for — the session shows it booting
+        // for - the session shows it booting
         if pending_cmd.is_some() && !sub.ready() && !sub.starting() {
-            self.status = Some(" the shell is already running a command — Ctrl+O shows it ".into());
+            self.status = Some(" the shell is already running a command - Ctrl+O shows it ".into());
             return Ok(());
         }
         sub.debug(&format!(
@@ -1411,7 +1411,7 @@ impl App {
                 }
             }
             if awaiting && cd_wait.is_none() && sub.ready() {
-                break; // the command finished — back to the panels, like MC
+                break; // the command finished - back to the panels, like MC
             }
             let mut fds = [
                 libc::pollfd {
@@ -1436,7 +1436,7 @@ impl App {
                 let n = unsafe { libc::read(0, keys.as_mut_ptr().cast(), keys.len()) };
                 if n > 0 {
                     let keys = &keys[..n as usize];
-                    // Ctrl+O never reaches the shell (MC-compatible —
+                    // Ctrl+O never reaches the shell (MC-compatible -
                     // yes, that shadows nano's save inside the subshell)
                     if let Some(pos) = keys.iter().position(|&b| b == 0x0F) {
                         sub.feed(&keys[..pos]);
@@ -1542,9 +1542,9 @@ impl App {
             }
             any_done = true;
             self.status = Some(match (aborted, skipped) {
-                (true, _) => format!(" aborted — {files_done} item(s) processed "),
-                (false, 0) => format!(" done — {files_done} item(s) processed "),
-                (false, n) => format!(" done — {files_done} item(s) processed, {n} skipped "),
+                (true, _) => format!(" aborted - {files_done} item(s) processed "),
+                (false, 0) => format!(" done - {files_done} item(s) processed "),
+                (false, n) => format!(" done - {files_done} item(s) processed, {n} skipped "),
             });
         }
         if any_done {
@@ -1559,7 +1559,7 @@ impl App {
     }
 
     /// MC's ESC-as-Meta prefix, for terminals without working F-keys or
-    /// Alt: a lone Esc waits for a follow-up key — a digit becomes an
+    /// Alt: a lone Esc waits for a follow-up key - a digit becomes an
     /// F-key (Esc 1 = F1 … Esc 0 = F10), anything else gets Alt added
     /// (Esc t = Alt+T, Esc Enter = Alt+Enter), and Esc Esc is a real
     /// Escape. Fast Esc+key already arrives as Alt from the terminal;
@@ -1723,7 +1723,7 @@ impl App {
     }
 
     /// Click on the column-header row: sort by that column, a second
-    /// click reverses — mirroring the F9 > Sort menu. Column x-ranges
+    /// click reverses - mirroring the F9 > Sort menu. Column x-ranges
     /// re-derive the table layout (fixed widths + 1 spacing).
     fn header_click(&mut self, side: usize, area: Rect, x: u16) {
         let inner_w = area.width.saturating_sub(2) as usize;
@@ -1978,7 +1978,7 @@ impl App {
                 if v.follow {
                     let _ = v.file.refresh();
                     viewer_end(v, rows);
-                    v.note = Some(" following — f stops ".into());
+                    v.note = Some(" following - f stops ".into());
                 }
             }
             _ => {}
@@ -2094,7 +2094,7 @@ impl App {
             Action::InfoView => self.toggle_info(),
             Action::UserMenu => {
                 if self.config.commands.is_empty() {
-                    self.status = Some(" no [[commands]] in the config — see F1 ".into());
+                    self.status = Some(" no [[commands]] in the config - see F1 ".into());
                 } else {
                     self.dialog = Some(Dialog::UserMenu(0));
                 }
@@ -2254,7 +2254,7 @@ impl App {
         };
         if !browse.is_local() {
             qv.view = None;
-            qv.note = "no preview here — F3 views remote/archive files".into();
+            qv.note = "no preview here - F3 views remote/archive files".into();
             return;
         }
         let path = browse.cwd.join(name);
@@ -2341,7 +2341,7 @@ impl App {
     }
 
     /// `%f` cursor file, `%d` this directory, `%D` the other panel's,
-    /// `%t` marked files, `%%` a literal percent — all shell-quoted.
+    /// `%t` marked files, `%%` a literal percent - all shell-quoted.
     fn expand_macros(&self, template: &str) -> String {
         let panel = &self.panels[self.active];
         let file = panel
@@ -2466,7 +2466,7 @@ impl App {
             return;
         }
         let name = entry.name.clone();
-        // [[view]] filter (F3 only — Shift+F3 stays raw): the
+        // [[view]] filter (F3 only - Shift+F3 stays raw): the
         // command's stdout becomes the viewed text
         if !raw && panel.is_local() {
             let lower = name.to_string_lossy().to_lowercase();
@@ -2545,7 +2545,7 @@ impl App {
 
     /// Run a `[[view]]` filter and open the internal viewer on its
     /// stdout. False = filter unusable (spawn failed, or it failed
-    /// with nothing to show) — the caller falls back to the raw view.
+    /// with nothing to show) - the caller falls back to the raw view.
     fn open_filtered_view(&mut self, rule: &crate::config::OpenRule) -> bool {
         let cwd = self.panels[self.active].local_cwd();
         let cmd = self.expand_macros(&rule.run);
@@ -2558,14 +2558,14 @@ impl App {
         let output = match output {
             Ok(out) => out,
             Err(err) => {
-                self.status = Some(format!(" view filter: {err} — showing raw "));
+                self.status = Some(format!(" view filter: {err} - showing raw "));
                 return false;
             }
         };
         if output.stdout.is_empty() && !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
             let first = err.lines().next().unwrap_or("failed").trim();
-            self.status = Some(format!(" view filter: {first} — showing raw "));
+            self.status = Some(format!(" view filter: {first} - showing raw "));
             return false;
         }
         let temp = std::env::temp_dir().join(format!("rcmd-view-{}-filtered", std::process::id()));
@@ -2731,10 +2731,10 @@ impl App {
             self.status = Some(format!(" bulk rename: {err} "));
             return;
         }
-        // always the built-in editor — the diff must be processed when
+        // always the built-in editor - the diff must be processed when
         // the session ends inside rcmd, $EDITOR can't signal that
         let title = format!(
-            "bulk rename: {} name(s) — edit, save, close (keep the numbers)",
+            "bulk rename: {} name(s) - edit, save, close (keep the numbers)",
             names.len()
         );
         if self.open_internal_editor(&temp, title) {
@@ -2754,7 +2754,7 @@ impl App {
         let text = std::fs::read_to_string(&bulk.temp).unwrap_or_default();
         let _ = std::fs::remove_file(&bulk.temp);
         match rcmd_core::rename::parse(&text, &bulk.names) {
-            Err(err) => self.status = Some(format!(" bulk rename: {err} — nothing done ")),
+            Err(err) => self.status = Some(format!(" bulk rename: {err} - nothing done ")),
             Ok(plan) if plan.is_empty() => self.status = Some(" bulk rename: no changes ".into()),
             Ok(plan) => {
                 self.dialog = Some(Dialog::RenamePreview(RenamePreview {
@@ -3614,7 +3614,7 @@ impl App {
     }
 
     /// Hotlist edits write through to the state file like the options
-    /// form — never to the user's config.
+    /// form - never to the user's config.
     fn save_hotlist(&mut self) {
         let hotlist = self.config.hotlist.clone();
         if let Err(err) = state::update(move |s| s.hotlist = Some(hotlist)) {
@@ -3679,7 +3679,7 @@ impl App {
             self.config.theme = theme.to_string();
             ui::init_theme(theme);
         }
-        // Write through immediately — waiting for exit would let any
+        // Write through immediately - waiting for exit would let any
         // other running instance clobber these on its own exit. Goes to
         // the state file: the user's config.toml is read-only for us.
         let cfg = &self.config;
@@ -3938,11 +3938,11 @@ impl App {
     fn route_transfer(&mut self, sources: Vec<PathBuf>, value: &str, is_move: bool) {
         let src_panel = &self.panels[self.active];
         let src_archive = src_panel.archive.is_some();
-        // sftp:// destination (must match before the zip:// syntax —
+        // sftp:// destination (must match before the zip:// syntax -
         // a URL also contains "://")
         if value.starts_with("sftp://") {
             let Some(url) = SftpUrl::parse(value) else {
-                self.status = Some(" bad URL — sftp://[user@]host[:port]/path ".into());
+                self.status = Some(" bad URL - sftp://[user@]host[:port]/path ".into());
                 return;
             };
             if url.path.as_os_str().is_empty() {
@@ -3954,7 +3954,7 @@ impl App {
                 return;
             }
             let Some(dst_fs) = self.connection(&url.prefix()) else {
-                self.status = Some(format!(" not connected — cd {} first ", url.prefix()));
+                self.status = Some(format!(" not connected - cd {} first ", url.prefix()));
                 return;
             };
             let src_fs = self.panels[self.active].fs.clone();
@@ -4289,7 +4289,7 @@ impl App {
             }
             return;
         }
-        // Focused info pane: nothing to scroll — Tab back or quit.
+        // Focused info pane: nothing to scroll - Tab back or quit.
         if self.info == Some(self.active) {
             match key.code {
                 KeyCode::Tab | KeyCode::BackTab => self.active ^= 1,
@@ -4373,7 +4373,7 @@ impl App {
         }
 
         // Action keys via the (config-driven) keymap. Plain characters and
-        // Left/Right only qualify while the command line is empty — with
+        // Left/Right only qualify while the command line is empty - with
         // text present they belong to line editing.
         let eligible = match key.code {
             KeyCode::Char(_) if !ctrl && !alt => cmd_empty,
@@ -4414,7 +4414,7 @@ impl App {
         }
     }
 
-    /// `cd <dir>` — from the command line or the M-c quick-cd dialog.
+    /// `cd <dir>` - from the command line or the M-c quick-cd dialog.
     fn do_cd(&mut self, dir: &str) {
         if dir.starts_with("sftp://") {
             self.connect_sftp(dir);
@@ -4546,7 +4546,7 @@ impl App {
         let verb = if is_move { "Move" } else { "Copy" };
         let other = &self.panels[self.active ^ 1];
         // a remote or archive panel on the other side prefills its
-        // virtual path — accepting it uploads / packs into the zip
+        // virtual path - accepting it uploads / packs into the zip
         let mut dest = if other.is_remote() {
             other.display_path()
         } else if other.is_local() || is_move {
@@ -4575,7 +4575,7 @@ impl App {
     }
 
     /// S-F5 / S-F6: copy or rename the cursor file without leaving the
-    /// directory — the dialog prefills the bare name for editing.
+    /// directory - the dialog prefills the bare name for editing.
     fn open_transfer_here(&mut self, is_move: bool) {
         if !self.require_local() {
             return;
@@ -4600,7 +4600,7 @@ impl App {
         }));
     }
 
-    /// S-F4: prompt for a file name, then edit it — existing or not.
+    /// S-F4: prompt for a file name, then edit it - existing or not.
     fn open_edit_new(&mut self) {
         if !self.require_local() {
             return;
@@ -5084,7 +5084,7 @@ fn normalize(path: &Path) -> PathBuf {
 
 /// `user[:group]` → numeric ids for chown; either side may be empty
 /// ("leave unchanged") or numeric. On remote panels (`numeric_only`)
-/// names cannot be resolved — the server's passwd is not ours.
+/// names cannot be resolved - the server's passwd is not ours.
 fn parse_owner_spec(spec: &str, numeric_only: bool) -> Result<(Option<u32>, Option<u32>), String> {
     let (user, group) = match spec.split_once(':') {
         Some((u, g)) => (u.trim(), g.trim()),

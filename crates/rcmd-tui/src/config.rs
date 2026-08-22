@@ -1,4 +1,4 @@
-//! `~/.config/rcmd/config.toml` — the user's file, and **read-only**
+//! `~/.config/rcmd/config.toml` - the user's file, and **read-only**
 //! from rcmd's side: comments and hand formatting survive because
 //! nothing here ever writes it back. Everything rcmd changes at runtime
 //! (panel state, hotlist, options-form toggles) lives in
@@ -29,7 +29,7 @@ pub struct Config {
     pub listing: String,
     /// Auto-reload panels when their directory changes on disk.
     pub watch: bool,
-    /// Mouse support (click, double-click, wheel). Additive only —
+    /// Mouse support (click, double-click, wheel). Additive only -
     /// hold Shift to select terminal text while it is on.
     pub mouse: bool,
     /// Git status column + branch in the panel title inside work trees
@@ -44,7 +44,7 @@ pub struct Config {
     /// Custom bindings on top of the preset, e.g. "ctrl+y" = "swap-panels".
     pub keys: BTreeMap<String, String>,
     pub hotlist: Vec<HotEntry>,
-    /// Openers consulted by Enter on a file, in file order — the first
+    /// Openers consulted by Enter on a file, in file order - the first
     /// matching glob wins.
     pub open: Vec<OpenRule>,
     /// View filters consulted by F3: the command's stdout is shown in
@@ -61,7 +61,7 @@ pub struct HotEntry {
     pub path: String,
 }
 
-/// `[[open]]` — `match = "*.pdf"`, `run = "zathura %f &"`.
+/// `[[open]]` - `match = "*.pdf"`, `run = "zathura %f &"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenRule {
     #[serde(rename = "match")]
@@ -69,7 +69,7 @@ pub struct OpenRule {
     pub run: String,
 }
 
-/// `[[commands]]` — a named shell template with `%f %d %D %t` macros,
+/// `[[commands]]` - a named shell template with `%f %d %D %t` macros,
 /// shown in the F2 menu; `key` optionally binds it directly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserCommand {

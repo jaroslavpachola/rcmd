@@ -3,16 +3,16 @@
 //! run inside it, and the panels follow its working directory.
 //!
 //! Mechanics (decision E2): bash, zsh and fish get a prompt hook that
-//! writes `pwd` to an inherited pipe on fd 27 — each message doubles as
+//! writes `pwd` to an inherited pipe on fd 27 - each message doubles as
 //! "the prompt is idle" detection. Shells without a precmd mechanism
 //! (sh, dash, …) fall back to `/proc/<pid>/cwd` plus the pty's
 //! foreground process group and output quiescence. The pty layer is
-//! hand-rolled over `libc::openpty` (decision E1) — Linux-only, like
+//! hand-rolled over `libc::openpty` (decision E1) - Linux-only, like
 //! the rest of the terminal handling.
 //!
 //! While the subshell is hidden its output is buffered (replayed on the
 //! next Ctrl+O) and a tiny shim answers the terminal queries that every
-//! real terminal must answer (DA1, DSR) — fish blocks at startup
+//! real terminal must answer (DA1, DSR) - fish blocks at startup
 //! waiting for those.
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -40,7 +40,7 @@ enum Kind {
     Bash,
     Zsh,
     Fish,
-    /// No precmd mechanism — /proc + foreground-pgroup fallback.
+    /// No precmd mechanism - /proc + foreground-pgroup fallback.
     Plain,
 }
 
@@ -74,7 +74,7 @@ pub struct Subshell {
     pub agreed: PathBuf,
     /// A prompt message arrived since the last feed (hook shells).
     prompt_seen: bool,
-    /// The shell reached a prompt at least once — distinguishes "still
+    /// The shell reached a prompt at least once - distinguishes "still
     /// starting up" (worth waiting for) from "busy with a command".
     ever_ready: bool,
     last_output: Instant,
@@ -94,7 +94,7 @@ pub struct Subshell {
 
 impl Subshell {
     /// Spawn `$SHELL` on a fresh pty in `dir`. Any failure here means
-    /// "no subshell this session" — the caller falls back to plain exec.
+    /// "no subshell this session" - the caller falls back to plain exec.
     pub fn spawn(dir: &Path, cols: u16, rows: u16) -> Result<Subshell> {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         Subshell::spawn_shell(&shell, dir, cols, rows)
@@ -128,7 +128,7 @@ impl Subshell {
                     return Err(std::io::Error::last_os_error());
                 }
                 // hand the hook channel to the shell on a fixed fd;
-                // dup2 clears CLOEXEC — except in the equal-fd special
+                // dup2 clears CLOEXEC - except in the equal-fd special
                 // case, where it is a no-op and the flag must go by hand
                 if ctl == CTL_FD {
                     if libc::fcntl(CTL_FD, libc::F_SETFD, 0) < 0 {
@@ -189,7 +189,7 @@ impl Subshell {
             return;
         }
         if let Ok(Some(_)) = self.child.try_wait() {
-            self.debug("child exited — respawning");
+            self.debug("child exited - respawning");
             self.respawn();
             return;
         }
@@ -364,20 +364,20 @@ impl Subshell {
         };
         match Subshell::spawn_shell(&self.shell, &dir, self.size.0, self.size.1) {
             Ok(fresh) => {
-                // the fresh shell reuses the same rc dir — keep the old
+                // the fresh shell reuses the same rc dir - keep the old
                 // self's Drop (runs on assignment) from deleting it
                 self.rcdir = None;
                 let old_buf = std::mem::take(&mut self.buf);
-                let note = "[rcmd: the subshell exited — respawned]";
+                let note = "[rcmd: the subshell exited - respawned]";
                 *self = fresh;
                 self.buf = old_buf;
                 self.buf
                     .extend_from_slice(format!("\r\n{note}\r\n").as_bytes());
-                self.note = Some(" the subshell exited — respawned ".into());
+                self.note = Some(" the subshell exited - respawned ".into());
             }
             Err(err) => {
                 self.failed = true;
-                self.note = Some(format!(" subshell lost ({err}) — using plain exec "));
+                self.note = Some(format!(" subshell lost ({err}) - using plain exec "));
             }
         }
     }
@@ -390,9 +390,9 @@ impl Subshell {
     }
 
     /// Answer the terminal queries a hidden program blocks on. Every
-    /// real terminal answers DA1 — programs use it as the "no more
+    /// real terminal answers DA1 - programs use it as the "no more
     /// replies coming" fence for capability probing (fish does at
-    /// startup) — and DSR/CPR.
+    /// startup) - and DSR/CPR.
     fn answer_queries(&mut self, chunk: &[u8]) {
         let mut data = std::mem::take(&mut self.carry);
         let watermark = data.len();
@@ -422,7 +422,7 @@ impl Subshell {
 
 impl Drop for Subshell {
     fn drop(&mut self) {
-        // an already-reaped child means the pid may be recycled — don't
+        // an already-reaped child means the pid may be recycled - don't
         // signal it (try_wait returns the cached status without waiting)
         if !matches!(self.child.try_wait(), Ok(Some(_))) {
             unsafe {
@@ -466,7 +466,7 @@ fn build_command(shell: &str, kind: Kind) -> Result<(Option<PathBuf>, Command)> 
         Kind::Zsh => {
             let dir = rc_dir()?;
             // the user's .zshenv must run in the env phase (before
-            // /etc/zsh/zshrc — skip_global_compinit and friends), with
+            // /etc/zsh/zshrc - skip_global_compinit and friends), with
             // ZDOTDIR restored afterwards so the rc phase finds our stub
             std::fs::write(
                 dir.join(".zshenv"),
@@ -705,7 +705,7 @@ mod tests {
         assert!(wait_until(&mut sub, false, 10, |s| s.ready()));
         // the shell asks like fish does at startup; the shim's answer
         // lands on the prompt's input line, where the tty echoes it
-        // (ECHOCTL renders the ESC as "^[") — the typed line spells ESC
+        // (ECHOCTL renders the ESC as "^[") - the typed line spells ESC
         // out as \033, so "[?6c" can only come from the shim
         sub.feed_line("printf 'Q\\033[cQ'");
         assert!(

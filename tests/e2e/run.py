@@ -281,7 +281,7 @@ def test_archive():
         os.path.isfile(extracted) and open(extracted).read() == "from the archive\n",
     )
 
-    # R4: copy INTO the tar — other panel (out/) holds a new file; F5
+    # R4: copy INTO the tar - other panel (out/) holds a new file; F5
     # from there with the tar path as destination rewrites the archive
     open(os.path.join(play, "out", "fresh.txt"), "w").write("packed later\n")
     s.send(b"\t")                       # -> right panel (out/)
@@ -290,7 +290,7 @@ def test_archive():
     s.send(F5)
     s.send(b"\x15")                     # clear the prefilled destination
     s.send(os.path.join(play, "b.tar.gz").encode() + b"://\r", wait=STEP * 4)
-    check("archive: packed into tar", wait_for(s, "done —"))
+    check("archive: packed into tar", wait_for(s, "done -"))
     s.quit()
     with tarfile.open(os.path.join(play, "b.tar.gz")) as t:
         names = t.getnames()
@@ -337,7 +337,7 @@ def test_cmdarchive():
     s.send(b"\r", wait=STEP * 3)        # extract into out/
     extracted = os.path.join(play, "out", "hello.txt")
     check("cmdarchive: F5 extracts",
-          wait_for(s, "done —") and open(extracted).read() == "packed content\n")
+          wait_for(s, "done -") and open(extracted).read() == "packed content\n")
     s.quit()
     shutil.rmtree(root)
 
@@ -773,7 +773,7 @@ def test_jobs():
     s = Session(play, home, args=(play, dest))
     s.send(b"\x13pipe\r", wait=STEP)        # quick search -> pipe.dat
     s.send(F5)
-    s.send(b"\r", wait=STEP * 2)            # copy to dest/ — blocks on the fifo
+    s.send(b"\r", wait=STEP * 2)            # copy to dest/ - blocks on the fifo
     check("jobs: progress dialog", "copy 1 item" in s.screen())
     s.send(b"b", wait=STEP)                 # detach
     check("jobs: status shows background job",
@@ -782,14 +782,14 @@ def test_jobs():
     scr = s.screen()
     check("jobs: list shows it", "Jobs" in scr and "copy 1 item" in scr)
     s.send(b"\r", wait=STEP)                # Enter: foreground again
-    check("jobs: foregrounded", "b — background" in s.screen())
+    check("jobs: foregrounded", "b - background" in s.screen())
     s.send(b"b", wait=STEP)                 # detach again
     s.send(F10, wait=STEP)                  # quit must refuse
     check("jobs: quit refused while running", "still running" in s.screen())
     fd = os.open(os.path.join(play, "pipe.dat"), os.O_WRONLY)
     os.write(fd, b"data!")
     os.close(fd)                            # EOF -> the copy completes
-    check("jobs: finishes in background", wait_for(s, "done —"))
+    check("jobs: finishes in background", wait_for(s, "done -"))
     copied = os.path.join(dest, "pipe.dat")
     check("jobs: payload arrived",
           os.path.isfile(copied) and open(copied, "rb").read() == b"data!")
@@ -798,7 +798,7 @@ def test_jobs():
 
 
 def test_bulk_rename():
-    """R3: bulk rename — edit names in the editor, preview, apply."""
+    """R3: bulk rename - edit names in the editor, preview, apply."""
     root, play, home = sandbox()
     for name in ("aaa.txt", "bbb.txt", "ccc.txt"):
         open(os.path.join(play, name), "w").write(name + "\n")
@@ -1032,7 +1032,7 @@ def test_editor():
     check("editor: modified flag", "[+]" in s.screen())
     s.send(F2, wait=STEP * 2)           # save
     check("editor: saved note", "saved" in s.screen())
-    s.send(F10, wait=STEP * 2)          # quit (no confirm — just saved)
+    s.send(F10, wait=STEP * 2)          # quit (no confirm - just saved)
     check("editor: file written", open(path).read() == "alpha\nbeta\ngamma")
 
     # replace all via F4-in-editor, then quit-confirm discard path
@@ -1057,7 +1057,7 @@ def test_editor():
     s.send(F10, wait=STEP * 2)
     check("editor: capture groups", "A-BET" in open(path).read())
 
-    # R4: F5/F6 block ops — duplicate the first line, then cut one copy
+    # R4: F5/F6 block ops - duplicate the first line, then cut one copy
     s.send(F4, wait=STEP * 2)
     s.send(F5)                          # no selection: duplicate line 1
     s.send(F6)                          # cut the duplicate (clipboard)
@@ -1067,7 +1067,7 @@ def test_editor():
     check("editor: F5 duplicated the line",
           open(path).read().count("alpha") == 2)
 
-    # R4: Alt+W soft-wrap — the tail of a long line becomes visible
+    # R4: Alt+W soft-wrap - the tail of a long line becomes visible
     long_path = os.path.join(play, "wide.txt")
     open(long_path, "w").write("HEAD" + "x" * 150 + "WRAPTAIL\n")
     s.send(b"\x12", wait=STEP)          # Ctrl+R reload the panel
@@ -1117,7 +1117,7 @@ def test_sftp():
         return
     py = sftp_python()
     if py is None:
-        print("SKIP sftp (no python with paramiko — pip install paramiko)")
+        print("SKIP sftp (no python with paramiko - pip install paramiko)")
         return
     root, play, home = sandbox()
     remote = os.path.join(root, "remote")
@@ -1153,7 +1153,7 @@ def test_sftp():
         downloaded = os.path.join(play, "server.txt")
         check(
             "sftp: download via F5",
-            wait_for(s, "done —")
+            wait_for(s, "done -")
             and os.path.isfile(downloaded)
             and open(downloaded).read() == "from the server\n",
         )
@@ -1165,7 +1165,7 @@ def test_sftp():
         uploaded = os.path.join(remote, "upload.txt")
         check(
             "sftp: upload via F5",
-            wait_for(s, "done —")
+            wait_for(s, "done -")
             and os.path.isfile(uploaded)
             and open(uploaded).read() == "to the server\n",
         )
@@ -1225,7 +1225,7 @@ def test_sftp_auth():
         return
     py = sftp_python()
     if py is None:
-        print("SKIP sftp-auth (no python with paramiko — pip install paramiko)")
+        print("SKIP sftp-auth (no python with paramiko - pip install paramiko)")
         return
     keygen = shutil.which("ssh-keygen")
     if keygen is None:
@@ -1236,7 +1236,7 @@ def test_sftp_auth():
     os.makedirs(remote)
     open(os.path.join(remote, "server.txt"), "w").write("from the server\n")
 
-    # an encrypted PEM key in the sandbox home — rcmd must ask for its
+    # an encrypted PEM key in the sandbox home - rcmd must ask for its
     # passphrase instead of falling through to password auth
     sshdir = os.path.join(home, ".ssh")
     os.makedirs(sshdir)
@@ -1267,7 +1267,7 @@ def test_sftp_auth():
         check("sftp auth: host key dialog", wait_for(s, "Unknown host"))
         s.send(b"y")
         check("sftp auth: passphrase prompt", wait_for(s, "passphrase for"))
-        s.send(b"wrong\r", wait=STEP * 2)    # rejected — the prompt returns
+        s.send(b"wrong\r", wait=STEP * 2)    # rejected - the prompt returns
         s.send(b"opensesame\r")
         check("sftp auth: key connected after retry",
               wait_for(s, "server.txt", timeout=15))
@@ -1283,7 +1283,7 @@ def test_sftp_auth():
         check("sftp auth: interactive host key", wait_for(s, "Unknown host"))
         s.send(b"y")
         # server sends two prompts in one round; each gets its own dialog
-        # (and no passphrase prompt — publickey is not on offer)
+        # (and no passphrase prompt - publickey is not on offer)
         check("sftp auth: first challenge", wait_for(s, "Word one:"))
         check("sftp auth: no passphrase detour", "passphrase" not in s.screen())
         s.send(b"fish\r")
@@ -1355,7 +1355,7 @@ def test_subshell():
 
         # a typed command runs in the subshell, panels come right back
         # ('' splits the marker so the echoed command line can't match;
-        # rcmd waits out slow shell startups — compinit and the like)
+        # rcmd waits out slow shell startups - compinit and the like)
         s.send(b"echo AA''BB\r")
         check(
             f"subshell {name}: typed command ran",

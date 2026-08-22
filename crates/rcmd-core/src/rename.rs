@@ -1,7 +1,7 @@
 //! Bulk rename (R3): the marked names become a numbered text buffer the
 //! user edits in the built-in editor; the saved diff turns into renames
 //! and deletes. The parsing and the two-phase apply live here where
-//! they are unit-testable — the TUI owns only the editor session and
+//! they are unit-testable - the TUI owns only the editor session and
 //! the preview dialog.
 
 use std::collections::HashSet;
@@ -37,7 +37,7 @@ impl Plan {
 
 /// Diff the edited buffer against the original names. Every kept line
 /// must still carry its number; a removed line means "delete", a
-/// changed name means "rename". Errors abort the whole operation —
+/// changed name means "rename". Errors abort the whole operation -
 /// nothing is ever applied from a buffer that doesn't parse.
 pub fn parse(buffer: &str, names: &[OsString]) -> Result<Plan, String> {
     let mut seen = vec![false; names.len()];
@@ -50,7 +50,7 @@ pub fn parse(buffer: &str, names: &[OsString]) -> Result<Plan, String> {
             continue;
         }
         let (idx, new_name) = line.split_once('\t').ok_or(format!(
-            "line {lineno}: no tab — keep the number column, delete whole lines to delete files"
+            "line {lineno}: no tab - keep the number column, delete whole lines to delete files"
         ))?;
         let idx: usize = idx
             .trim()
@@ -65,7 +65,7 @@ pub fn parse(buffer: &str, names: &[OsString]) -> Result<Plan, String> {
         seen[idx] = true;
         if new_name.is_empty() {
             return Err(format!(
-                "line {lineno}: empty name — delete the whole line to delete the file"
+                "line {lineno}: empty name - delete the whole line to delete the file"
             ));
         }
         if !targets.insert(new_name.to_string()) {
@@ -98,7 +98,7 @@ pub fn parse(buffer: &str, names: &[OsString]) -> Result<Plan, String> {
 }
 
 /// Two-phase apply inside `dir`: every source first moves to a unique
-/// temp name, then the temps move onto the final names — swaps and
+/// temp name, then the temps move onto the final names - swaps and
 /// chains need no special-casing. A target that still exists (it was
 /// never part of the buffer, or its delete has not happened yet) is
 /// refused and that item returns to its original name; phase-1 failures

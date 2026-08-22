@@ -1,6 +1,6 @@
-# rcmd — a Midnight Commander replacement in Rust
+# rcmd - a Midnight Commander replacement in Rust
 
-**Status:** ✅ COMPLETED (2026-07-04) — all milestones M0–M5 shipped, plus
+**Status:** ✅ COMPLETED (2026-07-04) - all milestones M0–M5 shipped, plus
 the debt list. Kept as a historical record; the follow-up roadmap is
 [PLAN2.md](PLAN2.md).
 
@@ -19,7 +19,7 @@ What the plan got right: the no-async decision cost nothing through M5
 the core/TUI split kept all logic unit-testable; virtual line breaks in
 the viewer and OsString-everywhere prevented the classic bugs on day one.
 
-What deviated: the FsProvider seam was carved in M5, not "from day one" —
+What deviated: the FsProvider seam was carved in M5, not "from day one" -
 retrofitting it took under an hour precisely because panel logic was
 already thin over `read_dir`, so the early-seam advice mattered less than
 keeping the call surface small. Copy-INTO-zip (planned as post-M5
@@ -28,15 +28,15 @@ winner was the pty test harness: every milestone was verified by driving
 the real binary in a pseudo-terminal, which caught keymap and terminal-
 protocol issues (Shift+F8 → F20, Ctrl+\ → Ctrl+4) no unit test would.
 
-The one open item is behavioral: the M1 exit criterion — *stop launching
-mc for a week* — is decided in daily use, not in CI.
+The one open item is behavioral: the M1 exit criterion - *stop launching
+mc for a week* - is decided in daily use, not in CI.
 
 ## Vision
 
 A fast, memory-safe, single-binary orthodox file manager that feels like
 Midnight Commander on day one: two panels, an F-key action bar, a command
 line at the bottom, and keyboard-first operation. Not a reinvention of the
-file-manager UI (yazi/broot already explore that space) — a faithful
+file-manager UI (yazi/broot already explore that space) - a faithful
 modernization of the MC workflow.
 
 ## Why (and why not just use existing tools)
@@ -53,11 +53,11 @@ The orthodox dual-pane niche in Rust is genuinely unoccupied.
 
 ## Non-goals (at least until 1.0)
 
-- Remote VFS (FTP/SFTP/fish) — big surface, defer; design the VFS trait so it can slot in later
+- Remote VFS (FTP/SFTP/fish) - big surface, defer; design the VFS trait so it can slot in later
 - Mouse-driven workflows beyond basic click-to-focus/select
 - Windows support (target Linux first, macOS second; keep unix-only code behind `cfg`)
 - Plugin system / scripting
-- Replacing `mcedit` as a general-purpose editor — F4 can open `$EDITOR` initially
+- Replacing `mcedit` as a general-purpose editor - F4 can open `$EDITOR` initially
 
 ## Crate stack
 
@@ -102,7 +102,7 @@ for local FS work and complicates the core. Revisit only if remote VFS lands.
   with a single `LocalFs` impl. This is the seam where archive/remote VFS
   plugs in later without touching panel code.
 - **Modal overlay stack:** dialogs (copy confirm, mkdir prompt, error box,
-  F9 menu) are a `Vec<Box<dyn Modal>>` — top of stack gets input first.
+  F9 menu) are a `Vec<Box<dyn Modal>>` - top of stack gets input first.
   Exactly how MC feels and trivially composable.
 - **Long operations** (copy of a big tree, recursive delete, dir sizing) are
   jobs: spawned on a worker thread, UI shows an MC-style progress dialog with
@@ -114,7 +114,7 @@ for local FS work and complicates the core. Revisit only if remote VFS lands.
 rcmd/
   Cargo.toml            # workspace
   crates/
-    rcmd-core/          # panels, jobs, FsProvider, sorting, selection — no TUI deps
+    rcmd-core/          # panels, jobs, FsProvider, sorting, selection - no TUI deps
     rcmd-tui/           # ratatui views, keymap, dialogs, main loop
   # binary target lives in rcmd-tui; core is pure logic + std
 ```
@@ -124,14 +124,14 @@ leaves the door open for an alternate frontend.
 
 ## Milestones
 
-### M0 — walking skeleton (~a weekend)
+### M0 - walking skeleton (~a weekend)
 Two panels rendering a directory listing, Tab to switch, arrows/PgUp/PgDn/
 Home/End to move, Enter to descend, standard MC colors, F10/quit. No file
 operations yet. Goal: it *feels* like MC when you navigate.
 
-### M1 — the daily-driver cut
+### M1 - the daily-driver cut
 - Insert/mark selection, `+`/`-`/`*` glob select
-- F5 copy, F6 move/rename, F7 mkdir, F8 delete (to trash) — all with
+- F5 copy, F6 move/rename, F7 mkdir, F8 delete (to trash) - all with
   MC-style confirm dialogs and progress + cancel
 - Sort modes (name/ext/size/mtime, reverse), Ctrl+R reload
 - Symlink display, permission/size/mtime columns, hidden-file toggle
@@ -139,48 +139,48 @@ operations yet. Goal: it *feels* like MC when you navigate.
 
 **Exit criterion: can uninstall nothing, but stop launching `mc` for a week.**
 
-### M2 — command line & shell integration
+### M2 - command line & shell integration
 - Bottom command line: type-to-run in cwd, `cd` handling, Ctrl+O shell
   suspend (swap to a real shell in the panel's cwd, return on exit)
 - `%f`/`%d`-style macros optional; at minimum Alt+Enter inserts filename
 - Exit-to-cwd support (the `mc-wrapper` trick: write last dir to a file,
   shell function `cd`s there)
 
-### M3 — view & edit
+### M3 - view & edit
 - F3 internal viewer: text with encoding fallback, hex mode toggle,
   search, no full-file load (mmap or chunked)
 - F4 opens `$EDITOR` first; internal editor is a separate later decision
 - F9 pulldown menu (discoverable UI for everything above)
 
-### M4 — polish & config
+### M4 - polish & config
 - `config.toml` + keymap remapping, MC and "modern" preset keymaps
 - Panelize/filter, quick search (Ctrl+S / Alt+S)
 - Directory hotlist (Ctrl+\)
 - Skin/theme support (MC blue default, plus a truecolor theme)
 
-### M5 — archives as VFS (stretch)
+### M5 - archives as VFS (stretch)
 - Enter on .zip/.tar.* descends into it via an `ArchiveFs: FsProvider`
 - Copy out of archives; copy *into* is a later stretch
 
 ## Key design decisions to make early
 
-1. **Keymap fidelity vs. modernity** — default to MC bindings exactly
+1. **Keymap fidelity vs. modernity** - default to MC bindings exactly
    (F-keys, Ins, `*`), offer a second preset later. F-keys are the identity
    of the tool; don't compromise them.
-2. **Delete semantics** — F8 → trash, Shift+F8 → permanent. Safer than MC,
+2. **Delete semantics** - F8 → trash, Shift+F8 → permanent. Safer than MC,
    still one keystroke.
-3. **Unicode/width handling** — use `unicode-width` for cell math from the
+3. **Unicode/width handling** - use `unicode-width` for cell math from the
    start; retrofitting is painful. Test with CJK + emoji filenames early.
-4. **Non-UTF-8 filenames** — panels must carry `OsString`/`PathBuf`, render
+4. **Non-UTF-8 filenames** - panels must carry `OsString`/`PathBuf`, render
    lossily, never round-trip through `String`. Classic Rust FM bug source.
 
 ## Risks
 
-- **Scope creep toward mc parity** — mc is ~30 years of features. Mitigation:
+- **Scope creep toward mc parity** - mc is ~30 years of features. Mitigation:
   M1 exit criterion is behavioral ("stop launching mc"), not a checklist.
-- **Terminal weirdness** (resize, kitty protocol, tmux) — ratatui/crossterm
+- **Terminal weirdness** (resize, kitty protocol, tmux) - ratatui/crossterm
   absorb most of it; test in tmux from M0.
-- **The internal editor** — biggest single time sink if attempted. Firm
+- **The internal editor** - biggest single time sink if attempted. Firm
   decision: `$EDITOR` until everything else ships.
 
 ## First session when starting `~/git/rcmd`

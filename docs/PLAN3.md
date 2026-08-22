@@ -1,12 +1,12 @@
-# rcmd 3.0 — the live commander
+# rcmd 3.0 - the live commander
 
-**Status:** R1 DONE (2026-07-06) — the persistent subshell is in,
+**Status:** R1 DONE (2026-07-06) - the persistent subshell is in,
 default-on with `subshell = false` as the escape hatch; now dogfooding.
-R2 DONE (2026-07-27). R3 DONE (2026-07-27) — the whole menu shipped,
-nothing pruned. R4 DONE (2026-07-27) — again the whole menu, including
-the job queue (E3 resolved). R5 DONE (2026-07-27) — only the 3.0.0
+R2 DONE (2026-07-27). R3 DONE (2026-07-27) - the whole menu shipped,
+nothing pruned. R4 DONE (2026-07-27) - again the whole menu, including
+the job queue (E3 resolved). R5 DONE (2026-07-27) - only the 3.0.0
 tag itself waits for the R1 dogfooding window to close (~2026-08-06). (Drafted 2026-07-06, alongside the 2.0 release.)
-**Prerequisite:** PLAN2.md complete (it is). Baseline: 2.0 — MC-workflow
+**Prerequisite:** PLAN2.md complete (it is). Baseline: 2.0 - MC-workflow
 parity and beyond, SFTP panels, built-in editor, openers/user menu;
 threads-not-async settled (D1); 82 unit tests + 82 pty e2e checks.
 
@@ -23,19 +23,19 @@ files like text, watch logs live, complete paths as you type.
 
 - Keyboard-first; MC hands stay unbroken (audited in 2.0 and enforced
   by e2e key checks).
-- `rcmd-core` stays TUI-free; worker threads + mpsc, no async — D1 is
+- `rcmd-core` stays TUI-free; worker threads + mpsc, no async - D1 is
   settled law.
 - Every phase ends pty-verified, subshell on *and* off where relevant.
 - External escape hatches never go away ($EDITOR, plain command exec).
 
 ## Phases
 
-### R1 — the persistent subshell (the flagship, and the risk) — DONE
+### R1 - the persistent subshell (the flagship, and the risk) - DONE
 
 Shipped 2026-07-06 (`rcmd-tui/src/subshell.rs` + a session loop in
 `app.rs`). What the build taught us:
 
-- **E1 resolved: hand-rolled** over `libc::openpty` — no new crate; the
+- **E1 resolved: hand-rolled** over `libc::openpty` - no new crate; the
   e2e harness had already proven the pty knowledge, and `libc` was a
   dependency anyway.
 - **E2 resolved: hooks + pipe, MC's trick minus the SIGSTOP dance.**
@@ -46,7 +46,7 @@ Shipped 2026-07-06 (`rcmd-tui/src/subshell.rs` + a session loop in
   `/proc/<pid>/cwd` + `TIOCGPGRP` (is the shell the foreground pgroup?)
   + 100 ms output quiescence.
 - cd sync uses an **"agreed directory"**: whoever (panel or shell)
-  moved away from the last agreement is the one synced from — no
+  moved away from the last agreement is the one synced from - no
   ping-pong, panel wins ties.
 - The panels live in the alternate screen, the subshell owns the
   primary one, so the terminal itself is MC's "output screen"; hidden
@@ -57,7 +57,7 @@ Shipped 2026-07-06 (`rcmd-tui/src/subshell.rs` + a session loop in
   when visible, the real terminal answers through the passthrough.
 - **Landmine found: `dup2(fd, fd)` keeps CLOEXEC.** When the pipe's
   write end randomly landed on fd 27 itself, the no-op dup2 left
-  CLOEXEC set and the hook fd died at exec — caught only because the
+  CLOEXEC set and the hook fd died at exec - caught only because the
   full e2e suite shifts fd numbering. Handled explicitly.
 - **Landmine found: shells that block before their first prompt.**
   Ubuntu's global compinit stops zsh at an interactive
@@ -76,26 +76,26 @@ Shipped 2026-07-06 (`rcmd-tui/src/subshell.rs` + a session loop in
   injecting, panel cd → subshell `cd` sync, subshell cwd → panel follow
   (OSC 7 / shell precmd hook; fallback `/proc/<pid>/cwd` polling).
 - Job control stays the shell's business (it owns its pty).
-- Shells: POSIX sh, bash, zsh, fish — each gets its own cd-sync recipe
+- Shells: POSIX sh, bash, zsh, fish - each gets its own cd-sync recipe
   and an e2e scenario.
 - `exit` in the subshell respawns it (with a note), like MC.
 - Exit: a month of Ctrl+O muscle memory without a bug report to
   yourself; the entire e2e suite passes with the subshell on and off.
 
 Scope notes: Ctrl+O always returns to panels, even from a full-screen
-app in the subshell (MC-compatible — it shadows nano's save there);
+app in the subshell (MC-compatible - it shadows nano's save there);
 `Exec::Quiet` (openers, external editor, temp viewers) deliberately
 stays on the one-shot path because remote-edit upload and temp cleanup
 need synchronous completion. CI runs the e2e suite twice (subshell on
 and off) plus per-shell scenarios: sh, bash, zsh, fish.
 `RCMD_SUBSHELL_LOG=/path` traces the state machine while dogfooding.
 
-### R2 — SFTP auth depth (carried from 2.0's P7) — DONE
+### R2 - SFTP auth depth (carried from 2.0's P7) - DONE
 
 Shipped 2026-07-27. As planned, plus one structural upgrade: the
 worker now asks the server for its allowed methods first (the "none"
 probe behind `auth_methods()`) and tries only what can work, in
-OpenSSH order — publickey, keyboard-interactive, password. So a
+OpenSSH order - publickey, keyboard-interactive, password. So a
 kbd-interactive-only server never shows a passphrase prompt, and a
 pubkey-only server never asks for a password.
 
@@ -112,13 +112,13 @@ pubkey-only server never asks for a password.
   encrypted PEM ECDSA key (wrong passphrase retried), and a
   kbd-interactive-only server sending two prompts in one round.
 
-### R3 — workflow bells — DONE (2026-07-27, whole menu shipped)
+### R3 - workflow bells - DONE (2026-07-27, whole menu shipped)
 
 Each item its own green commit (fmt, clippy -D, unit + full pty e2e in
 both subshell modes). Notes per item:
 
 - **Bulk rename via the editor** (F9 > File > Bulk rename): shipped
-  vidir-style — marked names become a `<index>\t<name>` buffer in
+  vidir-style - marked names become a `<index>\t<name>` buffer in
   `rcmd-edit` (always the built-in editor: $EDITOR can't signal
   "session over"); the index column makes deleted lines and renames
   unambiguous. Changed lines = renames (two-phase temp names; swaps
@@ -128,7 +128,7 @@ both subshell modes). Notes per item:
   doesn't parse applies nothing. Parsing/apply live in
   `rcmd-core::rename`.
 - **Viewer follow mode**: `f` in F3 (loop-tick fstat rather than
-  notify — works for any path, no watch rewiring); sticks to the
+  notify - works for any path, no watch rewiring); sticks to the
   bottom, truncation/rotation rebuilds the index. Landmine found:
   growing a fully-indexed file whose last byte was a line break needs
   the frontier line-start registered explicitly, or the first appended
@@ -149,7 +149,7 @@ both subshell modes). Notes per item:
   the bare name prefilled), plus legacy F16–F18 codes for the shifted
   F-keys; everything remappable via `[keys]`.
 
-### R4 — depth debt — DONE (2026-07-27, whole menu shipped)
+### R4 - depth debt - DONE (2026-07-27, whole menu shipped)
 
 One green commit per item (fmt, clippy -D, units, full e2e both
 subshell modes; suite now 167 checks). Notes:
@@ -157,7 +157,7 @@ subshell modes; suite now 167 checks). Notes:
 - **Editor depth**: `$1`–`$9` capture groups in replace (expansion only
   trusts captures that re-find the exact highlighted match); mcedit
   F5/F6 (F5 duplicates the block or line and fills the clipboard, F6
-  cuts for pasting elsewhere); soft-wrap behind Alt+W — segments reuse
+  cuts for pasting elsewhere); soft-wrap behind Alt+W - segments reuse
   the horizontal-clipping renderer with a per-segment left edge, so
   tabs/selection/syntax colors came free; wrap-aware viewport walks at
   most a screenful, clicks map through the wrapped rows.
@@ -165,8 +165,8 @@ subshell modes; suite now 167 checks). Notes:
   via getpwnam/getgrnam locally, numeric on sftp), symlink to the
   cursor entry. New `FsWrite::set_owner` verb: `lchown` locally, the
   UIDGID setstat attribute over sftp (missing half backfilled from
-  lstat) — so all three work on remote panels.
-- **Copy into tar**: full rewrite-append as planned — existing entries
+  lstat) - so all three work on remote panels.
+- **Copy into tar**: full rewrite-append as planned - existing entries
   stream into a temp with the same compression (`append_data` re-fixes
   long names), new trees follow with per-file progress and the usual
   retry/skip, temp renames over. Plain/.gz/.xz/.bz2; zip keeps its
@@ -176,36 +176,36 @@ subshell modes; suite now 167 checks). Notes:
   headers** (same toggle as F9 > Sort; layout re-derived from the fixed
   column widths), **Ctrl+Space over sftp/archives** (provider-walking
   twin of the local scan).
-- **Job queue** (E3, designed from scratch — deliberately small):
+- **Job queue** (E3, designed from scratch - deliberately small):
   `jobs: Vec<Job>` with at most one *foreground* job (its dialog is
-  modal, exactly the old behavior); `b` detaches it — panels come back,
-  the status line shows "N job(s) running — pct%", and new jobs can
+  modal, exactly the old behavior); `b` detaches it - panels come back,
+  the status line shows "N job(s) running - pct%", and new jobs can
   start meanwhile. C-x j / F9 > Command > Jobs lists them: Enter
   foregrounds, c cancels. An overwrite/error question pulls a
   background job back to the front by itself; quitting is refused
   while jobs run. e2e drives it deterministically by copying from a
   FIFO (the job blocks until the test opens the writing end).
 
-### R5 — packaging & the wider world — DONE (2026-07-27)
+### R5 - packaging & the wider world - DONE (2026-07-27)
 - `[profile.release]` thin LTO + strip: shipped (7.3 MB binary).
-- Static musl tarball: shipped — a `vendored` cargo feature
+- Static musl tarball: shipped - a `vendored` cargo feature
   (`ssh2/vendored-openssl`; xz2/bzip2 already vendor statically) plus
   a musl entry in the release matrix with an ldd static-linkage gate.
   The workflow gained `workflow_dispatch` so packaging can be dry-run
   without a tag (upload is tag-gated).
-- Demo GIF: shipped — recorded by `tests/e2e/record_demo.py` (the pty
+- Demo GIF: shipped - recorded by `tests/e2e/record_demo.py` (the pty
   harness with timestamps, emitting asciicast v2) and rendered by agg
   with a VGA palette so the mc theme looks like itself; cast + gif
   committed, embedded in the README.
 - Windows, Lua, macOS builds, crates.io (D4): all stay parked unless
-  real demand shows up — unchanged from the 2.0 decisions.
+  real demand shows up - unchanged from the 2.0 decisions.
 - Note: versions now bump per feature (user call, 2026-07-27); the
   3.0.0 release tag follows the R1 dogfooding exit, not this phase.
 
 ## Sequencing & effort (rough)
 
 R1 (2–4 wk, flagship + risk) → R2 (days) → R3 (1–2 wk) → R4 (1–2 wk) →
-R5 (days). R2–R5 do not block on R1 — if the subshell drags, ship 3.x
+R5 (days). R2–R5 do not block on R1 - if the subshell drags, ship 3.x
 minors from the menus. R3/R4 are menus, not promises: cherry-pick per
 sitting, prune freely.
 
@@ -216,20 +216,20 @@ sitting, prune freely.
   landmines. Mitigations: feature flag (default-on only after real
   dogfooding), the plain-exec path stays forever, and the whole e2e
   suite runs in both modes in CI.
-- **Bulk rename is destructive by nature** — collisions, cycles,
+- **Bulk rename is destructive by nature** - collisions, cycles,
   case-only renames on case-insensitive mounts. Two-phase renames plus
   a mandatory preview dialog.
-- **Scope gravity** — R3/R4 could swallow months; the menus exist to be
+- **Scope gravity** - R3/R4 could swallow months; the menus exist to be
   pruned, and nothing in them blocks a release.
 
 ## Decision points
 
-- **E1 (R1): pty layer** — RESOLVED: hand-rolled over `libc::openpty`
+- **E1 (R1): pty layer** - RESOLVED: hand-rolled over `libc::openpty`
   (see R1 notes; `portable-pty` never became worth a dependency).
-- **E2 (R1): cwd tracking** — RESOLVED: prompt hooks writing to an
+- **E2 (R1): cwd tracking** - RESOLVED: prompt hooks writing to an
   inherited pipe fd for bash/zsh/fish, `/proc` + foreground-pgroup
   fallback for plain sh (see R1 notes).
-- **E3 (R4): job queue UI shape** — RESOLVED: one foreground job
+- **E3 (R4): job queue UI shape** - RESOLVED: one foreground job
   (modal dialog, as before) + any number of detached background jobs,
   `b` to detach, C-x j to list/foreground/cancel, asks auto-foreground
   (see R4 notes).

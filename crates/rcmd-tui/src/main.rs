@@ -42,7 +42,7 @@ fn run(
     let mut app = app::App::new(&args.dirs, cfg, warnings)?;
     let result = app.run(terminal);
 
-    // Persist the panel state for the next session — onto the *on-disk*
+    // Persist the panel state for the next session - onto the *on-disk*
     // state file, not this instance's copy: options-form and hotlist
     // changes are written through when they happen, and another instance
     // may have saved its own since we started.
