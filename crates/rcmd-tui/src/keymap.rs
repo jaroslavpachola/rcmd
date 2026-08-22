@@ -40,8 +40,10 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("alt+right", "history-forward"),
     ("alt+y", "history-back"), // MC: M-y / M-u walk the history
     ("alt+u", "history-forward"),
-    ("alt+?", "find-file"), // MC: M-? find file
-    ("alt+c", "quick-cd"),  // MC: M-c quick cd
+    ("alt+?", "find-file"),    // MC: M-? find file
+    ("alt+c", "quick-cd"),     // MC: M-c quick cd
+    ("alt+h", "history-list"), // MC: M-h command-line history
+    ("alt+a", "paste-path"),   // MC: M-a paste the panel directory
     ("ctrl+l", "repaint"),
     ("shift+f4", "edit-new"),
     ("f16", "edit-new"), // S-F4 on legacy terminals
@@ -208,6 +210,8 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "quick-cd" => Action::QuickCd,
         "repaint" => Action::Repaint,
         "bulk-rename" => Action::BulkRename,
+        "history-list" => Action::HistoryList,
+        "jobs" => Action::Jobs,
         _ => return None,
     })
 }

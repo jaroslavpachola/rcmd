@@ -258,6 +258,18 @@ impl Panel {
         self.history.iter().rev().map(String::as_str)
     }
 
+    /// Where this panel was before its current location, for `cd -`.
+    /// Unlike [`Self::hist_back`] this does not move the history cursor:
+    /// the jump is an ordinary cd, so a second `cd -` comes back.
+    pub fn previous_location(&self) -> Option<&str> {
+        let here = self.display_path();
+        self.history[..self.hist_pos.min(self.history.len())]
+            .iter()
+            .rev()
+            .find(|loc| **loc != here)
+            .map(String::as_str)
+    }
+
     /// Previous history location to navigate to, if any.
     pub fn hist_back(&mut self) -> Option<String> {
         let pos = self.hist_pos.checked_sub(1)?;
@@ -777,6 +789,32 @@ mod tests {
         fs::write(dir.path().join("cargo.lock"), "").unwrap();
         fs::write(dir.path().join(".hidden"), "").unwrap();
         dir
+    }
+
+    #[test]
+    fn previous_location_is_where_we_came_from() {
+        let dir = make_tree();
+        let root = dir.path().to_path_buf();
+        let mut panel = Panel::new(root.clone()).unwrap();
+        // fresh panel: nowhere to go back to
+        assert_eq!(panel.previous_location(), None);
+
+        panel.cd(root.join("src")).unwrap();
+        assert_eq!(
+            panel.previous_location().map(str::to_string),
+            Some(root.display().to_string())
+        );
+
+        panel.cd(root.join("Docs")).unwrap();
+        assert_eq!(
+            panel.previous_location().map(str::to_string),
+            Some(root.join("src").display().to_string())
+        );
+        // never reports the place we are standing in
+        assert_ne!(
+            panel.previous_location().map(str::to_string),
+            Some(panel.display_path())
+        );
     }
 
     fn names(panel: &Panel) -> Vec<String> {

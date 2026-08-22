@@ -50,11 +50,13 @@ fn run(
     let (show_hidden, sort_reverse) = (panel.show_hidden, panel.sort_reverse);
     let sort_key = config::sort_key_name(panel.sort_key).to_string();
     let listing = config::list_mode_name(panel.list_mode).to_string();
+    let history: Vec<String> = app.cmdline.history().to_vec();
     if let Err(err) = state::update(|s| {
         s.show_hidden = Some(show_hidden);
         s.sort_key = Some(sort_key);
         s.sort_reverse = Some(sort_reverse);
         s.listing = Some(listing);
+        s.cmd_history = history;
     }) {
         eprintln!("rcmd: could not save state: {err}");
     }

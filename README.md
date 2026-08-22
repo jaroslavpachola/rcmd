@@ -119,6 +119,9 @@ end
 | Alt+← / Alt+→ | Directory history back / forward (per panel) |
 | Alt+↑ | Directory hotlist |
 | Ctrl+X d | Compare directories (marks differences in both panels) |
+| Ctrl+X ! | Panelize a command's output |
+| Alt+H | Command history (kept across sessions); Alt+P / Alt+N walk it |
+| Alt+A | Insert the panel's path on the command line |
 | Ctrl+X q | Quick view: other panel previews the cursor file |
 | Ctrl+X i | Info panel: other panel shows the cursor file's full stat |
 | Alt+i / Alt+o | Other panel: same directory / directory under cursor |
@@ -129,7 +132,11 @@ end
 | F10 | Quit |
 
 Typing goes to the **command line** at the bottom; Enter runs it in the
-active panel's directory (`cd` changes the panel instead). Alt+Enter
+active panel's directory (`cd` changes the panel instead, and `cd -`
+goes back to where the panel came from; a relative `cd` that misses
+locally also tries `$CDPATH`). MC's macros expand there too - `%f` the
+cursor file, `%d` this directory, `%D` the other panel's, `%t` the
+marked files. Alt+Enter
 inserts the selected filename, Ctrl+P/Ctrl+N walk history, Ctrl+A/E are
 readline-style and Esc clears the line (Ctrl+U swaps panels, like MC).
 The `+`/`-`/`*`/`\` selection keys apply only while the command line is
@@ -309,6 +316,8 @@ mouse = true        # click/double-click/wheel support
 git = true          # git status column + branch in panel titles
 editor = "internal" # or "external" ($VISUAL/$EDITOR for F4)
 subshell = true     # persistent $SHELL behind Ctrl+O (false = one-shot exec)
+esc_timeout_ms = 250 # how long a lone Esc waits for its meta follow-up
+                     # (1000 = MC's roomier window for typing Esc 1..0)
 show_hidden = true
 sort_key = "name"   # name | ext | size | mtime
 sort_reverse = false

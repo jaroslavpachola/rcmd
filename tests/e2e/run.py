@@ -663,24 +663,41 @@ def test_escmeta():
     root, play, home = sandbox()
     open(os.path.join(play, "read.me"), "w").write("esc meta works\n")
     s = Session(play, home)
-    # Esc then 9 (separate writes, so crossterm sees a lone Esc) = F9
-    s.send(b"\x1b")
+    # Esc then 9 (separate writes, so crossterm sees a lone Esc) = F9.
+    # The follow-up must land inside esc_timeout_ms (250 ms by default),
+    # so these sends drain briefly instead of a full STEP.
+    s.send(b"\x1b", wait=0.05)
     s.send(b"9")
     check("escmeta: Esc 9 opens the menu", "Make directory..." in s.screen())
     # Esc Esc = a real Escape: closes the menu
-    s.send(b"\x1b")
+    s.send(b"\x1b", wait=0.05)
     s.send(b"\x1b")
     check("escmeta: Esc Esc escapes", "Make directory..." not in s.screen())
     # Esc 3 on a file = F3 viewer
     s.send(DOWN)                       # cursor -> read.me
-    s.send(b"\x1b")
+    s.send(b"\x1b", wait=0.05)
     s.send(b"3")
     check("escmeta: Esc 3 views", "esc meta works" in s.screen())
     s.send(b"q")
     # Esc t = Alt+T (cycle listing: full -> long)
-    s.send(b"\x1b")
+    s.send(b"\x1b", wait=0.05)
     s.send(b"t")
     check("escmeta: Esc t is Alt+T", "Owner" in header_line(s)[:60])
+    s.quit()
+
+    # esc_timeout_ms raises the window for people who type the prefix by
+    # hand: at MC's 1000 ms a half-second gap still reaches F9
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir, exist_ok=True)
+    cfg = os.path.join(cfgdir, "config.toml")
+    open(cfg, "w").write("esc_timeout_ms = 1000\n" + open(cfg).read())
+    s = Session(play, home)
+    s.send(b"\x1b", wait=STEP)         # a slow, deliberate follow-up
+    s.send(b"9")
+    check("escmeta: esc_timeout_ms widens the window",
+          "Make directory..." in s.screen())
+    s.send(b"\x1b", wait=0.05)
+    s.send(b"\x1b")
     s.quit()
     shutil.rmtree(root)
 
@@ -907,6 +924,79 @@ def test_extensibility():
     check("extensibility: Shift+F3 raw view",
           "filtered view content" in s.screen())
     s.send(b"q")
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_keysbatch():
+    """PLAN4 S0 small keys: M-h history (persisted), M-p/M-n, M-a, cd -,
+    C-x !, command-line macros, and the shortened Esc timeout."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "one"))
+    os.makedirs(os.path.join(play, "two"))
+    open(os.path.join(play, "marker.txt"), "w").write("x\n")
+    s = Session(play, home)
+
+    # command-line macros: %d expands to the panel directory
+    s.send(b"echo %d > macro.out\r", wait=STEP * 3)
+    if not SUBSHELL:
+        s.send(b"\r", wait=STEP * 2)
+    out = os.path.join(play, "macro.out")
+    check(
+        "keys: %d expands on the command line",
+        os.path.isfile(out) and play in open(out).read(),
+    )
+
+    # cd - returns to the previous directory
+    s.send(b"cd one\r")
+    check("keys: cd landed", play + "/one" in s.screen())
+    s.send(b"cd -\r")
+    check("keys: cd - goes back", play + "/one" not in s.screen() and play in s.screen())
+
+    # M-a pastes the panel path onto the command line
+    s.send(b"\x1ba", wait=STEP)
+    check("keys: M-a pastes the path", play in s.screen().split("\n")[-2])
+
+    # a lone Esc clears the line within the 250 ms timeout (was 1 s).
+    # assert on text rcmd itself painted: the harness ignores the
+    # clear-screen sequence, so stale shell output on that row is not
+    # a reliable thing to test against.
+    s.send(b"zzmarkerzz", wait=STEP)
+    check("keys: typing reaches the line", "zzmarkerzz" in s.screen())
+    s.send(b"\x1b", wait=STEP)          # single Esc, no follow-up key
+    check("keys: lone Esc clears the line", "zzmarkerzz" not in s.screen())
+
+    # M-p walks history backwards (same as C-p)
+    s.send(b"\x1bp", wait=STEP)
+    check("keys: M-p recalls history", "cd -" in s.screen().split("\n")[-2])
+    s.send(b"\x1b", wait=STEP)
+
+    # M-h lists the history and Enter puts an entry back on the line
+    s.send(b"\x1bh", wait=STEP)
+    check("keys: M-h opens the history", "Command history" in s.screen())
+    s.send(b"\r", wait=STEP)
+    check("keys: M-h picks an entry", "cd -" in s.screen().split("\n")[-2])
+    s.send(b"\x1b", wait=STEP)
+
+    # C-x ! panelizes a command's output
+    s.send(b"\x18!", wait=STEP)
+    check("keys: C-x ! opens panelize", "Panelize" in s.screen())
+    s.send(b"echo marker.txt\r", wait=STEP * 2)
+    check("keys: C-x ! panelized", "cmd: echo marker.txt" in s.screen())
+    s.send(b"\x12", wait=STEP)          # Ctrl+R restores the listing
+    s.quit()
+
+    # history survived the session, in the state file
+    statepath = os.path.join(home, ".local", "state", "rcmd", "state.toml")
+    st = open(statepath).read()
+    check("keys: history persisted to state", "cmd_history" in st and "cd one" in st, st)
+
+    s = Session(play, home)
+    s.send(b"\x1bh", wait=STEP)
+    check("keys: history restored next run", "cd one" in s.screen())
+    # Enter closes the dialog by picking a line. (A lone Esc would arm
+    # the meta prefix for a second and swallow quit()'s F10.)
+    s.send(b"\r", wait=STEP)
     s.quit()
     shutil.rmtree(root)
 
@@ -1420,6 +1510,7 @@ def main():
         test_jobs,
         test_cxops,
         test_extensibility,
+        test_keysbatch,
         test_configstate,
         test_git,
         test_editor,

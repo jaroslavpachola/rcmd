@@ -27,6 +27,15 @@ use crate::keymap::Keymap;
 use crate::subshell::Subshell;
 use crate::{config, git, keymap, state, ui};
 
+/// Fallback for `esc_timeout_ms`: how long a lone Esc waits for its
+/// follow-up key before acting as a plain Escape (MC's meta prefix).
+/// Short, so "Esc clears the command line" feels immediate; raise it in
+/// the config when typing Esc-1..0 for F1..F10 by hand.
+pub const ESC_TIMEOUT_MS: u64 = 250;
+
+/// Command lines kept across sessions (in the state file).
+const HISTORY_CAP: usize = 100;
+
 pub enum InputAction {
     CopyTo {
         sources: Vec<PathBuf>,
@@ -157,6 +166,8 @@ pub enum Dialog {
     RenamePreview(RenamePreview),
     /// Background-jobs list; the payload is the selected row.
     Jobs(usize),
+    /// M-h: the command-line history; the payload is the selected row.
+    History(usize),
 }
 
 /// The confirmation step of a bulk rename - nothing has touched the
@@ -452,6 +463,8 @@ pub enum Action {
     BulkRename,
     /// The running-jobs list (C-x j / F9 > Command > Jobs).
     Jobs,
+    /// M-h: the command-line history as a pick list.
+    HistoryList,
     /// Shift+F3: the internal viewer without any [[view]] filter.
     ViewRaw,
     /// C-l: redraw the screen from scratch.
@@ -501,6 +514,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("S&wap panels", "C-u", Action::SwapPanels)),
             Some(("Toggle hidde&n files", "M-.", Action::ToggleHidden)),
             Some(("&Jobs...", "C-x j", Action::Jobs)),
+            Some(("Command &history...", "M-h", Action::HistoryList)),
         ],
     ),
     (
@@ -632,6 +646,31 @@ impl CmdLine {
         if self.history.last().map(String::as_str) != Some(cmd) {
             self.history.push(cmd.to_string());
         }
+        if self.history.len() > HISTORY_CAP {
+            let drop = self.history.len() - HISTORY_CAP;
+            self.history.drain(..drop);
+        }
+    }
+
+    /// Newest last, as stored: what M-h lists and the state file keeps.
+    pub fn history(&self) -> &[String] {
+        &self.history
+    }
+
+    /// Seed from the state file at startup (oldest first).
+    fn restore_history(&mut self, history: Vec<String>) {
+        self.history = history;
+        if self.history.len() > HISTORY_CAP {
+            let drop = self.history.len() - HISTORY_CAP;
+            self.history.drain(..drop);
+        }
+    }
+
+    /// M-h: put a history entry on the line, ready to edit or run.
+    fn set_line(&mut self, text: &str) {
+        self.value = text.to_string();
+        self.cursor = self.value.chars().count();
+        self.hist_pos = None;
     }
 
     fn hist_prev(&mut self) {
@@ -776,6 +815,9 @@ impl App {
             Some(format!(" {} ", warnings.join(" · ")))
         };
         let (git_tx, git_rx) = std::sync::mpsc::channel();
+        // command history survives sessions (it lives in the state file)
+        let mut cmdline = CmdLine::default();
+        cmdline.restore_history(state::load().0.cmd_history);
         Ok(App {
             panels: [left, right],
             table_states: [TableState::default(), TableState::default()],
@@ -791,7 +833,7 @@ impl App {
             disk: [None, None],
             menu: None,
             help: None,
-            cmdline: CmdLine::default(),
+            cmdline,
             quick_search: None,
             find: None,
             connect: None,
@@ -833,7 +875,7 @@ impl App {
             self.subshell_tick();
             // an abandoned ESC prefix becomes a real Escape, like MC
             if let Some(at) = self.esc_at
-                && at.elapsed() >= Duration::from_secs(1)
+                && at.elapsed() >= Duration::from_millis(self.config.esc_timeout_ms)
             {
                 self.esc_at = None;
                 self.dispatch_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -2171,6 +2213,15 @@ impl App {
                     self.dialog = Some(Dialog::Jobs(0));
                 }
             }
+            Action::HistoryList => {
+                if self.cmdline.history().is_empty() {
+                    self.status = Some(" command history is empty ".into());
+                } else {
+                    // newest first, so the row under the cursor is the
+                    // command you most likely want back
+                    self.dialog = Some(Dialog::History(0));
+                }
+            }
         }
     }
 
@@ -3391,6 +3442,29 @@ impl App {
                 }
                 _ => self.dialog = Some(Dialog::RenamePreview(d)),
             },
+            Dialog::History(mut selected) => {
+                // rows are newest first; Enter puts one on the line
+                let len = self.cmdline.history().len();
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => {
+                        let history = self.cmdline.history();
+                        if let Some(cmd) = history.get(len.saturating_sub(1) - selected).cloned() {
+                            self.cmdline.set_line(&cmd);
+                        }
+                    }
+                    KeyCode::Up => {
+                        self.dialog = Some(Dialog::History(selected.saturating_sub(1)));
+                    }
+                    KeyCode::Down => {
+                        if selected + 1 < len {
+                            selected += 1;
+                        }
+                        self.dialog = Some(Dialog::History(selected));
+                    }
+                    _ => self.dialog = Some(Dialog::History(selected)),
+                }
+            }
             Dialog::Jobs(mut selected) => {
                 let len = self.jobs.len();
                 match key.code {
@@ -4234,6 +4308,7 @@ impl App {
                 KeyCode::Char('o' | 'O') => self.open_chown(),
                 KeyCode::Char('s' | 'S') => self.open_symlink(),
                 KeyCode::Char('j' | 'J') => self.run_action(Action::Jobs),
+                KeyCode::Char('!') => self.run_action(Action::Panelize),
                 _ => {}
             }
             return;
@@ -4242,7 +4317,8 @@ impl App {
             self.prefix_cx = true;
             self.status = Some(
                 " C-x  (d = compare, q = quick view, i = info, c = chmod, \
-                 o = chown, s = symlink, j = jobs, t/p = paste tags/path) "
+                 o = chown, s = symlink, j = jobs, ! = panelize, \
+                 t/p = paste tags/path) "
                     .into(),
             );
             return;
@@ -4361,11 +4437,12 @@ impl App {
                 self.fallible(|p| p.go_up());
                 return;
             }
-            KeyCode::Char('p') if ctrl => {
+            // C-p/C-n are rcmd's; M-p/M-n are the same keys in MC
+            KeyCode::Char('p') if ctrl || alt => {
                 self.cmdline.hist_prev();
                 return;
             }
-            KeyCode::Char('n') if ctrl => {
+            KeyCode::Char('n') if ctrl || alt => {
                 self.cmdline.hist_next();
                 return;
             }
@@ -4408,9 +4485,13 @@ impl App {
         }
         self.cmdline.push_history(&cmd);
         if let Some(dir) = parse_cd(&cmd) {
+            // no macro expansion here: the expansion shell-quotes, and a
+            // quoted path is not what `cd` wants
             self.do_cd(dir);
         } else {
-            self.pending_exec = Some(Exec::Command(cmd));
+            // MC expands its macros on the command line too; unknown
+            // percent sequences (printf "%s") are left alone
+            self.pending_exec = Some(Exec::Command(self.expand_macros(&cmd)));
         }
     }
 
@@ -4418,6 +4499,17 @@ impl App {
     fn do_cd(&mut self, dir: &str) {
         if dir.starts_with("sftp://") {
             self.connect_sftp(dir);
+            return;
+        }
+        // `cd -`: back to where this panel came from, shell-style
+        if dir == "-" {
+            let previous = self.panels[self.active]
+                .previous_location()
+                .map(str::to_string);
+            match previous {
+                Some(loc) => self.navigate(&loc),
+                None => self.status = Some(" cd: no previous directory ".into()),
+            }
             return;
         }
         let panel = &mut self.panels[self.active];
@@ -4448,11 +4540,39 @@ impl App {
         let target = if dir.is_empty() {
             home_dir()
         } else {
-            self.resolve(dir)
+            self.resolve_cd(dir)
         };
         if let Err(err) = self.panels[self.active].cd(target) {
             self.status = Some(format!(" cd: {err} "));
         }
+    }
+
+    /// [`Self::resolve`] plus `$CDPATH`: a relative target that does not
+    /// exist under the panel directory is looked up in each CDPATH entry
+    /// in turn, like the shell builtin. Absolute and `~` paths, and any
+    /// target that does exist here, never consult it.
+    fn resolve_cd(&self, input: &str) -> PathBuf {
+        let here = self.resolve(input);
+        if here.exists()
+            || input.starts_with('/')
+            || input.starts_with('~')
+            || input.starts_with('.')
+        {
+            return here;
+        }
+        let Some(cdpath) = std::env::var_os("CDPATH") else {
+            return here;
+        };
+        for dir in std::env::split_paths(&cdpath) {
+            if dir.as_os_str().is_empty() {
+                continue;
+            }
+            let candidate = normalize(&dir.join(input));
+            if candidate.is_dir() {
+                return candidate;
+            }
+        }
+        here
     }
 
     /// Tab: complete the path under the cursor (files/dirs only).
@@ -5167,6 +5287,33 @@ mod tests {
         assert!(parse_owner_spec("alice", true).is_err()); // names need local passwd
         assert_eq!(parse_owner_spec("root:", false), Ok((Some(0), None)));
         assert!(parse_owner_spec("no-such-user-xyz", false).is_err());
+    }
+
+    #[test]
+    fn command_history_caps_and_dedups() {
+        let mut cl = CmdLine::default();
+        cl.push_history("ls");
+        cl.push_history("ls"); // consecutive duplicate is dropped
+        cl.push_history("pwd");
+        assert_eq!(cl.history(), ["ls", "pwd"]);
+        for i in 0..HISTORY_CAP + 10 {
+            cl.push_history(&format!("cmd{i}"));
+        }
+        assert_eq!(cl.history().len(), HISTORY_CAP);
+        // the oldest entries fell off the front, the newest is last
+        assert_eq!(
+            cl.history().last().unwrap(),
+            &format!("cmd{}", HISTORY_CAP + 9)
+        );
+        assert!(!cl.history().contains(&"ls".to_string()));
+    }
+
+    #[test]
+    fn restored_history_is_capped_too() {
+        let mut cl = CmdLine::default();
+        cl.restore_history((0..HISTORY_CAP + 5).map(|i| format!("c{i}")).collect());
+        assert_eq!(cl.history().len(), HISTORY_CAP);
+        assert_eq!(cl.history()[0], format!("c{}", 5));
     }
 
     #[test]

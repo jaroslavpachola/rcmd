@@ -41,6 +41,10 @@ pub struct Config {
     /// screen, typed commands run inside it, panels follow its cwd.
     /// false = the pre-3.0 one-shot command execution.
     pub subshell: bool,
+    /// How long a lone Esc waits for its follow-up key before acting as
+    /// a plain Escape (MC's meta prefix: Esc 1..0 = F1..F10, Esc x =
+    /// Alt+X). Raise it towards MC's 1000 when typing those by hand.
+    pub esc_timeout_ms: u64,
     /// Custom bindings on top of the preset, e.g. "ctrl+y" = "swap-panels".
     pub keys: BTreeMap<String, String>,
     pub hotlist: Vec<HotEntry>,
@@ -102,6 +106,7 @@ impl Default for Config {
             git: true,
             editor: "internal".into(),
             subshell: true,
+            esc_timeout_ms: crate::app::ESC_TIMEOUT_MS,
             keys: BTreeMap::new(),
             hotlist: Vec::new(),
             open: Vec::new(),

@@ -45,6 +45,10 @@ pub struct State {
     /// Once `a`/`d` touches it, this owns the list outright.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hotlist: Option<Vec<HotEntry>>,
+    /// Command lines from previous sessions, oldest first (M-h lists
+    /// them, C-p/M-p walk them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cmd_history: Vec<String>,
 }
 
 /// `$XDG_STATE_HOME/rcmd/state.toml`, falling back to

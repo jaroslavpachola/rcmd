@@ -197,6 +197,7 @@ const HELP_TEXT: &[&str] = &[
     "                  save, close, and confirm the preview",
     "  Esc             cancel a running operation",
     "  b               send the running operation to the background",
+    "  Ctrl+X !        panelize a command's output (F9 > Command too)",
     "  Ctrl+X j        jobs list: Enter foregrounds, c cancels; the",
     "                  status line shows aggregate background progress",
     "  Overwrite prompt hotkeys: o=overwrite a=all s=skip S=skip all",
@@ -248,9 +249,14 @@ const HELP_TEXT: &[&str] = &[
     "  (type)          compose a command; Enter runs it in the panel dir",
     "  cd PATH         changes the active panel instead",
     "  Alt+Enter       insert the selected filename",
-    "  Ctrl+P / Ctrl+N previous / next history entry",
+    "  Ctrl+P / Ctrl+N previous / next history entry (Alt+P / Alt+N too)",
+    "  Alt+H           pick from the command history (kept across runs)",
+    "  Alt+A           insert this panel's path (same as Ctrl+X p)",
+    "  cd -            back to the panel's previous directory; a relative",
+    "                  cd that misses here also tries $CDPATH",
+    "  %f %d %D %t     expand on the command line, as in MC (%% = percent)",
     "  Ctrl+A / Ctrl+E start / end of line",
-    "  Esc             clear the command line (Ctrl+U swaps panels, as in MC)",
+    "  Esc             clear the command line - acts at once while typing",
     "  Ctrl+O          open a full shell here; exit returns to rcmd",
     "",
     "# Viewer (F3)",
@@ -280,7 +286,8 @@ const HELP_TEXT: &[&str] = &[
     "# Other",
     "  Esc KEY         meta prefix, like MC: Esc 1..0 = F1..F10,",
     "                  Esc letter = Alt+letter, Esc Esc = plain Escape",
-    "                  (a lone Esc acts after 1 s)",
+    "                  (a lone Esc acts after 1 s - at once if you are",
+    "                  typing on the command line)",
     "  F1              this help",
     "  F4              edit (built-in editor, see above)",
     "  F9              pulldown menu",
@@ -398,6 +405,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Options(d) => draw_options(frame, d),
             Dialog::RenamePreview(d) => draw_rename_preview(frame, d),
             Dialog::Jobs(selected) => draw_jobs(frame, &app.jobs, *selected),
+            Dialog::History(selected) => draw_history(frame, app.cmdline.history(), *selected),
         }
     }
     if let Some(job) = app.fg_job() {
@@ -2253,6 +2261,50 @@ fn draw_connect_ask(frame: &mut Frame, ask: &ConnectAsk) {
 
 /// The C-x j jobs list: every running job with its progress; Enter
 /// pulls one to the foreground, c cancels it.
+/// M-h: the command line's history, newest first. Enter puts the
+/// selected line back on the command line for editing.
+fn draw_history(frame: &mut Frame, history: &[String], selected: usize) {
+    let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let rows = history.len().min(16) as u16;
+    let area = centered(64, rows + 2, frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .title(" Command history ")
+        .title_bottom(Line::from(" Enter picks · Esc cancels ").centered())
+        .style(style);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // keep the selected row in view when the list outgrows the dialog
+    let visible = inner.height as usize;
+    let first = selected.saturating_sub(visible.saturating_sub(1));
+    for (row, (i, cmd)) in history
+        .iter()
+        .rev()
+        .enumerate()
+        .skip(first)
+        .take(visible)
+        .enumerate()
+    {
+        let line = Rect {
+            x: inner.x,
+            y: inner.y + row as u16,
+            width: inner.width,
+            height: 1,
+        };
+        let text = format!(
+            " {:<width$}",
+            tail(cmd, inner.width as usize - 1),
+            width = inner.width as usize - 1
+        );
+        frame.render_widget(
+            Line::from(text).style(if i == selected { sel } else { style }),
+            line,
+        );
+    }
+}
+
 fn draw_jobs(frame: &mut Frame, jobs: &[Job], selected: usize) {
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **MC command-line keys** (4.0 S0): `M-h` opens the command history as
+  a pick list (Enter puts a line back on the command line), `M-p`/`M-n`
+  walk it like MC (`C-p`/`C-n` still work), `M-a` inserts the panel
+  path, `C-x !` panelizes a command's output, and `cd -` returns to the
+  panel's previous directory - a relative `cd` that misses locally now
+  also tries `$CDPATH`. The command line expands MC's macros (`%f %d %D
+  %t %%`); unknown percent sequences are left alone, so `printf "%s"`
+  still works. **The history survives sessions**, in the state file
+  (last 100 lines).
+- **Esc meta prefix is quicker**: a lone Esc now resolves after 250 ms
+  instead of a second, so Esc-to-clear feels immediate. Typing the
+  prefix by hand (Esc 1..0 for F1..F10) needs the follow-up key inside
+  that window - `esc_timeout_ms = 1000` in the config restores MC's
+  older, roomier feel.
+
+## Unreleased
+
 - **Config/state split** (4.0 S0): `~/.config/rcmd/config.toml` is now
   read-only from rcmd's side - comments and hand formatting survive
   because nothing writes it back. Everything rcmd changes itself (panel
