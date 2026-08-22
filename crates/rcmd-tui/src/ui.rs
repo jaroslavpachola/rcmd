@@ -288,7 +288,8 @@ const HELP_TEXT: &[&str] = &[
     "  rcmd -P FILE    write last directory to FILE on exit",
     "                  (see README for the rc() shell wrapper)",
     "",
-    "# Config  (~/.config/rcmd/config.toml, saved on exit)",
+    "# Config  (~/.config/rcmd/config.toml — yours, never rewritten;",
+    "#          rcmd's own state lives in ~/.local/state/rcmd/state.toml)",
     "  theme = \"mc\" | \"dark\"      keymap = \"mc\" | \"modern\" (= lynx on)",
     "  [keys] section adds custom bindings, e.g. \"ctrl+y\" = \"swap-panels\"",
 ];

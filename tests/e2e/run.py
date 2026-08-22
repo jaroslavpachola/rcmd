@@ -62,6 +62,7 @@ class Session:
             os.chdir(cwd)
             os.environ["HOME"] = home
             os.environ.pop("XDG_CONFIG_HOME", None)
+            os.environ.pop("XDG_STATE_HOME", None)  # state.toml stays in $HOME
             os.environ.pop("SSH_AUTH_SOCK", None)  # keep sftp auth deterministic
             os.environ["SHELL"] = shell
             os.environ["TERM"] = "xterm-256color"
@@ -634,8 +635,9 @@ def test_mcdepth():
     check("mcdepth: form checkbox", "[x] Lynx-like motion" in s.screen())
     s.send(b"\r")                      # OK applies live
     time.sleep(0.5)                    # ... and writes through to disk
-    cfg_path = os.path.join(home, ".config", "rcmd", "config.toml")
-    check("mcdepth: options write through", "lynx = true" in open(cfg_path).read())
+    # write-through lands in the state file; config.toml is the user's
+    state_path = os.path.join(home, ".local", "state", "rcmd", "state.toml")
+    check("mcdepth: options write through", "lynx = true" in open(state_path).read())
     s2 = Session(play, home)           # second instance, soon-stale memory
     s.send(HOME_K + DOWN)              # cursor -> docs/
     s.send(b"\x1b[C")                  # lynx Right enters it
@@ -652,7 +654,7 @@ def test_mcdepth():
     # the second instance never saw the toggles; its exit must save only
     # panel state, not clobber the options another instance applied
     s2.quit()
-    check("mcdepth: exit does not clobber", "lynx = false" in open(cfg_path).read())
+    check("mcdepth: exit does not clobber", "lynx = false" in open(state_path).read())
     s.quit()
     shutil.rmtree(root)
 
@@ -905,6 +907,76 @@ def test_extensibility():
     check("extensibility: Shift+F3 raw view",
           "filtered view content" in s.screen())
     s.send(b"q")
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_configstate():
+    """PLAN4 S0: config.toml is the user's and never rewritten; everything
+    rcmd changes lives in $XDG_STATE_HOME/rcmd/state.toml."""
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    cfgpath = os.path.join(cfgdir, "config.toml")
+    open(cfgpath, "w").write(
+        "# hand-written config: this comment must survive\n"
+        'theme = "mc"\n'
+        "show_hidden = false\n"
+        'sort_key = "mtime"\n'
+        "\n"
+        "[[hotlist]]\n"
+        'label = "home"\n'
+        'path = "%s"\n' % home
+    )
+    open(os.path.join(play, "visible.txt"), "w").write("x\n")
+    open(os.path.join(play, ".secret"), "w").write("x\n")
+    s = Session(play, home)
+    # the harness prepends its own subshell line before rcmd ever starts
+    written = open(cfgpath).read()
+    statepath = os.path.join(home, ".local", "state", "rcmd", "state.toml")
+
+    # migration: the state keys still in config.toml seed state.toml once
+    check("config/state: state file created at startup", os.path.isfile(statepath))
+    st = open(statepath).read() if os.path.isfile(statepath) else ""
+    check(
+        "config/state: state keys migrated out of the config",
+        'sort_key = "mtime"' in st and "show_hidden = false" in st,
+        st,
+    )
+    # ...and theme is not one of them: it stays the user's to set
+    check("config/state: non-state keys not migrated", "theme" not in st, st)
+
+    # the merged view still drives behaviour (hidden files stay hidden)
+    scr = s.screen()
+    check(
+        "config/state: config still applies",
+        "visible.txt" in scr and ".secret" not in scr,
+    )
+
+    # a hotlist edit goes to state, never to the user's file
+    s.send(ALT_UP, wait=STEP)              # hotlist (Ctrl+\ equivalent)
+    # the pinned entry points at $HOME, so it renders abbreviated as ~
+    check(
+        "config/state: hotlist read from config",
+        "Directory hotlist" in s.screen() and "home" in s.screen(),
+        s.screen()[-400:],
+    )
+    s.send(b"a", wait=STEP)                # add the current directory
+    s.send(b"\r", wait=STEP)               # Enter on a row closes the dialog
+    s.quit()
+
+    st = open(statepath).read()
+    check("config/state: hotlist saved to state", play in st, st)
+    check(
+        "config/state: user config untouched",
+        open(cfgpath).read() == written and "must survive" in open(cfgpath).read(),
+    )
+
+    # second run: state wins, and the added hotlist entry is still there
+    s = Session(play, home)
+    s.send(ALT_UP, wait=STEP)
+    check("config/state: state survives a restart", play in s.screen())
+    s.send(b"\r", wait=STEP)
     s.quit()
     shutil.rmtree(root)
 
@@ -1348,6 +1420,7 @@ def main():
         test_jobs,
         test_cxops,
         test_extensibility,
+        test_configstate,
         test_git,
         test_editor,
         test_subshell,

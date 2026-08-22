@@ -1,12 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **Config/state split** (4.0 S0): `~/.config/rcmd/config.toml` is now
+  read-only from rcmd's side — comments and hand formatting survive
+  because nothing writes it back. Everything rcmd changes itself (panel
+  sort/hidden/listing state, the hotlist, every options-form toggle)
+  lives in `$XDG_STATE_HOME/rcmd/state.toml` and takes precedence over
+  the config. State is sparse, so a config edit still decides anything
+  you never touched in the UI. Existing state keys in `config.toml` are
+  migrated once on first start and stay honoured for one release.
+
 ## 3.0.0 — 2026-08-22
 
 The live commander ([docs/PLAN3.md](docs/PLAN3.md), R1–R5 complete): the
 persistent subshell shipped in R1 and has been dogfooded since, joined
 by SFTP auth depth, the workflow bells, the depth-debt menu including
 the job queue, and the packaging work.
-
 
 - **Packaging** (3.0 R5): release binaries are now thin-LTO'd and
   stripped, and every release ships a second, fully static

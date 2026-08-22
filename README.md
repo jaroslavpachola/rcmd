@@ -283,10 +283,19 @@ hotlist stores sftp:// entries, so `Ctrl+\` + Enter reconnects.
 
 ## Configuration
 
-`~/.config/rcmd/config.toml` — options-form and hotlist changes are
-saved the moment they happen; panel state (sort mode, hidden files,
-listing format) is saved on exit. Saves merge into the on-disk file,
-so several rcmd instances never clobber each other's settings.
+`~/.config/rcmd/config.toml` is **yours** — rcmd only ever reads it, so
+comments and hand formatting survive. Everything rcmd changes itself
+(panel sort mode, hidden files, listing format, the hotlist, and every
+options-form toggle) goes to `$XDG_STATE_HOME/rcmd/state.toml`
+(`~/.local/state/rcmd/state.toml` by default) and takes precedence over
+the config file. State is sparse — only keys you actually changed in the
+UI are stored, so a config edit keeps working for everything else — and
+writes merge into the on-disk file, so several rcmd instances never
+clobber each other. Upgrading from 3.x: state keys still in your
+`config.toml` (`show_hidden`, `sort_key`, `sort_reverse`, `listing`,
+`[[hotlist]]`) are migrated once on first start; they stay honoured for
+one release, then stop being read.
+
 The everyday toggles — hidden files, lynx-like motion, mouse,
 auto-reload, git, subshell, editor, theme — live in an MC-style
 checkbox form under **F9 → Options → Panel options**, applied live:

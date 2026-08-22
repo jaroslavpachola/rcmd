@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod git;
 mod keymap;
+mod state;
 mod subshell;
 mod ui;
 
@@ -42,20 +43,20 @@ fn run(
     let result = app.run(terminal);
 
     // Persist the panel state for the next session — onto the *on-disk*
-    // config, not this instance's copy: options-form and hotlist changes
-    // are written through when they happen, and another instance may
-    // have saved its own since we started.
+    // state file, not this instance's copy: options-form and hotlist
+    // changes are written through when they happen, and another instance
+    // may have saved its own since we started.
     let panel = &app.panels[app.active];
     let (show_hidden, sort_reverse) = (panel.show_hidden, panel.sort_reverse);
     let sort_key = config::sort_key_name(panel.sort_key).to_string();
     let listing = config::list_mode_name(panel.list_mode).to_string();
-    if let Err(err) = config::update(|cfg| {
-        cfg.show_hidden = show_hidden;
-        cfg.sort_key = sort_key;
-        cfg.sort_reverse = sort_reverse;
-        cfg.listing = listing;
+    if let Err(err) = state::update(|s| {
+        s.show_hidden = Some(show_hidden);
+        s.sort_key = Some(sort_key);
+        s.sort_reverse = Some(sort_reverse);
+        s.listing = Some(listing);
     }) {
-        eprintln!("rcmd: could not save config: {err}");
+        eprintln!("rcmd: could not save state: {err}");
     }
 
     if let Some(path) = &args.printwd {

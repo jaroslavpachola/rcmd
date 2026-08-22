@@ -25,7 +25,7 @@ use rcmd_core::view::FileView;
 use crate::config::{Config, HotEntry};
 use crate::keymap::Keymap;
 use crate::subshell::Subshell;
-use crate::{config, git, keymap, ui};
+use crate::{config, git, keymap, state, ui};
 
 pub enum InputAction {
     CopyTo {
@@ -3613,11 +3613,12 @@ impl App {
         out
     }
 
-    /// Hotlist edits write through to disk like the options form.
+    /// Hotlist edits write through to the state file like the options
+    /// form — never to the user's config.
     fn save_hotlist(&mut self) {
         let hotlist = self.config.hotlist.clone();
-        if let Err(err) = config::update(move |c| c.hotlist = hotlist) {
-            self.status = Some(format!(" could not save config: {err} "));
+        if let Err(err) = state::update(move |s| s.hotlist = Some(hotlist)) {
+            self.status = Some(format!(" could not save state: {err} "));
         }
     }
 
@@ -3679,22 +3680,23 @@ impl App {
             ui::init_theme(theme);
         }
         // Write through immediately — waiting for exit would let any
-        // other running instance clobber these on its own exit.
+        // other running instance clobber these on its own exit. Goes to
+        // the state file: the user's config.toml is read-only for us.
         let cfg = &self.config;
         let (lynx, mouse, watch, git, subshell) =
             (cfg.lynx, cfg.mouse, cfg.watch, cfg.git, cfg.subshell);
         let (show_hidden, editor, theme) = (cfg.show_hidden, cfg.editor.clone(), cfg.theme.clone());
-        if let Err(err) = config::update(move |c| {
-            c.show_hidden = show_hidden;
-            c.lynx = lynx;
-            c.mouse = mouse;
-            c.watch = watch;
-            c.git = git;
-            c.subshell = subshell;
-            c.editor = editor;
-            c.theme = theme;
+        if let Err(err) = state::update(move |s| {
+            s.show_hidden = Some(show_hidden);
+            s.lynx = lynx;
+            s.mouse = Some(mouse);
+            s.watch = Some(watch);
+            s.git = Some(git);
+            s.subshell = Some(subshell);
+            s.editor = Some(editor);
+            s.theme = Some(theme);
         }) {
-            self.status = Some(format!(" could not save config: {err} "));
+            self.status = Some(format!(" could not save state: {err} "));
         }
     }
 
