@@ -312,7 +312,9 @@ clobber each other. Upgrading from 3.x: state keys still in your
 one release, then stop being read.
 
 The settings live in one sectioned checkbox form under **F9 → Options →
-Panel options**, applied live: *Panel* (hidden files, lynx-like motion,
+Panel options**, applied live: *Layout* (split direction and size, and
+which of the menu bar / status line / command line / key bar are
+drawn), *Panel* (hidden files, lynx-like motion,
 mouse, auto-reload, git), *Confirmation* (ask before deleting /
 overwriting / quitting), *Shell and editor* (persistent subshell,
 internal or external editor) and *Appearance* (theme):
@@ -326,6 +328,12 @@ mouse = true        # click/double-click/wheel support
 git = true          # git status column + branch in panel titles
 editor = "internal" # or "external" ($VISUAL/$EDITOR for F4)
 subshell = true     # persistent $SHELL behind Ctrl+O (false = one-shot exec)
+split = "vertical"         # or "horizontal" (panels stacked)
+split_ratio = 50           # percent for the left/top panel, 20..80
+show_menubar = false       # MC's permanent menu bar (F9 works either way)
+show_status = true         # the line describing the cursor entry
+show_cmdline = true        # the command line
+show_keybar = true         # the F1..F10 bar along the bottom
 confirm_delete = true      # ask before F8 / Shift+F8
 confirm_overwrite = true   # ask before overwriting during copy/move
 confirm_exit = false       # ask before F10 quits (MC asks; rcmd does not)

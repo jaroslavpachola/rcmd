@@ -41,6 +41,21 @@ pub struct Config {
     /// screen, typed commands run inside it, panels follow its cwd.
     /// false = the pre-3.0 one-shot command execution.
     pub subshell: bool,
+    /// Panel split direction: "vertical" (side by side, the default) or
+    /// "horizontal" (one above the other), as in MC's Layout dialog.
+    pub split: String,
+    /// Percentage of the window given to the left / top panel, 20..80.
+    pub split_ratio: u16,
+    /// Draw MC's permanent menu bar across the top (F9 opens the menu
+    /// either way).
+    pub show_menubar: bool,
+    /// Draw the status line showing the cursor entry.
+    pub show_status: bool,
+    /// Draw the command line. With it hidden, plain characters only
+    /// trigger key bindings - there is nowhere for them to be typed.
+    pub show_cmdline: bool,
+    /// Draw the F1..F10 key bar along the bottom.
+    pub show_keybar: bool,
     /// Ask before deleting (F8 / Shift+F8).
     pub confirm_delete: bool,
     /// Ask before overwriting an existing file during copy/move; false
@@ -108,6 +123,16 @@ pub struct KeyContexts {
 }
 
 impl Config {
+    /// True when the panels are stacked instead of side by side.
+    pub fn horizontal_split(&self) -> bool {
+        self.split == "horizontal"
+    }
+
+    /// The split percentage, clamped to something usable.
+    pub fn ratio(&self) -> u16 {
+        self.split_ratio.clamp(20, 80)
+    }
+
     /// Sort the raw `[keys]` table into per-context maps. A string value
     /// is a panel binding (the pre-4.0 shape); a sub-table is a context.
     /// Unknown contexts and odd value types become warnings rather than
@@ -171,6 +196,12 @@ impl Default for Config {
             git: true,
             editor: "internal".into(),
             subshell: true,
+            split: "vertical".into(),
+            split_ratio: 50,
+            show_menubar: false,
+            show_status: true,
+            show_cmdline: true,
+            show_keybar: true,
             confirm_delete: true,
             confirm_overwrite: true,
             confirm_exit: false,

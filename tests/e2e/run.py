@@ -560,6 +560,21 @@ def test_sortclick():
     shutil.rmtree(root)
 
 
+def option_downs(scr, label):
+    """Down presses needed to reach `label` in the options form, counted
+    from the first setting. Keeps these tests working as the form grows
+    a section at a time."""
+    rows = []
+    for line in scr.split("\n"):
+        text = line.strip()
+        if any(mark in text for mark in ("[x]", "[ ]", "(*)", "( )", "(Left/Right)")):
+            rows.append(text)
+    for i, row in enumerate(rows):
+        if label in row:
+            return i
+    raise AssertionError(f"{label!r} not found in the options form: {rows}")
+
+
 def status_line(s):
     return s.screen().split("\n")[-3]
 
@@ -630,7 +645,8 @@ def test_mcdepth():
     s.send(b"o")
     s.send(b"p")
     check("mcdepth: options form opens", "Lynx-like motion" in s.screen())
-    s.send(DOWN)                       # -> lynx row
+    for _ in range(option_downs(s.screen(), "Lynx-like motion")):
+        s.send(DOWN)                   # -> lynx row
     s.send(b" ")                       # check it
     check("mcdepth: form checkbox", "[x] Lynx-like motion" in s.screen())
     s.send(b"\r")                      # OK applies live
@@ -646,8 +662,10 @@ def test_mcdepth():
     check("mcdepth: lynx left up", "/docs" not in s.screen().split("\n")[0][:60])
     s.send(b"\x1b[20~")
     s.send(b"o")
-    s.send(b"p")
-    s.send(DOWN + b" " + b"\r")        # uncheck, OK
+    s.send(b"p", wait=STEP)
+    for _ in range(option_downs(s.screen(), "Lynx-like motion")):
+        s.send(DOWN)
+    s.send(b" " + b"\r")               # uncheck, OK
     s.send(HOME_K + DOWN)
     s.send(b"\x1b[C")                  # Right is a no-op once more
     check("mcdepth: lynx toggles off", "/docs" not in s.screen().split("\n")[0][:60])
@@ -928,6 +946,56 @@ def test_extensibility():
     shutil.rmtree(root)
 
 
+def test_layout():
+    """PLAN4 S1: MC's Layout settings - split direction and size, and the
+    optional menu bar / status line / command line / key bar."""
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write(
+        'split = "horizontal"\n'
+        "split_ratio = 30\n"
+        "show_menubar = true\n"
+        "show_keybar = false\n"
+    )
+    open(os.path.join(play, "hello.txt"), "w").write("hi\n")
+    s = Session(play, home)
+    scr = s.screen().split("\n")
+
+    # the menu bar is drawn across the top, the key bar is gone
+    check("layout: menu bar drawn", "File" in scr[0] and "Command" in scr[0], scr[0])
+    check("layout: key bar hidden", not any("10Quit" in line for line in scr), scr[-1])
+
+    # horizontal split: the two panel frames are stacked, so the panel
+    # border appears on more than the usual two rows
+    tops = [i for i, line in enumerate(scr) if line.startswith("\u250c")]
+    check("layout: panels stacked", len(tops) == 2, str(tops))
+    # ...and the 30% top panel is the shorter of the two
+    check("layout: split ratio honoured", tops[1] - tops[0] < ROWS // 2, str(tops))
+
+    # clicking the menu bar opens that menu (click() is 1-based)
+    s.send(click(2, 1), wait=STEP)
+    check("layout: menu bar is clickable", "Make directory..." in s.screen())
+    s.send(b"\x1b", wait=STEP)
+    s.send(b"\x1b", wait=STEP)
+
+    # switch back to a vertical split from the options form
+    s.send(b"\x1b[20~")
+    s.send(b"o")
+    s.send(b"p", wait=STEP)
+    check("layout: form has a Layout section", "Layout" in s.screen(), s.screen())
+    check("layout: ratio row shows the split", "30%" in s.screen(), s.screen())
+    s.send(b" ", wait=STEP)                 # row 1 = Split radio -> vertical
+    s.send(b"\r", wait=STEP)
+    scr = s.screen().split("\n")
+    tops = [i for i, line in enumerate(scr) if line.startswith("\u250c")]
+    check("layout: back to a vertical split", len(tops) == 1, str(tops))
+    statepath = os.path.join(home, ".local", "state", "rcmd", "state.toml")
+    check("layout: saved to state", 'split = "vertical"' in open(statepath).read())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_mcimport():
     """PLAN4 S0: `rcmd --import-mc DIR` converts mc's menu, mc.ext and
     keymap into an rcmd config fragment on stdout, warning on stderr
@@ -1038,7 +1106,7 @@ def test_options():
           "Ask before deleting" in scr and "Ask before quitting" in scr)
 
     # walk to "Ask before deleting" and switch it off, then OK
-    for _ in range(5):                      # 5 settings below the first
+    for _ in range(option_downs(s.screen(), "Ask before deleting")):
         s.send(DOWN)
     scr = s.screen()
     check("options: cursor skips the headings", "[x] Ask before deleting" in scr, scr)
@@ -1059,7 +1127,7 @@ def test_options():
     s.send(b"\x1b[20~")
     s.send(b"o")
     s.send(b"p", wait=STEP)
-    for _ in range(7):
+    for _ in range(option_downs(s.screen(), "Ask before quitting")):
         s.send(DOWN)
     scr = s.screen()
     check("options: reached the quit toggle", "[ ] Ask before quitting" in scr, scr)
@@ -1659,6 +1727,7 @@ def main():
         test_jobs,
         test_cxops,
         test_extensibility,
+        test_layout,
         test_mcimport,
         test_keycontexts,
         test_options,

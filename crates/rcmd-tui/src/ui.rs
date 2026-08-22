@@ -147,7 +147,8 @@ const HELP_TEXT: &[&str] = &[
     "                  (an active long panel takes the whole width, MC's",
     "                  one-panel view; Tab or cycling back restores the split)",
     "  Alt+Left/Right  walk the panel's directory history (back/forward)",
-    "  F9 > Options    one options form, in sections: Panel (hidden",
+    "  F9 > Options    one options form, in sections: Layout (split",
+    "                  direction and size, which bars are drawn), Panel (hidden",
     "                  files, lynx-like motion, mouse, auto-reload, git),",
     "                  Confirmation (ask before deleting / overwriting /",
     "                  quitting), Shell and editor, Appearance - applied",
@@ -320,11 +321,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_viewer(frame, app);
         return;
     }
-    let [main, status, cmdline, keybar] = Layout::vertical([
+    // MC's Layout dialog: every bar is optional, so the vertical stack
+    // is built from whatever is switched on.
+    let cfg = &app.config;
+    let bar = |on: bool| Constraint::Length(u16::from(on));
+    let [menubar, main, status, cmdline, keybar] = Layout::vertical([
+        bar(cfg.show_menubar),
         Constraint::Min(3),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
+        bar(cfg.show_status),
+        bar(cfg.show_cmdline),
+        bar(cfg.show_keybar),
     ])
     .areas(frame.area());
 
@@ -346,16 +352,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             [hidden, main]
         }
     } else {
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(main)
+        let split = [
+            Constraint::Percentage(app.config.ratio()),
+            Constraint::Percentage(100 - app.config.ratio()),
+        ];
+        if app.config.horizontal_split() {
+            Layout::vertical(split).areas(main)
+        } else {
+            Layout::horizontal(split).areas(main)
+        }
     };
 
-    // 2 border rows + 1 column-header row.
-    app.panel_rows = main.height.saturating_sub(3) as usize;
+    // 2 border rows + 1 column-header row, in the ACTIVE panel: with a
+    // horizontal split the two panels can differ in height.
+    let active_area = if app.active == 0 { left } else { right };
+    app.panel_rows = active_area.height.saturating_sub(3) as usize;
     app.areas = crate::app::Areas {
         screen: frame.area(),
         left,
         right,
         keybar,
+        menubar,
     };
 
     for (i, area) in [(0, left), (1, right)] {
@@ -388,9 +405,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             );
         }
     }
-    draw_status(frame, status, app);
-    draw_cmdline(frame, cmdline, app);
-    draw_keybar(frame, keybar);
+    if menubar.height > 0 {
+        draw_menubar(frame, menubar, app.menu.as_ref().map(|m| m.menu));
+    }
+    if status.height > 0 {
+        draw_status(frame, status, app);
+    }
+    if cmdline.height > 0 {
+        draw_cmdline(frame, cmdline, app);
+    }
+    if keybar.height > 0 {
+        draw_keybar(frame, keybar);
+    }
 
     if let Some(menu) = &app.menu {
         draw_menu(frame, menu);
@@ -1018,6 +1044,21 @@ const KEYBAR: [(&str, &str); 10] = [
     ("9", "PullDn"),
     ("10", "Quit"),
 ];
+
+/// MC's permanent menu bar. F9 opens the same menus either way; this is
+/// the always-visible row of titles, clickable like MC's.
+fn draw_menubar(frame: &mut Frame, area: Rect, open: Option<usize>) {
+    use crate::app::MENUS;
+    let base = Style::new().fg(th().label_fg).bg(th().label_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let mut spans = vec![Span::styled(" ", base)];
+    for (i, (title, _)) in MENUS.iter().enumerate() {
+        let style = if open == Some(i) { sel } else { base };
+        hot_spans(title, style, &mut spans);
+        spans.push(Span::styled("  ", base));
+    }
+    frame.render_widget(Line::from(spans).style(base), area);
+}
 
 fn draw_keybar(frame: &mut Frame, area: Rect) {
     let mut spans = Vec::with_capacity(KEYBAR.len() * 2);
@@ -1915,6 +1956,10 @@ fn draw_options(frame: &mut Frame, d: &OptionsDialog) {
             OptRow::Head(title) => (format!(" {title}"), head),
             OptRow::Check(opt, label) => (
                 format!(" {} {label}", check(d.get(*opt))),
+                if d.cursor == i { sel } else { base },
+            ),
+            OptRow::Ratio(label) => (
+                format!(" {label}  {:>3}%  (Left/Right)", d.ratio),
                 if d.cursor == i { sel } else { base },
             ),
             OptRow::Radio(opt, label, off, on) => (

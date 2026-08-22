@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Layout settings** (4.0 S1): MC's Layout dialog arrives as a section
+  of the options form. The panels can be **stacked horizontally**
+  instead of side by side, the **split size** is adjustable (20-80%,
+  Left/Right on the ratio row), and the menu bar, status line, command
+  line and key bar are each optional. The menu bar is new: MC shows one
+  permanently, rcmd only had F9, and it is clickable like the rest.
+  With the command line hidden, plain characters only trigger key
+  bindings - there is nowhere for them to be typed.
+
+## Unreleased
+
 - **Import from Midnight Commander** (4.0 S0, completes it):
   `rcmd --import-mc [DIR]` reads mc's `menu`, `mc.ext` (or the newer
   `mc.ext.ini`) and `mc.keymap` and prints an rcmd config fragment on

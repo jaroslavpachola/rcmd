@@ -42,6 +42,18 @@ pub struct State {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub split: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub split_ratio: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_menubar: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_status: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_cmdline: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_keybar: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub confirm_delete: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confirm_overwrite: Option<bool>,
@@ -125,7 +137,13 @@ pub fn apply(state: &State, config: &mut Config) {
         theme,
         confirm_delete,
         confirm_overwrite,
-        confirm_exit
+        confirm_exit,
+        split,
+        split_ratio,
+        show_menubar,
+        show_status,
+        show_cmdline,
+        show_keybar
     );
     // `lynx` is Option in the config too: unset means "follow the preset".
     if state.lynx.is_some() {

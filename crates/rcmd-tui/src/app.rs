@@ -205,6 +205,8 @@ pub struct OptionsDialog {
     pub cursor: usize,
     /// Current value of every toggle, indexed by [`Opt`].
     pub values: [bool; OPT_COUNT],
+    /// Percentage of the window given to the left / top panel.
+    pub ratio: u16,
     /// Focused button on the button row: true = OK.
     pub ok: bool,
 }
@@ -213,6 +215,11 @@ pub struct OptionsDialog {
 /// bool too: the label spells out which side `true` means.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Opt {
+    HorizontalSplit,
+    MenuBar,
+    StatusLine,
+    CommandLine,
+    KeyBar,
     Hidden,
     Lynx,
     Mouse,
@@ -226,7 +233,7 @@ pub enum Opt {
     DarkTheme,
 }
 
-pub const OPT_COUNT: usize = 11;
+pub const OPT_COUNT: usize = 16;
 
 /// A row of the options form: a section heading or a setting.
 pub enum OptRow {
@@ -235,11 +242,20 @@ pub enum OptRow {
     Check(Opt, &'static str),
     /// Radio pair: (label, text for false, text for true).
     Radio(Opt, &'static str, &'static str, &'static str),
+    /// The panel split percentage, adjusted with Left/Right.
+    Ratio(&'static str),
 }
 
 /// The form, in display order. One dialog covering MC's five (PLAN4 S0):
 /// sections keep it readable without five separate screens.
 pub const OPTION_ROWS: &[OptRow] = &[
+    OptRow::Head("Layout"),
+    OptRow::Radio(Opt::HorizontalSplit, "Split ", "vertical", "horizontal"),
+    OptRow::Ratio("Panel size"),
+    OptRow::Check(Opt::MenuBar, "Menu bar"),
+    OptRow::Check(Opt::StatusLine, "Status line"),
+    OptRow::Check(Opt::CommandLine, "Command line"),
+    OptRow::Check(Opt::KeyBar, "Key bar"),
     OptRow::Head("Panel"),
     OptRow::Check(Opt::Hidden, "Show hidden files"),
     OptRow::Check(Opt::Lynx, "Lynx-like motion"),
@@ -262,7 +278,14 @@ impl OptRow {
         match self {
             OptRow::Head(_) => None,
             OptRow::Check(opt, _) | OptRow::Radio(opt, ..) => Some(*opt),
+            // the ratio is a stop for the cursor but has no bool
+            OptRow::Ratio(_) => None,
         }
+    }
+
+    /// Rows the cursor may land on: settings and the ratio, not headings.
+    pub fn selectable(&self) -> bool {
+        !matches!(self, OptRow::Head(_))
     }
 }
 
@@ -282,6 +305,15 @@ impl OptionsDialog {
         }
     }
 
+    /// Left/Right on the ratio row nudges the split by 5%.
+    fn nudge(&mut self, step: i16) -> bool {
+        if !matches!(OPTION_ROWS.get(self.cursor), Some(OptRow::Ratio(_))) {
+            return false;
+        }
+        self.ratio = (self.ratio as i16 + step).clamp(20, 80) as u16;
+        true
+    }
+
     /// Move the cursor by `step`, skipping section headings and
     /// stopping on the button row (which sits past the last option).
     fn step(&mut self, step: isize) {
@@ -297,8 +329,7 @@ impl OptionsDialog {
             if cursor as usize == last
                 || OPTION_ROWS
                     .get(cursor as usize)
-                    .and_then(OptRow::opt)
-                    .is_some()
+                    .is_some_and(OptRow::selectable)
             {
                 self.cursor = cursor as usize;
                 return;
@@ -418,6 +449,7 @@ pub struct Areas {
     pub left: Rect,
     pub right: Rect,
     pub keybar: Rect,
+    pub menubar: Rect,
 }
 
 /// Turn terminal mouse reporting on or off (a no-op if the terminal
@@ -1822,6 +1854,14 @@ impl App {
         self.quick_search = None;
         self.prefix_cx = false;
         let pos = Position { x, y };
+        if self.areas.menubar.height > 0 && self.areas.menubar.contains(pos) {
+            self.menu = Some(MenuState {
+                menu: 0,
+                item: first_menu_item(MENUS[0].1),
+            });
+            self.menu_click(x, y);
+            return;
+        }
         if self.areas.keybar.contains(pos) {
             // 10 buttons, 8 cells each ("nnLabel  ") → F1..F10
             let n = ((x - self.areas.keybar.x) / 8 + 1).min(10) as u8;
@@ -2324,10 +2364,17 @@ impl App {
                 values[Opt::Subshell as usize] = cfg.subshell;
                 values[Opt::ExternalEditor as usize] = cfg.editor == "external";
                 values[Opt::DarkTheme as usize] = cfg.theme == "dark";
+                values[Opt::HorizontalSplit as usize] = cfg.horizontal_split();
+                values[Opt::MenuBar as usize] = cfg.show_menubar;
+                values[Opt::StatusLine as usize] = cfg.show_status;
+                values[Opt::CommandLine as usize] = cfg.show_cmdline;
+                values[Opt::KeyBar as usize] = cfg.show_keybar;
+                let ratio = cfg.ratio();
                 self.dialog = Some(Dialog::Options(OptionsDialog {
                     // start on the first setting, not the heading
                     cursor: 1,
                     values,
+                    ratio,
                     ok: true,
                 }));
             }
@@ -3791,6 +3838,11 @@ impl App {
                     d.step(1);
                     self.dialog = Some(Dialog::Options(d));
                 }
+                KeyCode::Left | KeyCode::Right
+                    if d.nudge(if key.code == KeyCode::Left { -5 } else { 5 }) =>
+                {
+                    self.dialog = Some(Dialog::Options(d));
+                }
                 KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right => {
                     if d.cursor == OPTION_ROWS.len() {
                         d.ok = !d.ok;
@@ -3901,6 +3953,17 @@ impl App {
             self.git_info = [None, None];
             self.git_refresh();
         }
+        self.config.split = if d.get(Opt::HorizontalSplit) {
+            "horizontal"
+        } else {
+            "vertical"
+        }
+        .to_string();
+        self.config.split_ratio = d.ratio;
+        self.config.show_menubar = d.get(Opt::MenuBar);
+        self.config.show_status = d.get(Opt::StatusLine);
+        self.config.show_cmdline = d.get(Opt::CommandLine);
+        self.config.show_keybar = d.get(Opt::KeyBar);
         self.config.confirm_delete = d.get(Opt::ConfirmDelete);
         self.config.confirm_overwrite = d.get(Opt::ConfirmOverwrite);
         self.config.confirm_exit = d.get(Opt::ConfirmExit);
@@ -3933,6 +3996,13 @@ impl App {
             (cfg.lynx, cfg.mouse, cfg.watch, cfg.git, cfg.subshell);
         let (show_hidden, editor, theme) = (cfg.show_hidden, cfg.editor.clone(), cfg.theme.clone());
         let (del, over, exit) = (cfg.confirm_delete, cfg.confirm_overwrite, cfg.confirm_exit);
+        let (split, ratio) = (cfg.split.clone(), cfg.split_ratio);
+        let (menubar, status_bar, cmdline, keybar) = (
+            cfg.show_menubar,
+            cfg.show_status,
+            cfg.show_cmdline,
+            cfg.show_keybar,
+        );
         if let Err(err) = state::update(move |s| {
             s.show_hidden = Some(show_hidden);
             s.lynx = lynx;
@@ -3945,6 +4015,12 @@ impl App {
             s.confirm_delete = Some(del);
             s.confirm_overwrite = Some(over);
             s.confirm_exit = Some(exit);
+            s.split = Some(split);
+            s.split_ratio = Some(ratio);
+            s.show_menubar = Some(menubar);
+            s.show_status = Some(status_bar);
+            s.show_cmdline = Some(cmdline);
+            s.show_keybar = Some(keybar);
         }) {
             self.status = Some(format!(" could not save state: {err} "));
         }
@@ -4644,12 +4720,16 @@ impl App {
             }
         }
 
-        if edit_line(
-            &mut self.cmdline.value,
-            &mut self.cmdline.cursor,
-            key.code,
-            mods,
-        ) {
+        // with the command line hidden there is nowhere to type: plain
+        // characters only reach bindings (MC's "command prompt" off)
+        if self.config.show_cmdline
+            && edit_line(
+                &mut self.cmdline.value,
+                &mut self.cmdline.cursor,
+                key.code,
+                mods,
+            )
+        {
             self.cmdline.hist_pos = None;
         }
     }
@@ -5483,6 +5563,7 @@ mod tests {
         let mut d = OptionsDialog {
             cursor: 1,
             values: [false; OPT_COUNT],
+            ratio: 50,
             ok: true,
         };
         // every stop is a setting, never a heading, all the way down
@@ -5494,7 +5575,7 @@ mod tests {
                 continue;
             }
             assert!(
-                OPTION_ROWS[d.cursor].opt().is_some(),
+                OPTION_ROWS[d.cursor].selectable(),
                 "landed on a heading at row {}",
                 d.cursor
             );
@@ -5503,23 +5584,60 @@ mod tests {
         // and the same walking backwards
         for _ in 0..OPTION_ROWS.len() * 2 {
             d.step(-1);
-            assert!(d.cursor == OPTION_ROWS.len() || OPTION_ROWS[d.cursor].opt().is_some());
+            assert!(d.cursor == OPTION_ROWS.len() || OPTION_ROWS[d.cursor].selectable());
         }
     }
 
     #[test]
     fn options_toggle_flips_only_the_focused_setting() {
+        // look the row up rather than hardcoding an index: the form
+        // grows a section at a time as the parity work lands
+        let hidden_row = OPTION_ROWS
+            .iter()
+            .position(|r| r.opt() == Some(Opt::Hidden))
+            .expect("the form has a hidden-files row");
         let mut d = OptionsDialog {
-            cursor: 1, // first setting: Show hidden files
+            cursor: hidden_row,
             values: [false; OPT_COUNT],
+            ratio: 50,
             ok: true,
         };
         d.toggle();
         assert!(d.get(Opt::Hidden));
         assert!(!d.get(Opt::Lynx));
-        d.cursor = 0; // a heading: toggling does nothing
+        d.cursor = 0; // a heading: toggling does nothing (row 0 is one)
         d.toggle();
         assert_eq!(d.values.iter().filter(|v| **v).count(), 1);
+    }
+
+    #[test]
+    fn options_ratio_nudges_within_bounds() {
+        let ratio_row = OPTION_ROWS
+            .iter()
+            .position(|r| matches!(r, OptRow::Ratio(_)))
+            .expect("the form has a ratio row");
+        let mut d = OptionsDialog {
+            cursor: ratio_row,
+            values: [false; OPT_COUNT],
+            ratio: 50,
+            ok: true,
+        };
+        assert!(d.nudge(5));
+        assert_eq!(d.ratio, 55);
+        for _ in 0..20 {
+            d.nudge(5);
+        }
+        assert_eq!(d.ratio, 80, "clamped at the top");
+        for _ in 0..40 {
+            d.nudge(-5);
+        }
+        assert_eq!(d.ratio, 20, "clamped at the bottom");
+        // any other row ignores the nudge, so Left/Right still toggles
+        d.cursor = OPTION_ROWS
+            .iter()
+            .position(|r| r.opt() == Some(Opt::Hidden))
+            .unwrap();
+        assert!(!d.nudge(5));
     }
 
     #[test]
