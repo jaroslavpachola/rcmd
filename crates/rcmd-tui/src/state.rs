@@ -41,6 +41,12 @@ pub struct State {
     pub editor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirm_delete: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirm_overwrite: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirm_exit: Option<bool>,
     /// `None` = never edited in rcmd, so `config.toml`'s list stands.
     /// Once `a`/`d` touches it, this owns the list outright.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -116,7 +122,10 @@ pub fn apply(state: &State, config: &mut Config) {
         git,
         subshell,
         editor,
-        theme
+        theme,
+        confirm_delete,
+        confirm_overwrite,
+        confirm_exit
     );
     // `lynx` is Option in the config too: unset means "follow the preset".
     if state.lynx.is_some() {

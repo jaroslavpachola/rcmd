@@ -151,6 +151,14 @@ pub struct ConfirmDialog {
     pub yes: bool,
     pub paths: Vec<PathBuf>,
     pub permanent: bool,
+    pub kind: ConfirmKind,
+}
+
+/// What a [`ConfirmDialog`] does when answered Yes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmKind {
+    Delete,
+    Quit,
 }
 
 pub enum Dialog {
@@ -192,38 +200,109 @@ struct BulkRename {
 /// file immediately (exit-time saves only cover panel state, so a
 /// second running instance cannot clobber applied options).
 pub struct OptionsDialog {
-    /// Focused row: the options in order, then [`OPTION_ROWS`] = the
-    /// OK/Cancel button row.
+    /// Focused row: an index into [`OPTION_ROWS`], or its length for
+    /// the OK/Cancel button row.
     pub cursor: usize,
-    pub show_hidden: bool,
-    pub lynx: bool,
-    pub mouse: bool,
-    pub watch: bool,
-    pub git: bool,
-    pub subshell: bool,
-    /// false = "internal", true = "external" ($VISUAL/$EDITOR).
-    pub external_editor: bool,
-    /// false = "mc" theme, true = "dark".
-    pub dark_theme: bool,
+    /// Current value of every toggle, indexed by [`Opt`].
+    pub values: [bool; OPT_COUNT],
     /// Focused button on the button row: true = OK.
     pub ok: bool,
 }
 
-/// Number of option rows in the form (the button row comes after).
-pub const OPTION_ROWS: usize = 8;
+/// One setting in the form. Radio pairs (editor, theme) are stored as a
+/// bool too: the label spells out which side `true` means.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Opt {
+    Hidden,
+    Lynx,
+    Mouse,
+    Watch,
+    Git,
+    ConfirmDelete,
+    ConfirmOverwrite,
+    ConfirmExit,
+    Subshell,
+    ExternalEditor,
+    DarkTheme,
+}
+
+pub const OPT_COUNT: usize = 11;
+
+/// A row of the options form: a section heading or a setting.
+pub enum OptRow {
+    Head(&'static str),
+    /// Checkbox: label.
+    Check(Opt, &'static str),
+    /// Radio pair: (label, text for false, text for true).
+    Radio(Opt, &'static str, &'static str, &'static str),
+}
+
+/// The form, in display order. One dialog covering MC's five (PLAN4 S0):
+/// sections keep it readable without five separate screens.
+pub const OPTION_ROWS: &[OptRow] = &[
+    OptRow::Head("Panel"),
+    OptRow::Check(Opt::Hidden, "Show hidden files"),
+    OptRow::Check(Opt::Lynx, "Lynx-like motion"),
+    OptRow::Check(Opt::Mouse, "Mouse support"),
+    OptRow::Check(Opt::Watch, "Auto-reload panels"),
+    OptRow::Check(Opt::Git, "Git status"),
+    OptRow::Head("Confirmation"),
+    OptRow::Check(Opt::ConfirmDelete, "Ask before deleting"),
+    OptRow::Check(Opt::ConfirmOverwrite, "Ask before overwriting"),
+    OptRow::Check(Opt::ConfirmExit, "Ask before quitting"),
+    OptRow::Head("Shell and editor"),
+    OptRow::Check(Opt::Subshell, "Persistent subshell"),
+    OptRow::Radio(Opt::ExternalEditor, "Editor", "internal", "external"),
+    OptRow::Head("Appearance"),
+    OptRow::Radio(Opt::DarkTheme, "Theme", "mc", "dark"),
+];
+
+impl OptRow {
+    pub fn opt(&self) -> Option<Opt> {
+        match self {
+            OptRow::Head(_) => None,
+            OptRow::Check(opt, _) | OptRow::Radio(opt, ..) => Some(*opt),
+        }
+    }
+}
 
 impl OptionsDialog {
+    pub fn get(&self, opt: Opt) -> bool {
+        self.values[opt as usize]
+    }
+
+    fn set(&mut self, opt: Opt, on: bool) {
+        self.values[opt as usize] = on;
+    }
+
     fn toggle(&mut self) {
-        match self.cursor {
-            0 => self.show_hidden = !self.show_hidden,
-            1 => self.lynx = !self.lynx,
-            2 => self.mouse = !self.mouse,
-            3 => self.watch = !self.watch,
-            4 => self.git = !self.git,
-            5 => self.subshell = !self.subshell,
-            6 => self.external_editor = !self.external_editor,
-            7 => self.dark_theme = !self.dark_theme,
-            _ => {}
+        if let Some(opt) = OPTION_ROWS.get(self.cursor).and_then(OptRow::opt) {
+            let now = self.get(opt);
+            self.set(opt, !now);
+        }
+    }
+
+    /// Move the cursor by `step`, skipping section headings and
+    /// stopping on the button row (which sits past the last option).
+    fn step(&mut self, step: isize) {
+        let last = OPTION_ROWS.len(); // the button row
+        let mut cursor = self.cursor as isize;
+        loop {
+            cursor += step;
+            if cursor < 0 {
+                cursor = last as isize;
+            } else if cursor > last as isize {
+                cursor = 0;
+            }
+            if cursor as usize == last
+                || OPTION_ROWS
+                    .get(cursor as usize)
+                    .and_then(OptRow::opt)
+                    .is_some()
+            {
+                self.cursor = cursor as usize;
+                return;
+            }
         }
     }
 }
@@ -1533,6 +1612,7 @@ impl App {
     }
 
     fn drain_job(&mut self) {
+        let confirm_overwrite = self.config.confirm_overwrite;
         let mut any_done = false;
         let mut i = 0;
         while i < self.jobs.len() {
@@ -1554,6 +1634,12 @@ impl App {
                         job.current = current;
                     }
                     JobEvent::AskOverwrite { path } => {
+                        if !confirm_overwrite {
+                            // the user turned the question off: answer it
+                            // once, for every remaining file in this job
+                            let _ = job.handle.replies.send(Reply::OverwriteAll);
+                            continue;
+                        }
                         job.ask = Some(Ask::Overwrite { path });
                         job.button = 0;
                         // a question pulls a background job back up
@@ -2120,7 +2206,20 @@ impl App {
             Action::SelectGroup => self.open_select(true),
             Action::UnselectGroup => self.open_select(false),
             Action::InvertSelection => self.panel().invert_marks(),
-            Action::Quit => self.quit = true,
+            Action::Quit => {
+                if self.config.confirm_exit {
+                    self.dialog = Some(Dialog::Confirm(ConfirmDialog {
+                        title: " Quit ".into(),
+                        message: "Quit rcmd?".into(),
+                        yes: true,
+                        paths: Vec::new(),
+                        permanent: false,
+                        kind: ConfirmKind::Quit,
+                    }));
+                } else {
+                    self.quit = true;
+                }
+            }
             Action::Shell => self.pending_exec = Some(Exec::Shell),
             Action::SftpLink => {
                 self.dialog = Some(Dialog::Input(InputDialog {
@@ -2169,16 +2268,23 @@ impl App {
             }
             Action::ToggleHidden => self.fallible(|p| p.toggle_hidden().map(|()| true)),
             Action::Options => {
+                let cfg = &self.config;
+                let mut values = [false; OPT_COUNT];
+                values[Opt::Hidden as usize] = self.panels[self.active].show_hidden;
+                values[Opt::Lynx as usize] = cfg.lynx_on();
+                values[Opt::Mouse as usize] = cfg.mouse;
+                values[Opt::Watch as usize] = cfg.watch;
+                values[Opt::Git as usize] = cfg.git;
+                values[Opt::ConfirmDelete as usize] = cfg.confirm_delete;
+                values[Opt::ConfirmOverwrite as usize] = cfg.confirm_overwrite;
+                values[Opt::ConfirmExit as usize] = cfg.confirm_exit;
+                values[Opt::Subshell as usize] = cfg.subshell;
+                values[Opt::ExternalEditor as usize] = cfg.editor == "external";
+                values[Opt::DarkTheme as usize] = cfg.theme == "dark";
                 self.dialog = Some(Dialog::Options(OptionsDialog {
-                    cursor: 0,
-                    show_hidden: self.panels[self.active].show_hidden,
-                    lynx: self.config.lynx_on(),
-                    mouse: self.config.mouse,
-                    watch: self.config.watch,
-                    git: self.config.git,
-                    subshell: self.config.subshell,
-                    external_editor: self.config.editor == "external",
-                    dark_theme: self.config.theme == "dark",
+                    // start on the first setting, not the heading
+                    cursor: 1,
+                    values,
                     ok: true,
                 }));
             }
@@ -3496,10 +3602,10 @@ impl App {
             }
             Dialog::Confirm(mut d) => match key.code {
                 KeyCode::Esc | KeyCode::Char('n') => {}
-                KeyCode::Char('y') => self.start_delete(d.paths, d.permanent),
+                KeyCode::Char('y') => self.confirm_yes(d),
                 KeyCode::Enter => {
                     if d.yes {
-                        self.start_delete(d.paths, d.permanent);
+                        self.confirm_yes(d);
                     }
                 }
                 KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
@@ -3601,30 +3707,26 @@ impl App {
             Dialog::Options(mut d) => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => {
-                    if d.cursor != OPTION_ROWS || d.ok {
+                    if d.cursor != OPTION_ROWS.len() || d.ok {
                         self.apply_options(&d);
                     }
                 }
-                KeyCode::Char(' ') if d.cursor == OPTION_ROWS => {
+                KeyCode::Char(' ') if d.cursor == OPTION_ROWS.len() => {
                     // Space presses the focused button, like MC
                     if d.ok {
                         self.apply_options(&d);
                     }
                 }
                 KeyCode::Up => {
-                    d.cursor = if d.cursor == 0 {
-                        OPTION_ROWS
-                    } else {
-                        d.cursor - 1
-                    };
+                    d.step(-1);
                     self.dialog = Some(Dialog::Options(d));
                 }
                 KeyCode::Down | KeyCode::Tab => {
-                    d.cursor = (d.cursor + 1) % (OPTION_ROWS + 1);
+                    d.step(1);
                     self.dialog = Some(Dialog::Options(d));
                 }
                 KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right => {
-                    if d.cursor == OPTION_ROWS {
+                    if d.cursor == OPTION_ROWS.len() {
                         d.ok = !d.ok;
                     } else {
                         d.toggle();
@@ -3697,27 +3799,28 @@ impl App {
     }
 
     /// OK in the options form: apply every change live and write it
-    /// through to the config file right away.
+    /// through to the state file right away.
     fn apply_options(&mut self, d: &OptionsDialog) {
+        let show_hidden = d.get(Opt::Hidden);
         for i in 0..2 {
-            if self.panels[i].show_hidden != d.show_hidden
+            if self.panels[i].show_hidden != show_hidden
                 && let Err(err) = self.panels[i].toggle_hidden()
             {
                 self.status = Some(format!(" {err} "));
             }
         }
-        self.config.show_hidden = d.show_hidden;
-        if self.config.lynx_on() != d.lynx {
-            self.config.lynx = Some(d.lynx);
+        self.config.show_hidden = show_hidden;
+        if self.config.lynx_on() != d.get(Opt::Lynx) {
+            self.config.lynx = Some(d.get(Opt::Lynx));
             (self.keymap, _) = full_keymap(&self.config);
         }
-        if self.config.mouse != d.mouse {
-            self.config.mouse = d.mouse;
-            set_mouse_capture(d.mouse);
+        if self.config.mouse != d.get(Opt::Mouse) {
+            self.config.mouse = d.get(Opt::Mouse);
+            set_mouse_capture(self.config.mouse);
         }
-        if self.config.watch != d.watch {
-            self.config.watch = d.watch;
-            self.watch = if d.watch {
+        if self.config.watch != d.get(Opt::Watch) {
+            self.config.watch = d.get(Opt::Watch);
+            self.watch = if self.config.watch {
                 let (watch, warning) = build_watch();
                 if let Some(warning) = warning {
                     self.status = Some(format!(" {warning} "));
@@ -3727,13 +3830,16 @@ impl App {
                 None
             };
         }
-        if self.config.git != d.git {
-            self.config.git = d.git;
+        if self.config.git != d.get(Opt::Git) {
+            self.config.git = d.get(Opt::Git);
             self.git_info = [None, None];
             self.git_refresh();
         }
-        self.config.subshell = d.subshell;
-        if !d.subshell {
+        self.config.confirm_delete = d.get(Opt::ConfirmDelete);
+        self.config.confirm_overwrite = d.get(Opt::ConfirmOverwrite);
+        self.config.confirm_exit = d.get(Opt::ConfirmExit);
+        self.config.subshell = d.get(Opt::Subshell);
+        if !self.config.subshell {
             self.subshell = None;
         } else if self.subshell.is_none() {
             let (cols, rows) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
@@ -3742,13 +3848,13 @@ impl App {
                 Err(err) => self.status = Some(format!(" subshell disabled: {err} ")),
             }
         }
-        self.config.editor = if d.external_editor {
+        self.config.editor = if d.get(Opt::ExternalEditor) {
             "external"
         } else {
             "internal"
         }
         .to_string();
-        let theme = if d.dark_theme { "dark" } else { "mc" };
+        let theme = if d.get(Opt::DarkTheme) { "dark" } else { "mc" };
         if self.config.theme != theme {
             self.config.theme = theme.to_string();
             ui::init_theme(theme);
@@ -3760,6 +3866,7 @@ impl App {
         let (lynx, mouse, watch, git, subshell) =
             (cfg.lynx, cfg.mouse, cfg.watch, cfg.git, cfg.subshell);
         let (show_hidden, editor, theme) = (cfg.show_hidden, cfg.editor.clone(), cfg.theme.clone());
+        let (del, over, exit) = (cfg.confirm_delete, cfg.confirm_overwrite, cfg.confirm_exit);
         if let Err(err) = state::update(move |s| {
             s.show_hidden = Some(show_hidden);
             s.lynx = lynx;
@@ -3769,6 +3876,9 @@ impl App {
             s.subshell = Some(subshell);
             s.editor = Some(editor);
             s.theme = Some(theme);
+            s.confirm_delete = Some(del);
+            s.confirm_overwrite = Some(over);
+            s.confirm_exit = Some(exit);
         }) {
             self.status = Some(format!(" could not save state: {err} "));
         }
@@ -4914,13 +5024,26 @@ impl App {
         } else {
             format!("Move {what} to trash?")
         };
+        if !self.config.confirm_delete {
+            self.start_delete(paths, permanent);
+            return;
+        }
         self.dialog = Some(Dialog::Confirm(ConfirmDialog {
             title: " Delete ".into(),
             message,
             yes: !permanent, // safer default for the irreversible variant
             paths,
             permanent,
+            kind: ConfirmKind::Delete,
         }));
+    }
+
+    /// Yes on a confirm dialog: do whatever it was asking about.
+    fn confirm_yes(&mut self, d: ConfirmDialog) {
+        match d.kind {
+            ConfirmKind::Delete => self.start_delete(d.paths, d.permanent),
+            ConfirmKind::Quit => self.quit = true,
+        }
     }
 
     fn panel(&mut self) -> &mut Panel {
@@ -5287,6 +5410,50 @@ mod tests {
         assert!(parse_owner_spec("alice", true).is_err()); // names need local passwd
         assert_eq!(parse_owner_spec("root:", false), Ok((Some(0), None)));
         assert!(parse_owner_spec("no-such-user-xyz", false).is_err());
+    }
+
+    #[test]
+    fn options_cursor_skips_section_headings() {
+        let mut d = OptionsDialog {
+            cursor: 1,
+            values: [false; OPT_COUNT],
+            ok: true,
+        };
+        // every stop is a setting, never a heading, all the way down
+        let mut seen = 0;
+        for _ in 0..OPTION_ROWS.len() * 2 {
+            d.step(1);
+            if d.cursor == OPTION_ROWS.len() {
+                seen += 1; // the button row
+                continue;
+            }
+            assert!(
+                OPTION_ROWS[d.cursor].opt().is_some(),
+                "landed on a heading at row {}",
+                d.cursor
+            );
+        }
+        assert!(seen >= 1, "never reached the button row");
+        // and the same walking backwards
+        for _ in 0..OPTION_ROWS.len() * 2 {
+            d.step(-1);
+            assert!(d.cursor == OPTION_ROWS.len() || OPTION_ROWS[d.cursor].opt().is_some());
+        }
+    }
+
+    #[test]
+    fn options_toggle_flips_only_the_focused_setting() {
+        let mut d = OptionsDialog {
+            cursor: 1, // first setting: Show hidden files
+            values: [false; OPT_COUNT],
+            ok: true,
+        };
+        d.toggle();
+        assert!(d.get(Opt::Hidden));
+        assert!(!d.get(Opt::Lynx));
+        d.cursor = 0; // a heading: toggling does nothing
+        d.toggle();
+        assert_eq!(d.values.iter().filter(|v| **v).count(), 1);
     }
 
     #[test]

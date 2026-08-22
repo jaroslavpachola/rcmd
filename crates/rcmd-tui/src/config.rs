@@ -41,6 +41,13 @@ pub struct Config {
     /// screen, typed commands run inside it, panels follow its cwd.
     /// false = the pre-3.0 one-shot command execution.
     pub subshell: bool,
+    /// Ask before deleting (F8 / Shift+F8).
+    pub confirm_delete: bool,
+    /// Ask before overwriting an existing file during copy/move; false
+    /// answers "overwrite all" for every job.
+    pub confirm_overwrite: bool,
+    /// Ask before quitting (F10). MC asks by default; rcmd does not.
+    pub confirm_exit: bool,
     /// How long a lone Esc waits for its follow-up key before acting as
     /// a plain Escape (MC's meta prefix: Esc 1..0 = F1..F10, Esc x =
     /// Alt+X). Raise it towards MC's 1000 when typing those by hand.
@@ -106,6 +113,9 @@ impl Default for Config {
             git: true,
             editor: "internal".into(),
             subshell: true,
+            confirm_delete: true,
+            confirm_overwrite: true,
+            confirm_exit: false,
             esc_timeout_ms: crate::app::ESC_TIMEOUT_MS,
             keys: BTreeMap::new(),
             hotlist: Vec::new(),

@@ -9,7 +9,7 @@ use rcmd_core::panel::{ListMode, Panel};
 
 use crate::app::{
     App, Ask, ConfirmDialog, ConnectAsk, Dialog, EditPrompt, FindDialog, InputDialog, Job, MENUS,
-    MenuState, OPTION_ROWS, OptionsDialog, QuickView, menu_label,
+    MenuState, OptionsDialog, QuickView, menu_label,
 };
 use crate::config::HotEntry;
 use crate::git::GitStatus;
@@ -147,10 +147,11 @@ const HELP_TEXT: &[&str] = &[
     "                  (an active long panel takes the whole width, MC's",
     "                  one-panel view; Tab or cycling back restores the split)",
     "  Alt+Left/Right  walk the panel's directory history (back/forward)",
-    "  F9 > Options    panel options form (MC-style checkboxes): hidden",
-    "                  files, lynx-like motion (Left/Right = parent/enter),",
-    "                  mouse, auto-reload, git, subshell, editor, theme -",
-    "                  applied live, saved to the config on exit",
+    "  F9 > Options    one options form, in sections: Panel (hidden",
+    "                  files, lynx-like motion, mouse, auto-reload, git),",
+    "                  Confirmation (ask before deleting / overwriting /",
+    "                  quitting), Shell and editor, Appearance - applied",
+    "                  live and saved at once",
     "  In menus the highlighted letter runs the entry (F9 o p = options)",
     "  Alt+Up          directory hotlist (same as Ctrl+\\)",
     "  Ctrl+X q        quick view: the other panel previews the cursor",
@@ -1891,48 +1892,49 @@ fn field_row(frame: &mut Frame, field: Rect, value: &str, cursor: Option<usize>)
 
 /// F9 > Options > Panel options - the MC-style checkbox form.
 fn draw_options(frame: &mut Frame, d: &OptionsDialog) {
+    use crate::app::{OPTION_ROWS, OptRow};
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
-    let area = centered(44, (OPTION_ROWS + 4) as u16, frame.area());
-    let inner = popup(frame, area, " Panel options ", base);
+    let head = Style::new().fg(th().header_fg).bg(th().dialog_bg);
+    // rows + a blank line + the button row, inside the border
+    let area = centered(46, OPTION_ROWS.len() as u16 + 4, frame.area());
+    let inner = popup(frame, area, " Options ", base);
     let check = |on: bool| if on { "[x]" } else { "[ ]" };
     let radio = |on: bool| if on { "(*)" } else { "( )" };
-    let rows: [String; OPTION_ROWS] = [
-        format!(" {} Show hidden files", check(d.show_hidden)),
-        format!(" {} Lynx-like motion", check(d.lynx)),
-        format!(" {} Mouse support", check(d.mouse)),
-        format!(" {} Auto-reload panels", check(d.watch)),
-        format!(" {} Git status", check(d.git)),
-        format!(" {} Persistent subshell", check(d.subshell)),
-        format!(
-            " Editor  {} internal  {} external",
-            radio(!d.external_editor),
-            radio(d.external_editor)
-        ),
-        format!(
-            " Theme   {} mc  {} dark",
-            radio(!d.dark_theme),
-            radio(d.dark_theme)
-        ),
-    ];
-    for (i, text) in rows.iter().enumerate() {
+
+    for (i, entry) in OPTION_ROWS.iter().enumerate() {
         let row = Rect {
             x: inner.x + 1,
             y: inner.y + i as u16,
             width: inner.width.saturating_sub(2),
             height: 1,
         };
-        let style = if d.cursor == i { sel } else { base };
         let width = row.width as usize;
+        let (text, style) = match entry {
+            OptRow::Head(title) => (format!(" {title}"), head),
+            OptRow::Check(opt, label) => (
+                format!(" {} {label}", check(d.get(*opt))),
+                if d.cursor == i { sel } else { base },
+            ),
+            OptRow::Radio(opt, label, off, on) => (
+                format!(
+                    " {label}  {} {off}  {} {on}",
+                    radio(!d.get(*opt)),
+                    radio(d.get(*opt))
+                ),
+                if d.cursor == i { sel } else { base },
+            ),
+        };
         frame.render_widget(Line::from(format!("{text:<width$}")).style(style), row);
     }
+
     let buttons = Rect {
         x: inner.x,
-        y: inner.y + OPTION_ROWS as u16 + 1,
+        y: inner.y + OPTION_ROWS.len() as u16 + 1,
         width: inner.width,
         height: 1,
     };
-    let selected = if d.cursor == OPTION_ROWS {
+    let selected = if d.cursor == OPTION_ROWS.len() {
         usize::from(!d.ok)
     } else {
         usize::MAX // neither highlighted while an option row is focused

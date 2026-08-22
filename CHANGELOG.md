@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **One grouped options dialog** (4.0 S0): F9 > Options > Panel options
+  is now a sectioned form - Panel, Confirmation, Shell and editor,
+  Appearance - covering MC's whole setting surface in one screen rather
+  than its five dialogs. Arrow keys skip the headings.
+- **Confirmation settings** (MC parity): *Ask before deleting* and *Ask
+  before overwriting* (both on, as before) and *Ask before quitting*
+  (off, keeping rcmd's instant F10). Turning the overwrite question off
+  answers "overwrite all" for every job; turning the delete question off
+  makes F8 act at once.
+
+## Unreleased
+
 - **MC command-line keys** (4.0 S0): `M-h` opens the command history as
   a pick list (Enter puts a line back on the command line), `M-p`/`M-n`
   walk it like MC (`C-p`/`C-n` still work), `M-a` inserts the panel

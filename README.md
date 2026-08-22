@@ -303,9 +303,11 @@ clobber each other. Upgrading from 3.x: state keys still in your
 `[[hotlist]]`) are migrated once on first start; they stay honoured for
 one release, then stop being read.
 
-The everyday toggles - hidden files, lynx-like motion, mouse,
-auto-reload, git, subshell, editor, theme - live in an MC-style
-checkbox form under **F9 → Options → Panel options**, applied live:
+The settings live in one sectioned checkbox form under **F9 → Options →
+Panel options**, applied live: *Panel* (hidden files, lynx-like motion,
+mouse, auto-reload, git), *Confirmation* (ask before deleting /
+overwriting / quitting), *Shell and editor* (persistent subshell,
+internal or external editor) and *Appearance* (theme):
 
 ```toml
 theme = "mc"        # or "dark" (truecolor); applied at startup
@@ -316,6 +318,9 @@ mouse = true        # click/double-click/wheel support
 git = true          # git status column + branch in panel titles
 editor = "internal" # or "external" ($VISUAL/$EDITOR for F4)
 subshell = true     # persistent $SHELL behind Ctrl+O (false = one-shot exec)
+confirm_delete = true      # ask before F8 / Shift+F8
+confirm_overwrite = true   # ask before overwriting during copy/move
+confirm_exit = false       # ask before F10 quits (MC asks; rcmd does not)
 esc_timeout_ms = 250 # how long a lone Esc waits for its meta follow-up
                      # (1000 = MC's roomier window for typing Esc 1..0)
 show_hidden = true

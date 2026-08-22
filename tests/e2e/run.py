@@ -928,6 +928,63 @@ def test_extensibility():
     shutil.rmtree(root)
 
 
+def test_options():
+    """PLAN4 S0: one grouped options dialog with MC's setting surface,
+    including the confirmation toggles."""
+    root, play, home = sandbox()
+    open(os.path.join(play, "gone.txt"), "w").write("x\n")
+    s = Session(play, home)
+
+    # F9 o p reaches the form; it now has sections
+    s.send(b"\x1b[20~")
+    s.send(b"o")
+    s.send(b"p", wait=STEP)
+    scr = s.screen()
+    check("options: form opens with sections",
+          "Confirmation" in scr and "Appearance" in scr and "Panel" in scr)
+    check("options: confirmation toggles present",
+          "Ask before deleting" in scr and "Ask before quitting" in scr)
+
+    # walk to "Ask before deleting" and switch it off, then OK
+    for _ in range(5):                      # 5 settings below the first
+        s.send(DOWN)
+    scr = s.screen()
+    check("options: cursor skips the headings", "[x] Ask before deleting" in scr, scr)
+    s.send(b" ", wait=STEP)
+    check("options: toggle flips the box", "[ ] Ask before deleting" in s.screen())
+    s.send(b"\r", wait=STEP)                # OK applies and writes through
+
+    statepath = os.path.join(home, ".local", "state", "rcmd", "state.toml")
+    check("options: written to state", "confirm_delete = false" in open(statepath).read())
+
+    # with the question off, F8 deletes straight away (no dialog)
+    s.send(HOME_K + DOWN)                   # cursor -> gone.txt
+    s.send(F8, wait=STEP * 3)
+    check("options: confirm_delete off deletes at once",
+          not os.path.exists(os.path.join(play, "gone.txt")))
+
+    # turn "Ask before quitting" on and check F10 asks
+    s.send(b"\x1b[20~")
+    s.send(b"o")
+    s.send(b"p", wait=STEP)
+    for _ in range(7):
+        s.send(DOWN)
+    scr = s.screen()
+    check("options: reached the quit toggle", "[ ] Ask before quitting" in scr, scr)
+    s.send(b" ")
+    s.send(b"\r", wait=STEP)
+    s.send(b"\x1b[21~", wait=STEP)          # F10
+    check("options: confirm_exit asks", "Quit rcmd?" in s.screen())
+    s.send(b"y", wait=STEP * 2)             # ...and Yes really quits
+    try:
+        os.waitpid(s.pid, 0)
+    except ChildProcessError:
+        pass
+    os.close(s.fd)
+    check("options: confirm_exit yes quits", True)
+    shutil.rmtree(root)
+
+
 def test_keysbatch():
     """PLAN4 S0 small keys: M-h history (persisted), M-p/M-n, M-a, cd -,
     C-x !, command-line macros, and the shortened Esc timeout."""
@@ -1510,6 +1567,7 @@ def main():
         test_jobs,
         test_cxops,
         test_extensibility,
+        test_options,
         test_keysbatch,
         test_configstate,
         test_git,
