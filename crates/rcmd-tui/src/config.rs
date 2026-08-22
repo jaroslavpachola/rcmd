@@ -41,6 +41,9 @@ pub struct Config {
     /// screen, typed commands run inside it, panels follow its cwd.
     /// false = the pre-3.0 one-shot command execution.
     pub subshell: bool,
+    /// Columns of names in the brief listing (MC shows two). 1 keeps
+    /// the pre-4.0 single full-width column.
+    pub brief_columns: u16,
     /// Panel split direction: "vertical" (side by side, the default) or
     /// "horizontal" (one above the other), as in MC's Layout dialog.
     pub split: String,
@@ -133,6 +136,11 @@ impl Config {
         self.split == "horizontal"
     }
 
+    /// Brief-listing columns, clamped to what fits sensibly.
+    pub fn columns(&self) -> u16 {
+        self.brief_columns.clamp(1, 6)
+    }
+
     /// The split percentage, clamped to something usable.
     pub fn ratio(&self) -> u16 {
         self.split_ratio.clamp(20, 80)
@@ -201,6 +209,7 @@ impl Default for Config {
             git: true,
             editor: "internal".into(),
             subshell: true,
+            brief_columns: 2,
             split: "vertical".into(),
             split_ratio: 50,
             show_menubar: false,

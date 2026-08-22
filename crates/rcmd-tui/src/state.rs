@@ -42,6 +42,8 @@ pub struct State {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub brief_columns: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub split: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub split_ratio: Option<u16>,
@@ -140,6 +142,7 @@ pub fn apply(state: &State, config: &mut Config) {
         confirm_delete,
         confirm_overwrite,
         confirm_exit,
+        brief_columns,
         split,
         split_ratio,
         show_menubar,

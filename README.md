@@ -117,7 +117,7 @@ end
 | F8 | Delete to trash |
 | Shift+F8 | Delete permanently |
 | Alt+N | Sort by name (again = reverse; other orders in F9 → Sort) |
-| Alt+T | Cycle listing format: brief / full / long (active long panel = full-width one-panel view) |
+| Alt+T | Cycle listing format: brief (names in columns) / full / long (active long panel = full-width one-panel view) |
 | Ctrl+U | Swap panels |
 | Alt+. | Toggle hidden files |
 | Ctrl+S, Alt+S | Quick search (type-ahead; Ctrl+S again = next match) |
@@ -328,6 +328,7 @@ mouse = true        # click/double-click/wheel support
 git = true          # git status column + branch in panel titles
 editor = "internal" # or "external" ($VISUAL/$EDITOR for F4)
 subshell = true     # persistent $SHELL behind Ctrl+O (false = one-shot exec)
+brief_columns = 2          # name columns in the brief listing (1..6)
 split = "vertical"         # or "horizontal" (panels stacked)
 split_ratio = 50           # percent for the left/top panel, 20..80
 show_menubar = false       # MC's permanent menu bar (F9 works either way)

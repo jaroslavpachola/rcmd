@@ -143,7 +143,8 @@ const HELP_TEXT: &[&str] = &[
     "  background: old listing + spinner stay up, Esc cancels the load.",
     "  Alt+.           show/hide dotfiles",
     "  Alt+N           sort by name (again = reverse); others in F9 > Sort",
-    "  Alt+T           cycle listing format: brief / full / long",
+    "  Alt+T           cycle listing format: brief (names in columns,",
+    "                  brief_columns in the config) / full / long",
     "                  (an active long panel takes the whole width, MC's",
     "                  one-panel view; Tab or cycling back restores the split)",
     "  Alt+Left/Right  walk the panel's directory history (back/forward)",
@@ -366,9 +367,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // 2 border rows + 1 column-header row, in the ACTIVE panel: with a
     // horizontal split the two panels can differ in height.
     let active_area = if app.active == 0 { left } else { right };
-    app.panel_rows = active_area
+    let visible_rows = active_area
         .height
         .saturating_sub(3 + u16::from(cfg.show_mini_status)) as usize;
+    // a brief listing pages by whole screens of names, not by rows
+    app.panel_rows = if app.panels[app.active].list_mode == ListMode::Brief {
+        visible_rows * cfg.columns() as usize
+    } else {
+        visible_rows
+    };
     app.areas = crate::app::Areas {
         screen: frame.area(),
         left,
@@ -406,6 +413,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     git: app.git_info[i].as_ref().map(|(_, s)| s),
                     disk,
                     mini: app.config.show_mini_status,
+                    columns: app.config.columns(),
                 },
             );
         }
@@ -461,6 +469,8 @@ struct Chrome<'a> {
     git: Option<&'a GitStatus>,
     disk: Option<(u64, u64)>,
     mini: bool,
+    /// Name columns in a brief listing (MC shows two).
+    columns: u16,
 }
 
 fn draw_panel(
@@ -475,6 +485,7 @@ fn draw_panel(
         git,
         disk,
         mini,
+        ..
     } = chrome;
     let title_style = if active {
         Style::new().fg(th().select_fg).bg(th().select_bg)
@@ -546,6 +557,12 @@ fn draw_panel(
         );
     }
 
+    if panel.list_mode == ListMode::Brief && chrome.columns > 1 {
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        draw_brief_columns(frame, inner, panel, state, &chrome, git);
+        return;
+    }
     let (labels, constraints): (&[&str], Vec<Constraint>) = match panel.list_mode {
         ListMode::Brief => (&["Name"], vec![Constraint::Fill(1)]),
         ListMode::Full => (
@@ -608,6 +625,105 @@ fn draw_panel(
         };
         let style = Style::new().fg(th().header_fg).bg(th().panel_bg);
         frame.render_widget(Line::from(entry_summary(panel)).style(style), row);
+    }
+}
+
+/// MC's brief listing: names only, in several columns. Filled column by
+/// column, so Down still lands on the file drawn underneath - the whole
+/// point of the layout. The visible window starts at a column boundary,
+/// which is what makes paging feel like MC's.
+fn draw_brief_columns(
+    frame: &mut Frame,
+    inner: Rect,
+    panel: &Panel,
+    state: &mut TableState,
+    chrome: &Chrome<'_>,
+    git: Option<&GitStatus>,
+) {
+    let cols = chrome.columns.max(1);
+    let body_height = inner.height.saturating_sub(1 + u16::from(chrome.mini));
+    let rows = body_height.max(1) as usize;
+    let per_page = rows * cols as usize;
+    let width = (inner.width / cols).max(1) as usize;
+
+    // keep the cursor on screen, scrolling a whole column at a time
+    let mut start = state.offset();
+    if !start.is_multiple_of(rows) {
+        start -= start % rows;
+    }
+    while panel.cursor < start {
+        start = start.saturating_sub(rows);
+    }
+    while panel.cursor >= start + per_page {
+        start += rows;
+    }
+    *state.offset_mut() = start;
+    state.select(None); // cells are highlighted, not whole rows
+
+    // header: one "Name" per column, like the single-column listing
+    let header: Vec<Span> = (0..cols)
+        .map(|_| {
+            Span::styled(
+                format!("{:^width$}", "Name"),
+                Style::new().fg(th().header_fg),
+            )
+        })
+        .collect();
+    frame.render_widget(
+        Line::from(header).style(Style::new().fg(th().panel_fg).bg(th().panel_bg)),
+        Rect { height: 1, ..inner },
+    );
+
+    for row in 0..rows {
+        let mut spans: Vec<Span> = Vec::new();
+        for col in 0..cols as usize {
+            let index = start + col * rows + row;
+            match panel.entries.get(index) {
+                None => spans.push(Span::raw(" ".repeat(width))),
+                Some(entry) => {
+                    let marked = panel.is_marked(entry);
+                    let under_cursor = chrome.active && index == panel.cursor;
+                    let mark = git.map(|g| g.marks.get(&entry.name).copied());
+                    let (marker, base) = entry_style(entry);
+                    let style = cell_style(marked, under_cursor, base);
+                    // the git column only exists inside a work tree
+                    let text = match mark {
+                        Some(mark) => format!(
+                            "{}{marker}{}",
+                            mark.unwrap_or(' '),
+                            entry.name.to_string_lossy()
+                        ),
+                        None => format!("{marker}{}", entry.name.to_string_lossy()),
+                    };
+                    let text: String = text.chars().take(width).collect();
+                    spans.push(Span::styled(format!("{text:<width$}"), style));
+                }
+            }
+        }
+        let area = Rect {
+            x: inner.x,
+            y: inner.y + 1 + row as u16,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Line::from(spans).style(Style::new().fg(th().panel_fg).bg(th().panel_bg)),
+            area,
+        );
+    }
+
+    if chrome.mini && inner.height > 1 {
+        let row = Rect {
+            x: inner.x,
+            y: inner.y + inner.height - 1,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Line::from(entry_summary(panel))
+                .style(Style::new().fg(th().header_fg).bg(th().panel_bg)),
+            row,
+        );
     }
 }
 
@@ -719,15 +835,10 @@ fn draw_quick_view(frame: &mut Frame, area: Rect, qv: &mut QuickView, active: bo
 
 /// `git`: None = no git column at all; Some(mark) = the panel is inside
 /// a work tree, render a one-cell status column (mark or blank).
-fn entry_row(
-    entry: &Entry,
-    marked: bool,
-    under_cursor: bool,
-    git: Option<Option<char>>,
-    mode: ListMode,
-    remote: bool,
-) -> Row<'_> {
-    let (marker, base) = match entry.kind {
+/// The type marker and colour for an entry: `/` a directory, `*`
+/// executable, `@` a symlink, and so on.
+fn entry_style(entry: &Entry) -> (&'static str, Style) {
+    match entry.kind {
         EntryKind::Dir => (
             "/",
             Style::new().fg(th().dir_fg).add_modifier(Modifier::BOLD),
@@ -740,8 +851,12 @@ fn entry_row(
         EntryKind::SymlinkBroken => ("!", Style::new().fg(th().broken_fg)),
         EntryKind::File if entry.is_executable() => ("*", Style::new().fg(th().exec_fg)),
         EntryKind::File => (" ", Style::new().fg(th().panel_fg)),
-    };
-    let style = match (marked, under_cursor) {
+    }
+}
+
+/// Marked / under the cursor / both, over the entry's own colour.
+fn cell_style(marked: bool, under_cursor: bool, base: Style) -> Style {
+    match (marked, under_cursor) {
         (true, true) => Style::new()
             .fg(th().mark_fg)
             .bg(th().select_bg)
@@ -749,7 +864,19 @@ fn entry_row(
         (true, false) => Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD),
         (false, true) => Style::new().fg(th().select_fg).bg(th().select_bg),
         (false, false) => base,
-    };
+    }
+}
+
+fn entry_row(
+    entry: &Entry,
+    marked: bool,
+    under_cursor: bool,
+    git: Option<Option<char>>,
+    mode: ListMode,
+    remote: bool,
+) -> Row<'_> {
+    let (marker, base) = entry_style(entry);
+    let style = cell_style(marked, under_cursor, base);
 
     let size = if entry.is_parent() {
         "UP--DIR".to_string()

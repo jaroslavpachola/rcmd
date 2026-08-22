@@ -1897,7 +1897,23 @@ impl App {
         if y < content_y || y + 1 >= area.y + area.height {
             return;
         }
-        let index = self.table_states[side].offset() + (y - content_y) as usize;
+        let row = (y - content_y) as usize;
+        let offset = self.table_states[side].offset();
+        // a brief listing fills column by column, so the x tells us
+        // which column was clicked
+        let columns = self.config.columns();
+        let index = if self.panels[side].list_mode == ListMode::Brief && columns > 1 {
+            let inner_w = area.width.saturating_sub(2).max(1);
+            let col_w = (inner_w / columns).max(1);
+            let col = (x.saturating_sub(area.x + 1) / col_w).min(columns - 1) as usize;
+            let rows = area
+                .height
+                .saturating_sub(3 + u16::from(self.config.show_mini_status))
+                .max(1) as usize;
+            offset + col * rows + row
+        } else {
+            offset + row
+        };
         if index < self.panels[side].entries.len() {
             self.panels[side].cursor = index;
             if double {

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Multi-column brief listing** (4.0 S1): the brief listing shows names
+  in two columns by default, as MC does, filled column by column so
+  Down still lands on the file drawn underneath. `brief_columns` sets
+  the count (1 keeps the old single full-width column, up to 6); paging
+  moves by whole screens of names and a click finds the right column.
+
+## Unreleased
+
 - **Mini status** (4.0 S1): each panel can carry its own status row
   describing the entry under *its* cursor (permissions, size, name,
   symlink target), MC-style. Off by default - rcmd's single status line

@@ -946,6 +946,40 @@ def test_extensibility():
     shutil.rmtree(root)
 
 
+def test_brief():
+    """PLAN4 S1: MC's brief listing shows names in several columns,
+    filled column by column so Down stays "the next file"."""
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write('listing = "brief"\n')
+    for i in range(40):
+        open(os.path.join(play, "f%02d.txt" % i), "w").write("x\n")
+    s = Session(play, home)
+    scr = s.screen().split("\n")
+
+    # two columns of names, filled downwards: the top row carries the
+    # first entry of each column, not the first two entries
+    top = next(line for line in scr if "f00.txt" in line)
+    check("brief: two columns", top.count("Name") == 0 and "f00.txt" in top, top)
+    header = next(line for line in scr if "Name" in line)
+    check("brief: a header per column", header.count("Name") >= 2, header)
+    check("brief: filled column by column", "f01.txt" not in top, top)
+
+    # Down moves to the file drawn underneath
+    s.send(DOWN)
+    check("brief: down is the next file", "f00.txt" in status_line(s), status_line(s))
+
+    # clicking in the second column selects that file
+    second = [line for line in scr if "f23.txt" in line]
+    check("brief: second column filled", bool(second), str(scr[2:4]))
+    col2_x = second[0].index("f23.txt") + 2
+    s.send(click(col2_x, 3))
+    check("brief: click maps to the right column", "f23.txt" in status_line(s), status_line(s))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_layout():
     """PLAN4 S1: MC's Layout settings - split direction and size, and the
     optional menu bar / status line / command line / key bar."""
@@ -1743,6 +1777,7 @@ def main():
         test_jobs,
         test_cxops,
         test_extensibility,
+        test_brief,
         test_layout,
         test_mcimport,
         test_keycontexts,
