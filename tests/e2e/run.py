@@ -928,6 +928,49 @@ def test_extensibility():
     shutil.rmtree(root)
 
 
+def test_keycontexts():
+    """PLAN4 S0: [keys.viewer] / [keys.editor] rebind inside the viewer
+    and the editor; bare [keys] entries still bind in the panel."""
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write(
+        '[keys]\n'
+        '"ctrl+y" = "swap-panels"\n'
+        '\n'
+        '[keys.viewer]\n'
+        '"ctrl+w" = "wrap"\n'
+        '"ctrl+k" = "quit"\n'
+        '\n'
+        '[keys.editor]\n'
+        '"ctrl+q" = "quit"\n'
+    )
+    long_line = "viewer " + "wide " * 40
+    open(os.path.join(play, "wide.txt"), "w").write(long_line + "\n")
+    s = Session(play, home)
+
+    # panel context still works from the bare table
+    s.send(DOWN)                            # cursor -> wide.txt
+    s.send(F3, wait=STEP)
+    check("keycontexts: viewer opened", "viewer wide" in s.screen())
+    # Ctrl+W now wraps, and the default F2 still does too
+    s.send(b"\x17", wait=STEP)               # Ctrl+W
+    wrapped = s.screen()
+    check("keycontexts: [keys.viewer] rebind works",
+          wrapped.count("wide wide") > 1, wrapped[-200:])
+    s.send(b"\x0b", wait=STEP)               # Ctrl+K = quit (rebound)
+    check("keycontexts: rebound quit leaves the viewer",
+          "Modify time" in s.screen())
+
+    # editor: Ctrl+Q quits (rebound), F2 still saves
+    s.send(b"\x1b[14~", wait=STEP * 2)       # F4 edit
+    check("keycontexts: editor opened", "wide.txt" in s.screen())
+    s.send(b"\x11", wait=STEP * 2)           # Ctrl+Q
+    check("keycontexts: rebound editor quit", "Modify time" in s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_options():
     """PLAN4 S0: one grouped options dialog with MC's setting surface,
     including the confirmation toggles."""
@@ -1567,6 +1610,7 @@ def main():
         test_jobs,
         test_cxops,
         test_extensibility,
+        test_keycontexts,
         test_options,
         test_keysbatch,
         test_configstate,

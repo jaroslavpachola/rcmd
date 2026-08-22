@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Per-context key bindings** (4.0 S0): `[keys.viewer]` and
+  `[keys.editor]` rebind keys inside the F3 viewer and the F4 editor,
+  which were hardcoded until now; bare `[keys]` entries still bind in
+  the panel (and `[keys.panel]` says so explicitly). Viewer actions:
+  quit, wrap, hex, search, search-next, follow. Editor actions: save,
+  quit, mark, replace, search, search-next, block-copy, block-move,
+  delete-line, undo, redo, copy, cut, paste, select-all, wrap. Unknown
+  contexts, keys and action names warn in the status line instead of
+  stopping the program.
+
+## Unreleased
+
 - **One grouped options dialog** (4.0 S0): F9 > Options > Panel options
   is now a sectioned form - Panel, Confirmation, Shell and editor,
   Appearance - covering MC's whole setting surface in one screen rather

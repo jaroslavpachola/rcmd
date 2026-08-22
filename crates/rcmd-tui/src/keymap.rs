@@ -252,6 +252,40 @@ mod tests {
     }
 
     #[test]
+    fn viewer_and_editor_maps_take_overrides() {
+        let custom = BTreeMap::from([
+            ("ctrl+w".to_string(), "wrap".to_string()),
+            ("ctrl+bad".to_string(), "wrap".to_string()),
+            ("ctrl+e".to_string(), "no-such-action".to_string()),
+        ]);
+        let (map, warnings) = build_viewer(&custom);
+        assert_eq!(
+            map.get(&(KeyCode::Char('w'), KeyModifiers::CONTROL)),
+            Some(&ViewerAction::ToggleWrap)
+        );
+        // defaults survive alongside the override
+        assert_eq!(
+            map.get(&(KeyCode::F(2), KeyModifiers::NONE)),
+            Some(&ViewerAction::ToggleWrap)
+        );
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+
+        let (map, warnings) = build_editor(&BTreeMap::from([(
+            "ctrl+q".to_string(),
+            "quit".to_string(),
+        )]));
+        assert_eq!(
+            map.get(&(KeyCode::Char('q'), KeyModifiers::CONTROL)),
+            Some(&EditorAction::Quit)
+        );
+        assert_eq!(
+            map.get(&(KeyCode::F(2), KeyModifiers::NONE)),
+            Some(&EditorAction::Save)
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
     fn build_applies_preset_and_custom_overrides() {
         let custom = BTreeMap::from([
             ("ctrl+y".to_string(), "swap-panels".to_string()),
@@ -279,4 +313,149 @@ mod tests {
         let (map, _) = build("mc", false, &BTreeMap::new());
         assert!(!map.contains_key(&(KeyCode::Left, KeyModifiers::NONE)));
     }
+}
+
+// ---------------------------------------------------------------------
+// Per-context maps (PLAN4 S0). The panel map above is the original one;
+// the viewer and the editor now route their action keys through tables
+// of their own, so `[keys.viewer]` / `[keys.editor]` can rebind them.
+// Movement keys (arrows, PgUp/PgDn, Home/End) stay structural in every
+// context, exactly as they are in the panel.
+// ---------------------------------------------------------------------
+
+/// What a key does in the F3 viewer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewerAction {
+    Quit,
+    ToggleWrap,
+    ToggleHex,
+    Search,
+    SearchNext,
+    Follow,
+}
+
+/// What a key does in the F4 editor (text entry and plain cursor
+/// movement are handled before this map is consulted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorAction {
+    Save,
+    Quit,
+    Mark,
+    Replace,
+    Search,
+    SearchNext,
+    BlockCopy,
+    BlockMove,
+    DeleteLine,
+    Undo,
+    Redo,
+    Copy,
+    Cut,
+    Paste,
+    SelectAll,
+    ToggleWrap,
+}
+
+pub type ViewerMap = HashMap<(KeyCode, KeyModifiers), ViewerAction>;
+pub type EditorMap = HashMap<(KeyCode, KeyModifiers), EditorAction>;
+
+const VIEWER_DEFAULTS: &[(&str, &str)] = &[
+    ("f3", "quit"),
+    ("f10", "quit"),
+    ("q", "quit"),
+    ("f2", "wrap"),
+    ("f4", "hex"),
+    ("f7", "search"),
+    ("/", "search"),
+    ("n", "search-next"),
+    ("f", "follow"),
+];
+
+const EDITOR_DEFAULTS: &[(&str, &str)] = &[
+    ("f2", "save"),
+    ("ctrl+s", "save"),
+    ("f10", "quit"),
+    ("f3", "mark"),
+    ("f4", "replace"),
+    ("f7", "search"),
+    ("shift+f7", "search-next"),
+    ("f19", "search-next"), // Shift+F7 on legacy terminals
+    ("f5", "block-copy"),
+    ("f6", "block-move"),
+    ("f8", "delete-line"),
+    ("ctrl+z", "undo"),
+    ("ctrl+y", "redo"),
+    ("ctrl+c", "copy"),
+    ("ctrl+x", "cut"),
+    ("ctrl+v", "paste"),
+    ("ctrl+a", "select-all"),
+    ("alt+w", "wrap"),
+];
+
+pub fn parse_viewer_action(name: &str) -> Option<ViewerAction> {
+    Some(match name {
+        "quit" => ViewerAction::Quit,
+        "wrap" => ViewerAction::ToggleWrap,
+        "hex" => ViewerAction::ToggleHex,
+        "search" => ViewerAction::Search,
+        "search-next" => ViewerAction::SearchNext,
+        "follow" => ViewerAction::Follow,
+        _ => return None,
+    })
+}
+
+pub fn parse_editor_action(name: &str) -> Option<EditorAction> {
+    Some(match name {
+        "save" => EditorAction::Save,
+        "quit" => EditorAction::Quit,
+        "mark" => EditorAction::Mark,
+        "replace" => EditorAction::Replace,
+        "search" => EditorAction::Search,
+        "search-next" => EditorAction::SearchNext,
+        "block-copy" => EditorAction::BlockCopy,
+        "block-move" => EditorAction::BlockMove,
+        "delete-line" => EditorAction::DeleteLine,
+        "undo" => EditorAction::Undo,
+        "redo" => EditorAction::Redo,
+        "copy" => EditorAction::Copy,
+        "cut" => EditorAction::Cut,
+        "paste" => EditorAction::Paste,
+        "select-all" => EditorAction::SelectAll,
+        "wrap" => EditorAction::ToggleWrap,
+        _ => return None,
+    })
+}
+
+/// Defaults plus the user's `[keys.viewer]` overrides.
+pub fn build_viewer(custom: &BTreeMap<String, String>) -> (ViewerMap, Vec<String>) {
+    build_context(VIEWER_DEFAULTS, custom, parse_viewer_action, "viewer")
+}
+
+/// Defaults plus the user's `[keys.editor]` overrides.
+pub fn build_editor(custom: &BTreeMap<String, String>) -> (EditorMap, Vec<String>) {
+    build_context(EDITOR_DEFAULTS, custom, parse_editor_action, "editor")
+}
+
+fn build_context<A: Copy>(
+    defaults: &[(&str, &str)],
+    custom: &BTreeMap<String, String>,
+    parse: fn(&str) -> Option<A>,
+    context: &str,
+) -> (HashMap<(KeyCode, KeyModifiers), A>, Vec<String>) {
+    let mut map = HashMap::new();
+    let mut warnings = Vec::new();
+    for (key, action) in defaults {
+        let key = parse_key(key).expect("default binding must parse");
+        map.insert(key, parse(action).expect("default action must parse"));
+    }
+    for (key, action) in custom {
+        match (parse_key(key), parse(action)) {
+            (Some(key), Some(action)) => {
+                map.insert(key, action);
+            }
+            (None, _) => warnings.push(format!("bad key '{key}' in [keys.{context}]")),
+            (_, None) => warnings.push(format!("bad {context} action '{action}'")),
+        }
+    }
+    (map, warnings)
 }

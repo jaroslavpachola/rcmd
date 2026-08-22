@@ -675,7 +675,10 @@ fn build_watch() -> (Option<WatchState>, Option<String>) {
 /// bindings, plus any `[[commands]]` hotkeys. Rebuilt when a toggle
 /// (F9 > Options) changes the config at runtime.
 fn full_keymap(config: &config::Config) -> (Keymap, Vec<String>) {
-    let (mut keymap, mut warnings) = keymap::build(&config.keymap, config.lynx_on(), &config.keys);
+    let (contexts, mut warnings) = config.key_contexts();
+    let (mut keymap, keymap_warnings) =
+        keymap::build(&config.keymap, config.lynx_on(), &contexts.panel);
+    warnings.extend(keymap_warnings);
     for (i, cmd) in config.commands.iter().enumerate() {
         if let Some(key) = &cmd.key {
             match keymap::parse_key(key) {
@@ -833,6 +836,10 @@ pub struct App {
     git_rx: std::sync::mpsc::Receiver<(usize, PathBuf, Option<git::GitStatus>)>,
     pub config: Config,
     keymap: Keymap,
+    /// Action keys inside the F3 viewer and the F4 editor; rebindable
+    /// through `[keys.viewer]` / `[keys.editor]`.
+    viewer_keys: keymap::ViewerMap,
+    editor_keys: keymap::EditorMap,
     pending_exec: Option<Exec>,
     /// The persistent subshell (PLAN3 R1); None = plain exec fallback,
     /// either by `subshell = false` or because the spawn failed.
@@ -869,6 +876,11 @@ impl App {
         }
         let (keymap, keymap_warnings) = full_keymap(&config);
         warnings.extend(keymap_warnings);
+        let (contexts, _) = config.key_contexts();
+        let (viewer_keys, viewer_warnings) = keymap::build_viewer(&contexts.viewer);
+        let (editor_keys, editor_warnings) = keymap::build_editor(&contexts.editor);
+        warnings.extend(viewer_warnings);
+        warnings.extend(editor_warnings);
         let watch = if config.watch {
             let (watch, warning) = build_watch();
             warnings.extend(warning);
@@ -932,6 +944,8 @@ impl App {
             git_rx,
             config,
             keymap,
+            viewer_keys,
+            editor_keys,
             pending_exec: None,
             subshell,
             quit: false,
@@ -2067,20 +2081,24 @@ impl App {
         }
         let rows = v.rows.max(1);
         let page = rows.saturating_sub(1).max(1) as isize;
+        // action keys first (rebindable via [keys.viewer]), then the
+        // structural movement keys
+        let bound = self
+            .viewer_keys
+            .get(&(key.code, key.modifiers.difference(KeyModifiers::SHIFT)))
+            .copied();
+        if let Some(action) = bound {
+            self.viewer_action(action, rows);
+            return;
+        }
         match key.code {
-            KeyCode::F(3) | KeyCode::F(10) | KeyCode::Esc | KeyCode::Char('q') => {
+            KeyCode::Esc => {
                 if let Some(viewer) = self.viewer.take()
                     && let Some(temp) = viewer.temp
                 {
                     let _ = std::fs::remove_file(temp);
                 }
             }
-            KeyCode::F(2) => {
-                v.wrap = !v.wrap;
-                v.top_seg = 0;
-                v.left = 0;
-            }
-            KeyCode::F(4) => v.hex = !v.hex,
             KeyCode::Up => viewer_scroll(v, -1, rows),
             KeyCode::Down => viewer_scroll(v, 1, rows),
             KeyCode::PageUp => viewer_scroll(v, -page, rows),
@@ -2094,14 +2112,40 @@ impl App {
             KeyCode::End => viewer_end(v, rows),
             KeyCode::Left if !v.wrap => v.left = v.left.saturating_sub(8),
             KeyCode::Right if !v.wrap => v.left += 8,
-            KeyCode::F(7) | KeyCode::Char('/') => {
-                v.prompt = Some((v.search.clone(), v.search.chars().count()));
+            _ => {}
+        }
+    }
+
+    /// One rebindable viewer action.
+    fn viewer_action(&mut self, action: keymap::ViewerAction, rows: usize) {
+        use keymap::ViewerAction as VA;
+        if action == VA::Quit {
+            if let Some(viewer) = self.viewer.take()
+                && let Some(temp) = viewer.temp
+            {
+                let _ = std::fs::remove_file(temp);
             }
-            KeyCode::Char('n') if !v.search.is_empty() => {
-                let from = v.found.map(|f| f + 1).unwrap_or(v.top);
-                viewer_search(v, from, true);
+            return;
+        }
+        let Some(v) = self.viewer.as_mut() else {
+            return;
+        };
+        match action {
+            VA::Quit => unreachable!("handled above"),
+            VA::ToggleWrap => {
+                v.wrap = !v.wrap;
+                v.top_seg = 0;
+                v.left = 0;
             }
-            KeyCode::Char('f' | 'F') => {
+            VA::ToggleHex => v.hex = !v.hex,
+            VA::Search => v.prompt = Some((v.search.clone(), v.search.chars().count())),
+            VA::SearchNext => {
+                if !v.search.is_empty() {
+                    let from = v.found.map(|f| f + 1).unwrap_or(v.top);
+                    viewer_search(v, from, true);
+                }
+            }
+            VA::Follow => {
                 v.follow = !v.follow;
                 if v.follow {
                     let _ = v.file.refresh();
@@ -2109,7 +2153,6 @@ impl App {
                     v.note = Some(" following - f stops ".into());
                 }
             }
-            _ => {}
         }
     }
 
@@ -3024,6 +3067,12 @@ impl App {
             .unwrap_or(usize::MAX)
             .min(st.ed.cursor.line);
         let mut edited = true; // most arms below edit; movement resets it
+        // action keys first (rebindable via [keys.editor]); Shift is
+        // part of the lookup so Shift+F7 can differ from F7
+        if let Some(action) = self.editor_keys.get(&(key.code, mods)).copied() {
+            self.editor_action(action);
+            return;
+        }
         match key.code {
             KeyCode::Left if ctrl => {
                 st.ed.move_word(false, select);
@@ -3077,58 +3126,6 @@ impl App {
             KeyCode::Tab => st.ed.insert("\t"),
             KeyCode::Backspace => st.ed.backspace(),
             KeyCode::Delete => st.ed.delete_forward(),
-            KeyCode::F(2) => {
-                self.editor_save();
-                return;
-            }
-            KeyCode::F(3) => {
-                st.ed.toggle_mark();
-                edited = false;
-            }
-            KeyCode::F(4) => {
-                let value = st.ed.search.clone();
-                st.prompt = Some(EditPrompt::ReplaceFind {
-                    cursor: value.chars().count(),
-                    value,
-                });
-                return;
-            }
-            KeyCode::F(7) if !select => {
-                let value = st.ed.search.clone();
-                st.prompt = Some(EditPrompt::Search {
-                    cursor: value.chars().count(),
-                    value,
-                });
-                return;
-            }
-            // Shift+F7 (legacy terminals send F19): repeat last search
-            KeyCode::F(7) | KeyCode::F(19) => {
-                let pattern = st.ed.search.clone();
-                let from = next_pos(&st.ed);
-                if pattern.is_empty() {
-                    st.prompt = Some(EditPrompt::Search {
-                        value: String::new(),
-                        cursor: 0,
-                    });
-                } else {
-                    self.editor_find(&pattern, from);
-                }
-                return;
-            }
-            KeyCode::Char('w') if alt => {
-                st.wrap = !st.wrap;
-                st.top_seg = 0;
-                st.left = 0;
-                edited = false;
-            }
-            // mcedit hands: F5 copies the block (or line), F6 moves it
-            KeyCode::F(5) => st.ed.block_copy(),
-            KeyCode::F(6) => st.ed.block_move(),
-            KeyCode::F(8) => st.ed.delete_selection_or_line(),
-            KeyCode::F(10) => {
-                self.editor_quit();
-                return;
-            }
             KeyCode::Esc => {
                 edited = false;
                 if st.ed.has_selection() {
@@ -3138,40 +3135,109 @@ impl App {
                     return;
                 }
             }
-            KeyCode::Char(c) if ctrl => {
-                edited = false;
-                match c.to_ascii_lowercase() {
-                    'z' => {
-                        edited = true;
-                        if !st.ed.undo() {
-                            st.note = Some(" nothing to undo ".into());
-                        }
-                    }
-                    'y' => {
-                        edited = true;
-                        if !st.ed.redo() {
-                            st.note = Some(" nothing to redo ".into());
-                        }
-                    }
-                    'c' => st.ed.copy(),
-                    'x' => {
-                        edited = true;
-                        st.ed.cut();
-                    }
-                    'v' => {
-                        edited = true;
-                        st.ed.paste();
-                    }
-                    'a' => st.ed.select_all(),
-                    's' => {
-                        self.editor_save();
-                        return;
-                    }
-                    _ => {}
-                }
-            }
             KeyCode::Char(c) if !alt => st.ed.insert(&c.to_string()),
             _ => edited = false,
+        }
+        if edited && let Some(hl) = st.hl.as_mut() {
+            hl.invalidate_from(lo.min(st.ed.cursor.line));
+        }
+        self.ensure_editor_visible();
+    }
+
+    /// One rebindable editor action.
+    fn editor_action(&mut self, action: keymap::EditorAction) {
+        use keymap::EditorAction as EA;
+        match action {
+            EA::Save => {
+                self.editor_save();
+                return;
+            }
+            EA::Quit => {
+                self.editor_quit();
+                return;
+            }
+            EA::SearchNext => {
+                let Some(st) = self.editor.as_ref() else {
+                    return;
+                };
+                let pattern = st.ed.search.clone();
+                let from = next_pos(&st.ed);
+                if pattern.is_empty() {
+                    if let Some(st) = self.editor.as_mut() {
+                        st.prompt = Some(EditPrompt::Search {
+                            value: String::new(),
+                            cursor: 0,
+                        });
+                    }
+                } else {
+                    self.editor_find(&pattern, from);
+                }
+                return;
+            }
+            _ => {}
+        }
+        let Some(st) = self.editor.as_mut() else {
+            return;
+        };
+        // lowest line this action might touch, for highlight invalidation
+        let lo = st
+            .ed
+            .sel_line_range()
+            .map(|(a, _)| a)
+            .unwrap_or(usize::MAX)
+            .min(st.ed.cursor.line);
+        let mut edited = true;
+        match action {
+            EA::Save | EA::Quit | EA::SearchNext => unreachable!("handled above"),
+            EA::Mark => {
+                st.ed.toggle_mark();
+                edited = false;
+            }
+            EA::Replace => {
+                let value = st.ed.search.clone();
+                st.prompt = Some(EditPrompt::ReplaceFind {
+                    cursor: value.chars().count(),
+                    value,
+                });
+                return;
+            }
+            EA::Search => {
+                let value = st.ed.search.clone();
+                st.prompt = Some(EditPrompt::Search {
+                    cursor: value.chars().count(),
+                    value,
+                });
+                return;
+            }
+            EA::BlockCopy => st.ed.block_copy(),
+            EA::BlockMove => st.ed.block_move(),
+            EA::DeleteLine => st.ed.delete_selection_or_line(),
+            EA::Undo => {
+                if !st.ed.undo() {
+                    st.note = Some(" nothing to undo ".into());
+                }
+            }
+            EA::Redo => {
+                if !st.ed.redo() {
+                    st.note = Some(" nothing to redo ".into());
+                }
+            }
+            EA::Copy => {
+                st.ed.copy();
+                edited = false;
+            }
+            EA::Cut => st.ed.cut(),
+            EA::Paste => st.ed.paste(),
+            EA::SelectAll => {
+                st.ed.select_all();
+                edited = false;
+            }
+            EA::ToggleWrap => {
+                st.wrap = !st.wrap;
+                st.top_seg = 0;
+                st.left = 0;
+                edited = false;
+            }
         }
         if edited && let Some(hl) = st.hl.as_mut() {
             hl.invalidate_from(lo.min(st.ed.cursor.line));

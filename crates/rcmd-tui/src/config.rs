@@ -52,8 +52,17 @@ pub struct Config {
     /// a plain Escape (MC's meta prefix: Esc 1..0 = F1..F10, Esc x =
     /// Alt+X). Raise it towards MC's 1000 when typing those by hand.
     pub esc_timeout_ms: u64,
-    /// Custom bindings on top of the preset, e.g. "ctrl+y" = "swap-panels".
-    pub keys: BTreeMap<String, String>,
+    /// Custom bindings on top of the presets. Bare entries under
+    /// `[keys]` bind in the panel, and `[keys.panel|viewer|editor]`
+    /// sub-tables bind in that context:
+    ///
+    /// ```toml
+    /// [keys]
+    /// "ctrl+y" = "swap-panels"     # panel, as before
+    /// [keys.viewer]
+    /// "ctrl+w" = "wrap"
+    /// ```
+    pub keys: BTreeMap<String, toml::Value>,
     pub hotlist: Vec<HotEntry>,
     /// Openers consulted by Enter on a file, in file order - the first
     /// matching glob wins.
@@ -90,7 +99,56 @@ pub struct UserCommand {
     pub key: Option<String>,
 }
 
+/// `[keys]` split by context, with anything unparsable reported.
+#[derive(Debug, Default, Clone)]
+pub struct KeyContexts {
+    pub panel: BTreeMap<String, String>,
+    pub viewer: BTreeMap<String, String>,
+    pub editor: BTreeMap<String, String>,
+}
+
 impl Config {
+    /// Sort the raw `[keys]` table into per-context maps. A string value
+    /// is a panel binding (the pre-4.0 shape); a sub-table is a context.
+    /// Unknown contexts and odd value types become warnings rather than
+    /// a refusal to start.
+    pub fn key_contexts(&self) -> (KeyContexts, Vec<String>) {
+        let mut out = KeyContexts::default();
+        let mut warnings = Vec::new();
+        for (key, value) in &self.keys {
+            match value {
+                toml::Value::String(action) => {
+                    out.panel.insert(key.clone(), action.clone());
+                }
+                toml::Value::Table(table) => {
+                    let target = match key.as_str() {
+                        "panel" => &mut out.panel,
+                        "viewer" => &mut out.viewer,
+                        "editor" => &mut out.editor,
+                        other => {
+                            warnings.push(format!(
+                                "unknown key context '[keys.{other}]' (panel, viewer, editor)"
+                            ));
+                            continue;
+                        }
+                    };
+                    for (k, v) in table {
+                        match v.as_str() {
+                            Some(action) => {
+                                target.insert(k.clone(), action.to_string());
+                            }
+                            None => {
+                                warnings.push(format!("[keys.{key}] '{k}' must be an action name"))
+                            }
+                        }
+                    }
+                }
+                _ => warnings.push(format!("[keys] '{key}' must be an action name or a table")),
+            }
+        }
+        (out, warnings)
+    }
+
     /// Effective lynx-motion state: an explicit `lynx` wins, otherwise
     /// the "modern" preset implies on.
     pub fn lynx_on(&self) -> bool {
@@ -242,8 +300,10 @@ path = "/home/user/git"
         let config: Config = toml::from_str(text).unwrap();
         assert_eq!(config.theme, "dark");
         assert!(config.sort_reverse);
-        assert_eq!(config.keys["ctrl+y"], "swap-panels");
-        assert_eq!(config.keys["ctrl+\\"], "hotlist");
+        let (contexts, warnings) = config.key_contexts();
+        assert!(warnings.is_empty());
+        assert_eq!(contexts.panel["ctrl+y"], "swap-panels");
+        assert_eq!(contexts.panel["ctrl+\\"], "hotlist");
         assert_eq!(config.hotlist[0].label, "projects");
 
         let out = toml::to_string_pretty(&config).unwrap();
@@ -251,6 +311,38 @@ path = "/home/user/git"
         assert_eq!(back.keys.len(), 2);
         assert_eq!(back.hotlist.len(), 1);
         assert_eq!(back.sort_key, "mtime");
+    }
+
+    #[test]
+    fn key_contexts_split_by_table() {
+        let text = r#"
+[keys]
+"ctrl+y" = "swap-panels"
+
+[keys.viewer]
+"ctrl+w" = "wrap"
+
+[keys.editor]
+"ctrl+q" = "quit"
+
+[keys.bogus]
+"x" = "y"
+"#;
+        let config: Config = toml::from_str(text).unwrap();
+        let (contexts, warnings) = config.key_contexts();
+        assert_eq!(contexts.panel["ctrl+y"], "swap-panels");
+        assert_eq!(contexts.viewer["ctrl+w"], "wrap");
+        assert_eq!(contexts.editor["ctrl+q"], "quit");
+        assert_eq!(warnings.len(), 1, "the unknown context warns: {warnings:?}");
+        assert!(warnings[0].contains("bogus"));
+    }
+
+    #[test]
+    fn key_contexts_warn_on_odd_values() {
+        let config: Config = toml::from_str("[keys]\n'ctrl+y' = 42\n").unwrap();
+        let (contexts, warnings) = config.key_contexts();
+        assert!(contexts.panel.is_empty());
+        assert_eq!(warnings.len(), 1);
     }
 
     #[test]

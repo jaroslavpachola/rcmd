@@ -299,7 +299,8 @@ const HELP_TEXT: &[&str] = &[
     "# Config  (~/.config/rcmd/config.toml - yours, never rewritten;",
     "#          rcmd's own state lives in ~/.local/state/rcmd/state.toml)",
     "  theme = \"mc\" | \"dark\"      keymap = \"mc\" | \"modern\" (= lynx on)",
-    "  [keys] section adds custom bindings, e.g. \"ctrl+y\" = \"swap-panels\"",
+    "  [keys] adds custom bindings, e.g. \"ctrl+y\" = \"swap-panels\";",
+    "  [keys.viewer] and [keys.editor] rebind inside the viewer/editor",
 ];
 
 pub fn help_lines() -> usize {

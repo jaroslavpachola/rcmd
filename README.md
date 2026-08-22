@@ -329,7 +329,13 @@ sort_reverse = false
 listing = "full"    # brief | full | long (panel listing format)
 
 [keys]              # custom bindings on top of the preset
-"ctrl+y" = "swap-panels"
+"ctrl+y" = "swap-panels"     # bare entries bind in the panel
+[keys.viewer]                # ...and these inside the F3 viewer
+"ctrl+w" = "wrap"            # quit wrap hex search search-next follow
+[keys.editor]                # ...and these inside the F4 editor
+"ctrl+q" = "quit"            # save quit mark replace search search-next
+                             # block-copy block-move delete-line undo
+                             # redo copy cut paste select-all wrap
 # key syntax:  [ctrl+][alt+][shift+]<key>  (f1..f20, letters, +, -, etc.)
 # actions: help view edit copy move mkdir delete delete-perm select-group
 #   unselect-group invert-selection quit shell reload swap-panels

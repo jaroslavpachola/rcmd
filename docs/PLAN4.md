@@ -36,7 +36,10 @@ only way to script), rcmd keeps its own shape and imports mc's data.
   default on.
 - **mc import layer**: `menu` / `.mc.menu`, `mc.ext`, mc keymap files
   read and converted into TOML; a one-shot importer on first run.
-- **Per-context keymaps**: `[keys.panel|editor|viewer|dialog]`.
+- **Per-context keymaps**: `[keys.panel|viewer|editor]` - done. The
+  `dialog` context is deferred: rebinding OK/Cancel/next-field means
+  routing every dialog's keys through a table first, which belongs with
+  the dialog work in S2/S6 rather than here.
 - **Small keys batch**: Esc prefix timeout to ~250 ms, `M-p`/`M-n`
   history aliases + `M-h` list, `M-a`, `cd -`/CDPATH, `C-x !`,
   command-line `%` macros, persisted command history.
