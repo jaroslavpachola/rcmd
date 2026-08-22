@@ -2,9 +2,9 @@
 
 A Midnight Commander replacement in Rust: orthodox dual-pane file manager
 with MC keybindings, built on ratatui. The 1.0
-([docs/PLAN.md](docs/PLAN.md)) and 2.0 ([docs/PLAN2.md](docs/PLAN2.md))
-roadmaps are complete; 3.0 ([docs/PLAN3.md](docs/PLAN3.md)) is under
-way — its flagship, the **persistent subshell** behind Ctrl+O, is in.
+([docs/PLAN.md](docs/PLAN.md)), 2.0 ([docs/PLAN2.md](docs/PLAN2.md)) and
+3.0 ([docs/PLAN3.md](docs/PLAN3.md)) roadmaps are complete — 3.0's
+flagship is the **persistent subshell** behind Ctrl+O.
 
 ![rcmd demo: browsing, the syntax-highlighted viewer, marking and
 copying, the persistent subshell](docs/demo.gif)
@@ -28,7 +28,7 @@ history, quick view, info panel, listing formats, git status in the
 panels, **openers and an F2 user menu**, and MC's ESC-prefix — see
 below.
 
-**3.0 so far** (unreleased, dogfooding): the persistent **subshell**
+**3.0** — the live commander: the persistent **subshell**
 (Ctrl+O), SFTP auth depth (passphrase keys, keyboard-interactive),
 bulk rename via the editor, viewer follow mode (tail&nbsp;-f) with
 syntax highlighting and precise search-match highlighting, `[[view]]`

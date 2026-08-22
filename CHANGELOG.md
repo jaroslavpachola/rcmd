@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 3.0.0 — 2026-08-22
+
+The live commander ([docs/PLAN3.md](docs/PLAN3.md), R1–R5 complete): the
+persistent subshell shipped in R1 and has been dogfooded since, joined
+by SFTP auth depth, the workflow bells, the depth-debt menu including
+the job queue, and the packaging work.
+
 
 - **Packaging** (3.0 R5): release binaries are now thin-LTO'd and
   stripped, and every release ships a second, fully static
