@@ -4,7 +4,10 @@ A Midnight Commander replacement in Rust: orthodox dual-pane file manager
 with MC keybindings, built on ratatui. The 1.0
 ([docs/PLAN.md](docs/PLAN.md)), 2.0 ([docs/PLAN2.md](docs/PLAN2.md)) and
 3.0 ([docs/PLAN3.md](docs/PLAN3.md)) roadmaps are complete — 3.0's
-flagship is the **persistent subshell** behind Ctrl+O.
+flagship is the **persistent subshell** behind Ctrl+O. Next up: 4.0, the
+parity release ([docs/PLAN4.md](docs/PLAN4.md)), whose scope comes from
+a decision-by-decision comparison against mc
+([docs/MC-DIFF.md](docs/MC-DIFF.md)).
 
 ![rcmd demo: browsing, the syntax-highlighted viewer, marking and
 copying, the persistent subshell](docs/demo.gif)
