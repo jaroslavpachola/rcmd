@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Mini status** (4.0 S1): each panel can carry its own status row
+  describing the entry under *its* cursor (permissions, size, name,
+  symlink target), MC-style. Off by default - rcmd's single status line
+  already covers the active panel, so the row earns its space mainly by
+  showing what the *other* panel is sitting on. Switch it on under
+  F9 > Options > Panel options > Layout.
+
+## Unreleased
+
 - **Layout settings** (4.0 S1): MC's Layout dialog arrives as a section
   of the options form. The panels can be **stacked horizontally**
   instead of side by side, the **split size** is adjustable (20-80%,

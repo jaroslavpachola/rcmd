@@ -48,6 +48,8 @@ pub struct State {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_menubar: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_mini_status: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub show_status: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_cmdline: Option<bool>,
@@ -141,6 +143,7 @@ pub fn apply(state: &State, config: &mut Config) {
         split,
         split_ratio,
         show_menubar,
+        show_mini_status,
         show_status,
         show_cmdline,
         show_keybar

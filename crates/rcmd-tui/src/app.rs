@@ -217,6 +217,7 @@ pub struct OptionsDialog {
 pub enum Opt {
     HorizontalSplit,
     MenuBar,
+    MiniStatus,
     StatusLine,
     CommandLine,
     KeyBar,
@@ -233,7 +234,7 @@ pub enum Opt {
     DarkTheme,
 }
 
-pub const OPT_COUNT: usize = 16;
+pub const OPT_COUNT: usize = 17;
 
 /// A row of the options form: a section heading or a setting.
 pub enum OptRow {
@@ -254,6 +255,7 @@ pub const OPTION_ROWS: &[OptRow] = &[
     OptRow::Ratio("Panel size"),
     OptRow::Check(Opt::MenuBar, "Menu bar"),
     OptRow::Check(Opt::StatusLine, "Status line"),
+    OptRow::Check(Opt::MiniStatus, "Mini status (per panel)"),
     OptRow::Check(Opt::CommandLine, "Command line"),
     OptRow::Check(Opt::KeyBar, "Key bar"),
     OptRow::Head("Panel"),
@@ -2367,6 +2369,7 @@ impl App {
                 values[Opt::HorizontalSplit as usize] = cfg.horizontal_split();
                 values[Opt::MenuBar as usize] = cfg.show_menubar;
                 values[Opt::StatusLine as usize] = cfg.show_status;
+                values[Opt::MiniStatus as usize] = cfg.show_mini_status;
                 values[Opt::CommandLine as usize] = cfg.show_cmdline;
                 values[Opt::KeyBar as usize] = cfg.show_keybar;
                 let ratio = cfg.ratio();
@@ -3962,6 +3965,7 @@ impl App {
         self.config.split_ratio = d.ratio;
         self.config.show_menubar = d.get(Opt::MenuBar);
         self.config.show_status = d.get(Opt::StatusLine);
+        self.config.show_mini_status = d.get(Opt::MiniStatus);
         self.config.show_cmdline = d.get(Opt::CommandLine);
         self.config.show_keybar = d.get(Opt::KeyBar);
         self.config.confirm_delete = d.get(Opt::ConfirmDelete);
@@ -3997,6 +4001,7 @@ impl App {
         let (show_hidden, editor, theme) = (cfg.show_hidden, cfg.editor.clone(), cfg.theme.clone());
         let (del, over, exit) = (cfg.confirm_delete, cfg.confirm_overwrite, cfg.confirm_exit);
         let (split, ratio) = (cfg.split.clone(), cfg.split_ratio);
+        let mini_status = cfg.show_mini_status;
         let (menubar, status_bar, cmdline, keybar) = (
             cfg.show_menubar,
             cfg.show_status,
@@ -4019,6 +4024,7 @@ impl App {
             s.split_ratio = Some(ratio);
             s.show_menubar = Some(menubar);
             s.show_status = Some(status_bar);
+            s.show_mini_status = Some(mini_status);
             s.show_cmdline = Some(cmdline);
             s.show_keybar = Some(keybar);
         }) {

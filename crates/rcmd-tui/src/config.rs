@@ -49,6 +49,11 @@ pub struct Config {
     /// Draw MC's permanent menu bar across the top (F9 opens the menu
     /// either way).
     pub show_menubar: bool,
+    /// Draw a status row inside each panel describing that panel's
+    /// cursor entry (MC's "mini status"). Off by default: rcmd's single
+    /// status line already covers the active panel, so this earns its
+    /// row mainly by showing the *other* panel's entry too.
+    pub show_mini_status: bool,
     /// Draw the status line showing the cursor entry.
     pub show_status: bool,
     /// Draw the command line. With it hidden, plain characters only
@@ -199,6 +204,7 @@ impl Default for Config {
             split: "vertical".into(),
             split_ratio: 50,
             show_menubar: false,
+            show_mini_status: false,
             show_status: true,
             show_cmdline: true,
             show_keybar: true,

@@ -366,7 +366,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // 2 border rows + 1 column-header row, in the ACTIVE panel: with a
     // horizontal split the two panels can differ in height.
     let active_area = if app.active == 0 { left } else { right };
-    app.panel_rows = active_area.height.saturating_sub(3) as usize;
+    app.panel_rows = active_area
+        .height
+        .saturating_sub(3 + u16::from(cfg.show_mini_status)) as usize;
     app.areas = crate::app::Areas {
         screen: frame.area(),
         left,
@@ -399,9 +401,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 area,
                 &app.panels[i],
                 &mut app.table_states[i],
-                app.active == i,
-                app.git_info[i].as_ref().map(|(_, s)| s),
-                disk,
+                Chrome {
+                    active: app.active == i,
+                    git: app.git_info[i].as_ref().map(|(_, s)| s),
+                    disk,
+                    mini: app.config.show_mini_status,
+                },
             );
         }
     }
@@ -449,15 +454,28 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 }
 
+/// Everything drawn around a panel's listing: which side is focused,
+/// its git status, free space and whether the mini status is on.
+struct Chrome<'a> {
+    active: bool,
+    git: Option<&'a GitStatus>,
+    disk: Option<(u64, u64)>,
+    mini: bool,
+}
+
 fn draw_panel(
     frame: &mut Frame,
     area: Rect,
     panel: &Panel,
     state: &mut TableState,
-    active: bool,
-    git: Option<&GitStatus>,
-    disk: Option<(u64, u64)>,
+    chrome: Chrome<'_>,
 ) {
+    let Chrome {
+        active,
+        git,
+        disk,
+        mini,
+    } = chrome;
     let title_style = if active {
         Style::new().fg(th().select_fg).bg(th().select_bg)
     } else {
@@ -568,11 +586,53 @@ fn draw_panel(
     let table = Table::new(rows, constraints)
         .header(header)
         .column_spacing(1)
-        .style(Style::new().fg(th().panel_fg).bg(th().panel_bg))
-        .block(block);
+        .style(Style::new().fg(th().panel_fg).bg(th().panel_bg));
 
+    // The frame is drawn first so the table can be given a smaller area
+    // when the mini status claims the last row inside it.
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let listing = Rect {
+        height: inner.height.saturating_sub(u16::from(mini)),
+        ..inner
+    };
     state.select(Some(panel.cursor));
-    frame.render_stateful_widget(table, area, state);
+    frame.render_stateful_widget(table, listing, state);
+
+    if mini && inner.height > 0 {
+        let row = Rect {
+            x: inner.x,
+            y: inner.y + inner.height - 1,
+            width: inner.width,
+            height: 1,
+        };
+        let style = Style::new().fg(th().header_fg).bg(th().panel_bg);
+        frame.render_widget(Line::from(entry_summary(panel)).style(style), row);
+    }
+}
+
+/// The one-line description of a panel's cursor entry: what the status
+/// line shows for the active panel, and what the mini status shows for
+/// each panel of its own.
+fn entry_summary(panel: &Panel) -> String {
+    match panel.selected() {
+        Some(e) if e.is_parent() => "UP--DIR".to_string(),
+        Some(e) => {
+            let link = e
+                .link_target
+                .as_ref()
+                .map(|t| format!(" -> {}", t.display()))
+                .unwrap_or_default();
+            format!(
+                "{} {:>9} {}{}",
+                e.perm_string(),
+                e.size,
+                e.name.to_string_lossy(),
+                link
+            )
+        }
+        None => String::new(),
+    }
 }
 
 /// The Ctrl+X Q preview pane: renders the head of the file under the
@@ -971,25 +1031,7 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(format!("Search: {prefix}"))
             .style(Style::new().fg(th().select_fg).bg(th().select_bg))
     } else {
-        match app.panels[app.active].selected() {
-            Some(e) if e.is_parent() => Line::from("UP--DIR"),
-            Some(e) => {
-                let link = e
-                    .link_target
-                    .as_ref()
-                    .map(|t| format!(" -> {}", t.display()))
-                    .unwrap_or_default();
-                Line::from(format!(
-                    "{} {:>9} {}{}",
-                    e.perm_string(),
-                    e.size,
-                    e.name.to_string_lossy(),
-                    link
-                ))
-            }
-            None => Line::default(),
-        }
-        .style(Style::new().fg(th().panel_fg))
+        Line::from(entry_summary(&app.panels[app.active])).style(Style::new().fg(th().panel_fg))
     };
     frame.render_widget(line, area);
 }

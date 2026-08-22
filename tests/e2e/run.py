@@ -992,6 +992,22 @@ def test_layout():
     check("layout: back to a vertical split", len(tops) == 1, str(tops))
     statepath = os.path.join(home, ".local", "state", "rcmd", "state.toml")
     check("layout: saved to state", 'split = "vertical"' in open(statepath).read())
+
+    # mini status: a per-panel row describing that panel's cursor entry
+    s.send(b"\x1b[20~")
+    s.send(b"o")
+    s.send(b"p", wait=STEP)
+    for _ in range(option_downs(s.screen(), "Mini status")):
+        s.send(DOWN)
+    s.send(b" ")
+    s.send(b"\r", wait=STEP)
+    s.send(DOWN)                            # active panel -> hello.txt
+    framed = [line for line in s.screen().split("\n") if line.startswith("\u2502")]
+    # side by side, one screen row carries both minis: the active panel
+    # describes hello.txt while the other still sits on ".."
+    both = [line for line in framed if "hello.txt" in line and "UP--DIR" in line]
+    check("layout: each panel has its own mini status", len(both) == 1, str(framed[-3:]))
+    check("layout: mini status shows permissions", "rw" in both[0] if both else False)
     s.quit()
     shutil.rmtree(root)
 
