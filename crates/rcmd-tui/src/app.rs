@@ -912,6 +912,16 @@ pub struct Viewer {
     pub found: Option<usize>,
     /// The search dialog when it is open.
     pub prompt: Option<ViewSearch>,
+    /// The goto prompt (value, cursor) when it is open.
+    pub goto: Option<(String, usize)>,
+    /// MC's ten numbered marks; `m<digit>` sets one, `r<digit>`
+    /// returns to it.
+    pub bookmarks: [Option<usize>; 10],
+    /// An `m` or `r` waiting for its digit - Some(true) is set,
+    /// Some(false) is go.
+    pub pending_mark: Option<bool>,
+    /// A column ruler under the title.
+    pub ruler: bool,
     pub note: Option<String>,
     /// Extraction scratch file when viewing inside an archive;
     /// deleted when the viewer closes.
@@ -2810,6 +2820,43 @@ impl App {
             return;
         };
         v.note = None;
+        if let Some((value, cursor)) = v.goto.as_mut() {
+            match key.code {
+                KeyCode::Esc => v.goto = None,
+                KeyCode::Enter => {
+                    let asked = value.clone();
+                    v.goto = None;
+                    viewer_goto(v, &asked);
+                }
+                code => {
+                    edit_line(value, cursor, code, key.modifiers);
+                }
+            }
+            return;
+        }
+        // m / r wait for the digit that names the mark
+        if let Some(setting) = v.pending_mark.take() {
+            match key.code {
+                KeyCode::Char(c) if c.is_ascii_digit() => {
+                    let slot = c as usize - '0' as usize;
+                    if setting {
+                        v.bookmarks[slot] = Some(v.top);
+                        v.note = Some(format!(" mark {slot} set here "));
+                    } else {
+                        match v.bookmarks[slot] {
+                            Some(line) => {
+                                v.top = line;
+                                v.top_seg = 0;
+                                v.hex = false;
+                            }
+                            None => v.note = Some(format!(" mark {slot} is not set ")),
+                        }
+                    }
+                }
+                _ => v.note = Some(" a mark is a digit ".into()),
+            }
+            return;
+        }
         if let Some(dialog) = v.prompt.as_mut() {
             match key.code {
                 KeyCode::Esc => v.prompt = None,
@@ -2919,6 +2966,20 @@ impl App {
                     viewer_search(v, from, true);
                 }
             }
+            VA::Goto => {
+                let at = (v.top + 1).to_string();
+                let cursor = at.chars().count();
+                v.goto = Some((at, cursor));
+            }
+            VA::SetMark => {
+                v.pending_mark = Some(true);
+                v.note = Some(" mark: press a digit ".into());
+            }
+            VA::GoMark => {
+                v.pending_mark = Some(false);
+                v.note = Some(" go to mark: press a digit ".into());
+            }
+            VA::ToggleRuler => v.ruler = !v.ruler,
             VA::Follow => {
                 v.follow = !v.follow;
                 if v.follow {
@@ -3654,6 +3715,10 @@ impl App {
                     hex_top: 0,
                     rows: 1,
                     search: ViewSearch::default(),
+                    goto: None,
+                    bookmarks: [None; 10],
+                    pending_mark: None,
+                    ruler: false,
                     found: None,
                     prompt: None,
                     note: None,
@@ -3714,6 +3779,10 @@ impl App {
                     hex_top: 0,
                     rows: 1,
                     search: ViewSearch::default(),
+                    goto: None,
+                    bookmarks: [None; 10],
+                    pending_mark: None,
+                    ruler: false,
                     found: None,
                     prompt: None,
                     note: None,
@@ -6934,6 +7003,28 @@ fn viewer_end(v: &mut Viewer, rows: usize) {
         } else {
             v.top = total.saturating_sub(rows);
         }
+    }
+}
+
+/// Take the viewer where a goto input says. The three forms - a line,
+/// a byte offset, a share of the file - are told apart by how the
+/// number is written, so there is one field rather than a radio.
+fn viewer_goto(v: &mut Viewer, input: &str) {
+    let Some(goto) = rcmd_core::view::parse_goto(input) else {
+        v.note = Some(" not a line, offset (0x1f or 31b) or percent ".into());
+        return;
+    };
+    match v.file.goto_line(goto) {
+        Ok(line) => {
+            v.top = line;
+            v.top_seg = 0;
+            v.found = None;
+            if let rcmd_core::view::Goto::Offset(offset) = goto {
+                // a hex view is where an offset is worth naming
+                v.hex_top = offset - offset % 16;
+            }
+        }
+        Err(err) => v.note = Some(format!(" {err} ")),
     }
 }
 

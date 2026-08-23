@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.34.0 - 2026-08-23
+
+- **Getting around a file in the viewer** (4.0 S4): **F5**, `Alt+L` or
+  `:` opens goto. mc splits line, offset and percentage across a radio
+  button; rcmd takes all three in one field and tells them apart by how
+  the number is written - `201` is a line, `0x3e8` and `1000b` are byte
+  offsets, `50%` is a share of the file. Anything else says so instead
+  of jumping somewhere.
+- **Ten numbered marks**: `m` then a digit sets one where you are, `r`
+  then the same digit returns. An unset mark says it is unset rather
+  than moving you to the top of the file.
+- **`Alt+R` toggles a column ruler** under the title. It counts from
+  the leftmost column actually on screen, not from the start of the
+  line, so it still tells the truth when the view is scrolled sideways.
+
 ## 3.33.0 - 2026-08-23
 
 - **The viewer's search dialog** (4.0 S4): F7 or `/` now opens mc's

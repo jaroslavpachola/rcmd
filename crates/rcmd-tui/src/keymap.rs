@@ -337,6 +337,13 @@ pub enum ViewerAction {
     Search,
     SearchNext,
     Follow,
+    /// The goto prompt: a line, a byte offset or a percentage.
+    Goto,
+    /// `m` then a digit.
+    SetMark,
+    /// `r` then a digit.
+    GoMark,
+    ToggleRuler,
 }
 
 /// What a key does in the F4 editor (text entry and plain cursor
@@ -374,6 +381,12 @@ const VIEWER_DEFAULTS: &[(&str, &str)] = &[
     ("/", "search"),
     ("n", "search-next"),
     ("f", "follow"),
+    ("f5", "goto"),
+    ("alt+l", "goto"),
+    (":", "goto"),
+    ("m", "set-mark"),
+    ("r", "go-mark"),
+    ("alt+r", "ruler"),
 ];
 
 const EDITOR_DEFAULTS: &[(&str, &str)] = &[
@@ -405,6 +418,10 @@ pub fn parse_viewer_action(name: &str) -> Option<ViewerAction> {
         "search" => ViewerAction::Search,
         "search-next" => ViewerAction::SearchNext,
         "follow" => ViewerAction::Follow,
+        "goto" => ViewerAction::Goto,
+        "set-mark" => ViewerAction::SetMark,
+        "go-mark" => ViewerAction::GoMark,
+        "ruler" => ViewerAction::ToggleRuler,
         _ => return None,
     })
 }

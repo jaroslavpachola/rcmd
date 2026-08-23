@@ -214,6 +214,15 @@ F2 toggles soft-wrap, F4 toggles hex mode, F3/F10/Esc/q quit. Lines are
 indexed lazily, so huge files open instantly; very long lines are broken
 at 4096 columns.
 
+**F5**, `Alt+L` or `:` opens **goto**, which takes all three of mc's
+destinations in one field, told apart by how the number is written: a
+bare `201` is a line, `0x3e8` or `1000b` a byte offset, and `50%` a
+share of the file. **`m`** followed by a digit sets one of ten marks at
+the current position and **`r`** followed by the same digit returns to
+it. `Alt+R` toggles a column ruler under the title, which counts from
+the leftmost column on screen rather than from the start of the line,
+so it keeps telling the truth when the view is scrolled sideways.
+
 F7 or `/` opens mc's **search dialog**: the pattern, and the four
 answers that change what it means. The pattern is read as **Normal**
 (a literal), a **Regular expression**, or **Hexadecimal** bytes -

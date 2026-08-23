@@ -510,6 +510,10 @@ const HELP_TEXT: &[&str] = &[
     "                  highlighted and the found line is marked.",
     "  Files with a known syntax (≤2 MB) get syntax colors, like F4",
     "  Left/Right      horizontal scroll",
+    "  F5 / Alt+L / :  goto: a line (201), a byte offset (0x3e8 or",
+    "                  1000b), or a share of the file (50%)",
+    "  m<digit>        set one of ten marks here; r<digit> returns",
+    "  Alt+R           column ruler under the title",
     "  f               follow mode (tail -f): stick to the growing end",
     "  Shift+F3        raw view (skip any [[view]] filter)",
     "  F3/F10/Esc/q    close the viewer",
@@ -2175,8 +2179,10 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
 
 fn draw_viewer(frame: &mut Frame, app: &mut App) {
     let Some(v) = app.viewer.as_mut() else { return };
-    let [title_area, content, bottom] = Layout::vertical([
+    let ruler_rows = if v.ruler { 1 } else { 0 };
+    let [title_area, ruler_area, content, bottom] = Layout::vertical([
         Constraint::Length(1),
+        Constraint::Length(ruler_rows),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
@@ -2209,6 +2215,13 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
             .style(Style::new().fg(th().select_fg).bg(th().select_bg)),
         title_area,
     );
+
+    if v.ruler {
+        frame.render_widget(
+            Line::from(ruler_text(v.left, width)).style(Style::new().fg(th().header_fg)),
+            ruler_area,
+        );
+    }
 
     // syntax spans for the visible line range (empty without a
     // recognized syntax); search matches are overlaid per line below
@@ -2316,6 +2329,34 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
     if let Some(dialog) = &v.prompt {
         draw_view_search(frame, dialog);
     }
+    if let Some((value, cursor)) = &v.goto {
+        let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+        let area = centered(52, 5, frame.area());
+        let inner = popup(frame, area, " Goto: line, 0x1f / 31b, or 50% ", style);
+        draw_field(frame, inner, value, *cursor);
+    }
+}
+
+/// A column ruler: a tick every ten columns, numbered, counting from
+/// the leftmost column actually on screen so it still tells the truth
+/// when the view is scrolled sideways.
+fn ruler_text(left: usize, width: usize) -> String {
+    let mut out = String::with_capacity(width);
+    let mut col = left;
+    while out.chars().count() < width {
+        let at = col + 1;
+        if at.is_multiple_of(10) {
+            let label = at.to_string();
+            out.push_str(&label);
+            // a label longer than the gap eats the next columns, which
+            // is what a ruler does rather than lying about the width
+            col += label.chars().count();
+            continue;
+        }
+        out.push(if at.is_multiple_of(5) { '+' } else { '-' });
+        col += 1;
+    }
+    out.chars().take(width).collect()
 }
 
 /// MC's viewer search dialog: the pattern on top, then the four

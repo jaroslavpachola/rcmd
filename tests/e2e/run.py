@@ -975,6 +975,67 @@ def test_viewsearch():
     shutil.rmtree(root)
 
 
+def test_viewgoto():
+    """Getting around a file: the goto prompt's three forms, the ten
+    numbered marks, and the ruler."""
+    root, play, home = sandbox()
+    # 500 lines of exactly ten bytes, so an offset and a line line up
+    body = "".join(f"line {n:04}\n" for n in range(500))
+    open(os.path.join(play, "text.txt"), "w").write(body)
+    s = Session(play, home)
+    s.send(b"\x13text\r", wait=STEP)
+    s.send(F3, wait=STEP * 2)
+    check("viewgoto: viewer opens", "line 0000" in s.screen())
+
+    # a bare number is a line
+    s.send(F5, wait=STEP)
+    check("viewgoto: the prompt says what it takes", "Goto" in s.screen())
+    s.send(b"\x15201\r", wait=STEP * 2)
+    check("viewgoto: went to the line", "line 0200" in s.screen())
+
+    # a trailing b is a byte offset - 3000 bytes in is line 300
+    s.send(F5, wait=STEP)
+    s.send(b"\x153000b\r", wait=STEP * 2)
+    check("viewgoto: an offset in bytes", "line 0300" in s.screen())
+
+    # and hex says the same thing
+    s.send(F5, wait=STEP)
+    s.send(b"\x150x3e8\r", wait=STEP * 2)   # 1000 -> line 100
+    check("viewgoto: an offset in hex", "line 0100" in s.screen())
+
+    # a trailing percent is a share of the file
+    s.send(F5, wait=STEP)
+    s.send(b"\x1550%\r", wait=STEP * 2)
+    check("viewgoto: halfway through", "line 0250" in s.screen())
+
+    # nonsense says so rather than jumping somewhere
+    s.send(F5, wait=STEP)
+    s.send(b"\x15nowhere\r", wait=STEP * 2)
+    check("viewgoto: nonsense is refused", wait_for(s, "not a line"))
+
+    # marks: set one here, wander off, come back
+    s.send(b"m", wait=STEP)
+    check("viewgoto: a mark wants a digit", "press a digit" in s.screen())
+    s.send(b"3", wait=STEP)
+    check("viewgoto: the mark was set", wait_for(s, "mark 3 set"))
+    s.send(HOME_K, wait=STEP)
+    check("viewgoto: moved away", "line 0000" in s.screen())
+    s.send(b"r3", wait=STEP * 2)
+    check("viewgoto: the mark brought us back", "line 0250" in s.screen())
+    s.send(b"r7", wait=STEP * 2)
+    check("viewgoto: an unset mark says so", wait_for(s, "mark 7 is not set"))
+
+    # the ruler
+    s.send(b"\x1br", wait=STEP * 2)          # Alt+R
+    check("viewgoto: the ruler appears", "----+----10" in s.screen())
+    s.send(b"\x1br", wait=STEP * 2)
+    check("viewgoto: and goes away again", "----+----10" not in s.screen())
+
+    s.send(b"q", wait=STEP)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_find():
     root, play, home = sandbox()
     os.makedirs(os.path.join(play, "sub"))
@@ -3132,6 +3193,7 @@ def main():
         test_cmdline,
         test_viewer,
         test_viewsearch,
+        test_viewgoto,
         test_archive,
         test_cmdarchive,
         test_cpio,

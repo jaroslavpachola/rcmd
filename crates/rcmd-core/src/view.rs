@@ -36,6 +36,40 @@ pub struct Search {
     pub backwards: bool,
 }
 
+/// What a "goto" input asks for. One field takes all three because
+/// which one you mean is written into the number: a bare number is a
+/// line, `0x…` or a trailing `b` is a byte offset, a trailing `%` is a
+/// share of the file.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Goto {
+    /// 1-based, as the status line counts.
+    Line(usize),
+    Offset(u64),
+    /// 0..=100.
+    Percent(f64),
+}
+
+/// Read a goto input. `None` for anything that is not one of the three.
+pub fn parse_goto(input: &str) -> Option<Goto> {
+    let text = input.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if let Some(number) = text.strip_suffix('%') {
+        let percent: f64 = number.trim().parse().ok()?;
+        return (0.0..=100.0)
+            .contains(&percent)
+            .then_some(Goto::Percent(percent));
+    }
+    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        return u64::from_str_radix(hex, 16).ok().map(Goto::Offset);
+    }
+    if let Some(number) = text.strip_suffix(['b', 'B']) {
+        return number.trim().parse().ok().map(Goto::Offset);
+    }
+    text.parse().ok().map(Goto::Line)
+}
+
 /// A compiled search: either a regular expression or a byte sequence.
 enum Matcher {
     Text(regex::Regex),
@@ -353,6 +387,18 @@ impl FileView {
         Ok(None)
     }
 
+    /// The line a goto input names. A line number is 1-based on the
+    /// way in and 0-based on the way out, because that is the gap
+    /// between what a status line counts and what an index is.
+    pub fn goto_line(&mut self, goto: Goto) -> io::Result<usize> {
+        let offset = match goto {
+            Goto::Line(line) => return Ok(line.saturating_sub(1)),
+            Goto::Offset(offset) => offset.min(self.size),
+            Goto::Percent(percent) => ((self.size as f64) * percent / 100.0).round() as u64,
+        };
+        self.line_at_offset(offset.min(self.size))
+    }
+
     /// Which line holds this byte offset.
     pub fn line_at_offset(&mut self, offset: u64) -> io::Result<usize> {
         // index far enough that the offset is inside what is known
@@ -624,5 +670,67 @@ mod search_tests {
         assert_eq!(f.line_at_offset(3).unwrap(), 0);
         assert_eq!(f.line_at_offset(11).unwrap(), 1);
         assert_eq!(f.line_at_offset(TEXT.len() as u64 - 1).unwrap(), 4);
+    }
+}
+
+#[cfg(test)]
+mod goto_tests {
+    use super::*;
+
+    #[test]
+    fn a_bare_number_is_a_line() {
+        assert_eq!(parse_goto("42"), Some(Goto::Line(42)));
+        assert_eq!(parse_goto("  7 "), Some(Goto::Line(7)));
+    }
+
+    #[test]
+    fn hex_and_a_trailing_b_are_both_offsets() {
+        assert_eq!(parse_goto("0x7b"), Some(Goto::Offset(123)));
+        assert_eq!(parse_goto("0X7B"), Some(Goto::Offset(123)));
+        assert_eq!(parse_goto("123b"), Some(Goto::Offset(123)));
+        assert_eq!(parse_goto("123B"), Some(Goto::Offset(123)));
+    }
+
+    #[test]
+    fn a_trailing_percent_is_a_share_of_the_file() {
+        assert_eq!(parse_goto("50%"), Some(Goto::Percent(50.0)));
+        assert_eq!(parse_goto("0%"), Some(Goto::Percent(0.0)));
+        assert_eq!(parse_goto("100%"), Some(Goto::Percent(100.0)));
+        assert_eq!(parse_goto("12.5%"), Some(Goto::Percent(12.5)));
+        // a share of a file cannot be more than the file
+        assert_eq!(parse_goto("101%"), None);
+        assert_eq!(parse_goto("-1%"), None);
+    }
+
+    #[test]
+    fn nonsense_is_refused_rather_than_taken_as_line_zero() {
+        for bad in ["", "  ", "abc", "0xzz", "12x", "%"] {
+            assert_eq!(parse_goto(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_three_forms_land_where_they_say() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        // ten lines of ten bytes each
+        let body: String = (0..10).map(|n| format!("line {n}!!!\n")).collect();
+        std::fs::write(&path, &body).unwrap();
+        let mut f = FileView::open(&path).unwrap();
+        assert_eq!(f.size, 100);
+
+        assert_eq!(f.goto_line(Goto::Line(1)).unwrap(), 0);
+        assert_eq!(f.goto_line(Goto::Line(5)).unwrap(), 4);
+        // line 0 and line 1 are the same place: there is no line zero
+        assert_eq!(f.goto_line(Goto::Line(0)).unwrap(), 0);
+
+        assert_eq!(f.goto_line(Goto::Offset(0)).unwrap(), 0);
+        assert_eq!(f.goto_line(Goto::Offset(25)).unwrap(), 2);
+        // past the end lands at the end rather than failing
+        assert_eq!(f.goto_line(Goto::Offset(9_999)).unwrap(), 9);
+
+        assert_eq!(f.goto_line(Goto::Percent(0.0)).unwrap(), 0);
+        assert_eq!(f.goto_line(Goto::Percent(50.0)).unwrap(), 5);
+        assert_eq!(f.goto_line(Goto::Percent(100.0)).unwrap(), 9);
     }
 }
