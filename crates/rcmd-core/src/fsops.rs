@@ -954,7 +954,7 @@ fn stable_link_target(target: &Path, src: &Path, dst: &Path, root: Option<&Path>
 /// `base` + `rest`, with `.` dropped and `..` cancelled against the
 /// component before it. Purely textual: the file it names need not
 /// exist, which matters for a link that is copied before its target is.
-fn lexical_join(base: &Path, rest: &Path) -> PathBuf {
+pub fn lexical_join(base: &Path, rest: &Path) -> PathBuf {
     let mut out: Vec<std::ffi::OsString> = Vec::new();
     let mut absolute = false;
     for component in base.components().chain(rest.components()) {
@@ -985,7 +985,7 @@ fn lexical_join(base: &Path, rest: &Path) -> PathBuf {
 
 /// `path` written relative to `base`, with `..` for each level that has
 /// to be climbed. Both are taken as literal component lists.
-fn relative_to(path: &Path, base: &Path) -> Option<PathBuf> {
+pub fn relative_to(path: &Path, base: &Path) -> Option<PathBuf> {
     let mut theirs = path.components().peekable();
     let mut ours = base.components().peekable();
     while theirs.peek().is_some() && theirs.peek() == ours.peek() {

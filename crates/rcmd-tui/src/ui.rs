@@ -353,7 +353,12 @@ const HELP_TEXT: &[&str] = &[
     "                  users > groups > buttons, arrows move, Home/End jump.",
     "                  On an sftp panel it stays a typed user[:group]: our",
     "                  account names are not the server's",
-    "  Ctrl+X s        create a symlink to the cursor entry",
+    "  Ctrl+X l        hard link to the cursor entry - a second name for",
+    "                  the same file (local panels only)",
+    "  Ctrl+X s        symlink holding the entry's full path",
+    "  Ctrl+X v        symlink holding just its name, so the pair can be",
+    "                  moved together",
+    "  Ctrl+X Ctrl+S   change where an existing symlink points",
     "  F9 > Left/Right   listing format: brief (names), full, long (ls -l,",
     "                  full-width), user defined, tree; the panel footer",
     "                  shows free space",
@@ -659,6 +664,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Transfer(d) => draw_transfer(frame, d),
             Dialog::Chmod(d) => draw_chmod(frame, d),
             Dialog::Chown(d) => draw_chown(frame, d),
+            Dialog::Link(d) => draw_link(frame, d),
             Dialog::Hotlist(selected) => {
                 draw_hotlist(frame, &app.config.hotlist, &app.hotlist_recent(), *selected)
             }
@@ -2840,6 +2846,62 @@ fn draw_tree_rows(frame: &mut Frame, area: Rect, tree: &Tree, base: Style, selec
 /// F9 > Command > Directory tree. Enter takes the current panel to the
 /// selected directory and closes - the panel's own tree mode is the one
 /// that stays open and moves the *other* panel.
+/// C-x l / s / v / C-s: the link form. What to point at on top, what to
+/// call it below - except when editing a link, which already has a name.
+fn draw_link(frame: &mut Frame, d: &crate::app::LinkDialog) {
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let rows = d.rows();
+    let area = centered(64, rows as u16 + 4, frame.area());
+    let inner = popup(frame, area, d.title(), base);
+    let width = inner.width.saturating_sub(2) as usize;
+    let row_at = |i: u16| Rect {
+        x: inner.x + 1,
+        y: inner.y + i,
+        width: inner.width.saturating_sub(2),
+        height: 1,
+    };
+    let field = |text: &str, label: &str| {
+        let room = width.saturating_sub(label.len());
+        format!("{label}{:<room$}", tail(text, room))
+    };
+
+    let labels: &[(&str, &str, usize)] = if rows == 1 {
+        &[("points at ", "target", 0)]
+    } else {
+        &[("points at ", "target", 0), ("named     ", "name", 1)]
+    };
+    for (label, which, row) in labels {
+        let text = if *which == "target" {
+            &d.target
+        } else {
+            &d.name
+        };
+        frame.render_widget(
+            Line::from(field(text, label)).style(if d.row == *row { sel } else { base }),
+            row_at(*row as u16),
+        );
+    }
+    let selected = if d.row == rows {
+        usize::from(!d.ok)
+    } else {
+        usize::MAX
+    };
+    frame.render_widget(
+        buttons_line(&["OK", "Cancel"], selected, base, sel),
+        row_at(rows as u16 + 1),
+    );
+    if d.row < rows {
+        let cursor = if d.row == 0 {
+            d.target_cursor
+        } else {
+            d.name_cursor
+        };
+        let x = inner.x + 11 + cursor.min(width.saturating_sub(12)) as u16;
+        frame.set_cursor_position((x, inner.y + d.row as u16));
+    }
+}
+
 /// C-x o: MC's chown window - the system's users and groups as two pick
 /// lists. Typing an owner is fine when you know the name; picking is
 /// what you want when you do not, which is most of the time.

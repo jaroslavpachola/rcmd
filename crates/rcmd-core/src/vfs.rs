@@ -39,6 +39,17 @@ pub trait FsWrite: Send + Sync {
     fn set_owner(&self, path: &Path, uid: Option<u32>, gid: Option<u32>) -> io::Result<()>;
     fn set_mtime(&self, path: &Path, mtime: SystemTime) -> io::Result<()>;
     fn symlink(&self, target: &Path, link: &Path) -> io::Result<()>;
+
+    /// A second name for the same file. Only local filesystems have
+    /// one: the SFTP protocol's hardlink is an OpenSSH extension and
+    /// an archive has nowhere to put it, so the default says so rather
+    /// than pretending.
+    fn hard_link(&self, _existing: &Path, _link: &Path) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "hard links are local only",
+        ))
+    }
 }
 
 pub struct LocalFs;
@@ -117,6 +128,10 @@ impl FsWrite for LocalFs {
     fn set_mtime(&self, path: &Path, mtime: SystemTime) -> io::Result<()> {
         let f = std::fs::File::open(path)?;
         f.set_times(std::fs::FileTimes::new().set_modified(mtime))
+    }
+
+    fn hard_link(&self, existing: &Path, link: &Path) -> io::Result<()> {
+        std::fs::hard_link(existing, link)
     }
 
     fn symlink(&self, target: &Path, link: &Path) -> io::Result<()> {

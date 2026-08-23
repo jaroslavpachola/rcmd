@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.20.0 - 2026-08-23
+
+- **MC's four link commands** (4.0 S2): `C-x l` makes a **hard link**,
+  `C-x s` a symlink holding the entry's **full path**, `C-x v` one
+  holding just its **name**, and `C-x C-s` changes where an existing
+  link points. All four share one small form - what to point at on top,
+  what to call it below - both of which are yours to edit, as they are
+  in mc.
+- **`C-x s` changed meaning**: it used to write a name-only target, and
+  now writes the full path, because that is what mc's absolute symlink
+  command does and `C-x v` is the one for the short form. The short one
+  is what you want when the link and its target travel together; the
+  long one when the target stays put.
+- Hard links are local only. The SFTP protocol's hardlink is an OpenSSH
+  extension and an archive has nowhere to keep one, so the write trait
+  says so rather than pretending - the panel reports it instead of
+  failing obscurely.
+- Editing a link replaces it: there is no atomic retarget on Unix, so
+  the old link is removed and a new one written in its place.
+
 ## 3.19.0 - 2026-08-23
 
 - **The rest of MC's confirmations** (4.0 S2): mc asks about six things,

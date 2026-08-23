@@ -136,6 +136,8 @@ end
 | Insert, Ctrl+T | Mark entry and advance |
 | `+` / `-` (or `\`) | Select / unselect by glob |
 | `*` | Invert marks |
+| Ctrl+X l / s / v | Hard link / absolute symlink / relative symlink to the cursor entry |
+| Ctrl+X Ctrl+S | Change where an existing symlink points |
 | F5 | Copy marked (or cursor) entry - opens MC's form: source mask, destination, preserve attributes / follow links / dive into subdirs / stable symlinks, and OK / Background / Cancel |
 | F6 | Move / rename |
 | F7 | Make directory |

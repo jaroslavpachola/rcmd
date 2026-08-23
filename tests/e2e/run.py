@@ -791,8 +791,10 @@ def test_cxops():
     check("cxops: symlink dialog", "Symlink" in s.screen())
     s.send(b"\r", wait=STEP * 2)            # accept "target.txt-link"
     link = os.path.join(play, "target.txt-link")
+    # C-x s is MC's *absolute* symlink; C-x v is the relative one
     check("cxops: symlink created",
-          os.path.islink(link) and os.readlink(link) == "target.txt")
+          os.path.islink(link) and os.readlink(link) == os.path.join(play, "target.txt"),
+          os.readlink(link) if os.path.islink(link) else "not a link")
     s.quit()
     shutil.rmtree(root)
 
@@ -1595,6 +1597,66 @@ def test_confirmations():
     shutil.rmtree(root)
 
 
+def test_links():
+    """PLAN4 S2: MC's four link commands - C-x l hard, C-x s absolute,
+    C-x v relative, C-x C-s to change where a link points."""
+    root, play, home = sandbox()
+    open(os.path.join(play, "orig.txt"), "w").write("payload\n")
+    s = Session(play, home)
+    s.send(DOWN)                            # onto orig.txt
+
+    # C-x v: a relative symlink, named by the form's second row
+    s.send(b"\x18v", wait=STEP)
+    scr = s.screen()
+    check("links: the form names both halves",
+          "points at" in scr and "named" in scr, scr[:400])
+    check("links: relative keeps it short", "points at orig.txt" in scr, scr[:400])
+    s.send(b"\x15")                         # Ctrl+U over the suggested name
+    s.send(b"rel.txt")
+    s.send(b"\r", wait=STEP * 2)
+    rel = os.path.join(play, "rel.txt")
+    check("links: relative symlink created",
+          os.path.islink(rel) and os.readlink(rel) == "orig.txt",
+          os.readlink(rel) if os.path.islink(rel) else "missing")
+
+    # C-x l: a hard link - a real file sharing the original's inode
+    s.send(HOME_K)
+    s.send(DOWN, wait=STEP)                 # back onto orig.txt
+    if "orig.txt" not in status_line(s):
+        s.send(DOWN, wait=STEP)
+    s.send(b"\x18l", wait=STEP)
+    check("links: the hard link form opens", "Hard link" in s.screen(), s.screen()[:300])
+    s.send(b"\x15")
+    s.send(b"hard.txt")
+    s.send(b"\r", wait=STEP * 2)
+    hard = os.path.join(play, "hard.txt")
+    check("links: hard link created",
+          os.path.exists(hard) and not os.path.islink(hard))
+    check("links: and it is the same file",
+          os.path.exists(hard) and
+          os.stat(hard).st_ino == os.stat(os.path.join(play, "orig.txt")).st_ino)
+
+    # C-x C-s: change where the relative link points
+    s.send(HOME_K, wait=STEP)
+    for _ in range(6):
+        if "rel.txt" in status_line(s):
+            break
+        s.send(DOWN, wait=STEP)
+    check("links: on the symlink", "rel.txt" in status_line(s), status_line(s))
+    s.send(b"\x18\x13", wait=STEP)          # C-x C-s
+    scr = s.screen()
+    check("links: edit shows the current target",
+          "Edit symlink" in scr and "orig.txt" in scr, scr[:300])
+    s.send(b"\x15")
+    s.send(b"hard.txt")
+    s.send(b"\r", wait=STEP * 2)
+    check("links: the link was retargeted",
+          os.path.islink(rel) and os.readlink(rel) == "hard.txt",
+          os.readlink(rel) if os.path.islink(rel) else "missing")
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_mcimport():
     """PLAN4 S0: `rcmd --import-mc DIR` converts mc's menu, mc.ext and
     keymap into an rcmd config fragment on stdout, warning on stderr
@@ -2338,6 +2400,7 @@ def main():
         test_chmod,
         test_chown,
         test_confirmations,
+        test_links,
         test_mcimport,
         test_keycontexts,
         test_options,

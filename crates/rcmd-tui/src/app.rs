@@ -63,10 +63,6 @@ pub enum InputAction {
     Chown {
         paths: Vec<PathBuf>,
     },
-    /// C-x s: the value is the link name; `target` is what it points to.
-    SymlinkTo {
-        target: PathBuf,
-    },
 }
 
 /// An SFTP connection attempt on its worker thread; `ask` is the
@@ -301,6 +297,49 @@ impl ChownDialog {
     }
 }
 
+/// C-x l / s / v / C-s: MC's four link commands in one form - what to
+/// point at, and what to call it.
+pub struct LinkDialog {
+    pub kind: LinkKind,
+    pub target: String,
+    pub target_cursor: usize,
+    pub name: String,
+    pub name_cursor: usize,
+    /// 0 = target, 1 = name, 2 = the buttons. Editing a symlink has no
+    /// name row: the link already has one.
+    pub row: usize,
+    pub ok: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LinkKind {
+    /// C-x l: a second name for the same file.
+    Hard,
+    /// C-x s / C-x v: a link holding a path, absolute or relative.
+    Symbolic,
+    /// C-x C-s: rewrite an existing link's target.
+    EditSymlink,
+}
+
+impl LinkDialog {
+    pub fn title(&self) -> &'static str {
+        match self.kind {
+            LinkKind::Hard => " Hard link ",
+            LinkKind::Symbolic => " Symlink ",
+            LinkKind::EditSymlink => " Edit symlink ",
+        }
+    }
+
+    /// Editing a link only has a target to change.
+    pub fn rows(&self) -> usize {
+        if self.kind == LinkKind::EditSymlink {
+            1
+        } else {
+            2
+        }
+    }
+}
+
 pub struct ConfirmDialog {
     pub title: String,
     pub message: String,
@@ -351,6 +390,8 @@ pub enum Dialog {
     Chmod(Box<ChmodDialog>),
     /// C-x o: the chown pick lists.
     Chown(Box<ChownDialog>),
+    /// C-x l / s / v / C-s: the link form.
+    Link(Box<LinkDialog>),
 }
 
 /// The confirmation step of a bulk rename - nothing has touched the
@@ -4457,6 +4498,41 @@ impl App {
                     _ => self.dialog = Some(Dialog::Hotlist(selected)),
                 }
             }
+            Dialog::Link(mut d) => {
+                let last = d.rows(); // the button row
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Up => {
+                        d.row = d.row.checked_sub(1).unwrap_or(last);
+                        self.dialog = Some(Dialog::Link(d));
+                    }
+                    KeyCode::Down | KeyCode::Tab => {
+                        d.row = if d.row >= last { 0 } else { d.row + 1 };
+                        self.dialog = Some(Dialog::Link(d));
+                    }
+                    KeyCode::Left | KeyCode::Right if d.row == last => {
+                        d.ok = !d.ok;
+                        self.dialog = Some(Dialog::Link(d));
+                    }
+                    KeyCode::Enter => {
+                        if d.ok {
+                            self.submit_link(*d);
+                        }
+                    }
+                    code => {
+                        match d.row {
+                            0 => {
+                                edit_line(&mut d.target, &mut d.target_cursor, code, key.modifiers);
+                            }
+                            1 => {
+                                edit_line(&mut d.name, &mut d.name_cursor, code, key.modifiers);
+                            }
+                            _ => {}
+                        }
+                        self.dialog = Some(Dialog::Link(d));
+                    }
+                }
+            }
             Dialog::Chown(mut d) => {
                 match key.code {
                     KeyCode::Esc => {}
@@ -5098,18 +5174,6 @@ impl App {
                     }
                 }
             }
-            InputAction::SymlinkTo { target } => {
-                let name = value.trim();
-                if name.is_empty() {
-                    return;
-                }
-                let link = if Path::new(name).is_absolute() {
-                    PathBuf::from(name)
-                } else {
-                    self.panels[self.active].cwd.join(name)
-                };
-                self.apply_fs_op(&[link], "symlink", |w, p| w.symlink(&target, p));
-            }
         }
     }
 
@@ -5517,7 +5581,13 @@ impl App {
                 KeyCode::Char('p' | 'P') => self.run_action(Action::PastePath),
                 KeyCode::Char('c' | 'C') => self.open_chmod(),
                 KeyCode::Char('o' | 'O') => self.open_chown(),
-                KeyCode::Char('s' | 'S') => self.open_symlink(),
+                // MC's four: l hard, s absolute, v relative, C-s edit
+                KeyCode::Char('s' | 'S') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.open_edit_symlink()
+                }
+                KeyCode::Char('s' | 'S') => self.open_link(LinkKind::Symbolic, false),
+                KeyCode::Char('v' | 'V') => self.open_link(LinkKind::Symbolic, true),
+                KeyCode::Char('l' | 'L') => self.open_link(LinkKind::Hard, false),
                 KeyCode::Char('j' | 'J') => self.run_action(Action::Jobs),
                 KeyCode::Char('!') => self.run_action(Action::Panelize),
                 _ => {}
@@ -6101,7 +6171,10 @@ impl App {
     }
 
     /// C-x s: create a symlink to the cursor entry.
-    fn open_symlink(&mut self) {
+    /// C-x s (absolute), C-x v (relative), C-x l (hard). MC fills in the
+    /// original's path and suggests a name for the link, and lets you
+    /// change either.
+    fn open_link(&mut self, kind: LinkKind, relative: bool) {
         let panel = &self.panels[self.active];
         if panel.fs.writer().is_none() {
             self.status = Some(" archive is read-only ".into());
@@ -6111,14 +6184,85 @@ impl App {
             self.status = Some(" nothing selected ".into());
             return;
         };
-        let target = PathBuf::from(&entry.name);
-        let value = format!("{}-link", entry.name.to_string_lossy());
-        self.dialog = Some(Dialog::Input(InputDialog {
-            title: format!(" Symlink to \"{}\" named: ", entry.name.to_string_lossy()),
-            cursor: value.chars().count(),
-            value,
-            action: InputAction::SymlinkTo { target },
-        }));
+        let name = entry.name.to_string_lossy().into_owned();
+        // relative to the directory the link lands in, which is this one
+        let target = if relative {
+            name.clone()
+        } else {
+            panel.cwd.join(&entry.name).display().to_string()
+        };
+        let link = format!("{name}-link");
+        self.dialog = Some(Dialog::Link(Box::new(LinkDialog {
+            kind,
+            target_cursor: target.chars().count(),
+            target,
+            name_cursor: link.chars().count(),
+            name: link,
+            row: 1, // the name is what usually needs changing
+            ok: true,
+        })));
+    }
+
+    /// C-x C-s: change where an existing symlink points.
+    fn open_edit_symlink(&mut self) {
+        let panel = &self.panels[self.active];
+        if panel.fs.writer().is_none() {
+            self.status = Some(" archive is read-only ".into());
+            return;
+        }
+        let Some(entry) = panel.selected().filter(|e| !e.is_parent()) else {
+            self.status = Some(" nothing selected ".into());
+            return;
+        };
+        let Some(target) = entry.link_target.clone() else {
+            self.status = Some(" not a symlink ".into());
+            return;
+        };
+        let target = target.display().to_string();
+        self.dialog = Some(Dialog::Link(Box::new(LinkDialog {
+            kind: LinkKind::EditSymlink,
+            target_cursor: target.chars().count(),
+            target,
+            name: entry.name.to_string_lossy().into_owned(),
+            name_cursor: 0,
+            row: 0,
+            ok: true,
+        })));
+    }
+
+    /// OK on the link form.
+    fn submit_link(&mut self, d: LinkDialog) {
+        let (target, name) = (d.target.trim().to_string(), d.name.trim().to_string());
+        if target.is_empty() || name.is_empty() {
+            return;
+        }
+        let cwd = self.panels[self.active].cwd.clone();
+        let link = if Path::new(&name).is_absolute() {
+            PathBuf::from(&name)
+        } else {
+            cwd.join(&name)
+        };
+        let target = PathBuf::from(&target);
+        match d.kind {
+            LinkKind::Hard => {
+                // the original is named relative to the panel, as it is
+                // for every other command here
+                let existing = if target.is_absolute() {
+                    target
+                } else {
+                    cwd.join(&target)
+                };
+                self.apply_fs_op(&[link], "link", |w, p| w.hard_link(&existing, p));
+            }
+            LinkKind::Symbolic => {
+                self.apply_fs_op(&[link], "symlink", |w, p| w.symlink(&target, p));
+            }
+            // there is no atomic retarget: the link is replaced
+            LinkKind::EditSymlink => self.apply_fs_op(&[link], "symlink", |w, p| {
+                w.remove_file(p)?;
+                w.symlink(&target, p)
+            }),
+        }
     }
 
     /// Run one FsWrite operation over several paths, reporting the
