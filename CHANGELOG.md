@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 3.10.0 - 2026-08-23
+
+S1 turns to the panels themselves: both of mc's directory-tree forms,
+and the user-defined listing format that lets a panel draw whatever
+fields you name.
 
 - **User-defined listing format** (4.0 S1, completes the listing work):
   `listing = "user"` draws whatever `listing_format` says, in mc's own
@@ -18,9 +22,6 @@
   model to learn those kinds first. A word the parser does not know costs
   that one column and says so in the status line, rather than taking
   the panel down with it.
-
-## Unreleased
-
 - **Directory tree** (4.0 S1): mc's tree figure, in both of its forms.
   F9 > Command > Directory tree opens it as a dialog where Enter takes
   *this* panel to the selected directory and closes; F9 > View > Tree

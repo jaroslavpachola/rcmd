@@ -7,8 +7,8 @@ with MC keybindings, built on ratatui. The 1.0
 flagship is the **persistent subshell** behind Ctrl+O. 4.0, the parity
 release ([docs/PLAN4.md](docs/PLAN4.md)), is under way: its scope comes
 from a decision-by-decision comparison against mc
-([docs/MC-DIFF.md](docs/MC-DIFF.md)), and its foundations phase shipped
-in 3.8.
+([docs/MC-DIFF.md](docs/MC-DIFF.md)); its foundations phase shipped in
+3.8 and the panel work has been landing since.
 
 ![rcmd demo: browsing, the syntax-highlighted viewer, marking and
 copying, the persistent subshell](docs/demo.gif)
@@ -52,6 +52,14 @@ configuration; the command line gained mc's keys, macros and a
 persistent history; and the panels gained the **Layout** settings
 (horizontal split, adjustable ratio, optional bars), a **per-panel mini
 status** and the **multi-column brief listing**.
+
+**3.10** - the panels themselves: mc's **directory tree**, both as the
+Command-menu dialog (Enter moves this panel) and as a panel listing mode
+(Enter moves the other one and the tree stays), scanned on demand so
+there is no tree cache to go stale; and the **user-defined listing
+format**, where `listing = "user"` draws whatever `listing_format` names
+in mc's own format language - `half type name | size | mtime` and the
+other fifteen fields, with widths that grow.
 
 ## Install & run
 
