@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.28.0 - 2026-08-23
+
+- **lha/lzh, arj and cab browse** (4.0 S3, finishing the extfs list):
+  they go through the same external-tool path rar and 7z already used,
+  because the 7z family reads all five and rcmd has no reason to write
+  a fifth decompressor. With no `7z` installed, opening one says which
+  tool it wants and names the format it was asked about, rather than
+  reporting an unsupported type.
+- Every format mc's extfs helpers covered is now readable: deb, rpm,
+  iso9660, cpio, patchfs, mailfs, and these four through 7z.
+
 ## 3.27.0 - 2026-08-23
 
 - **Mailboxes browse as their messages** (4.0 S3, and the last of mc's

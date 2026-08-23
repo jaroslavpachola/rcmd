@@ -62,6 +62,11 @@ enum Comp {
     Lzma,
 }
 
+/// The formats rcmd has no reader for and the 7z family does. They all
+/// list and extract through the same two commands, so adding one is a
+/// matter of naming it.
+const CMD_EXTENSIONS: [&str; 6] = [".rar", ".7z", ".lha", ".lzh", ".arj", ".cab"];
+
 /// Which external tool serves a [`Kind::Cmd`] archive.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct CmdBackend {
@@ -136,7 +141,7 @@ impl ArchiveFs {
             Kind::Iso
         } else if name.ends_with(".a") || name.ends_with(".ar") {
             Kind::Ar
-        } else if name.ends_with(".rar") || name.ends_with(".7z") {
+        } else if CMD_EXTENSIONS.iter().any(|ext| name.ends_with(ext)) {
             Kind::Cmd
         } else {
             let (stem, comp) = peel_comp(&name);
@@ -171,7 +176,7 @@ impl ArchiveFs {
         };
         match kind {
             Kind::Zip => fs.index_zip()?,
-            Kind::Cmd => fs.index_cmd(name.ends_with(".rar"))?,
+            Kind::Cmd => fs.index_cmd(&name)?,
             Kind::Cpio(_) => fs.index_cpio()?,
             Kind::Ar => fs.index_ar()?,
             Kind::Deb => fs.index_deb()?,
@@ -678,8 +683,9 @@ impl ArchiveFs {
     /// List a rar/7z through the first working tool: the 7z family
     /// reads both formats (rar needs its nonfree codec), unrar covers
     /// .rar where 7z can't.
-    fn index_cmd(&mut self, is_rar: bool) -> io::Result<()> {
+    fn index_cmd(&mut self, name: &str) -> io::Result<()> {
         const SEVENS: [&str; 3] = ["7z", "7zz", "7za"];
+        let is_rar = name.ends_with(".rar");
         let mut candidates: Vec<CmdBackend> = SEVENS
             .iter()
             .map(|p| CmdBackend {
@@ -693,12 +699,17 @@ impl ArchiveFs {
                 flavor: CmdFlavor::Unrar,
             });
         }
+        let extension = CMD_EXTENSIONS
+            .iter()
+            .find(|ext| name.ends_with(*ext))
+            .copied()
+            .unwrap_or("");
         let mut last = io::Error::new(
             io::ErrorKind::NotFound,
             if is_rar {
-                "browsing .rar needs 7z (p7zip + rar codec) or unrar installed"
+                "browsing .rar needs 7z (p7zip + rar codec) or unrar installed".to_string()
             } else {
-                "browsing .7z needs 7z / 7za (p7zip) installed"
+                format!("browsing {extension} needs 7z / 7za (p7zip) installed")
             },
         );
         for backend in candidates {
@@ -1865,7 +1876,38 @@ From here on it is just body text.
         let bogus = tmp.path().join("not-an-archive.zip");
         std::fs::write(&bogus, b"this is not a zip").unwrap();
         assert!(ArchiveFs::open(&bogus).is_err());
-        assert!(ArchiveFs::open(Path::new("file.lha")).is_err());
+        assert!(ArchiveFs::open(Path::new("file.wad")).is_err());
+    }
+
+    #[test]
+    fn the_external_tool_formats_reach_the_external_tool() {
+        // 7z is not installed everywhere, so what is checked here is
+        // that these extensions get routed to it and named in the
+        // message - not that a listing comes back
+        let tmp = tempfile::tempdir().unwrap();
+        for ext in [".lha", ".lzh", ".arj", ".cab", ".7z"] {
+            let path = tmp.path().join(format!("box{ext}"));
+            std::fs::write(&path, b"not really an archive").unwrap();
+            let err = match ArchiveFs::open(&path) {
+                Ok(_) => panic!("{ext}: garbage listed as an archive"),
+                Err(err) => err.to_string(),
+            };
+            assert!(
+                !err.contains("unsupported archive type"),
+                "{ext} was not routed: {err}"
+            );
+            if err.contains("needs 7z") {
+                assert!(err.contains(ext), "{ext} was not named: {err}");
+            }
+        }
+        // .rar has a second tool that can serve it, and says so
+        let path = tmp.path().join("box.rar");
+        std::fs::write(&path, b"not really an archive").unwrap();
+        let err = match ArchiveFs::open(&path) {
+            Ok(_) => panic!("garbage listed as a rar"),
+            Err(err) => err.to_string(),
+        };
+        assert!(!err.contains("unsupported archive type"), "{err}");
     }
 
     #[test]

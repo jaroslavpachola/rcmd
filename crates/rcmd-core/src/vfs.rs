@@ -191,6 +191,10 @@ pub fn is_archive_name(name: &OsStr) -> bool {
         ".ar",
         ".rar",
         ".7z",
+        ".lha",
+        ".lzh",
+        ".arj",
+        ".cab",
     ]
     .iter()
     .any(|ext| name.ends_with(ext))

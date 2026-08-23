@@ -308,6 +308,11 @@ rather than three: `debian-binary` at the root, the metadata and
 maintainer scripts under `CONTROL/`, and everything the package
 installs under `CONTENTS/`.
 
+**rar, 7z, lha/lzh, arj and cab** browse through an installed `7z`
+(p7zip - rar needs its nonfree codec) or `unrar`, read-only and streamed
+one member at a time. Without one of those tools installed, opening one
+says which tool it wants rather than failing silently.
+
 An **mbox** (`.mbox`, `.mbx`, plain or compressed) browses as the
 messages in it, each numbered so name order is arrival order and named
 by its subject - decoded, since real mail writes subjects as
