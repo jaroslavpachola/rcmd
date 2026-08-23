@@ -1,5 +1,29 @@
 # Changelog
 
+## 3.21.0 - 2026-08-23
+
+- **Recursive chmod and chown** (4.0 S2, completes it): both windows
+  gained a **recurse into directories** box - mc keeps this in a third
+  "advanced chown" dialog, rcmd puts it where the change is made. A
+  recursive change runs as a **job**, with the progress dialog, a
+  Cancel button and the same Retry/Skip questions on error that a copy
+  gets: a deep tree is not something to walk between two frames of the
+  UI, and halfway down one is exactly when a Cancel button earns its
+  place.
+- **A directory is changed after what is inside it.** Take the execute
+  bit off a directory and nothing under it can be reached any more, so
+  the walk goes in first and the door closes behind it. There is a test
+  that recursively removes `+x` and then has to put it back before it
+  can even look at the file it just changed.
+- The box is its own focus stop in both windows, reached with Tab and
+  ticked with Space. It briefly answered to `r` in the chown window,
+  which the test suite caught within the hour: names get typed at those
+  lists, and "jarda" has an r in it. A letter key must not flip a switch
+  that turns one chmod into a thousand.
+- A recursive chmod writes one mode over the tree: "add these bits" and
+  "take these away" are answers about one file's own mode, and a tree
+  has no single mode to add them to.
+
 ## 3.20.0 - 2026-08-23
 
 - **MC's four link commands** (4.0 S2): `C-x l` makes a **hard link**,

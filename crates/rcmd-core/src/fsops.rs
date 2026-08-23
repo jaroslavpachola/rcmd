@@ -268,6 +268,92 @@ pub fn spawn_move(
     })
 }
 
+/// Owner and permissions to write. Each `None` leaves that part as it
+/// is, which is what makes one job serve both the chmod and the chown
+/// windows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Attrs {
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub mode: Option<u32>,
+}
+
+impl Attrs {
+    fn is_empty(&self) -> bool {
+        *self == Attrs::default()
+    }
+}
+
+/// MC's advanced chown: owner and/or permissions over whole trees. It
+/// is a job rather than a loop because a deep tree is not something to
+/// walk between two frames of the UI - and because half way through a
+/// recursive chmod is exactly when you want a Cancel button.
+pub fn spawn_attrs(paths: Vec<PathBuf>, attrs: Attrs, recursive: bool) -> JobHandle {
+    spawn(move |ctx| {
+        let total = if recursive {
+            scan(&paths).0
+        } else {
+            paths.len() as u64
+        };
+        let _ = ctx.tx.send(JobEvent::Total {
+            files: total,
+            bytes: 0,
+        });
+        if attrs.is_empty() {
+            return Ok(());
+        }
+        for path in &paths {
+            set_attrs(ctx, path, attrs, recursive)?;
+        }
+        Ok(())
+    })
+}
+
+fn set_attrs(ctx: &mut Ctx, path: &Path, attrs: Attrs, recursive: bool) -> Result<(), Aborted> {
+    if ctx.cancelled() {
+        return Err(Aborted);
+    }
+    ctx.progress(path);
+    let Some(meta) = ctx.with_retry(path, || path.symlink_metadata())? else {
+        return Ok(());
+    };
+    // children first: a directory that loses its execute bit cannot be
+    // walked afterwards, and the recursion has to get in before that
+    if recursive && meta.is_dir() {
+        let Some(names) = read_names(ctx, path)? else {
+            return Ok(());
+        };
+        for name in names {
+            set_attrs(ctx, &path.join(&name), attrs, recursive)?;
+        }
+    }
+    let writer = crate::vfs::LocalFs;
+    if attrs.uid.is_some() || attrs.gid.is_some() {
+        let done = ctx.with_retry(path, || {
+            use crate::vfs::FsWrite;
+            writer.set_owner(path, attrs.uid, attrs.gid)
+        })?;
+        if done.is_none() {
+            return Ok(());
+        }
+    }
+    // chmod follows symlinks, so a link's own mode is not a thing to set
+    if let Some(mode) = attrs.mode
+        && !meta.is_symlink()
+    {
+        let done = ctx.with_retry(path, || {
+            use crate::vfs::FsWrite;
+            writer.set_mode(path, mode)
+        })?;
+        if done.is_none() {
+            return Ok(());
+        }
+    }
+    ctx.files_done += 1;
+    ctx.progress(path);
+    Ok(())
+}
+
 pub fn spawn_delete(paths: Vec<PathBuf>, permanent: bool) -> JobHandle {
     spawn(move |ctx| {
         if permanent {
@@ -1800,6 +1886,7 @@ fn make_symlink(_target: &Path, _dst: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
 
     struct Outcome {
         files_done: u64,
@@ -2081,6 +2168,118 @@ mod tests {
         }
         assert_eq!(seen_total, (CHUNK * 3 + 11) as u64);
         assert!(seen_partial, "the bar needs something between 0 and done");
+    }
+
+    #[test]
+    fn a_recursive_chmod_reaches_the_whole_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tree");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/file.txt"), b"x").unwrap();
+
+        let out = run(
+            spawn_attrs(
+                vec![dir.clone()],
+                Attrs {
+                    mode: Some(0o755),
+                    ..Attrs::default()
+                },
+                true,
+            ),
+            vec![],
+        );
+        assert_eq!(
+            out.files_done, 3,
+            "the directory, the subdirectory, the file"
+        );
+        for path in [dir.clone(), dir.join("sub"), dir.join("sub/file.txt")] {
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o755, "{}", path.display());
+        }
+    }
+
+    /// The order matters: a directory whose execute bit is going away
+    /// has to be walked *before* it loses it, or everything under it is
+    /// silently missed.
+    #[test]
+    fn a_directory_is_changed_after_what_is_inside_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tree");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("file.txt"), b"x").unwrap();
+
+        let out = run(
+            spawn_attrs(
+                vec![dir.clone()],
+                Attrs {
+                    mode: Some(0o600), // no execute: unreadable as a directory
+                    ..Attrs::default()
+                },
+                true,
+            ),
+            vec![],
+        );
+        assert_eq!(
+            out.files_done, 2,
+            "the file was reached before the door shut"
+        );
+        // the directory has no execute bit now, so nothing inside it can
+        // even be looked at until it is given one back - which is the
+        // whole reason the walk has to happen before the change
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let file = fs::metadata(dir.join("file.txt")).unwrap();
+        assert_eq!(file.permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn without_recursion_only_the_named_paths_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tree");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("file.txt"), b"x").unwrap();
+        fs::set_permissions(dir.join("file.txt"), fs::Permissions::from_mode(0o644)).unwrap();
+
+        run(
+            spawn_attrs(
+                vec![dir.clone()],
+                Attrs {
+                    mode: Some(0o700),
+                    ..Attrs::default()
+                },
+                false,
+            ),
+            vec![],
+        );
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(dir.join("file.txt"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644,
+            "the file inside was not named, so it was not touched"
+        );
+    }
+
+    #[test]
+    fn an_empty_change_does_nothing_at_all() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("f.txt");
+        fs::write(&file, b"x").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        let out = run(
+            spawn_attrs(vec![file.clone()], Attrs::default(), true),
+            vec![],
+        );
+        assert_eq!(out.files_done, 0);
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
     }
 
     /// MC copies "all the files matching the source mask" - the rest

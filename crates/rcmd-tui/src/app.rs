@@ -208,6 +208,9 @@ pub struct ChmodDialog {
     /// buttons.
     pub row: usize,
     pub button: usize,
+    /// Walk into directories. MC keeps this in its "advanced chown";
+    /// rcmd puts it where the change is made.
+    pub recurse: bool,
 }
 
 /// The bits, top to bottom, as MC lists them.
@@ -226,7 +229,8 @@ pub const CHMOD_BITS: &[(&str, u32)] = &[
     ("exec    other", 0o001),
 ];
 pub const CHMOD_OCTAL_ROW: usize = CHMOD_BITS.len();
-pub const CHMOD_ROWS: usize = CHMOD_BITS.len() + 1;
+pub const CHMOD_RECURSE_ROW: usize = CHMOD_BITS.len() + 1;
+pub const CHMOD_ROWS: usize = CHMOD_BITS.len() + 2;
 /// What the buttons do to each selected entry's own mode.
 pub const CHMOD_BUTTONS: &[&str] = &["Set", "Set marked", "Clear marked", "Cancel"];
 
@@ -255,15 +259,22 @@ pub struct ChownDialog {
     pub groups: Vec<(u32, String)>,
     pub user_row: usize,
     pub group_row: usize,
-    /// 0 = the user list, 1 = the group list, 2 = the buttons.
+    /// 0 = the user list, 1 = the group list, 2 = the recurse box,
+    /// 3 = the buttons.
     pub column: usize,
     pub button: usize,
     pub name: String,
     pub owner: String,
     pub group: String,
+    /// Walk into directories.
+    pub recurse: bool,
 }
 
 pub const CHOWN_BUTTONS: &[&str] = &["Set", "Cancel"];
+/// Focus stops in the chown window: two lists, the box, the buttons.
+pub const CHOWN_STOPS: usize = 4;
+pub const CHOWN_RECURSE_COL: usize = 2;
+pub const CHOWN_BUTTON_COL: usize = 3;
 /// Rows of each pick list on screen.
 pub const CHOWN_ROWS: usize = 12;
 
@@ -4560,13 +4571,20 @@ impl App {
                         d.move_by(isize::MAX / 2);
                         self.dialog = Some(Dialog::Chown(d));
                     }
-                    // Tab walks user list -> group list -> buttons
+                    // Tab walks user list -> group list -> recurse -> buttons
                     KeyCode::Tab => {
-                        d.column = (d.column + 1) % 3;
+                        d.column = (d.column + 1) % CHOWN_STOPS;
+                        self.dialog = Some(Dialog::Chown(d));
+                    }
+                    // ...and only the box itself takes Space. A letter
+                    // key must never flip it: names get typed at these
+                    // lists, and "jarda" would tick it on the r
+                    KeyCode::Char(' ') if d.column == CHOWN_RECURSE_COL => {
+                        d.recurse = !d.recurse;
                         self.dialog = Some(Dialog::Chown(d));
                     }
                     KeyCode::Left | KeyCode::Right => {
-                        if d.column == 2 {
+                        if d.column == CHOWN_BUTTON_COL {
                             let count = CHOWN_BUTTONS.len();
                             d.button = if key.code == KeyCode::Left {
                                 d.button.checked_sub(1).unwrap_or(count - 1)
@@ -4584,10 +4602,27 @@ impl App {
                         self.dialog = Some(Dialog::Chown(d));
                     }
                     KeyCode::Enter => {
+                        if d.column == CHOWN_RECURSE_COL {
+                            // Enter on the box is a Set, as it is on any
+                            // other row of a form
+                            d.column = CHOWN_BUTTON_COL;
+                        }
                         if CHOWN_BUTTONS.get(d.button) != Some(&"Cancel") {
                             let (uid, gid) = d.picked();
                             let paths = d.paths.clone();
-                            self.apply_fs_op(&paths, "chown", |w, p| w.set_owner(p, uid, gid));
+                            if d.recurse {
+                                self.start_attrs_job(
+                                    paths,
+                                    fsops::Attrs {
+                                        uid,
+                                        gid,
+                                        ..Default::default()
+                                    },
+                                    "chown",
+                                );
+                            } else {
+                                self.apply_fs_op(&paths, "chown", |w, p| w.set_owner(p, uid, gid));
+                            }
                         }
                     }
                     _ => self.dialog = Some(Dialog::Chown(d)),
@@ -4617,6 +4652,10 @@ impl App {
                     KeyCode::Char(' ') if d.row < CHMOD_BITS.len() => {
                         d.mode ^= CHMOD_BITS[d.row].1;
                         d.sync_octal();
+                        self.dialog = Some(Dialog::Chmod(d));
+                    }
+                    KeyCode::Char(' ') if d.row == CHMOD_RECURSE_ROW => {
+                        d.recurse = !d.recurse;
                         self.dialog = Some(Dialog::Chmod(d));
                     }
                     KeyCode::Enter => self.submit_chmod(*d),
@@ -5207,7 +5246,43 @@ impl App {
             }
         };
         let paths = d.paths.clone();
+        if d.recurse {
+            // one mode for the whole tree: "add" and "remove" are per
+            // file, and a tree has no single mode to add them to
+            self.start_attrs_job(
+                paths,
+                fsops::Attrs {
+                    mode: Some(mode),
+                    ..Default::default()
+                },
+                "chmod",
+            );
+            return;
+        }
         self.apply_fs_op(&paths, "chmod", |w, p| w.set_mode(p, apply(p)));
+    }
+
+    /// A recursive chmod/chown, as a job with a progress dialog and a
+    /// Cancel button - which is what you want halfway down a big tree.
+    fn start_attrs_job(&mut self, paths: Vec<PathBuf>, attrs: fsops::Attrs, verb: &str) {
+        self.jobs.push(Job {
+            title: format!(" {verb} {} item(s), recursively ", paths.len()),
+            handle: fsops::spawn_attrs(paths, attrs, true),
+            total_files: 0,
+            total_bytes: 0,
+            files_done: 0,
+            bytes_done: 0,
+            current: PathBuf::new(),
+            file_done: 0,
+            file_total: 0,
+            rate: 0.0,
+            rate_mark: (Instant::now(), 0),
+            started: Instant::now(),
+            ask: None,
+            button: 0,
+            src_panel: self.active,
+            background: false,
+        });
     }
 
     /// OK or Background on the copy/move form. Cancel never gets here.
@@ -6124,6 +6199,7 @@ impl App {
             // boxes are there for everyone else
             row: CHMOD_OCTAL_ROW,
             button: 0,
+            recurse: false,
         };
         dialog.sync_octal();
         self.dialog = Some(Dialog::Chmod(Box::new(dialog)));
@@ -6167,6 +6243,7 @@ impl App {
             group: entry.map_or_else(String::new, |e| {
                 crate::ui::owner_label(e.extra.gid, false, false)
             }),
+            recurse: false,
         })));
     }
 

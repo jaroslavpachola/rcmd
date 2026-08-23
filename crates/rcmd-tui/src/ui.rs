@@ -347,10 +347,14 @@ const HELP_TEXT: &[&str] = &[
     "                  file's name/mode/owner/group on the right, and Set /",
     "                  Set marked / Clear marked - the last two add or",
     "                  remove the checked bits and leave each entry's",
-    "                  others alone",
+    "                  others alone. A recurse box under the octal walks",
+    "                  into directories - that runs as a job, with progress",
+    "                  and a Cancel button",
     "  Ctrl+X o        chown: the system's users and groups as two pick",
     "                  lists, the entry's own owner preselected. Tab walks",
     "                  users > groups > buttons, arrows move, Home/End jump.",
+    "                  Tab walks users > groups > recurse > buttons; Space",
+    "                  on the recurse row walks into directories, as a job",
     "                  On an sftp panel it stays a typed user[:group]: our",
     "                  account names are not the server's",
     "  Ctrl+X l        hard link to the cursor entry - a second name for",
@@ -2906,7 +2910,7 @@ fn draw_link(frame: &mut Frame, d: &crate::app::LinkDialog) {
 /// lists. Typing an owner is fine when you know the name; picking is
 /// what you want when you do not, which is most of the time.
 fn draw_chown(frame: &mut Frame, d: &crate::app::ChownDialog) {
-    use crate::app::{CHOWN_BUTTONS, CHOWN_ROWS};
+    use crate::app::{CHOWN_BUTTON_COL, CHOWN_BUTTONS, CHOWN_RECURSE_COL, CHOWN_ROWS};
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
     // an unfocused list still shows where its cursor is, just quietly
@@ -2980,7 +2984,24 @@ fn draw_chown(frame: &mut Frame, d: &crate::app::ChownDialog) {
         );
     }
 
-    let selected = if d.column == 2 { d.button } else { usize::MAX };
+    let recurse = format!(
+        " {} recurse into directories",
+        if d.recurse { "[x]" } else { "[ ]" }
+    );
+    let width = inner.width.saturating_sub(2) as usize;
+    frame.render_widget(
+        Line::from(format!("{recurse:<width$}")).style(if d.column == CHOWN_RECURSE_COL {
+            sel
+        } else {
+            base
+        }),
+        row_at(0, inner.width.saturating_sub(2), CHOWN_ROWS as u16 + 1),
+    );
+    let selected = if d.column == CHOWN_BUTTON_COL {
+        d.button
+    } else {
+        usize::MAX
+    };
     frame.render_widget(
         buttons_line(CHOWN_BUTTONS, selected, base, sel),
         row_at(0, inner.width.saturating_sub(2), CHOWN_ROWS as u16 + 2),
@@ -2991,12 +3012,12 @@ fn draw_chown(frame: &mut Frame, d: &crate::app::ChownDialog) {
 /// is being changed on the right, and the octal underneath - typing in
 /// it moves the boxes, flipping a box rewrites it.
 fn draw_chmod(frame: &mut Frame, d: &crate::app::ChmodDialog) {
-    use crate::app::{CHMOD_BITS, CHMOD_BUTTONS, CHMOD_OCTAL_ROW, CHMOD_ROWS};
+    use crate::app::{CHMOD_BITS, CHMOD_BUTTONS, CHMOD_OCTAL_ROW, CHMOD_RECURSE_ROW, CHMOD_ROWS};
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
     let head = Style::new().fg(th().header_fg).bg(th().dialog_bg);
-    // a heading row, the bits, the octal, a blank, the buttons
-    let area = centered(58, CHMOD_BITS.len() as u16 + 6, frame.area());
+    // a heading row, the bits, the octal, recurse, a blank, the buttons
+    let area = centered(58, CHMOD_BITS.len() as u16 + 7, frame.area());
     let inner = popup(frame, area, " Chmod ", base);
     let row_at = |i: u16| Rect {
         x: inner.x + 1,
@@ -3053,6 +3074,22 @@ fn draw_chmod(frame: &mut Frame, d: &crate::app::ChmodDialog) {
             ..row_at(octal_row)
         },
     );
+    let recurse = format!(
+        " {} recurse into directories",
+        if d.recurse { "[x]" } else { "[ ]" }
+    );
+    frame.render_widget(
+        Line::from(format!(
+            "{recurse:<w$}",
+            w = inner.width.saturating_sub(2) as usize
+        ))
+        .style(if d.row == CHMOD_RECURSE_ROW {
+            sel
+        } else {
+            base
+        }),
+        row_at(octal_row + 1),
+    );
     let selected = if d.row == CHMOD_ROWS {
         d.button
     } else {
@@ -3060,7 +3097,7 @@ fn draw_chmod(frame: &mut Frame, d: &crate::app::ChmodDialog) {
     };
     frame.render_widget(
         buttons_line(CHMOD_BUTTONS, selected, base, sel),
-        row_at(octal_row + 2),
+        row_at(octal_row + 3),
     );
     if d.row == CHMOD_OCTAL_ROW {
         let x = inner.x + 7 + d.octal_cursor.min(8) as u16;

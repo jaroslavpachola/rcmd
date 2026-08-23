@@ -783,9 +783,10 @@ def test_cxops():
 
     s.send(b"\x18o", wait=STEP)             # C-x o
     check("cxops: chown dialog", "Chown" in s.screen())
-    me = pwd.getpwuid(os.getuid()).pw_name
-    s.send(me.encode() + b"\r", wait=STEP * 2)   # chown to self: allowed
-    check("cxops: chown self ok", "chown: 1 item(s)" in s.screen())
+    # the lists open on the entry's own owner, so Set is a no-op chown
+    s.send(b"\t" * 3)                       # users -> groups -> recurse -> Set
+    s.send(b"\r", wait=STEP * 2)
+    check("cxops: chown self ok", "chown: 1 item(s)" in status_line(s), status_line(s))
 
     s.send(b"\x18s", wait=STEP)             # C-x s
     check("cxops: symlink dialog", "Symlink" in s.screen())
@@ -1487,7 +1488,7 @@ def test_chmod():
     s.send(b"\x18c", wait=STEP)
     check("chmod: the boxes come from the cursor entry", "0600" in s.screen(),
           s.screen()[:400])
-    s.send(DOWN)                            # -> the button row
+    s.send(DOWN * 2)                        # -> past recurse, to the buttons
     s.send(b"\x1b[C" * 2)                   # -> Clear marked
     s.send(b"\r", wait=STEP * 3)
     a = os.stat(os.path.join(play, "a.sh")).st_mode & 0o777
@@ -1526,16 +1527,14 @@ def test_chown():
     check("chown: it says how many entries", "1 item(s)" in scr, scr[:600])
 
     # Tab walks user list -> group list -> buttons, and Esc backs out
-    s.send(b"\t")
-    s.send(b"\t")
+    s.send(b"\t" * 3)                       # users -> groups -> recurse -> buttons
     check("chown: tab reaches the buttons", "[ Set ]" in s.screen(), s.screen()[:600])
     s.send(b"\x1b", wait=STEP)
     check("chown: esc closed it", "Chown" not in s.screen())
 
     # Set with the entry's own owner is a no-op chown that still runs
     s.send(b"\x18o", wait=STEP)
-    s.send(b"\t")
-    s.send(b"\t")
+    s.send(b"\t" * 3)
     s.send(b"\r", wait=STEP * 2)
     check("chown: Set ran", "chown: 1 item(s)" in status_line(s), status_line(s))
     s.quit()
@@ -1653,6 +1652,48 @@ def test_links():
     check("links: the link was retargeted",
           os.path.islink(rel) and os.readlink(rel) == "hard.txt",
           os.readlink(rel) if os.path.islink(rel) else "missing")
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_recursive_attrs():
+    """PLAN4 S2: MC's advanced chown - a recursive chmod/chown runs as a
+    job, and reaches everything under the directory."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "tree/sub"))
+    open(os.path.join(play, "tree/sub/deep.txt"), "w").write("x\n")
+    os.chmod(os.path.join(play, "tree/sub/deep.txt"), 0o644)
+    s = Session(play, home)
+
+    s.send(DOWN)                            # onto tree/
+    s.send(b"\x18c", wait=STEP)             # Ctrl+X c, on the octal field
+    s.send(b"\x15")
+    s.send(b"750")
+    s.send(DOWN)                            # -> recurse into directories
+    check("recattrs: the box is there", "recurse into directories" in s.screen(),
+          s.screen()[:600])
+    s.send(b" ")
+    check("recattrs: and it ticks", "[x] recurse into directories" in s.screen(),
+          s.screen()[:600])
+    s.send(DOWN)                            # -> the buttons
+    s.send(b"\r", wait=STEP * 4)            # Set
+
+    deep = os.path.join(play, "tree/sub/deep.txt")
+    check("recattrs: the change reached the bottom",
+          oct(os.stat(deep).st_mode & 0o777) == "0o750",
+          oct(os.stat(deep).st_mode & 0o777))
+    check("recattrs: and the directory itself",
+          oct(os.stat(os.path.join(play, "tree")).st_mode & 0o777) == "0o750")
+
+    # the chown window carries the same switch
+    s.send(b"\x18o", wait=STEP)
+    check("recattrs: chown offers it too", "recurse into directories" in s.screen(),
+          s.screen()[:600])
+    s.send(b"\t" * 2)                       # -> the recurse row
+    s.send(b" ")
+    check("recattrs: space ticks it", "[x] recurse into directories" in s.screen(),
+          s.screen()[:600])
+    s.send(b"\x1b", wait=STEP)
     s.quit()
     shutil.rmtree(root)
 
@@ -2401,6 +2442,7 @@ def main():
         test_chown,
         test_confirmations,
         test_links,
+        test_recursive_attrs,
         test_mcimport,
         test_keycontexts,
         test_options,
