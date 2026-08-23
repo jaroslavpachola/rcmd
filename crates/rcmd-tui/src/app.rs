@@ -959,6 +959,7 @@ impl App {
         };
         let (listing_format, format_warnings) = format::parse(&config.listing_format);
         warnings.extend(format_warnings);
+        warnings.extend(crate::ui::init_highlight(&config.highlight));
         let status = if warnings.is_empty() {
             None
         } else {

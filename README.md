@@ -61,6 +61,9 @@ format**, where `listing = "user"` draws whatever `listing_format` names
 in mc's own format language - `half type name | size | mtime` and the
 other fifteen fields, with widths that grow.
 
+**3.11** - `[[highlight]]` colour rules: entries are painted by glob or
+by kind, which is mc's filehighlight without the second file.
+
 ## Install & run
 
 ```sh
@@ -387,6 +390,15 @@ listing_format = "half type name | size | mtime"
 #   listing-full listing-long listing-tree listing-user listing-cycle
 #   other-same-dir other-open-dir sftp-link find-file panelize
 #   compare-dirs dir-size dir-tree
+
+[[highlight]]          # MC's filehighlight, as rules: first match wins
+match = "*.tar.gz"     # a glob on the name...
+color = "brightred"    # ...mc's colour names, #rrggbb or "default"
+
+[[highlight]]
+type = "exe"           # ...or what the entry is: dir linkdir exe link
+color = "magenta"      #    broken file
+bold = true            # optional; left out, the kind's own weight stands
 
 [[hotlist]]
 label = "projects"

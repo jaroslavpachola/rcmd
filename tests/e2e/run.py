@@ -1186,6 +1186,50 @@ def test_userformat():
     shutil.rmtree(root)
 
 
+def test_highlight():
+    """PLAN4 S1: MC's filehighlight as TOML - [[highlight]] paints
+    entries by name or by kind, first rule wins."""
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write(
+        '[[highlight]]\nmatch = "*.tar.gz"\ncolor = "brightred"\n\n'
+        '[[highlight]]\nmatch = "*.gz"\ncolor = "green"\n\n'
+        '[[highlight]]\ntype = "exe"\ncolor = "magenta"\nbold = true\n\n'
+        '[[highlight]]\nmatch = "*.bad"\ncolor = "chartreuse"\n'
+    )
+    open(os.path.join(play, "archive.tar.gz"), "w").write("x")
+    open(os.path.join(play, "data.gz"), "w").write("x")
+    open(os.path.join(play, "plain.txt"), "w").write("x")
+    open(os.path.join(play, "script.sh"), "w").write("#!/bin/sh\n")
+    os.chmod(os.path.join(play, "script.sh"), 0o755)
+    s = Session(play, home)
+
+    def sgr(needle):
+        """The escape codes still in force where `needle` was drawn -
+        screen() strips them, so the raw stream is where colour lives."""
+        raw = s.buf.decode("utf-8", "replace")
+        i = raw.find(needle)
+        return raw[max(0, i - 40):i] if i >= 0 else ""
+
+    # 38;5;N is how ratatui writes a named colour: 9 bright red, 2 green,
+    # 5 magenta, 7 the panel's own grey
+    check("highlight: a glob rule paints the name", "38;5;9" in sgr("archive.tar.gz"),
+          repr(sgr("archive.tar.gz")))
+    check("highlight: the first matching rule wins", "38;5;2" not in sgr("archive.tar.gz"),
+          repr(sgr("archive.tar.gz")))
+    check("highlight: later rules still apply", "38;5;2" in sgr("data.gz"),
+          repr(sgr("data.gz")))
+    check("highlight: a type rule paints by kind", "38;5;5" in sgr("script.sh"),
+          repr(sgr("script.sh")))
+    check("highlight: bold is honoured", "\x1b[1m" in sgr("script.sh"), repr(sgr("script.sh")))
+    check("highlight: unmatched entries keep the panel colour",
+          "38;5;7" in sgr("plain.txt"), repr(sgr("plain.txt")))
+    check("highlight: an unknown colour warns", "chartreuse" in status_line(s), status_line(s))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_mcimport():
     """PLAN4 S0: `rcmd --import-mc DIR` converts mc's menu, mc.ext and
     keymap into an rcmd config fragment on stdout, warning on stderr
@@ -1921,6 +1965,7 @@ def main():
         test_layout,
         test_tree,
         test_userformat,
+        test_highlight,
         test_mcimport,
         test_keycontexts,
         test_options,

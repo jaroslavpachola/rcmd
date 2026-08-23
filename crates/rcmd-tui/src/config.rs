@@ -101,6 +101,9 @@ pub struct Config {
     pub view: Vec<OpenRule>,
     /// User commands: the F2 menu, in file order.
     pub commands: Vec<UserCommand>,
+    /// Per-name / per-type colour rules, in file order - the first
+    /// matching one wins. MC's filehighlight, as TOML.
+    pub highlight: Vec<HighlightRule>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +118,27 @@ pub struct OpenRule {
     #[serde(rename = "match")]
     pub pattern: String,
     pub run: String,
+}
+
+/// `[[highlight]]` - `match = "*.tar.gz"` or `type = "exe"`, plus the
+/// colour to draw such entries in (and optionally `bold`). MC keeps the
+/// groups in `filehighlight.ini` and their colours in the skin; rcmd
+/// puts both in one rule, because splitting them over two files only
+/// ever made sense when the skin was shipped separately.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HighlightRule {
+    /// Glob on the entry name; mutually exclusive with `type`.
+    #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    /// One of `dir exe link linkdir broken file` - what the entry *is*,
+    /// where `match` says what it is called.
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    pub color: String,
+    /// `None` keeps whatever the entry kind draws by default, so a rule
+    /// that only sets a colour does not quietly un-bold directories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bold: Option<bool>,
 }
 
 /// `[[commands]]` - a named shell template with `%f %d %D %t` macros,
@@ -232,6 +256,7 @@ impl Default for Config {
             open: Vec::new(),
             view: Vec::new(),
             commands: Vec::new(),
+            highlight: Vec::new(),
         }
     }
 }

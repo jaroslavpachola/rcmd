@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.11.0 - 2026-08-23
+
+- **File highlighting rules** (4.0 S1): `[[highlight]]` colours entries
+  by name or by kind - `match = "*.tar.gz"` for a glob, `type = "exe"`
+  for what the entry is (`dir linkdir exe link broken file`), plus
+  `color` (mc's own colour names, `#rrggbb`, or `default`) and an
+  optional `bold`. The first matching rule wins, as with `[[open]]` and
+  `[[view]]`. mc splits this over two files - the groups in
+  `filehighlight.ini`, their colours in the skin - which only ever made
+  sense while skins shipped separately, so a rcmd rule carries both. A
+  rule that cannot be understood (a colour typo, a type nobody knows,
+  or both `match` and `type` at once) is dropped with a warning in the
+  status line rather than taking the listing down, and with no rules
+  configured the listing costs exactly what it did before.
+
 ## 3.10.0 - 2026-08-23
 
 S1 turns to the panels themselves: both of mc's directory-tree forms,

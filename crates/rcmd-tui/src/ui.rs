@@ -5,6 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Clear, Gauge, Row, Table, TableState};
 use rcmd_core::entry::{Entry, EntryKind};
+use rcmd_core::glob::glob_match;
 use rcmd_core::panel::{ListMode, Panel};
 use rcmd_core::tree::Tree;
 
@@ -97,6 +98,151 @@ fn dark_theme() -> Theme {
     }
 }
 
+/// What a `[[highlight]]` rule looks at: what the entry is called, or
+/// what it is.
+enum Matcher {
+    Glob(String),
+    Kind(HighlightKind),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HighlightKind {
+    Dir,
+    LinkDir,
+    Exe,
+    Link,
+    Broken,
+    File,
+}
+
+/// A `[[highlight]]` rule with its glob compiled and its colour parsed.
+struct Rule {
+    matcher: Matcher,
+    color: Color,
+    bold: Option<bool>,
+}
+
+impl Rule {
+    fn matches(&self, entry: &Entry) -> bool {
+        match &self.matcher {
+            Matcher::Glob(pattern) => glob_match(pattern, &entry.name.to_string_lossy()),
+            Matcher::Kind(kind) => *kind == entry_kind(entry),
+        }
+    }
+}
+
+fn entry_kind(entry: &Entry) -> HighlightKind {
+    match entry.kind {
+        EntryKind::Dir => HighlightKind::Dir,
+        EntryKind::SymlinkDir => HighlightKind::LinkDir,
+        EntryKind::SymlinkFile => HighlightKind::Link,
+        EntryKind::SymlinkBroken => HighlightKind::Broken,
+        EntryKind::File if entry.is_executable() => HighlightKind::Exe,
+        EntryKind::File => HighlightKind::File,
+    }
+}
+
+static HIGHLIGHT: std::sync::RwLock<Vec<Rule>> = std::sync::RwLock::new(Vec::new());
+
+/// Compile `[[highlight]]`; returns a warning per rule that could not be
+/// understood. A bad rule is dropped, never fatal - a colour typo should
+/// cost that one rule, not the listing.
+pub fn init_highlight(rules: &[crate::config::HighlightRule]) -> Vec<String> {
+    let (compiled, warnings) = compile_highlight(rules);
+    *HIGHLIGHT.write().unwrap_or_else(|e| e.into_inner()) = compiled;
+    warnings
+}
+
+fn compile_highlight(rules: &[crate::config::HighlightRule]) -> (Vec<Rule>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let mut compiled = Vec::new();
+    for rule in rules {
+        let matcher = match (&rule.pattern, &rule.kind) {
+            (Some(_), Some(_)) => {
+                warnings.push("highlight: rule has both match and type".into());
+                continue;
+            }
+            (Some(pattern), None) => Matcher::Glob(pattern.clone()),
+            (None, Some(kind)) => match parse_kind(kind) {
+                Some(kind) => Matcher::Kind(kind),
+                None => {
+                    warnings.push(format!("highlight: unknown type '{kind}'"));
+                    continue;
+                }
+            },
+            (None, None) => {
+                warnings.push("highlight: rule has neither match nor type".into());
+                continue;
+            }
+        };
+        match parse_color(&rule.color) {
+            Some(color) => compiled.push(Rule {
+                matcher,
+                color,
+                bold: rule.bold,
+            }),
+            None => warnings.push(format!("highlight: unknown colour '{}'", rule.color)),
+        }
+    }
+    (compiled, warnings)
+}
+
+fn parse_kind(name: &str) -> Option<HighlightKind> {
+    Some(match name {
+        "dir" => HighlightKind::Dir,
+        "linkdir" => HighlightKind::LinkDir,
+        "exe" => HighlightKind::Exe,
+        "link" => HighlightKind::Link,
+        "broken" => HighlightKind::Broken,
+        "file" => HighlightKind::File,
+        _ => return None,
+    })
+}
+
+/// MC's colour names (its skin files use these), `#rrggbb`, or
+/// `default` for the terminal's own foreground.
+pub fn parse_color(name: &str) -> Option<Color> {
+    if let Some(hex) = name.strip_prefix('#')
+        && hex.len() == 6
+        && let Ok(rgb) = u32::from_str_radix(hex, 16)
+    {
+        return Some(Color::Rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8));
+    }
+    // mc spells the bright half "bright*"; "light*" is accepted too,
+    // because that is what everything else calls them - except
+    // "lightgray", which is a colour of mc's own
+    let owned;
+    let name = match name.strip_prefix("light") {
+        Some("gray" | "grey") => "lightgray",
+        Some(rest) => {
+            owned = format!("bright{rest}");
+            owned.as_str()
+        }
+        None => name,
+    };
+    Some(match name {
+        "default" => Color::Reset,
+        "black" => Color::Black,
+        // mc's gray is bright black, and its lightgray is the plain one
+        "gray" | "grey" => Color::DarkGray,
+        "lightgray" | "lightgrey" => Color::Gray,
+        "white" => Color::White,
+        "red" => Color::Red,
+        "brightred" => Color::LightRed,
+        "green" => Color::Green,
+        "brightgreen" => Color::LightGreen,
+        "brown" => Color::Yellow,
+        "yellow" | "brightyellow" => Color::LightYellow,
+        "blue" => Color::Blue,
+        "brightblue" => Color::LightBlue,
+        "magenta" => Color::Magenta,
+        "brightmagenta" => Color::LightMagenta,
+        "cyan" => Color::Cyan,
+        "brightcyan" => Color::LightCyan,
+        _ => return None,
+    })
+}
+
 static THEME: std::sync::RwLock<Option<Theme>> = std::sync::RwLock::new(None);
 
 /// Install the theme; returns a warning for unknown names. Called at
@@ -150,6 +296,10 @@ const HELP_TEXT: &[&str] = &[
     "                  brief_columns in the config) / full / long",
     "                  (an active long panel takes the whole width, MC's",
     "                  one-panel view; Tab or cycling back restores the split)",
+    "  [[highlight]] in the config colours entries: match = \"*.tar.gz\" (a",
+    "                  glob) or type = \"exe\" (dir linkdir exe link broken",
+    "                  file), color = mc's names / #rrggbb / default, and an",
+    "                  optional bold; the first matching rule wins",
     "  F9 > View > User defined   the panel draws listing_format from the",
     "                  config: a panel size (half/full), an optional repeat",
     "                  count 1-9, then fields - name size bsize type mark",
@@ -1097,7 +1247,27 @@ fn draw_quick_view(frame: &mut Frame, area: Rect, qv: &mut QuickView, active: bo
 /// a work tree, render a one-cell status column (mark or blank).
 /// The type marker and colour for an entry: `/` a directory, `*`
 /// executable, `@` a symlink, and so on.
+/// The marker character and colour for an entry: the built-in look for
+/// its kind, then whatever `[[highlight]]` says on top - `..` included,
+/// since to mc it is a directory like any other. Rules are the
+/// exception, so the usual path costs one `is_empty`.
 fn entry_style(entry: &Entry) -> (&'static str, Style) {
+    let (marker, mut style) = kind_style(entry);
+    let rules = HIGHLIGHT.read().unwrap_or_else(|e| e.into_inner());
+    if !rules.is_empty()
+        && let Some(rule) = rules.iter().find(|rule| rule.matches(entry))
+    {
+        style = style.fg(rule.color);
+        match rule.bold {
+            Some(true) => style = style.add_modifier(Modifier::BOLD),
+            Some(false) => style = style.remove_modifier(Modifier::BOLD),
+            None => {}
+        }
+    }
+    (marker, style)
+}
+
+fn kind_style(entry: &Entry) -> (&'static str, Style) {
     match entry.kind {
         EntryKind::Dir => (
             "/",
@@ -2987,4 +3157,96 @@ fn draw_ask(frame: &mut Frame, ask: &Ask, button: usize) {
         height: 1,
     };
     frame.render_widget(buttons_line(ask.buttons(), button, style, sel), buttons);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::HighlightRule;
+
+    fn rule(pattern: Option<&str>, kind: Option<&str>, color: &str) -> HighlightRule {
+        HighlightRule {
+            pattern: pattern.map(str::to_string),
+            kind: kind.map(str::to_string),
+            color: color.into(),
+            bold: None,
+        }
+    }
+
+    fn entry(name: &str, kind: EntryKind, mode: u32) -> Entry {
+        Entry {
+            name: name.into(),
+            kind,
+            size: 0,
+            mtime: None,
+            mode,
+            link_target: None,
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn colours_come_from_mcs_vocabulary() {
+        assert_eq!(parse_color("brightred"), Some(Color::LightRed));
+        assert_eq!(parse_color("lightred"), Some(Color::LightRed));
+        assert_eq!(parse_color("brown"), Some(Color::Yellow));
+        // mc's gray is bright black; its lightgray is the plain one
+        assert_eq!(parse_color("gray"), Some(Color::DarkGray));
+        assert_eq!(parse_color("lightgray"), Some(Color::Gray));
+        assert_eq!(parse_color("default"), Some(Color::Reset));
+        assert_eq!(parse_color("#ff8000"), Some(Color::Rgb(0xff, 0x80, 0x00)));
+        assert_eq!(parse_color("chartreuse"), None);
+        assert_eq!(parse_color("#ff80"), None);
+    }
+
+    #[test]
+    fn a_glob_rule_matches_by_name_and_a_type_rule_by_kind() {
+        let (rules, warnings) = compile_highlight(&[
+            rule(Some("*.tar.gz"), None, "brightred"),
+            rule(None, Some("exe"), "magenta"),
+        ]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let tarball = entry("archive.tar.gz", EntryKind::File, 0o644);
+        let script = entry("run.sh", EntryKind::File, 0o755);
+        assert!(rules[0].matches(&tarball));
+        assert!(!rules[0].matches(&script));
+        assert!(rules[1].matches(&script));
+        assert!(!rules[1].matches(&tarball));
+    }
+
+    #[test]
+    fn unusable_rules_are_dropped_with_a_warning() {
+        let (rules, warnings) = compile_highlight(&[
+            rule(Some("*.a"), Some("dir"), "red"),
+            rule(None, Some("sideways"), "red"),
+            rule(None, None, "red"),
+            rule(Some("*.b"), None, "chartreuse"),
+            rule(Some("*.c"), None, "green"),
+        ]);
+        assert_eq!(rules.len(), 1, "only the last rule is usable");
+        assert_eq!(warnings.len(), 4);
+        assert!(warnings[0].contains("both match and type"), "{warnings:?}");
+        assert!(warnings[1].contains("sideways"), "{warnings:?}");
+        assert!(warnings[2].contains("neither"), "{warnings:?}");
+        assert!(warnings[3].contains("chartreuse"), "{warnings:?}");
+    }
+
+    #[test]
+    fn every_kind_has_a_name() {
+        for (name, kind, mode) in [
+            ("dir", EntryKind::Dir, 0o755),
+            ("linkdir", EntryKind::SymlinkDir, 0o777),
+            ("link", EntryKind::SymlinkFile, 0o777),
+            ("broken", EntryKind::SymlinkBroken, 0o777),
+            ("exe", EntryKind::File, 0o755),
+            ("file", EntryKind::File, 0o644),
+        ] {
+            let (rules, warnings) = compile_highlight(&[rule(None, Some(name), "red")]);
+            assert!(warnings.is_empty(), "{name}: {warnings:?}");
+            assert!(
+                rules[0].matches(&entry("x", kind, mode)),
+                "{name} did not match its own kind"
+            );
+        }
+    }
 }
