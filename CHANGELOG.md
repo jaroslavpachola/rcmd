@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.27.0 - 2026-08-23
+
+- **Mailboxes browse as their messages** (4.0 S3, and the last of mc's
+  extfs formats rcmd was missing): Enter on a `.mbox` or `.mbx` - plain
+  or compressed - and each message is an entry, numbered so the panel's
+  name order is the order they arrived in and named by its subject.
+  Opening one gives an ordinary RFC 822 message, without the `From `
+  separator line the mbox format puts between them, which is to say a
+  file you can hand to anything that reads mail.
+- **Subjects are decoded.** Real mail writes them as
+  `=?UTF-8?B?4bmt...?=`, and a listing full of that is no listing at
+  all, so RFC 2047 encoded words are unwrapped - both the base64 and
+  quoted-printable forms, and the folded headers that carry long ones.
+- **A body line beginning "From " does not start a new message.** Mail
+  agents are supposed to escape those and plenty do not, so a separator
+  has to look like one: a sender with no spaces in it and a four-digit
+  year further along. "From now on nothing works." has neither.
+
 ## 3.26.0 - 2026-08-23
 
 - **Patches browse as directories** (4.0 S3): Enter on a `.patch` or

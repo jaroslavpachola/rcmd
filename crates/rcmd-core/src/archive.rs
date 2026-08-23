@@ -1,6 +1,6 @@
 //! Read-only archive VFS: zip, tar and cpio (each plain or gz/xz/bz2/
 //! zstd compressed), `ar` archives and Debian and RPM packages
-//! ISO 9660 images and patch files natively; rar
+//! ISO 9660 images, patch files and mailboxes natively; rar
 //! and 7z through an external tool (the 7z family, or unrar for .rar) -
 //! listed once at open, members streamed out per read.
 //!
@@ -21,6 +21,7 @@ use crate::ar;
 use crate::cpio;
 use crate::entry::{Entry, EntryKind};
 use crate::iso;
+use crate::mail;
 use crate::patch;
 use crate::rpm;
 use crate::vfs::FsProvider;
@@ -40,6 +41,8 @@ enum Kind {
     Iso,
     /// A patch, browsed as the files it touches.
     Patch(Comp),
+    /// An mbox, browsed as the messages in it.
+    Mbox(Comp),
     /// rar / 7z via an external lister+extractor.
     Cmd,
 }
@@ -96,6 +99,8 @@ pub struct ArchiveFs {
     /// A patch's whole text and where each file's part of it starts.
     /// The text is kept once; the entries point into it.
     patch: Option<(String, Vec<patch::Piece>)>,
+    /// The same arrangement for an mbox and its messages.
+    mbox: Option<(String, Vec<mail::Message>)>,
 }
 
 /// A run of bytes inside the container, and what it is wrapped in.
@@ -141,6 +146,8 @@ impl ArchiveFs {
                 Kind::Cpio(comp)
             } else if stem.ends_with(".patch") || stem.ends_with(".diff") {
                 Kind::Patch(comp)
+            } else if stem.ends_with(".mbox") || stem.ends_with(".mbx") {
+                Kind::Mbox(comp)
             } else {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -160,6 +167,7 @@ impl ArchiveFs {
             payload: None,
             iso: None,
             patch: None,
+            mbox: None,
         };
         match kind {
             Kind::Zip => fs.index_zip()?,
@@ -170,6 +178,7 @@ impl ArchiveFs {
             Kind::Rpm => fs.index_rpm()?,
             Kind::Iso => fs.index_iso()?,
             Kind::Patch(_) => fs.index_patch()?,
+            Kind::Mbox(_) => fs.index_mbox()?,
             Kind::Tar(_) => fs.index_tar()?,
         }
         Ok(fs)
@@ -516,6 +525,47 @@ impl ArchiveFs {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not in this patch"))
     }
 
+    /// An mbox lists as its messages, numbered so the panel's name
+    /// order is the mailbox's order.
+    fn index_mbox(&mut self) -> io::Result<()> {
+        let mut text = String::new();
+        self.raw_reader()?.read_to_string(&mut text)?;
+        let messages = mail::split(&text);
+        if messages.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "no messages in this mailbox",
+            ));
+        }
+        for message in &messages {
+            self.add(
+                &message.name,
+                EntryKind::File,
+                message.len as u64,
+                0o644,
+                None,
+                None,
+            );
+        }
+        self.mbox = Some((text, messages));
+        Ok(())
+    }
+
+    fn read_mbox(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
+        let (text, messages) = self
+            .mbox
+            .as_ref()
+            .ok_or_else(|| io::Error::other("no mailbox"))?;
+        messages
+            .iter()
+            .find(|message| message.name == rel)
+            .map(|message| {
+                let body = text[message.at..message.at + message.len].to_string();
+                Box::new(Cursor::new(body.into_bytes())) as Box<dyn Read + Send>
+            })
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not in this mailbox"))
+    }
+
     /// Read a path that lives in a slice of the container: either the
     /// slice *is* the file, or it is a tarball the path reaches into.
     fn read_slice(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
@@ -747,7 +797,7 @@ impl ArchiveFs {
 
     fn raw_reader(&self) -> io::Result<Box<dyn Read>> {
         let comp = match self.kind {
-            Kind::Tar(comp) | Kind::Cpio(comp) | Kind::Patch(comp) => comp,
+            Kind::Tar(comp) | Kind::Cpio(comp) | Kind::Patch(comp) | Kind::Mbox(comp) => comp,
             _ => unreachable!("zip, ar, deb and cmd use their own readers"),
         };
         decompress(Box::new(File::open(&self.path)?), comp)
@@ -791,6 +841,7 @@ impl FsProvider for ArchiveFs {
             Kind::Ar | Kind::Deb | Kind::Rpm => self.read_slice(&rel),
             Kind::Iso => self.read_iso(&rel),
             Kind::Patch(_) => self.read_patch(&rel),
+            Kind::Mbox(_) => self.read_mbox(&rel),
             Kind::Zip => {
                 let mut zip = zip::ZipArchive::new(File::open(&self.path)?).map_err(zip_err)?;
                 for i in 0..zip.len() {
@@ -1728,6 +1779,69 @@ diff --git a/docs/readme.md b/docs/readme.md
         std::fs::write(
             &path,
             b"these are just notes
+",
+        )
+        .unwrap();
+        assert!(ArchiveFs::open(&path).is_err());
+    }
+
+    const MBOX: &str = "\
+From alice@example.com Mon Aug 23 10:00:00 2026
+From: Alice <alice@example.com>
+Subject: the first message
+
+Hello Bob.
+
+From bob@example.com Mon Aug 23 11:00:00 2026
+From: Bob <bob@example.com>
+Subject: =?UTF-8?B?YSByZXBseQ==?=
+
+From here on it is just body text.
+";
+
+    #[test]
+    fn mbox_lists_its_messages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("inbox.mbox");
+        std::fs::write(&path, MBOX).unwrap();
+        let fs = ArchiveFs::open(&path).unwrap();
+
+        let names: Vec<_> = fs
+            .read_dir(Path::new(""))
+            .unwrap()
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
+        // numbered, so name order is the order they arrived in, and the
+        // encoded subject is readable
+        assert_eq!(names, ["0001 the first message", "0002 a reply"]);
+
+        let mut body = String::new();
+        fs.open_read(Path::new("0001 the first message"))
+            .unwrap()
+            .read_to_string(&mut body)
+            .unwrap();
+        // an ordinary message, without the mbox's own separator line
+        assert!(body.starts_with("From: Alice"), "{body}");
+        assert!(body.contains("Hello Bob."));
+        assert!(!body.contains("a reply"), "{body}");
+
+        // a "From " line inside a body is body text, not a new message
+        let mut second = String::new();
+        fs.open_read(Path::new("0002 a reply"))
+            .unwrap()
+            .read_to_string(&mut second)
+            .unwrap();
+        assert!(second.contains("From here on it is just body text."));
+    }
+
+    #[test]
+    fn a_file_with_no_messages_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("empty.mbox");
+        std::fs::write(
+            &path,
+            b"not a mailbox at all
 ",
         )
         .unwrap();

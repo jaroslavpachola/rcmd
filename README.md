@@ -308,6 +308,12 @@ rather than three: `debian-binary` at the root, the metadata and
 maintainer scripts under `CONTROL/`, and everything the package
 installs under `CONTENTS/`.
 
+An **mbox** (`.mbox`, `.mbx`, plain or compressed) browses as the
+messages in it, each numbered so name order is arrival order and named
+by its subject - decoded, since real mail writes subjects as
+`=?UTF-8?B?...?=`. Opening one gives an ordinary RFC 822 message,
+without the `From ` separator line the mbox format puts between them.
+
 A **patch** (`.patch`, `.diff`, plain or compressed) browses as the tree
 it would apply to: one entry per file it touches, holding that file's
 hunks and nothing else, filed under the directories its paths name.

@@ -7,6 +7,7 @@ pub mod find;
 pub mod fsops;
 pub mod glob;
 pub mod iso;
+pub mod mail;
 pub mod mask;
 pub mod panel;
 pub mod patch;

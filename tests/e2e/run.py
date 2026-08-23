@@ -639,6 +639,48 @@ def test_patch():
     shutil.rmtree(root)
 
 
+def test_mbox():
+    """An mbox browses as its messages, numbered and with the subject
+    decoded out of its RFC 2047 wrapper."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "out"))
+    open(os.path.join(play, "inbox.mbox"), "w").write(
+        "From alice@example.com Mon Aug 23 10:00:00 2026\n"
+        "From: Alice <alice@example.com>\n"
+        "Subject: the first message\n"
+        "\n"
+        "Hello Bob, this is the body.\n"
+        "\n"
+        "From bob@example.com Mon Aug 23 11:00:00 2026\n"
+        "From: Bob <bob@example.com>\n"
+        "Subject: =?UTF-8?B?YSByZXBseQ==?=\n"
+        "\n"
+        "And a reply.\n")
+
+    s = Session(play, home, args=(play, os.path.join(play, "out")))
+    s.send(b"\x13inbox\r", wait=STEP)   # quick search -> inbox.mbox
+    s.send(b"\r", wait=STEP * 2)
+    scr = s.screen()
+    check("mbox: entered", "inbox.mbox://" in scr)
+    check("mbox: messages are numbered", "0001 the first message" in scr)
+    check("mbox: the encoded subject is readable", "0002 a reply" in scr)
+
+    s.send(DOWN)                        # -> the first message
+    s.send(F3, wait=STEP * 2)
+    scr = s.screen()
+    check("mbox: F3 shows the message", "Hello Bob, this is the body." in scr)
+    check("mbox: without the mbox separator line", "From alice@example.com Mon" not in scr)
+    s.send(b"q")
+    s.send(F5)
+    s.send(b"\r", wait=STEP * 3)
+    extracted = os.path.join(play, "out", "0001 the first message")
+    check("mbox: F5 writes the message out",
+          wait_for(s, "done -")
+          and open(extracted).read().startswith("From: Alice"))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_find():
     root, play, home = sandbox()
     os.makedirs(os.path.join(play, "sub"))
@@ -2716,6 +2758,7 @@ def main():
         test_rpm,
         test_iso,
         test_patch,
+        test_mbox,
         test_find,
         test_compare,
         test_watch,
