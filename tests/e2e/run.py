@@ -360,7 +360,7 @@ def test_find():
         # F9 -> Command -> Find file...
         # (Help, User menu, Quick search, Hotlist, Directory tree, Find)
         s.send(b"\x1b[20~")                 # F9
-        s.send(b"\x1b[C")                   # Right -> Command
+        s.send(b"\x1b[C" * 2)               # Left -> File -> Command
         s.send(DOWN * 5)                    # -> Find file...
         s.send(b"\r")                       # open find dialog
         s.send(b"\x15")                     # Ctrl+U clears the "*" prefill
@@ -519,13 +519,15 @@ def test_mouse():
     # click focuses the right panel and puts the cursor on the row
     s.send(click(62, 4))
     check("mouse: click focuses+selects", "inner.txt" in status_line(s))
-    # keybar: the "9 PullDn" button opens the menu
+    # keybar: the "9 PullDn" button opens the menu (on Left, as in MC)
     s.send(click(66, 30))
-    check("mouse: keybar opens menu", "Make directory..." in s.screen())
-    s.send(click(21, 1))                # menu bar: switch to Sort
-    check("mouse: menu bar switches", "By modify time" in s.screen())
+    check("mouse: keybar opens menu", "Brief listing" in s.screen())
+    # menu bar: switch to Command, whose title x comes from the bar itself
+    titles = s.screen().split("\n")[0]
+    s.send(click(titles.index("Command") + 1, 1))
+    check("mouse: menu bar switches", "Find file..." in s.screen())
     s.send(click(100, 15))              # outside: closes the menu
-    check("mouse: click outside closes menu", "By modify time" not in s.screen())
+    check("mouse: click outside closes menu", "Find file..." not in s.screen())
     # editor: a click places the cursor (line 2, past the end of "beta")
     s.send(click(10, 5))                # focus left panel, cursor file1.txt
     s.send(F4, wait=STEP * 2)
@@ -602,9 +604,8 @@ def test_mcdepth():
     check("mcdepth: info owner resolved", getpass.getuser() in scr)
     s.send(b"\x18i")                   # off
 
-    # long listing via F9 -> View
+    # long listing via F9 -> Left (the panel menu F9 opens on)
     s.send(b"\x1b[20~")                # F9
-    s.send(b"\x1b[C\x1b[C\x1b[C")      # File -> Command -> Sort -> View
     s.send(DOWN + DOWN + b"\r")        # Brief, Full, *Long*
     check("mcdepth: long listing headers", "Owner" in header_line(s)[:60])
     check("mcdepth: long listing owner", getpass.getuser() in s.screen())
@@ -619,7 +620,6 @@ def test_mcdepth():
 
     # brief listing hides everything but names (left panel only)
     s.send(b"\x1b[20~")
-    s.send(b"\x1b[C\x1b[C\x1b[C")
     s.send(b"\r")                      # *Brief*
     hdr = header_line(s)
     check("mcdepth: brief listing", "Size" not in hdr[:60] and "Size" in hdr[60:])
@@ -686,11 +686,11 @@ def test_escmeta():
     # so these sends drain briefly instead of a full STEP.
     s.send(b"\x1b", wait=0.05)
     s.send(b"9")
-    check("escmeta: Esc 9 opens the menu", "Make directory..." in s.screen())
+    check("escmeta: Esc 9 opens the menu", "Brief listing" in s.screen())
     # Esc Esc = a real Escape: closes the menu
     s.send(b"\x1b", wait=0.05)
     s.send(b"\x1b")
-    check("escmeta: Esc Esc escapes", "Make directory..." not in s.screen())
+    check("escmeta: Esc Esc escapes", "Brief listing" not in s.screen())
     # Esc 3 on a file = F3 viewer
     s.send(DOWN)                       # cursor -> read.me
     s.send(b"\x1b", wait=0.05)
@@ -713,7 +713,7 @@ def test_escmeta():
     s.send(b"\x1b", wait=STEP)         # a slow, deliberate follow-up
     s.send(b"9")
     check("escmeta: esc_timeout_ms widens the window",
-          "Make directory..." in s.screen())
+          "Brief listing" in s.screen())
     s.send(b"\x1b", wait=0.05)
     s.send(b"\x1b")
     s.quit()
@@ -840,7 +840,8 @@ def test_bulk_rename():
     s = Session(play, home)
     s.send(b"+")                            # select group dialog
     s.send(b"\r", wait=STEP)                # "*" marks all files
-    s.send(b"\x1b[20~")                     # F9 (File menu opens)
+    s.send(b"\x1b[20~")                     # F9 (opens on Left, as in MC)
+    s.send(b"f")                            # -> File, by its title letter
     s.send(b"b", wait=STEP)                 # Bulk rename (entry hotkey)
     check("bulk: editor opens with numbered names",
           "bulk rename" in s.screen() and "aaa.txt" in s.screen())
@@ -1007,8 +1008,9 @@ def test_layout():
     # ...and the 30% top panel is the shorter of the two
     check("layout: split ratio honoured", tops[1] - tops[0] < ROWS // 2, str(tops))
 
-    # clicking the menu bar opens that menu (click() is 1-based)
-    s.send(click(2, 1), wait=STEP)
+    # clicking a menu-bar title opens that menu (click() is 1-based, and
+    # the title's column comes from the bar itself - Left is first now)
+    s.send(click(scr[0].index("File") + 1, 1), wait=STEP)
     check("layout: menu bar is clickable", "Make directory..." in s.screen())
     s.send(b"\x1b", wait=STEP)
     s.send(b"\x1b", wait=STEP)
@@ -1072,7 +1074,7 @@ def test_tree():
     # F9 -> Command -> Directory tree...
     # (Help, User menu, Quick search, Hotlist, *Directory tree*)
     s.send(b"\x1b[20~")
-    s.send(b"\x1b[C")
+    s.send(b"\x1b[C" * 2)
     s.send(DOWN * 4 + b"\r")
     scr = s.screen()
     check("tree: dialog opens", "Directory tree" in scr, scr[:120])
@@ -1097,10 +1099,9 @@ def test_tree():
     check("tree: Enter cd'd this panel", "play/beta" in scr, scr[:120])
     check("tree: and only this one", scr.count("play/beta") < 3, scr[:240])
 
-    # the listing mode: F9 -> View -> Tree (Brief, Full, Long, *Tree*)
+    # the listing mode: F9 -> Left (Brief, Full, Long, User, *Tree*)
     s.send(b"\x1b[20~")
-    s.send(b"\x1b[C\x1b[C\x1b[C")
-    s.send(DOWN * 3 + b"\r")
+    s.send(DOWN * 4 + b"\r")
     scr = s.screen()
     left_half = [ln[:60] for ln in scr.split("\n")]
     check("tree: listing mode draws the figure", len(figure(scr, 0, 60)) > 3, scr[:120])
@@ -1226,6 +1227,63 @@ def test_highlight():
     check("highlight: unmatched entries keep the panel colour",
           "38;5;7" in sgr("plain.txt"), repr(sgr("plain.txt")))
     check("highlight: an unknown colour warns", "chartreuse" in status_line(s), status_line(s))
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_panelmenus():
+    """PLAN4 S1: mc's menu structure - Left and Right act on their own
+    panel whichever one has the focus, with File, Command and Options
+    between them."""
+    root, play, home = sandbox()
+    other = os.path.join(root, "other")
+    os.makedirs(other)
+    open(os.path.join(play, "left.txt"), "w").write("x\n")
+    open(os.path.join(other, "right.txt"), "w").write("hello from the right\n")
+    s = Session(play, home, args=(play, other))
+
+    s.send(b"\x1b[20~")                     # F9 opens on the Left menu
+    titles = s.screen().split("\n")[0]
+    for title in ("Left", "File", "Command", "Options", "Right"):
+        check("panelmenus: %s in the bar" % title.lower(), title in titles, titles)
+
+    # an entry letter beats a title letter, so the panel menus leave f,
+    # c, o and r alone - the other menus stay one keystroke away
+    for letter, entry in ((b"f", "Make directory..."), (b"c", "Find file..."),
+                          (b"o", "Panel options...")):
+        s.send(letter)
+        check("panelmenus: %s reachable by letter" % entry.split()[0].lower(),
+              entry in s.screen(), s.screen().split("\n")[2])
+        s.send(b"\x1b")
+        s.send(b"\x1b[20~")
+
+    # Right menu, Brief listing: the right panel loses its columns and
+    # the left keeps them, though the left panel is the one with focus
+    s.send(b"r")
+    s.send(b"b", wait=STEP)
+    hdr = header_line(s)
+    check("panelmenus: the right menu hit the right panel",
+          "Modify time" not in hdr[60:], hdr[60:])
+    check("panelmenus: the left panel is untouched", "Modify time" in hdr[:60], hdr[:60])
+    check("panelmenus: focus follows the menu you used",
+          "/other$" in s.screen().split("\n")[-2], s.screen().split("\n")[-2])
+
+    # Left menu, Quick view: the *left* panel becomes the preview, so
+    # the focus lands on the right one, which is doing the browsing
+    s.send(b"\x1b[20~")
+    s.send(b"q", wait=STEP * 2)
+    s.send(DOWN, wait=STEP * 2)             # off ".." and onto the file
+    scr = s.screen()
+    check("panelmenus: quick view took the left panel",
+          "hello from the right" in "".join(ln[:60] for ln in scr.split("\n")), scr[:200])
+    check("panelmenus: the browsing panel keeps the focus",
+          "/other$" in scr.split("\n")[-2], scr.split("\n")[-2])
+
+    # ...and the same entry again puts the panel back
+    s.send(b"\x1b[20~")
+    s.send(b"q", wait=STEP)
+    check("panelmenus: quick view toggles back off",
+          "hello from the right" not in s.screen(), s.screen()[:200])
     s.quit()
     shutil.rmtree(root)
 
@@ -1966,6 +2024,7 @@ def main():
         test_tree,
         test_userformat,
         test_highlight,
+        test_panelmenus,
         test_mcimport,
         test_keycontexts,
         test_options,

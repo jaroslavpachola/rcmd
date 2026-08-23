@@ -1,5 +1,34 @@
 # Changelog
 
+## 3.12.0 - 2026-08-23
+
+- **Per-panel Left and Right menus** (4.0 S1, completes it): the menu
+  bar is mc's - **Left, File, Command, Options, Right** - and the two
+  panel menus act on *their own* panel whichever one has the focus.
+  Each carries what mc puts there: the listing formats (brief, full,
+  long, user defined, tree), quick view, info, the sort orders and
+  reverse, filter, panelize, rescan and the SFTP link - all of mc's
+  per-panel entries except Encoding, which joins them in S5 when there
+  is a codepage to pick. rcmd's global Sort and View menus are gone
+  into them, and Command keeps what works on both panels at once.
+  Using a panel menu **moves the focus to that panel**, which mc does
+  not do: several of these entries open a dialog that only lands later,
+  and a filter or a panelize prompt acting on a panel other than the
+  focused one is how you end up surprised. An entry letter beats a menu
+  title's, so the panel-menu entries deliberately avoid `f`, `c`, `o`
+  and `r`: File, Command, Options and Right stay one keystroke away
+  from an open panel menu, and the documented `F9 o p` still reaches
+  the options form. That is also why the filter entry reads **Glob
+  filter...** - every letter of "Filter" was already spoken for. With a
+  horizontal split the menus are still Left and Right, as in mc, and
+  mean top and bottom.
+- **Fixed: the permanent menu bar's titles now sit where clicks expect
+  them.** `show_menubar = true` drew the bar with different spacing from
+  the title row an open menu draws, while clicks were hit-tested against
+  the second one - so clicking a title on the permanent bar could open
+  its neighbour. The two are drawn the same way now, which also stops
+  the bar shifting as a menu opens.
+
 ## 3.11.0 - 2026-08-23
 
 - **File highlighting rules** (4.0 S1): `[[highlight]]` colours entries

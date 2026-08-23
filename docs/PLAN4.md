@@ -48,7 +48,7 @@ only way to script), rcmd keeps its own shape and imports mc's data.
   history aliases + `M-h` list, `M-a`, `cd -`/CDPATH, `C-x !`,
   command-line `%` macros, persisted command history.
 
-### S1 - panel & layout (first user-visible milestone)
+### S1 - panel & layout (first user-visible milestone) - DONE (2026-08-23)
 
 - Layout dialog: split direction, unequal split, hide
   menubar/keybar/command line/hint bar.
@@ -57,7 +57,8 @@ only way to script), rcmd keeps its own shape and imports mc's data.
 - Multi-column brief listing; user-defined listing format.
 - Per-extension/type file highlighting rules.
 - Per-panel Left/Right menus (listing mode, sort, filter, panelize,
-  rescan, encoding, links) - the mc menu structure.
+  rescan, encoding, links) - the mc menu structure. Encoding is the one
+  entry still missing: it joins them in S5, with the codepage work.
 
 ### S2 - file-operation dialogs
 

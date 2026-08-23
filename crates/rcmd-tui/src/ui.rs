@@ -291,7 +291,8 @@ const HELP_TEXT: &[&str] = &[
     "  (watch = false in config disables). Slow directories load in the",
     "  background: old listing + spinner stay up, Esc cancels the load.",
     "  Alt+.           show/hide dotfiles",
-    "  Alt+N           sort by name (again = reverse); others in F9 > Sort",
+    "  Alt+N           sort by name (again = reverse); other orders are in",
+    "                  the panel's own F9 menu (Left or Right)",
     "  Alt+T           cycle listing format: brief (names in columns,",
     "                  brief_columns in the config) / full / long",
     "                  (an active long panel takes the whole width, MC's",
@@ -300,16 +301,22 @@ const HELP_TEXT: &[&str] = &[
     "                  glob) or type = \"exe\" (dir linkdir exe link broken",
     "                  file), color = mc's names / #rrggbb / default, and an",
     "                  optional bold; the first matching rule wins",
-    "  F9 > View > User defined   the panel draws listing_format from the",
+    "  F9 > Left/Right   the menu bar is MC's: Left and Right act on that",
+    "                  panel whichever one has the focus - listing format,",
+    "                  quick view, info, tree, sort order, filter, panelize,",
+    "                  rescan, SFTP link. Using one focuses that panel, so",
+    "                  the dialogs it opens cannot land on the other.",
+    "  F9 > Left/Right > User defined   the panel draws listing_format from the",
     "                  config: a panel size (half/full), an optional repeat",
     "                  count 1-9, then fields - name size bsize type mark",
     "                  mtime atime ctime perm mode nlink ngid nuid owner",
     "                  group inode, plus space and | - each with an optional",
     "                  :width (:width+ grows). MC's own Full listing is",
     "                  \"half type name | size | mtime\"",
-    "  F9 > View > Tree   the panel becomes a directory tree: Up/Down walk",
-    "                  it, Left/Right go to parent/child, Enter opens the",
-    "                  selection in the *other* panel and the tree stays,",
+    "  F9 > Left/Right > Tree   the panel becomes a directory tree: Up and",
+    "                  Down walk it, Left/Right go to parent/child, Enter",
+    "                  opens the selection in the *other* panel and the",
+    "                  tree stays put,",
     "                  F4 switches dynamic/static navigation, Ctrl+R rescans",
     "  F9 > Command > Directory tree   the same figure in a dialog, where",
     "                  Enter takes *this* panel there and closes; typing",
@@ -335,8 +342,9 @@ const HELP_TEXT: &[&str] = &[
     "  Ctrl+X c / o    chmod (octal) / chown (user[:group]) the marked",
     "                  entries - both work on sftp panels too",
     "  Ctrl+X s        create a symlink to the cursor entry",
-    "  F9 > View       listing format: brief (names), full, long (ls -l,",
-    "                  full-width); the panel footer shows free space",
+    "  F9 > Left/Right   listing format: brief (names), full, long (ls -l,",
+    "                  full-width), user defined, tree; the panel footer",
+    "                  shows free space",
     "  Inside a git work tree the title shows [branch] and entries get a",
     "  status column: M modified, A added, ? untracked, ! ignored (dim).",
     "",
@@ -1661,11 +1669,15 @@ fn draw_menubar(frame: &mut Frame, area: Rect, open: Option<usize>) {
     use crate::app::MENUS;
     let base = Style::new().fg(th().label_fg).bg(th().label_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
-    let mut spans = vec![Span::styled(" ", base)];
+    // Same "  title  " spacing as the open menu's own title row, which
+    // is what `menu_layout` hit-tests clicks against: drawn any other
+    // way, a click on this bar lands on the neighbouring menu.
+    let mut spans = Vec::new();
     for (i, (title, _)) in MENUS.iter().enumerate() {
         let style = if open == Some(i) { sel } else { base };
+        spans.push(Span::styled("  ", style));
         hot_spans(title, style, &mut spans);
-        spans.push(Span::styled("  ", base));
+        spans.push(Span::styled("  ", style));
     }
     frame.render_widget(Line::from(spans).style(base), area);
 }

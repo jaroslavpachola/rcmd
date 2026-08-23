@@ -601,7 +601,13 @@ pub enum Action {
 /// MC-style: highlighted in the dropdown, pressing it runs the entry.
 pub type MenuEntry = Option<(&'static str, &'static str, Action)>;
 
+/// MC's menu bar: the two panel menus bracket the global ones. Left and
+/// Right act on their own panel whichever one has the focus, which is
+/// why their entries carry no side - [`App::menu_side`] reads it off
+/// the menu that is open. (With a horizontal split they are still Left
+/// and Right, as in mc, and mean top and bottom.)
 pub const MENUS: &[(&str, &[MenuEntry])] = &[
+    ("&Left", PANEL_MENU),
     (
         "&File",
         &[
@@ -619,7 +625,6 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Invert selection", "*", Action::InvertSelection)),
             None,
             Some(("Directory si&ze", "C-spc", Action::DirSize)),
-            Some(("&Filter files...", "C-f", Action::Filter)),
             None,
             Some(("&Quit", "F10", Action::Quit)),
         ],
@@ -633,48 +638,59 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Directory ho&tlist...", "C-\\", Action::Hotlist)),
             Some(("Directory tr&ee...", "", Action::DirTree)),
             Some(("&Find file...", "M-F7", Action::FindFile)),
-            Some(("&Panelize command...", "", Action::Panelize)),
             Some(("&Compare directories", "C-x d", Action::CompareDirs)),
-            Some(("SFTP &link...", "", Action::SftpLink)),
             Some(("&Open shell", "C-o", Action::Shell)),
-            Some(("&Reload panel", "C-r", Action::Reload)),
             Some(("S&wap panels", "C-u", Action::SwapPanels)),
             Some(("Toggle hidde&n files", "M-.", Action::ToggleHidden)),
-            Some(("&Jobs...", "C-x j", Action::Jobs)),
-            Some(("Command &history...", "M-h", Action::HistoryList)),
-        ],
-    ),
-    (
-        "&Sort",
-        &[
-            Some(("By &name", "M-n", Action::Sort(SortKey::Name))),
-            Some(("By &extension", "", Action::Sort(SortKey::Ext))),
-            Some(("By &size", "", Action::Sort(SortKey::Size))),
-            Some(("By &modify time", "", Action::Sort(SortKey::Mtime))),
-            None,
-            Some(("Toggle &reverse", "", Action::SortReverse)),
-        ],
-    ),
-    (
-        "&View",
-        &[
-            Some(("&Brief listing", "", Action::Listing(ListMode::Brief))),
-            Some(("&Full listing", "", Action::Listing(ListMode::Full))),
-            Some(("&Long listing", "", Action::Listing(ListMode::Long))),
-            Some(("&Tree", "", Action::Listing(ListMode::Tree))),
-            Some(("&User defined", "", Action::Listing(ListMode::User))),
-            None,
-            Some(("&Quick view", "C-x q", Action::QuickView)),
-            Some(("&Info panel", "C-x i", Action::InfoView)),
             None,
             Some(("Other panel: &same dir", "M-i", Action::OtherSameDir)),
-            Some(("Other panel: &this dir", "M-o", Action::OtherOpenDir)),
+            Some(("Other panel: this &dir", "M-o", Action::OtherOpenDir)),
+            None,
+            Some(("&Jobs...", "C-x j", Action::Jobs)),
+            Some(("Command histor&y...", "M-h", Action::HistoryList)),
         ],
     ),
     (
         "&Options",
         &[Some(("&Panel options...", "", Action::Options))],
     ),
+    ("&Right", PANEL_MENU),
+];
+
+/// Index of the panel menus in [`MENUS`] - the two that act on a named
+/// side rather than on the focused panel.
+pub const LEFT_MENU: usize = 0;
+pub const RIGHT_MENU: usize = 4;
+
+/// The Left and Right menus have identical entries: mc's per-panel
+/// commands, in mc's order. Which panel they land on comes from which
+/// menu is open. No entry here may take `f`, `c`, `o` or `r`: an entry
+/// letter beats a menu title, so those would strand File, Command,
+/// Options and Right - and `F9 o p` for the options form is documented.
+const PANEL_MENU: &[MenuEntry] = &[
+    Some(("&Brief listing", "", Action::Listing(ListMode::Brief))),
+    Some(("F&ull listing", "", Action::Listing(ListMode::Full))),
+    Some(("&Long listing", "", Action::Listing(ListMode::Long))),
+    Some(("User &defined", "", Action::Listing(ListMode::User))),
+    Some(("&Tree", "", Action::Listing(ListMode::Tree))),
+    None,
+    Some(("&Quick view", "C-x q", Action::QuickView)),
+    Some(("&Info panel", "C-x i", Action::InfoView)),
+    None,
+    Some(("Sort by &name", "M-n", Action::Sort(SortKey::Name))),
+    Some(("Sort by &extension", "", Action::Sort(SortKey::Ext))),
+    Some(("Sort by si&ze", "", Action::Sort(SortKey::Size))),
+    Some(("Sort by &modify time", "", Action::Sort(SortKey::Mtime))),
+    Some(("Re&verse sort", "", Action::SortReverse)),
+    None,
+    // "Filter" cannot take a letter of its own here: f, i, l, t, e and
+    // r are all spoken for by an entry above or by a menu title, and a
+    // panel-menu entry that shadows File, Command, Options or Right
+    // would make that menu unreachable by letter
+    Some(("&Glob filter...", "C-f", Action::Filter)),
+    Some(("&Panelize command...", "", Action::Panelize)),
+    Some(("Re&scan", "C-r", Action::Reload)),
+    Some(("SFTP lin&k...", "", Action::SftpLink)),
 ];
 
 /// The character after `&` in a menu label - its hotkey, lowercased.
@@ -2075,9 +2091,9 @@ impl App {
             let idx = (y - inner.y) as usize;
             // a separator click keeps the menu open
             if let Some(Some((_, _, action))) = MENUS[ms.menu].1.get(idx) {
-                let action = *action;
+                let (action, menu) = (*action, ms.menu);
                 self.menu = None;
-                self.run_action(action);
+                self.run_menu_action(menu, action);
             }
             return;
         }
@@ -2381,8 +2397,9 @@ impl App {
             KeyCode::Down => ms.item = menu_step(MENUS[ms.menu].1, ms.item, 1),
             KeyCode::Enter => {
                 if let Some((_, _, action)) = MENUS[ms.menu].1[ms.item] {
+                    let menu = ms.menu;
                     self.menu = None;
-                    self.run_action(action);
+                    self.run_menu_action(menu, action);
                 }
             }
             KeyCode::Char(c) => {
@@ -2395,8 +2412,9 @@ impl App {
                     .flatten()
                     .find(|(label, ..)| menu_hotkey(label) == Some(c));
                 if let Some(&(_, _, action)) = entry {
+                    let menu = ms.menu;
                     self.menu = None;
-                    self.run_action(action);
+                    self.run_menu_action(menu, action);
                 } else if let Some(menu) = MENUS
                     .iter()
                     .position(|(title, _)| menu_hotkey(title) == Some(c))
@@ -2407,6 +2425,63 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Which panel a menu acts on: mc's Left and Right menus act on
+    /// their own panel, everything else on whichever has the focus.
+    fn menu_side(menu: usize) -> Option<usize> {
+        match menu {
+            LEFT_MENU => Some(0),
+            RIGHT_MENU => Some(1),
+            _ => None,
+        }
+    }
+
+    fn run_menu_action(&mut self, menu: usize, action: Action) {
+        match Self::menu_side(menu) {
+            Some(side) => self.run_action_on(side, action),
+            None => self.run_action(action),
+        }
+    }
+
+    /// Run a Left/Right menu entry against that menu's panel. The focus
+    /// moves there first, and stays: several of these entries open a
+    /// dialog that only lands later (filter, panelize, the SFTP link),
+    /// and a dialog that acts on a panel other than the focused one is
+    /// how you delete the wrong file. mc leaves the focus alone; this
+    /// is the one place rcmd would rather be obvious than identical.
+    fn run_action_on(&mut self, side: usize, action: Action) {
+        match action {
+            // the preview and info panes replace the panel whose menu
+            // was used, so the focus goes to the *other* one - the one
+            // still doing the browsing
+            Action::QuickView => self.quick_view_on(side),
+            Action::InfoView => self.info_on(side),
+            _ => {
+                self.active = side;
+                self.run_action(action);
+            }
+        }
+    }
+
+    fn quick_view_on(&mut self, side: usize) {
+        if self.quick_view.as_ref().is_some_and(|qv| qv.side == side) {
+            self.quick_view = None;
+            return;
+        }
+        self.quick_view = None;
+        self.active = side ^ 1;
+        self.toggle_quick_view();
+    }
+
+    fn info_on(&mut self, side: usize) {
+        if self.info == Some(side) {
+            self.info = None;
+            return;
+        }
+        self.info = None;
+        self.active = side ^ 1;
+        self.toggle_info();
     }
 
     /// Actions that mean "do this to the entry under the cursor" have

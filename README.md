@@ -64,6 +64,9 @@ other fifteen fields, with widths that grow.
 **3.11** - `[[highlight]]` colour rules: entries are painted by glob or
 by kind, which is mc's filehighlight without the second file.
 
+**3.12** - mc's menu bar: **Left, File, Command, Options, Right**, where
+the two panel menus act on their own panel whichever one has the focus.
+
 ## Install & run
 
 ```sh
@@ -138,7 +141,7 @@ end
 | F7 | Make directory |
 | F8 | Delete to trash |
 | Shift+F8 | Delete permanently |
-| Alt+N | Sort by name (again = reverse; other orders in F9 → Sort) |
+| Alt+N | Sort by name (again = reverse; other orders in the panel's own F9 → Left/Right menu) |
 | Alt+T | Cycle listing format: brief (names in columns) / full / long (active long panel = full-width one-panel view) |
 | Ctrl+U | Swap panels |
 | Alt+. | Toggle hidden files |
@@ -208,7 +211,7 @@ Panels also auto-reload when their directory changes on disk (debounced;
 optional case-insensitive content substring; matches stream live into
 the active panel as a *panelized* listing (paths relative to the panel
 dir), where marking and F5/F6/F8 work as usual. *Panelize command…*
-(F9 → Command) turns any command's stdout lines into such a listing
+(F9 → Left/Right) turns any command's stdout lines into such a listing
 (`git ls-files -m`, `rg -l TODO`, …). *Compare directories* (Ctrl+X d)
 marks files that are missing on the other side or differ in size/mtime
 in both panels - then a plain F5 copies the marked differences across.
@@ -261,7 +264,7 @@ into a live stat display of the file under the cursor - type, size,
 permissions, owner and group (resolved locally, numeric on SFTP),
 hard links, inode, and all three timestamps - plus the filesystem's
 free space, which also shows in every local panel's footer. Listing
-formats are switchable per panel from F9 → View: *brief* (names only,
+formats are switchable per panel from F9 → Left/Right: *brief* (names only,
 full width), *full* (the classic name/size/mtime), and *long*
 (ls-style perms/owner/group/size/name). A long listing needs room, so
 while the *active* panel is long it takes the whole width and the
@@ -301,7 +304,7 @@ back when you close the editor. Set `editor = "external"` in the config
 to keep using $VISUAL/$EDITOR.
 
 **Remote filesystems (SFTP)**: `cd sftp://[user@]host[:port][/path]`
-(or F9 → Command → SFTP link) connects a panel to a server - user
+(or F9 → Left/Right → SFTP link) connects a panel to a server - user
 defaults to your login, path to the remote home. Authentication tries
 your ssh-agent, then the default `~/.ssh/id_*` keys, then asks for a
 password; host keys are checked against `~/.ssh/known_hosts`, and
