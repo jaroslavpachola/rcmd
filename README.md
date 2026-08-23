@@ -295,8 +295,12 @@ block the UI. Built behind the default-on `git` cargo feature;
 `git = false` in the config disables it at runtime.
 
 **Archives**: Enter on a `.zip`, `.tar`, `.tar.gz`/`.tgz`,
-`.tar.xz`/`.txz`, or `.tar.bz2`/`.tbz2` file browses it like a directory
-(the panel title shows `archive://path`). F5 copies members out with the
+`.tar.xz`/`.txz`, `.tar.bz2`/`.tbz2`, or `.cpio` (plain or
+`.gz`/`.xz`/`.bz2`) file browses it like a directory (the panel title
+shows `archive://path`). cpio is read in all three of its header
+shapes - `newc`/`crc`, the portable octal `odc`, and the old binary one
+in either byte order - and a hard link inside one lists and opens as the
+file it shares its bytes with. F5 copies members out with the
 usual progress/overwrite dialogs, F3 views them; move, delete, and mkdir
 are disabled inside. Copying **into** an archive works for zip only
 (members are appended in place - tar formats would need a full rewrite):

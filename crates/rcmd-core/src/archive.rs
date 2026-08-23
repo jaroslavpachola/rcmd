@@ -1,6 +1,7 @@
-//! Read-only archive VFS: zip, tar, tar.gz/xz/bz2 natively; rar and 7z
-//! through an external tool (the 7z family, or unrar for .rar) - listed
-//! once at open, members streamed out per read.
+//! Read-only archive VFS: zip, tar and cpio (each plain or gz/xz/bz2
+//! compressed) natively; rar and 7z through an external tool (the 7z
+//! family, or unrar for .rar) - listed once at open, members streamed
+//! out per read.
 //!
 //! The entry table is indexed once at open; `open_read` re-opens the
 //! archive and decodes just the requested member into memory (compressed
@@ -15,18 +16,28 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use flate2::read::GzDecoder;
 
+use crate::cpio;
 use crate::entry::{Entry, EntryKind};
 use crate::vfs::FsProvider;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Zip,
-    Tar,
-    TarGz,
-    TarXz,
-    TarBz2,
+    Tar(Comp),
+    Cpio(Comp),
     /// rar / 7z via an external lister+extractor.
     Cmd,
+}
+
+/// What, if anything, the container stream is wrapped in. tar and cpio
+/// both come plain or squeezed, and they answer to the same three
+/// wrappers, so it is an axis of its own rather than a variant each.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Comp {
+    None,
+    Gz,
+    Xz,
+    Bz2,
 }
 
 /// Which external tool serves a [`Kind::Cmd`] archive.
@@ -48,6 +59,9 @@ pub struct ArchiveFs {
     cmd: Option<CmdBackend>,
     /// Directory (relative, "" = archive root) → its entries.
     index: HashMap<PathBuf, Vec<Entry>>,
+    /// A hard link's name → the member that actually carries the bytes.
+    /// cpio writes the data once, with one of the names.
+    links: HashMap<PathBuf, PathBuf>,
 }
 
 impl ArchiveFs {
@@ -59,32 +73,39 @@ impl ArchiveFs {
             .to_lowercase();
         let kind = if name.ends_with(".zip") {
             Kind::Zip
-        } else if name.ends_with(".tar") {
-            Kind::Tar
-        } else if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
-            Kind::TarGz
-        } else if name.ends_with(".tar.xz") || name.ends_with(".txz") {
-            Kind::TarXz
-        } else if name.ends_with(".tar.bz2") || name.ends_with(".tbz2") || name.ends_with(".tbz") {
-            Kind::TarBz2
+        } else if name.ends_with(".tgz") {
+            Kind::Tar(Comp::Gz)
+        } else if name.ends_with(".txz") {
+            Kind::Tar(Comp::Xz)
+        } else if name.ends_with(".tbz2") || name.ends_with(".tbz") {
+            Kind::Tar(Comp::Bz2)
         } else if name.ends_with(".rar") || name.ends_with(".7z") {
             Kind::Cmd
         } else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "unsupported archive type",
-            ));
+            let (stem, comp) = peel_comp(&name);
+            if stem.ends_with(".tar") {
+                Kind::Tar(comp)
+            } else if stem.ends_with(".cpio") {
+                Kind::Cpio(comp)
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unsupported archive type",
+                ));
+            }
         };
         let mut fs = ArchiveFs {
             path: path.to_path_buf(),
             kind,
             cmd: None,
             index: HashMap::from([(PathBuf::new(), Vec::new())]),
+            links: HashMap::new(),
         };
         match kind {
             Kind::Zip => fs.index_zip()?,
             Kind::Cmd => fs.index_cmd(name.ends_with(".rar"))?,
-            _ => fs.index_tar()?,
+            Kind::Cpio(_) => fs.index_cpio()?,
+            Kind::Tar(_) => fs.index_tar()?,
         }
         Ok(fs)
     }
@@ -135,6 +156,64 @@ impl ArchiveFs {
             self.add(&rel, kind, size, mode, link, mtime);
         }
         Ok(())
+    }
+
+    /// cpio streams have no index: read the whole thing once, keeping
+    /// each header and skipping past its bytes. Hard links are written
+    /// with the data attached to just one of the names, so the empty
+    /// aliases are collected and pointed at the one that has it.
+    fn index_cpio(&mut self) -> io::Result<()> {
+        let mut reader = cpio::Reader::new(self.raw_reader()?);
+        // (dev, ino) → the member carrying the bytes, and its size
+        let mut bodies: HashMap<(u64, u64), (PathBuf, u64)> = HashMap::new();
+        let mut aliases: Vec<(PathBuf, (u64, u64))> = Vec::new();
+        while let Some(header) = reader.next_member()? {
+            let rel = normalize_rel(&header.path);
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+            let (kind, link) = if header.is_dir() {
+                (EntryKind::Dir, None)
+            } else if header.is_symlink() {
+                let target = String::from_utf8_lossy(&reader.data()?).into_owned();
+                (EntryKind::SymlinkFile, Some(PathBuf::from(target)))
+            } else if header.is_file() {
+                (EntryKind::File, None)
+            } else {
+                continue; // devices, fifos, sockets: nothing to browse
+            };
+            if kind == EntryKind::File && header.nlink > 1 {
+                let id = (header.dev, header.ino);
+                if header.size > 0 {
+                    bodies.insert(id, (rel.clone(), header.size));
+                } else {
+                    aliases.push((rel.clone(), id));
+                }
+            }
+            let mtime = Some(UNIX_EPOCH + Duration::from_secs(header.mtime));
+            self.add(&rel, kind, header.size, header.perm(), link, mtime);
+        }
+        for (alias, id) in aliases {
+            if let Some((body, size)) = bodies.get(&id).filter(|(body, _)| *body != alias) {
+                self.links.insert(alias.clone(), body.clone());
+                self.set_size(&alias, *size);
+            }
+        }
+        Ok(())
+    }
+
+    /// A hard link's listing should show the size of what it points at,
+    /// not the zero bytes its own record carries.
+    fn set_size(&mut self, rel: &Path, size: u64) {
+        let parent = rel.parent().map(Path::to_path_buf).unwrap_or_default();
+        let Some(name) = rel.file_name() else { return };
+        if let Some(entry) = self
+            .index
+            .get_mut(&parent)
+            .and_then(|list| list.iter_mut().find(|e| e.name == name))
+        {
+            entry.size = size;
+        }
     }
 
     fn add(
@@ -291,14 +370,33 @@ impl ArchiveFs {
         Ok(Box::new(Cursor::new(output.stdout)))
     }
 
+    /// Stream one member out by walking the archive again - the only
+    /// way in without an index, and the same cost tar already pays.
+    fn read_cpio(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
+        let wanted = self.links.get(rel).unwrap_or(&rel.to_path_buf()).clone();
+        let mut reader = cpio::Reader::new(self.raw_reader()?);
+        while let Some(header) = reader.next_member()? {
+            if normalize_rel(&header.path) == wanted {
+                return Ok(Box::new(Cursor::new(reader.data()?)));
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "not found in archive",
+        ))
+    }
+
     fn raw_reader(&self) -> io::Result<Box<dyn Read>> {
         let file = File::open(&self.path)?;
-        Ok(match self.kind {
-            Kind::Tar => Box::new(file),
-            Kind::TarGz => Box::new(GzDecoder::new(file)),
-            Kind::TarXz => Box::new(xz2::read::XzDecoder::new(file)),
-            Kind::TarBz2 => Box::new(bzip2::read::BzDecoder::new(file)),
+        let comp = match self.kind {
+            Kind::Tar(comp) | Kind::Cpio(comp) => comp,
             Kind::Zip | Kind::Cmd => unreachable!("zip/cmd use their own readers"),
+        };
+        Ok(match comp {
+            Comp::None => Box::new(file),
+            Comp::Gz => Box::new(GzDecoder::new(file)),
+            Comp::Xz => Box::new(xz2::read::XzDecoder::new(file)),
+            Comp::Bz2 => Box::new(bzip2::read::BzDecoder::new(file)),
         })
     }
 }
@@ -329,6 +427,7 @@ impl FsProvider for ArchiveFs {
         let rel = normalize_rel(path);
         match self.kind {
             Kind::Cmd => self.read_cmd(&rel),
+            Kind::Cpio(_) => self.read_cpio(&rel),
             Kind::Zip => {
                 let mut zip = zip::ZipArchive::new(File::open(&self.path)?).map_err(zip_err)?;
                 for i in 0..zip.len() {
@@ -528,6 +627,18 @@ fn parse_datetime(s: &str) -> Option<std::time::SystemTime> {
     Some(UNIX_EPOCH + Duration::from_secs(days as u64 * 86_400 + h * 3_600 + min * 60 + sec))
 }
 
+/// Split a trailing compression suffix off a lowercased filename, so
+/// "x.cpio.gz" and "x.tar.bz2" reach the same table as their plain
+/// forms.
+fn peel_comp(name: &str) -> (&str, Comp) {
+    for (suffix, comp) in [(".gz", Comp::Gz), (".xz", Comp::Xz), (".bz2", Comp::Bz2)] {
+        if let Some(stem) = name.strip_suffix(suffix) {
+            return (stem, comp);
+        }
+    }
+    (name, Comp::None)
+}
+
 /// Keep only normal components: strips "./", trailing slashes, and any
 /// leading "/" or ".." an ill-formed archive might carry.
 fn normalize_rel(path: &Path) -> PathBuf {
@@ -678,6 +789,191 @@ mod tests {
                 .unwrap();
             assert_eq!(content, "data", "{name}");
         }
+    }
+
+    /// A newc stream, written by hand so the fixture does not need GNU
+    /// cpio installed: `(name, st_mode, nlink, ino, data)`.
+    fn write_newc(members: &[(&str, u32, u64, u64, &[u8])]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        let trailer = ("TRAILER!!!", 0, 1, 0, &b""[..]);
+        for (name, mode, nlink, ino, data) in members.iter().copied().chain([trailer]) {
+            let name = format!("{name}\0");
+            out.extend_from_slice(b"070701");
+            for value in [
+                ino,
+                u64::from(mode),
+                0,
+                0,
+                nlink,
+                1_700_000_000,
+                data.len() as u64,
+                3,
+                4,
+                0,
+                0,
+                name.len() as u64,
+                0,
+            ] {
+                out.extend_from_slice(format!("{value:08X}").as_bytes());
+            }
+            out.extend_from_slice(name.as_bytes());
+            while !out.len().is_multiple_of(4) {
+                out.push(0);
+            }
+            out.extend_from_slice(data);
+            while !out.len().is_multiple_of(4) {
+                out.push(0);
+            }
+        }
+        out
+    }
+
+    fn make_cpio(dir: &Path, name: &str) -> PathBuf {
+        let stream = write_newc(&[
+            ("dir", 0o040_755, 1, 1, b""),
+            ("dir/nest/deep.txt", 0o100_644, 1, 2, b"deep\n"),
+            ("top.txt", 0o100_600, 1, 3, b"hello cpio\n"),
+            ("link", 0o120_777, 1, 4, b"top.txt"),
+            ("dev/null", 0o020_666, 1, 5, b""),
+            // a hard link pair: the bytes ride with the second name
+            ("alias.txt", 0o100_644, 2, 9, b""),
+            ("real.txt", 0o100_644, 2, 9, b"shared bytes\n"),
+        ]);
+        let path = dir.join(name);
+        let bytes = if name.ends_with(".gz") {
+            let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+            gz.write_all(&stream).unwrap();
+            gz.finish().unwrap()
+        } else {
+            stream
+        };
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn cpio_index_listing_and_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fs = ArchiveFs::open(&make_cpio(tmp.path(), "box.cpio")).unwrap();
+
+        let root = fs.read_dir(Path::new("")).unwrap();
+        let mut names: Vec<_> = root
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        // "dev/null" is a device node - nothing a panel can open, so it
+        // is dropped whole, the same as tar drops one, and the "dev/"
+        // that held only it never appears either
+        assert_eq!(names, ["alias.txt", "dir", "link", "real.txt", "top.txt"]);
+        assert!(fs.stat(Path::new("dev")).is_err());
+
+        // the nest/ chain has no record of its own and must materialize
+        let deep = fs.stat(Path::new("dir/nest/deep.txt")).unwrap();
+        assert_eq!(deep.size, 5);
+        assert_eq!(deep.mode, 0o644);
+        assert!(fs.stat(Path::new("dir/nest")).unwrap().is_dir());
+
+        let top = fs.stat(Path::new("top.txt")).unwrap();
+        assert_eq!(top.mode, 0o600);
+        assert_eq!(
+            top.mtime,
+            Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000))
+        );
+
+        let link = fs.stat(Path::new("link")).unwrap();
+        assert_eq!(link.kind, EntryKind::SymlinkFile);
+        assert_eq!(link.link_target, Some(PathBuf::from("top.txt")));
+
+        let mut content = String::new();
+        fs.open_read(Path::new("dir/nest/deep.txt"))
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        assert_eq!(content, "deep\n");
+    }
+
+    #[test]
+    fn cpio_hard_link_borrows_the_size_and_the_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fs = ArchiveFs::open(&make_cpio(tmp.path(), "box.cpio")).unwrap();
+
+        // the alias record carries no bytes at all; the listing must
+        // still say what opening it will give you
+        assert_eq!(fs.stat(Path::new("alias.txt")).unwrap().size, 13);
+        let mut content = String::new();
+        fs.open_read(Path::new("alias.txt"))
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        assert_eq!(content, "shared bytes\n");
+    }
+
+    #[test]
+    fn cpio_gz_is_the_same_archive_through_a_wrapper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fs = ArchiveFs::open(&make_cpio(tmp.path(), "box.cpio.gz")).unwrap();
+        let mut content = String::new();
+        fs.open_read(Path::new("top.txt"))
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        assert_eq!(content, "hello cpio\n");
+    }
+
+    #[test]
+    fn cpio_round_trip_against_gnu_cpio() {
+        if !tool_available("cpio", "--version") {
+            eprintln!("skipping: no cpio binary to build the fixture");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub/inner.txt"), b"written by cpio\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("sub/inner.txt", src.join("point")).unwrap();
+        std::fs::hard_link(src.join("sub/inner.txt"), src.join("second-name")).unwrap();
+
+        for format in ["newc", "odc", "bin"] {
+            let out = std::fs::File::create(tmp.path().join("box.cpio")).unwrap();
+            let list = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("find . | cpio --quiet -o -H {format} 2>/dev/null"))
+                .current_dir(&src)
+                .stdout(out)
+                .status()
+                .unwrap();
+            assert!(list.success(), "{format}");
+
+            let fs = ArchiveFs::open(&tmp.path().join("box.cpio")).unwrap();
+            let mut content = String::new();
+            fs.open_read(Path::new("sub/inner.txt"))
+                .unwrap()
+                .read_to_string(&mut content)
+                .unwrap();
+            assert_eq!(content, "written by cpio\n", "{format}");
+            assert!(fs.stat(Path::new("sub")).unwrap().is_dir(), "{format}");
+            let mut shared = String::new();
+            fs.open_read(Path::new("second-name"))
+                .unwrap()
+                .read_to_string(&mut shared)
+                .unwrap();
+            assert_eq!(shared, "written by cpio\n", "{format}");
+            #[cfg(unix)]
+            assert_eq!(
+                fs.stat(Path::new("point")).unwrap().link_target,
+                Some(PathBuf::from("sub/inner.txt")),
+                "{format}"
+            );
+        }
+    }
+
+    #[test]
+    fn peels_compression_suffixes() {
+        assert!(matches!(peel_comp("x.cpio.gz"), ("x.cpio", Comp::Gz)));
+        assert!(matches!(peel_comp("x.tar.bz2"), ("x.tar", Comp::Bz2)));
+        assert!(matches!(peel_comp("x.tar"), ("x.tar", Comp::None)));
     }
 
     #[test]

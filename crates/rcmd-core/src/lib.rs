@@ -1,5 +1,6 @@
 pub mod archive;
 pub mod complete;
+pub mod cpio;
 pub mod entry;
 pub mod find;
 pub mod fsops;

@@ -1,5 +1,29 @@
 # Changelog
 
+## 3.22.0 - 2026-08-23
+
+- **cpio archives** (4.0 S3): Enter on a `.cpio` - plain or `.gz`,
+  `.xz`, `.bz2` - browses it like any other archive, with F3 on members
+  and F5 to extract them. All three header shapes are read: the
+  `newc`/`crc` hex ASCII one, the portable octal `odc`, and the old
+  binary one **in either byte order**, since that format was whatever
+  the machine that wrote it happened to be. Each member carries its own
+  magic, so a stream that mixes them still reads.
+- **Hard links inside a cpio resolve.** cpio writes the bytes once and
+  gives the other names an empty record, so a naive reader hands you a
+  zero-byte file. The index pairs the empty aliases with the member
+  that shares their inode: the listing shows the real size and opening
+  the alias gives the real bytes.
+- The reader lives in `rcmd-core::cpio` rather than inside the archive
+  VFS, because an rpm's payload is a cpio stream and this is the half
+  of that work that stands on its own.
+- Compression is now an axis of the archive kind rather than a variant
+  per combination, which is what let `.cpio.gz` arrive without a fourth
+  copy of the gz/xz/bz2 wrapper.
+- Device nodes, fifos and sockets in a cpio are dropped from the
+  listing, the same as tar has always dropped them - there is nothing a
+  panel can do with one.
+
 ## 3.21.0 - 2026-08-23
 
 - **Recursive chmod and chown** (4.0 S2, completes it): both windows

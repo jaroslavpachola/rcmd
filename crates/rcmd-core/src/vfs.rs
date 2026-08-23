@@ -154,7 +154,20 @@ impl FsWrite for LocalFs {
 pub fn is_archive_name(name: &OsStr) -> bool {
     let name = name.to_string_lossy().to_lowercase();
     [
-        ".zip", ".tar", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tbz", ".rar",
+        ".zip",
+        ".tar",
+        ".tar.gz",
+        ".tgz",
+        ".tar.xz",
+        ".txz",
+        ".tar.bz2",
+        ".tbz2",
+        ".tbz",
+        ".cpio",
+        ".cpio.gz",
+        ".cpio.xz",
+        ".cpio.bz2",
+        ".rar",
         ".7z",
     ]
     .iter()

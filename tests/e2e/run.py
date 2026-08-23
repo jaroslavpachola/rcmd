@@ -8,6 +8,7 @@ Each test runs in a fresh tempdir with an isolated $HOME, so the user's
 real config is never touched. Exits non-zero if any check fails.
 """
 import fcntl
+import gzip
 import os
 import pty
 import re
@@ -297,6 +298,64 @@ def test_archive():
         packed = t.extractfile("fresh.txt").read()
     check("archive: tar holds old and new",
           "inside.txt" in names and packed == b"packed later\n")
+    shutil.rmtree(root)
+
+
+def write_newc(members):
+    """A cpio "newc" stream, built by hand so the fixture needs no tool.
+
+    Each member is (name, st_mode, nlink, ino, data).
+    """
+    out = bytearray()
+    for name, mode, nlink, ino, data in list(members) + [("TRAILER!!!", 0, 1, 0, b"")]:
+        raw = name.encode() + b"\0"
+        out += b"070701"
+        for value in (ino, mode, 0, 0, nlink, 1700000000, len(data),
+                      3, 4, 0, 0, len(raw), 0):
+            out += b"%08X" % value
+        out += raw
+        out += b"\0" * (-len(out) % 4)
+        out += data
+        out += b"\0" * (-len(out) % 4)
+    return bytes(out)
+
+
+def test_cpio():
+    """cpio archives: browse, view and extract - including a hard link,
+    whose own record carries no bytes at all."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "out"))
+    stream = write_newc([
+        ("sub", 0o040755, 1, 1, b""),
+        ("sub/inner.txt", 0o100644, 1, 2, b"deep\n"),
+        ("hello.txt", 0o100644, 1, 3, b"from the cpio\n"),
+        ("point", 0o120777, 1, 4, b"hello.txt"),
+        # the alias comes first and is empty; the bytes ride with real.txt
+        ("alias.txt", 0o100644, 2, 9, b""),
+        ("real.txt", 0o100644, 2, 9, b"shared bytes\n"),
+    ])
+    with gzip.open(os.path.join(play, "box.cpio.gz"), "wb") as f:
+        f.write(stream)
+
+    s = Session(play, home, args=(play, os.path.join(play, "out")))
+    s.send(b"\x13box\r", wait=STEP)     # quick search -> box.cpio.gz
+    s.send(b"\r", wait=STEP * 2)        # enter the archive
+    scr = s.screen()
+    check("cpio: entered", "box.cpio.gz://" in scr)
+    check("cpio: listing", "hello.txt" in scr and "sub" in scr and "point" in scr)
+    s.send(F8)                          # must refuse
+    check("cpio: read-only", "read-only" in s.screen())
+    s.send(b"\x13hello\r", wait=STEP)   # -> hello.txt
+    s.send(F3, wait=STEP * 2)
+    check("cpio: F3 views member", "from the cpio" in s.screen())
+    s.send(b"q")
+    s.send(b"\x13alias\r", wait=STEP)   # -> alias.txt, the empty record
+    s.send(F5)
+    s.send(b"\r", wait=STEP * 3)        # extract into out/
+    extracted = os.path.join(play, "out", "alias.txt")
+    check("cpio: hard link extracts the shared bytes",
+          wait_for(s, "done -") and open(extracted).read() == "shared bytes\n")
+    s.quit()
     shutil.rmtree(root)
 
 
@@ -2414,6 +2473,7 @@ def main():
         test_viewer,
         test_archive,
         test_cmdarchive,
+        test_cpio,
         test_find,
         test_compare,
         test_watch,
