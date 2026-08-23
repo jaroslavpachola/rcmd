@@ -409,9 +409,14 @@ pub enum Opt {
     Subshell,
     ExternalEditor,
     DarkTheme,
+    /// Not a setting: how many there are. Adding one above grows the
+    /// values array with it, which is the point - [`OPT_COUNT`] used to
+    /// be a hand-kept number, and getting it wrong indexed past the end
+    /// of the array. Keep this last.
+    Count,
 }
 
-pub const OPT_COUNT: usize = 19;
+pub const OPT_COUNT: usize = Opt::Count as usize;
 
 /// A row of the options form: a section heading or a setting.
 pub enum OptRow {
@@ -6631,6 +6636,27 @@ fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every setting must have a row, or it exists in the config and in
+    /// the values array while being unreachable in the form - which is
+    /// the other half of the mistake `Opt::Count` now prevents.
+    #[test]
+    fn every_option_has_a_row_in_the_form() {
+        let mut seen = [false; OPT_COUNT];
+        for row in OPTION_ROWS {
+            match row {
+                OptRow::Check(opt, _) | OptRow::Radio(opt, ..) => seen[*opt as usize] = true,
+                OptRow::Head(_) | OptRow::Ratio(_) => {}
+            }
+        }
+        let missing: Vec<usize> = seen
+            .iter()
+            .enumerate()
+            .filter(|(_, shown)| !**shown)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(missing.is_empty(), "settings with no row: {missing:?}");
+    }
 
     #[test]
     fn owner_spec_parsing() {
