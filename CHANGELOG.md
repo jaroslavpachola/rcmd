@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.18.0 - 2026-08-23
+
+- **MC's chown pick lists** (4.0 S2): Ctrl+X o asked for `user[:group]`
+  as text, which assumes you can name the account you want. It now
+  shows the system's users and groups as two lists side by side, with
+  the entry's own owner and group preselected and the file's details
+  beside them. Tab walks users to groups to the buttons, arrows and
+  Page keys move, Home/End jump to the ends.
+- The names come from `getpwent`/`getgrent` rather than by reading
+  `/etc/passwd`, so accounts that live in LDAP or SSSD are listed too.
+  The list is capped at 4096 entries: a directory service will happily
+  return far more names than belong in a pick list.
+- **On an SFTP panel it stays a typed spec.** Our `/etc/passwd` has
+  nothing to say about the server's accounts, and a pick list there
+  would be offering confident wrong answers.
+
 ## 3.17.0 - 2026-08-23
 
 - **MC's chmod bit matrix** (4.0 S2): Ctrl+X c was a one-line octal

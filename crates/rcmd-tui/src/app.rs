@@ -251,6 +251,56 @@ impl ChmodDialog {
     }
 }
 
+/// C-x o: MC's chown window - the system's users and groups as two
+/// pick lists, with what is being changed beside them.
+pub struct ChownDialog {
+    pub paths: Vec<PathBuf>,
+    pub users: Vec<(u32, String)>,
+    pub groups: Vec<(u32, String)>,
+    pub user_row: usize,
+    pub group_row: usize,
+    /// 0 = the user list, 1 = the group list, 2 = the buttons.
+    pub column: usize,
+    pub button: usize,
+    pub name: String,
+    pub owner: String,
+    pub group: String,
+}
+
+pub const CHOWN_BUTTONS: &[&str] = &["Set", "Cancel"];
+/// Rows of each pick list on screen.
+pub const CHOWN_ROWS: usize = 12;
+
+impl ChownDialog {
+    /// The list with the focus, and where its cursor sits.
+    fn list(&self) -> (&[(u32, String)], usize) {
+        if self.column == 0 {
+            (&self.users, self.user_row)
+        } else {
+            (&self.groups, self.group_row)
+        }
+    }
+
+    fn move_by(&mut self, delta: isize) {
+        let (list, row) = self.list();
+        let last = list.len().saturating_sub(1);
+        let next = (row as isize + delta).clamp(0, last as isize) as usize;
+        if self.column == 0 {
+            self.user_row = next;
+        } else {
+            self.group_row = next;
+        }
+    }
+
+    /// What Set would write.
+    fn picked(&self) -> (Option<u32>, Option<u32>) {
+        (
+            self.users.get(self.user_row).map(|u| u.0),
+            self.groups.get(self.group_row).map(|g| g.0),
+        )
+    }
+}
+
 pub struct ConfirmDialog {
     pub title: String,
     pub message: String,
@@ -290,6 +340,8 @@ pub enum Dialog {
     Transfer(Box<TransferDialog>),
     /// C-x c: the chmod bit matrix.
     Chmod(Box<ChmodDialog>),
+    /// C-x o: the chown pick lists.
+    Chown(Box<ChownDialog>),
 }
 
 /// The confirmation step of a bulk rename - nothing has touched the
@@ -4349,6 +4401,66 @@ impl App {
                     _ => self.dialog = Some(Dialog::Hotlist(selected)),
                 }
             }
+            Dialog::Chown(mut d) => {
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Up if d.column < 2 => {
+                        d.move_by(-1);
+                        self.dialog = Some(Dialog::Chown(d));
+                    }
+                    KeyCode::Down if d.column < 2 => {
+                        d.move_by(1);
+                        self.dialog = Some(Dialog::Chown(d));
+                    }
+                    KeyCode::PageUp if d.column < 2 => {
+                        d.move_by(-(CHOWN_ROWS as isize));
+                        self.dialog = Some(Dialog::Chown(d));
+                    }
+                    KeyCode::PageDown if d.column < 2 => {
+                        d.move_by(CHOWN_ROWS as isize);
+                        self.dialog = Some(Dialog::Chown(d));
+                    }
+                    KeyCode::Home if d.column < 2 => {
+                        d.move_by(isize::MIN / 2);
+                        self.dialog = Some(Dialog::Chown(d));
+                    }
+                    KeyCode::End if d.column < 2 => {
+                        d.move_by(isize::MAX / 2);
+                        self.dialog = Some(Dialog::Chown(d));
+                    }
+                    // Tab walks user list -> group list -> buttons
+                    KeyCode::Tab => {
+                        d.column = (d.column + 1) % 3;
+                        self.dialog = Some(Dialog::Chown(d));
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        if d.column == 2 {
+                            let count = CHOWN_BUTTONS.len();
+                            d.button = if key.code == KeyCode::Left {
+                                d.button.checked_sub(1).unwrap_or(count - 1)
+                            } else {
+                                (d.button + 1) % count
+                            };
+                        } else {
+                            d.column = if key.code == KeyCode::Left { 0 } else { 1 };
+                        }
+                        self.dialog = Some(Dialog::Chown(d));
+                    }
+                    KeyCode::Down | KeyCode::Up => {
+                        // on the button row, up returns to the lists
+                        d.column = 0;
+                        self.dialog = Some(Dialog::Chown(d));
+                    }
+                    KeyCode::Enter => {
+                        if CHOWN_BUTTONS.get(d.button) != Some(&"Cancel") {
+                            let (uid, gid) = d.picked();
+                            let paths = d.paths.clone();
+                            self.apply_fs_op(&paths, "chown", |w, p| w.set_owner(p, uid, gid));
+                        }
+                    }
+                    _ => self.dialog = Some(Dialog::Chown(d)),
+                }
+            }
             Dialog::Chmod(mut d) => {
                 match key.code {
                     KeyCode::Esc => {}
@@ -5891,12 +6003,40 @@ impl App {
         let Some(paths) = self.writable_targets() else {
             return;
         };
-        self.dialog = Some(Dialog::Input(InputDialog {
-            title: format!(" Chown {} (user[:group]) ", Self::describe(&paths)),
-            value: String::new(),
-            cursor: 0,
-            action: InputAction::Chown { paths },
-        }));
+        // On a remote panel our /etc/passwd means nothing: the ids
+        // belong to the server, so it stays a typed spec.
+        if self.panels[self.active].is_remote() {
+            self.dialog = Some(Dialog::Input(InputDialog {
+                title: format!(" Chown {} (user[:group]) ", Self::describe(&paths)),
+                value: String::new(),
+                cursor: 0,
+                action: InputAction::Chown { paths },
+            }));
+            return;
+        }
+        let entry = self.panels[self.active].selected();
+        let users = crate::ui::all_users();
+        let groups = crate::ui::all_groups();
+        let find = |list: &[(u32, String)], id: Option<u32>| {
+            id.and_then(|id| list.iter().position(|entry| entry.0 == id))
+                .unwrap_or(0)
+        };
+        self.dialog = Some(Dialog::Chown(Box::new(ChownDialog {
+            user_row: find(&users, entry.and_then(|e| e.extra.uid)),
+            group_row: find(&groups, entry.and_then(|e| e.extra.gid)),
+            users,
+            groups,
+            paths,
+            column: 0,
+            button: 0,
+            name: entry.map_or_else(String::new, |e| e.name.to_string_lossy().into_owned()),
+            owner: entry.map_or_else(String::new, |e| {
+                crate::ui::owner_label(e.extra.uid, false, true)
+            }),
+            group: entry.map_or_else(String::new, |e| {
+                crate::ui::owner_label(e.extra.gid, false, false)
+            }),
+        })));
     }
 
     /// C-x s: create a symlink to the cursor entry.

@@ -347,8 +347,11 @@ const HELP_TEXT: &[&str] = &[
     "                  Set marked / Clear marked - the last two add or",
     "                  remove the checked bits and leave each entry's",
     "                  others alone",
-    "  Ctrl+X o        chown (user[:group]) the marked entries",
-    "                  - both work on sftp panels too",
+    "  Ctrl+X o        chown: the system's users and groups as two pick",
+    "                  lists, the entry's own owner preselected. Tab walks",
+    "                  users > groups > buttons, arrows move, Home/End jump.",
+    "                  On an sftp panel it stays a typed user[:group]: our",
+    "                  account names are not the server's",
     "  Ctrl+X s        create a symlink to the cursor entry",
     "  F9 > Left/Right   listing format: brief (names), full, long (ls -l,",
     "                  full-width), user defined, tree; the panel footer",
@@ -654,6 +657,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Tree(tree) => draw_tree_dialog(frame, tree),
             Dialog::Transfer(d) => draw_transfer(frame, d),
             Dialog::Chmod(d) => draw_chmod(frame, d),
+            Dialog::Chown(d) => draw_chown(frame, d),
             Dialog::Hotlist(selected) => {
                 draw_hotlist(frame, &app.config.hotlist, &app.hotlist_recent(), *selected)
             }
@@ -1549,6 +1553,60 @@ fn group_name(gid: u32) -> String {
     let name = lookup_name(gid, false).unwrap_or_else(|| gid.to_string());
     cache.lock().unwrap().insert(gid, name.clone());
     name
+}
+
+/// Every user the system will name, id and name, sorted by name.
+/// `getpwent` rather than reading /etc/passwd, so whatever NSS knows
+/// about (LDAP, SSSD) is in the list too. Capped: a directory service
+/// can hand back a great many, and a pick list is not the place to meet
+/// them all.
+pub fn all_users() -> Vec<(u32, String)> {
+    const CAP: usize = 4096;
+    let mut out = Vec::new();
+    unsafe {
+        libc::setpwent();
+        loop {
+            let entry = libc::getpwent();
+            if entry.is_null() || out.len() >= CAP {
+                break;
+            }
+            let name = std::ffi::CStr::from_ptr((*entry).pw_name)
+                .to_string_lossy()
+                .into_owned();
+            out.push(((*entry).pw_uid, name));
+        }
+        libc::endpwent();
+    }
+    finish_list(out)
+}
+
+/// The same for groups.
+pub fn all_groups() -> Vec<(u32, String)> {
+    const CAP: usize = 4096;
+    let mut out = Vec::new();
+    unsafe {
+        libc::setgrent();
+        loop {
+            let entry = libc::getgrent();
+            if entry.is_null() || out.len() >= CAP {
+                break;
+            }
+            let name = std::ffi::CStr::from_ptr((*entry).gr_name)
+                .to_string_lossy()
+                .into_owned();
+            out.push(((*entry).gr_gid, name));
+        }
+        libc::endgrent();
+    }
+    finish_list(out)
+}
+
+/// Sorted by name, one row per name - NSS can hand the same account
+/// back twice when two sources carry it.
+fn finish_list(mut list: Vec<(u32, String)>) -> Vec<(u32, String)> {
+    list.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+    list.dedup_by(|a, b| a.1 == b.1 && a.0 == b.0);
+    list
 }
 
 /// getpwuid_r / getgrgid_r, tolerating missing entries.
@@ -2781,6 +2839,91 @@ fn draw_tree_rows(frame: &mut Frame, area: Rect, tree: &Tree, base: Style, selec
 /// F9 > Command > Directory tree. Enter takes the current panel to the
 /// selected directory and closes - the panel's own tree mode is the one
 /// that stays open and moves the *other* panel.
+/// C-x o: MC's chown window - the system's users and groups as two pick
+/// lists. Typing an owner is fine when you know the name; picking is
+/// what you want when you do not, which is most of the time.
+fn draw_chown(frame: &mut Frame, d: &crate::app::ChownDialog) {
+    use crate::app::{CHOWN_BUTTONS, CHOWN_ROWS};
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    // an unfocused list still shows where its cursor is, just quietly
+    let idle = Style::new()
+        .fg(th().dialog_fg)
+        .bg(th().dialog_bg)
+        .add_modifier(Modifier::REVERSED);
+    let head = Style::new().fg(th().header_fg).bg(th().dialog_bg);
+    let area = centered(62, CHOWN_ROWS as u16 + 5, frame.area());
+    let inner = popup(frame, area, " Chown ", base);
+    let (col_w, gap) = (16u16, 1u16);
+    let row_at = |x: u16, w: u16, i: u16| Rect {
+        x: inner.x + 1 + x,
+        y: inner.y + i,
+        width: w,
+        height: 1,
+    };
+
+    for (index, (title, list, cursor)) in [
+        ("User", &d.users, d.user_row),
+        ("Group", &d.groups, d.group_row),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let x = index as u16 * (col_w + gap);
+        frame.render_widget(Line::from(title).style(head), row_at(x, col_w, 0));
+        // scrolled so the cursor stays in view, mid-window
+        let first = cursor
+            .saturating_sub(CHOWN_ROWS / 2)
+            .min(list.len().saturating_sub(CHOWN_ROWS));
+        for i in 0..CHOWN_ROWS {
+            let Some((_, name)) = list.get(first + i) else {
+                break;
+            };
+            let style = if first + i != cursor {
+                base
+            } else if d.column == index {
+                sel
+            } else {
+                idle
+            };
+            // clipped at the end, not the start: `tail` keeps the tail
+            // of a path, which for a name is the half you can spare
+            let text: String = name.chars().take(col_w as usize).collect();
+            frame.render_widget(
+                Line::from(format!("{text:<w$}", w = col_w as usize)).style(style),
+                row_at(x, col_w, i as u16 + 1),
+            );
+        }
+    }
+
+    // the File section, past both lists
+    let facts_x = 2 * (col_w + gap);
+    let facts_w = inner.width.saturating_sub(facts_x + 2);
+    for (i, fact) in [
+        format!(
+            "name  {}",
+            tail(&d.name, facts_w.saturating_sub(6) as usize)
+        ),
+        format!("owner {}", d.owner),
+        format!("group {}", d.group),
+        format!("{} item(s)", d.paths.len()),
+    ]
+    .iter()
+    .enumerate()
+    {
+        frame.render_widget(
+            Line::from(fact.as_str()).style(base),
+            row_at(facts_x, facts_w, i as u16 + 1),
+        );
+    }
+
+    let selected = if d.column == 2 { d.button } else { usize::MAX };
+    frame.render_widget(
+        buttons_line(CHOWN_BUTTONS, selected, base, sel),
+        row_at(0, inner.width.saturating_sub(2), CHOWN_ROWS as u16 + 2),
+    );
+}
+
 /// C-x c: MC's chmod window. The bits on the left as check boxes, what
 /// is being changed on the right, and the octal underneath - typing in
 /// it moves the boxes, flipping a box rewrites it.

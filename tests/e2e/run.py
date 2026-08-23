@@ -1496,6 +1496,50 @@ def test_chmod():
     shutil.rmtree(root)
 
 
+def test_chown():
+    """PLAN4 S2: MC's chown window - the system's users and groups as
+    two pick lists, with the entry's own owner preselected."""
+    import getpass
+    root, play, home = sandbox()
+    open(os.path.join(play, "target.txt"), "w").write("x\n")
+    s = Session(play, home)
+    me = getpass.getuser()
+
+    s.send(DOWN)                            # onto target.txt
+    s.send(b"\x18o", wait=STEP)             # Ctrl+X o
+    scr = s.screen()
+    check("chown: the window opens", "Chown" in scr, scr[:200])
+    check("chown: both lists are headed", "User" in scr and "Group" in scr, scr[:400])
+    # the user column, read straight off the screen: the lists scroll to
+    # centre the entry's own owner, so what is visible is around "me"
+    lines = scr.split("\n")
+    head = next(ln for ln in lines if "User" in ln and "Group" in ln)
+    at = head.index("User")
+    column = [ln[at:at + 16].strip() for ln in lines[lines.index(head) + 1:]][:12]
+    names = [n for n in column if n]
+    check("chown: the user column lists accounts", len(names) >= 5, str(names))
+    check("chown: with the entry's own owner among them", me in names, str(names))
+    check("chown: the file section names what changes",
+          "target.txt" in scr and me in scr, scr[:600])
+    check("chown: it says how many entries", "1 item(s)" in scr, scr[:600])
+
+    # Tab walks user list -> group list -> buttons, and Esc backs out
+    s.send(b"\t")
+    s.send(b"\t")
+    check("chown: tab reaches the buttons", "[ Set ]" in s.screen(), s.screen()[:600])
+    s.send(b"\x1b", wait=STEP)
+    check("chown: esc closed it", "Chown" not in s.screen())
+
+    # Set with the entry's own owner is a no-op chown that still runs
+    s.send(b"\x18o", wait=STEP)
+    s.send(b"\t")
+    s.send(b"\t")
+    s.send(b"\r", wait=STEP * 2)
+    check("chown: Set ran", "chown: 1 item(s)" in status_line(s), status_line(s))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_mcimport():
     """PLAN4 S0: `rcmd --import-mc DIR` converts mc's menu, mc.ext and
     keymap into an rcmd config fragment on stdout, warning on stderr
@@ -2237,6 +2281,7 @@ def main():
         test_copyform,
         test_masks,
         test_chmod,
+        test_chown,
         test_mcimport,
         test_keycontexts,
         test_options,
