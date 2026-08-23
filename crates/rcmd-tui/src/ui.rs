@@ -363,11 +363,17 @@ const HELP_TEXT: &[&str] = &[
     "  (the four keys above work while the command line is empty)",
     "",
     "# File operations  (marked entries, or the cursor entry)",
-    "  F5              copy - a form: where to, then MC's switches for",
-    "                  what a copy means (preserve attributes, follow",
-    "                  links, dive into subdirs, stable symlinks), then",
-    "                  OK / Background / Cancel. Space flips a box,",
+    "  F5              copy - a form: a source mask, where to, then MC's",
+    "                  switches for what a copy means (preserve attributes,",
+    "                  follow links, dive into subdirs, stable symlinks),",
+    "                  then OK / Background / Cancel. Space flips a box,",
     "                  Up/Down move, Background starts the job detached",
+    "  Masks rename as they copy: source *.tar.gz with destination",
+    "                  dir/*.tgz makes foo.tar.gz into dir/foo.tgz. The",
+    "                  mask's wildcards are numbered left to right - * in",
+    "                  the destination is the first, \\1..\\9 any of them,",
+    "                  \\0 the whole name - and \\u \\l \\U \\L \\E change case.",
+    "                  Files the mask does not match are left where they are.",
     "  F6              move / rename (the same form)",
     "  F7              make directory",
     "  F8              delete to trash",
@@ -2769,11 +2775,11 @@ fn draw_tree_rows(frame: &mut Frame, area: Rect, tree: &Tree, base: Style, selec
 /// Cancel - Background starts the job detached, which is otherwise only
 /// reachable by pressing b once it is already running.
 fn draw_transfer(frame: &mut Frame, d: &crate::app::TransferDialog) {
-    use crate::app::{TRANSFER_OPTS, TRANSFER_ROWS};
+    use crate::app::{TRANSFER_DEST_ROW, TRANSFER_OPTS, TRANSFER_ROWS};
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
-    // destination + one row per option + a blank + the buttons
-    let area = centered(64, TRANSFER_OPTS.len() as u16 + 5, frame.area());
+    // mask + destination + one row per option + a blank + the buttons
+    let area = centered(64, TRANSFER_OPTS.len() as u16 + 6, frame.area());
     let inner = popup(frame, area, &d.title, base);
     let row_at = |i: u16| Rect {
         x: inner.x + 1,
@@ -2783,21 +2789,30 @@ fn draw_transfer(frame: &mut Frame, d: &crate::app::TransferDialog) {
     };
     let width = inner.width.saturating_sub(2) as usize;
 
-    let dest = tail(&d.dest, width.saturating_sub(1));
+    // MC asks for the source mask first, then where it all goes
+    let field = |text: &str, label: &str| {
+        let room = width.saturating_sub(label.len());
+        format!("{label}{:<room$}", tail(text, room))
+    };
     frame.render_widget(
-        Line::from(format!(" {dest:<w$}", w = width.saturating_sub(1))).style(if d.row == 0 {
+        Line::from(field(&d.mask, " mask ")).style(if d.row == 0 { sel } else { base }),
+        row_at(0),
+    );
+    frame.render_widget(
+        Line::from(field(&d.dest, " to   ")).style(if d.row == TRANSFER_DEST_ROW {
             sel
         } else {
             base
         }),
-        row_at(0),
+        row_at(TRANSFER_DEST_ROW as u16),
     );
     for (i, (label, _)) in TRANSFER_OPTS.iter().enumerate() {
         let mark = if d.checked(i) { "[x]" } else { "[ ]" };
         let text = format!(" {mark} {label}");
+        let row = TRANSFER_DEST_ROW + 1 + i;
         frame.render_widget(
-            Line::from(format!("{text:<width$}")).style(if d.row == i + 1 { sel } else { base }),
-            row_at(i as u16 + 1),
+            Line::from(format!("{text:<width$}")).style(if d.row == row { sel } else { base }),
+            row_at(row as u16),
         );
     }
     let buttons = ["OK", "Background", "Cancel"];
@@ -2808,12 +2823,17 @@ fn draw_transfer(frame: &mut Frame, d: &crate::app::TransferDialog) {
     };
     frame.render_widget(
         buttons_line(&buttons, selected, base, sel),
-        row_at(TRANSFER_OPTS.len() as u16 + 2),
+        row_at(TRANSFER_ROWS as u16 + 1),
     );
-    // the cursor sits in the destination while that row has the focus
-    if d.row == 0 {
-        let x = inner.x + 1 + (d.cursor.min(width.saturating_sub(2)) as u16);
-        frame.set_cursor_position((x, inner.y));
+    // the cursor sits in whichever of the two text rows has the focus
+    let text_row = match d.row {
+        0 => Some((0u16, d.mask_cursor)),
+        TRANSFER_DEST_ROW => Some((TRANSFER_DEST_ROW as u16, d.cursor)),
+        _ => None,
+    };
+    if let Some((row, cursor)) = text_row {
+        let x = inner.x + 7 + (cursor.min(width.saturating_sub(8)) as u16);
+        frame.set_cursor_position((x, inner.y + row));
     }
 }
 

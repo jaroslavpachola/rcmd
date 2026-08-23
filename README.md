@@ -136,7 +136,7 @@ end
 | Insert, Ctrl+T | Mark entry and advance |
 | `+` / `-` (or `\`) | Select / unselect by glob |
 | `*` | Invert marks |
-| F5 | Copy marked (or cursor) entry - opens MC's form: destination, preserve attributes / follow links / dive into subdirs / stable symlinks, and OK / Background / Cancel |
+| F5 | Copy marked (or cursor) entry - opens MC's form: source mask, destination, preserve attributes / follow links / dive into subdirs / stable symlinks, and OK / Background / Cancel |
 | F6 | Move / rename |
 | F7 | Make directory |
 | F8 | Delete to trash |
@@ -189,7 +189,15 @@ shell cannot be spawned).
 
 In dialogs: arrows/Tab move between buttons, Enter confirms, Esc cancels;
 overwrite and error prompts also take hotkeys (o/a/s/S, r/s/S). The
-overwrite prompt is MC's: both files' size and date on screen, then
+The copy/move form takes MC's **source mask**: `*.tar.gz` with a
+destination of `dir/*.tgz` copies `foo.tar.gz` to `dir/foo.tgz`, and
+files the mask does not match stay where they are. The mask's wildcards
+are numbered left to right - `*` in the destination is the first,
+`\1`..`\9` any of them, `\0` the whole name - and `\u \l \U \L \E`
+change case. (Regex renaming with capture groups lives in F9 > File >
+Bulk rename, which is a better place for it than a one-line field.)
+
+The overwrite prompt is MC's: both files' size and date on screen, then
 **Overwrite / Append / Reget** for this file and **All / Update / Size
 differs / None** for every remaining one (Up/Down switch rows). Append
 and Reget - MC's resume - need a local file on both sides.

@@ -15,8 +15,9 @@ use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 use rcmd_core::entry;
 use rcmd_core::find::{self, FindEvent, FindHandle};
-use rcmd_core::fsops::{self, FileFacts, JobEvent, JobHandle, Reply, TransferOpts};
+use rcmd_core::fsops::{self, FileFacts, JobEvent, JobHandle, Rename, Reply, TransferOpts};
 use rcmd_core::glob::glob_match;
+use rcmd_core::mask::{self, Mask};
 use rcmd_core::panel::{ListMode, LoadKind, Panel, SortKey};
 use rcmd_core::sftp::{self, ConnectEvent, ConnectReply, SftpFs, SftpUrl};
 use rcmd_core::tree::Tree;
@@ -152,6 +153,10 @@ pub struct InputDialog {
 /// change what "copy" means, and OK / Background / Cancel.
 pub struct TransferDialog {
     pub title: String,
+    /// MC's source mask: which of the marked files take part, and what
+    /// their wildcards capture for the destination to spend.
+    pub mask: String,
+    pub mask_cursor: usize,
     pub dest: String,
     /// Cursor position in the destination, in characters.
     pub cursor: usize,
@@ -176,8 +181,11 @@ pub const TRANSFER_OPTS: &[(&str, OptField)] = &[
     ("Dive into subdirs", |o| &mut o.dive),
     ("Stable symlinks", |o| &mut o.stable_symlinks),
 ];
-/// Row index of the button line: after the destination and the boxes.
-pub const TRANSFER_ROWS: usize = TRANSFER_OPTS.len() + 1;
+/// Row index of the button line: after the mask, the destination and
+/// the boxes.
+pub const TRANSFER_ROWS: usize = TRANSFER_OPTS.len() + 2;
+/// The row the destination is drawn on; the mask has row 0.
+pub const TRANSFER_DEST_ROW: usize = 1;
 
 impl TransferDialog {
     pub fn checked(&self, i: usize) -> bool {
@@ -4250,14 +4258,22 @@ impl App {
                         };
                         self.dialog = Some(Dialog::Transfer(d));
                     }
-                    KeyCode::Char(' ') if (1..=TRANSFER_OPTS.len()).contains(&d.row) => {
-                        let row = d.row - 1;
+                    KeyCode::Char(' ')
+                        if (TRANSFER_DEST_ROW + 1..TRANSFER_ROWS).contains(&d.row) =>
+                    {
+                        let row = d.row - TRANSFER_DEST_ROW - 1;
                         d.toggle(row);
                         self.dialog = Some(Dialog::Transfer(d));
                     }
                     code => {
-                        if d.row == 0 {
-                            edit_line(&mut d.dest, &mut d.cursor, code, key.modifiers);
+                        match d.row {
+                            0 => {
+                                edit_line(&mut d.mask, &mut d.mask_cursor, code, key.modifiers);
+                            }
+                            TRANSFER_DEST_ROW => {
+                                edit_line(&mut d.dest, &mut d.cursor, code, key.modifiers);
+                            }
+                            _ => {}
                         }
                         self.dialog = Some(Dialog::Transfer(d));
                     }
@@ -4706,10 +4722,10 @@ impl App {
         }
         match dialog.action {
             InputAction::CopyTo { sources } => {
-                self.route_transfer(sources, &value, false, TransferOpts::default())
+                self.route_transfer(sources, &value, false, TransferOpts::default(), None)
             }
             InputAction::MoveTo { sources } => {
-                self.route_transfer(sources, &value, true, TransferOpts::default())
+                self.route_transfer(sources, &value, true, TransferOpts::default(), None)
             }
             InputAction::Mkdir => {
                 if self.panels[self.active].is_remote() {
@@ -4793,7 +4809,17 @@ impl App {
             return; // Cancel
         }
         let background = d.button == 1;
-        self.route_transfer(d.sources, &d.dest, d.is_move, d.opts);
+        // MC puts the target mask in the destination's last component;
+        // anything without a wildcard there is a plain destination
+        let (dest, target) = match d.dest.rsplit_once('/') {
+            Some((dir, last)) if mask::is_target_mask(last) => {
+                (format!("{dir}/"), Some(last.to_string()))
+            }
+            _ if mask::is_target_mask(&d.dest) => (String::new(), Some(d.dest.clone())),
+            _ => (d.dest.clone(), None),
+        };
+        let rename = Rename::new(Mask::new(&d.mask), target);
+        self.route_transfer(d.sources, &dest, d.is_move, d.opts, rename);
         // every route ends in a pushed job, or in a status message and
         // no job at all - marking the last one is right either way
         if background && let Some(job) = self.jobs.last_mut() {
@@ -4810,9 +4836,21 @@ impl App {
         value: &str,
         is_move: bool,
         opts: TransferOpts,
+        rename: Option<Rename>,
     ) {
         let src_panel = &self.panels[self.active];
         let src_archive = src_panel.archive.is_some();
+        // masks rename local files; the archive and SFTP routes below
+        // build their own targets and would drop one on the floor
+        if rename.is_some()
+            && (value.starts_with("sftp://")
+                || src_panel.is_remote()
+                || src_archive
+                || split_vfs_dest(value).is_some())
+        {
+            self.status = Some(" source masks work on local copies ".into());
+            return;
+        }
         // sftp:// destination (must match before the zip:// syntax -
         // a URL also contains "://")
         if value.starts_with("sftp://") {
@@ -4855,14 +4893,16 @@ impl App {
             } else if split_vfs_dest(value).is_some() {
                 self.status = Some(" cannot move into an archive ".into());
             } else {
-                self.start_transfer(sources, value, fsops::spawn_move, "move", opts);
+                self.start_transfer(sources, value, fsops::spawn_move, "move", opts, rename);
             }
             return;
         }
         match (split_vfs_dest(value), !src_archive) {
             (Some(_), false) => self.status = Some(" cannot copy from archive to archive ".into()),
             (Some((archive, inside)), true) => self.start_pack(sources, archive, inside),
-            (None, true) => self.start_transfer(sources, value, fsops::spawn_copy, "copy", opts),
+            (None, true) => {
+                self.start_transfer(sources, value, fsops::spawn_copy, "copy", opts, rename)
+            }
             (None, false) => self.start_extract(sources, value),
         }
     }
@@ -4967,14 +5007,15 @@ impl App {
         &mut self,
         sources: Vec<PathBuf>,
         dest: &str,
-        spawn: fn(Vec<PathBuf>, PathBuf, TransferOpts) -> JobHandle,
+        spawn: fn(Vec<PathBuf>, PathBuf, TransferOpts, Option<Rename>) -> JobHandle,
         verb: &str,
         opts: TransferOpts,
+        rename: Option<Rename>,
     ) {
         let dest = self.resolve(dest);
         self.jobs.push(Job {
             title: format!(" {verb} {} item(s) to {} ", sources.len(), dest.display()),
-            handle: spawn(sources, dest, opts),
+            handle: spawn(sources, dest, opts, rename),
             total_files: 0,
             total_bytes: 0,
             files_done: 0,
@@ -5519,12 +5560,16 @@ impl App {
         }
         self.dialog = Some(Dialog::Transfer(Box::new(TransferDialog {
             title: format!(" {verb} {} to: ", Self::describe(&sources)),
+            mask: "*".into(),
+            mask_cursor: 1,
             cursor: dest.chars().count(),
             dest,
             is_move,
             sources,
             opts: TransferOpts::default(),
-            row: 0,
+            // the destination is what people type; the mask sits above
+            // it for the rare copy that needs one, an Up away
+            row: TRANSFER_DEST_ROW,
             button: 0,
         })));
     }

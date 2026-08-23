@@ -1,5 +1,29 @@
 # Changelog
 
+## 3.15.0 - 2026-08-23
+
+- **MC's copy/rename masks** (4.0 S2, completes the copy dialog): the
+  copy/move form starts with a **source mask**, and the destination may
+  answer it with wildcards. `*.tar.gz` into `dir/*.tgz` copies
+  `foo.tar.gz` to `dir/foo.tgz`; files the mask does not match are left
+  where they are, as mc leaves them. The mask's `*` and `?` are capture
+  groups numbered left to right, and the destination spends them: `*`
+  is the first, `\1`..`\9` any of them, `\0` the whole name. `\u` and
+  `\l` change the case of the next character, `\U` and `\L` of
+  everything up to `\E`, and `\` quotes itself or a wildcard. Matching
+  is greedy, like the regex mc compiles the pattern into, so `*.*`
+  against `a.b.c` captures `a.b` and `c`.
+- The regex form behind mc's "use shell patterns" switch is **not**
+  here, deliberately: rcmd already does regex renaming with capture
+  groups in the F9 > File > Bulk rename editor, which is a better place
+  for it than a one-line field in a dialog.
+- The form still opens on the **destination**, with the mask one row
+  above it: the destination is what anyone types, and a form that opens
+  somewhere else costs every user a keystroke to save a rare one.
+- Masks apply to local copies. The SFTP and archive routes build their
+  own targets, so asking for a mask there says so rather than quietly
+  ignoring it.
+
 ## 3.14.0 - 2026-08-23
 
 - **MC's copy/move form** (4.0 S2): F5 and F6 open a form rather than a

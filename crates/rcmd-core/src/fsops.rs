@@ -16,6 +16,7 @@ use std::thread::{self, JoinHandle};
 use std::time::SystemTime;
 
 use crate::entry::EntryKind;
+use crate::mask::{self, Mask};
 use crate::vfs::FsProvider;
 
 const CHUNK: usize = 256 * 1024;
@@ -138,6 +139,44 @@ impl Default for TransferOpts {
     }
 }
 
+/// MC's mask copy/rename: which of the sources take part, and what
+/// they are called when they land.
+#[derive(Debug, Clone)]
+pub struct Rename {
+    /// Only sources whose name matches are copied at all.
+    pub source: Mask,
+    /// The destination's last component when it carries wildcards;
+    /// `None` leaves every name as it is.
+    pub target: Option<String>,
+}
+
+impl Rename {
+    /// A mask that neither filters nor renames is not worth carrying.
+    pub fn new(source: Mask, target: Option<String>) -> Option<Rename> {
+        (!source.is_catch_all() || target.is_some()).then_some(Rename { source, target })
+    }
+
+    fn accepts(&self, path: &Path) -> bool {
+        self.source.matches(&file_name_of(path))
+    }
+
+    /// The name this source lands under, or `None` when the mask only
+    /// filters and the name is kept.
+    fn name_for(&self, path: &Path) -> Option<String> {
+        let target = self.target.as_ref()?;
+        let name = file_name_of(path);
+        let caps = self.source.captures(&name)?;
+        Some(mask::expand(target, &caps, &name))
+    }
+}
+
+fn file_name_of(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// What to do with a target that already exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Overwrite {
@@ -171,8 +210,14 @@ impl JobHandle {
     }
 }
 
-pub fn spawn_copy(sources: Vec<PathBuf>, dest: PathBuf, opts: TransferOpts) -> JobHandle {
+pub fn spawn_copy(
+    sources: Vec<PathBuf>,
+    dest: PathBuf,
+    opts: TransferOpts,
+    rename: Option<Rename>,
+) -> JobHandle {
     spawn_with(opts, move |ctx| {
+        let sources = filter_sources(sources, rename.as_ref());
         let (files, bytes) = scan(&sources);
         let _ = ctx.tx.send(JobEvent::Total { files, bytes });
         let multiple = sources.len() > 1;
@@ -181,7 +226,7 @@ pub fn spawn_copy(sources: Vec<PathBuf>, dest: PathBuf, opts: TransferOpts) -> J
             if ctx.cancelled() {
                 return Err(Aborted);
             }
-            let target = transfer_target(src, &dest, multiple, into_dir, ctx.opts);
+            let target = renamed_target(src, &dest, multiple, into_dir, ctx.opts, rename.as_ref());
             ctx.copy_root = Some(src.clone());
             copy_tree(ctx, src, &target)?;
         }
@@ -189,8 +234,14 @@ pub fn spawn_copy(sources: Vec<PathBuf>, dest: PathBuf, opts: TransferOpts) -> J
     })
 }
 
-pub fn spawn_move(sources: Vec<PathBuf>, dest: PathBuf, opts: TransferOpts) -> JobHandle {
+pub fn spawn_move(
+    sources: Vec<PathBuf>,
+    dest: PathBuf,
+    opts: TransferOpts,
+    rename: Option<Rename>,
+) -> JobHandle {
     spawn_with(opts, move |ctx| {
+        let sources = filter_sources(sources, rename.as_ref());
         // Totals start as item counts; a cross-device fallback re-announces
         // them with real file/byte numbers for that subtree.
         let mut totals = (sources.len() as u64, 0u64);
@@ -204,7 +255,7 @@ pub fn spawn_move(sources: Vec<PathBuf>, dest: PathBuf, opts: TransferOpts) -> J
             if ctx.cancelled() {
                 return Err(Aborted);
             }
-            let target = transfer_target(src, &dest, multiple, into_dir, ctx.opts);
+            let target = renamed_target(src, &dest, multiple, into_dir, ctx.opts, rename.as_ref());
             move_one(ctx, src, &target, &mut totals)?;
         }
         Ok(())
@@ -932,6 +983,33 @@ fn target_for(src: &Path, dest: &Path, into_dir: bool) -> PathBuf {
         dest.join(src.file_name().unwrap_or_default())
     } else {
         dest.to_path_buf()
+    }
+}
+
+/// Sources the mask leaves out never take part - mc copies "all the
+/// files matching the source mask" and quietly passes over the rest.
+fn filter_sources(sources: Vec<PathBuf>, rename: Option<&Rename>) -> Vec<PathBuf> {
+    match rename {
+        Some(rename) => sources
+            .into_iter()
+            .filter(|src| rename.accepts(src))
+            .collect(),
+        None => sources,
+    }
+}
+
+/// Where one source lands once a target mask has had its say.
+fn renamed_target(
+    src: &Path,
+    dest: &Path,
+    multiple: bool,
+    into_dir: bool,
+    opts: TransferOpts,
+    rename: Option<&Rename>,
+) -> PathBuf {
+    match rename.and_then(|rename| rename.name_for(src)) {
+        Some(name) => dest.join(name),
+        None => transfer_target(src, dest, multiple, into_dir, opts),
     }
 }
 
@@ -1747,7 +1825,12 @@ mod tests {
         fs::create_dir(&dst).unwrap();
 
         let out = run(
-            spawn_copy(vec![src.clone()], dst.clone(), TransferOpts::default()),
+            spawn_copy(
+                vec![src.clone()],
+                dst.clone(),
+                TransferOpts::default(),
+                None,
+            ),
             vec![],
         );
 
@@ -1823,6 +1906,7 @@ mod tests {
                 vec![src_dir.join("link")],
                 out_dir.clone(),
                 TransferOpts::default(),
+                None,
             ),
             vec![],
         );
@@ -1840,7 +1924,7 @@ mod tests {
         let out_dir2 = tmp.path().join("out2");
         fs::create_dir_all(&out_dir2).unwrap();
         run(
-            spawn_copy(vec![src_dir.join("link")], out_dir2.clone(), plain),
+            spawn_copy(vec![src_dir.join("link")], out_dir2.clone(), plain, None),
             vec![],
         );
         assert_eq!(
@@ -1862,7 +1946,7 @@ mod tests {
             ..TransferOpts::default()
         };
         run(
-            spawn_copy(vec![tmp.path().join("link")], out.clone(), opts),
+            spawn_copy(vec![tmp.path().join("link")], out.clone(), opts, None),
             vec![],
         );
         let copied = out.join("link");
@@ -1887,7 +1971,10 @@ mod tests {
             preserve: false,
             ..TransferOpts::default()
         };
-        run(spawn_copy(vec![src.clone()], out.clone(), opts), vec![]);
+        run(
+            spawn_copy(vec![src.clone()], out.clone(), opts, None),
+            vec![],
+        );
         let copied = fs::metadata(out.join("f.txt")).unwrap().modified().unwrap();
         assert!(copied > old, "the copy is new, not as old as the source");
 
@@ -1895,7 +1982,7 @@ mod tests {
         let out2 = tmp.path().join("out2");
         fs::create_dir(&out2).unwrap();
         run(
-            spawn_copy(vec![src], out2.clone(), TransferOpts::default()),
+            spawn_copy(vec![src], out2.clone(), TransferOpts::default(), None),
             vec![],
         );
         assert_eq!(
@@ -1923,7 +2010,7 @@ mod tests {
         let on = tempfile::tempdir().unwrap();
         let (foo, bla_foo) = make(on.path());
         run(
-            spawn_copy(vec![foo], bla_foo.clone(), TransferOpts::default()),
+            spawn_copy(vec![foo], bla_foo.clone(), TransferOpts::default(), None),
             vec![],
         );
         assert!(bla_foo.join("foo/bar").is_file(), "dive on: inside it");
@@ -1934,9 +2021,61 @@ mod tests {
             dive: false,
             ..TransferOpts::default()
         };
-        run(spawn_copy(vec![foo], bla_foo.clone(), opts), vec![]);
+        run(spawn_copy(vec![foo], bla_foo.clone(), opts, None), vec![]);
         assert!(bla_foo.join("bar").is_file(), "dive off: merged in");
         assert!(!bla_foo.join("foo").exists());
+    }
+
+    /// MC copies "all the files matching the source mask" - the rest
+    /// are passed over, not skipped-with-a-question.
+    #[test]
+    fn a_source_mask_leaves_the_others_where_they_are() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+        for name in ["keep.txt", "ignore.log"] {
+            fs::write(tmp.path().join(name), b"x").unwrap();
+        }
+
+        let rename = Rename::new(Mask::new("*.txt"), None);
+        assert!(rename.is_some(), "a filtering mask is worth carrying");
+        let result = run(
+            spawn_copy(
+                vec![tmp.path().join("keep.txt"), tmp.path().join("ignore.log")],
+                out.clone(),
+                TransferOpts::default(),
+                rename,
+            ),
+            vec![],
+        );
+        assert_eq!(result.files_done, 1);
+        assert!(out.join("keep.txt").is_file());
+        assert!(!out.join("ignore.log").exists());
+    }
+
+    #[test]
+    fn a_target_mask_renames_on_the_way() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+        fs::write(tmp.path().join("foo.tar.gz"), b"x").unwrap();
+
+        run(
+            spawn_copy(
+                vec![tmp.path().join("foo.tar.gz")],
+                out.clone(),
+                TransferOpts::default(),
+                Rename::new(Mask::new("*.tar.gz"), Some("*.tgz".into())),
+            ),
+            vec![],
+        );
+        assert!(out.join("foo.tgz").is_file(), "renamed as it landed");
+        assert!(!out.join("foo.tar.gz").exists());
+    }
+
+    #[test]
+    fn a_mask_that_neither_filters_nor_renames_is_dropped() {
+        assert!(Rename::new(Mask::new("*"), None).is_none());
     }
 
     /// MC's Append: the source goes on the end of what is already there.
@@ -1950,7 +2089,7 @@ mod tests {
         fs::write(dst_dir.join("log.txt"), b"first\n").unwrap();
 
         let out = run(
-            spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default()),
+            spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default(), None),
             vec![Reply::Append],
         );
         assert_eq!(out.files_done, 1);
@@ -1973,7 +2112,12 @@ mod tests {
         fs::write(dst_dir.join("big.bin"), b"0123").unwrap();
 
         let out = run(
-            spawn_copy(vec![src.clone()], dst_dir.clone(), TransferOpts::default()),
+            spawn_copy(
+                vec![src.clone()],
+                dst_dir.clone(),
+                TransferOpts::default(),
+                None,
+            ),
             vec![Reply::Reget],
         );
         assert_eq!(out.files_done, 1);
@@ -1981,7 +2125,7 @@ mod tests {
 
         // a target that is already as long as the source has nothing left
         let out = run(
-            spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default()),
+            spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default(), None),
             vec![Reply::Reget],
         );
         assert_eq!(out.files_done, 1);
@@ -2013,7 +2157,7 @@ mod tests {
         set_mtime(&dst_dir.join("b.txt"), new);
 
         let out = run(
-            spawn_copy(vec![a, b], dst_dir.clone(), TransferOpts::default()),
+            spawn_copy(vec![a, b], dst_dir.clone(), TransferOpts::default(), None),
             vec![Reply::UpdateAll],
         );
         // asked once, then the policy answered the rest
@@ -2039,7 +2183,12 @@ mod tests {
         fs::write(dst_dir.join("grown.txt"), b"abcd").unwrap();
 
         let out = run(
-            spawn_copy(vec![grown, same], dst_dir.clone(), TransferOpts::default()),
+            spawn_copy(
+                vec![grown, same],
+                dst_dir.clone(),
+                TransferOpts::default(),
+                None,
+            ),
             vec![Reply::SizeDiffersAll],
         );
         assert_eq!(out.asks.len(), 1);
@@ -2058,7 +2207,7 @@ mod tests {
         fs::create_dir(&dst_dir).unwrap();
         fs::write(dst_dir.join("f.txt"), b"ab").unwrap();
 
-        let handle = spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default());
+        let handle = spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default(), None);
         let (mut asked_src, mut asked_dst, mut appendable) = (0, 0, false);
         loop {
             match handle.events.recv().unwrap() {
@@ -2097,7 +2246,12 @@ mod tests {
         fs::write(dst_dir.join("new.txt"), b"old").unwrap();
 
         let out = run(
-            spawn_copy(vec![src.clone()], dst_dir.clone(), TransferOpts::default()),
+            spawn_copy(
+                vec![src.clone()],
+                dst_dir.clone(),
+                TransferOpts::default(),
+                None,
+            ),
             vec![Reply::Skip],
         );
         assert_eq!(out.asks.len(), 1);
@@ -2105,7 +2259,7 @@ mod tests {
         assert_eq!(fs::read(dst_dir.join("new.txt")).unwrap(), b"old");
 
         let out = run(
-            spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default()),
+            spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default(), None),
             vec![Reply::Overwrite],
         );
         assert_eq!(out.files_done, 1);
@@ -2120,7 +2274,12 @@ mod tests {
         fs::write(dir.join("f"), b"x").unwrap();
 
         let out = run(
-            spawn_copy(vec![dir.clone()], dir.clone(), TransferOpts::default()),
+            spawn_copy(
+                vec![dir.clone()],
+                dir.clone(),
+                TransferOpts::default(),
+                None,
+            ),
             vec![Reply::Skip],
         );
 
@@ -2139,7 +2298,12 @@ mod tests {
         fs::create_dir(&dst_dir).unwrap();
 
         let out = run(
-            spawn_move(vec![src.clone()], dst_dir.clone(), TransferOpts::default()),
+            spawn_move(
+                vec![src.clone()],
+                dst_dir.clone(),
+                TransferOpts::default(),
+                None,
+            ),
             vec![],
         );
 
@@ -2221,7 +2385,7 @@ mod tests {
         fs::create_dir(&out).unwrap();
 
         let result = run(
-            spawn_copy(vec![src], out.clone(), TransferOpts::default()),
+            spawn_copy(vec![src], out.clone(), TransferOpts::default(), None),
             vec![],
         );
 
@@ -2499,7 +2663,7 @@ mod tests {
         fs::write(dst_dir.join("a"), b"old").unwrap();
 
         let out = run(
-            spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default()),
+            spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default(), None),
             vec![Reply::Abort],
         );
 

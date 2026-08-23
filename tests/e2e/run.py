@@ -1362,6 +1362,7 @@ def test_copyform():
     check("copyform: OK/Background/Cancel", "[ Background ]" in scr, scr[:400])
 
     # Cancel really cancels: down to the buttons, along to Cancel, Enter
+    # (the form opens on the destination, with four boxes below it)
     s.send(DOWN * 5)
     s.send(b"\x1b[C" * 2)
     s.send(b"\r", wait=STEP * 2)
@@ -1393,6 +1394,44 @@ def test_copyform():
     check("copyform: background leaves no dialog up", "[ Background ]" not in scr, scr[:200])
     check("copyform: and the copy still happened",
           os.path.exists(os.path.join(other, "b.txt")))
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_masks():
+    """PLAN4 S2: MC's mask copy/rename - the source mask picks which
+    files take part, the destination's wildcards rename them."""
+    root, play, home = sandbox()
+    other = os.path.join(root, "other")
+    os.makedirs(other)
+    open(os.path.join(play, "foo.tar.gz"), "w").write("tarball\n")
+    open(os.path.join(play, "notes.txt"), "w").write("notes\n")
+    s = Session(play, home, args=(play, other))
+
+    s.send(b"+")                            # select group...
+    s.send(b"\r", wait=STEP)                # ..."*" marks both files
+    s.send(F5, wait=STEP)
+    check("masks: the form asks for a mask first", "mask" in s.screen(), s.screen()[:300])
+    check("masks: it starts as catch-all", "mask *" in s.screen(), s.screen()[:300])
+
+    s.send(b"\x1b[A")                       # up to the mask row
+    s.send(b"\x15")                         # Ctrl+U clears it
+    s.send(b"*.tar.gz")
+    s.send(DOWN)                            # back to the destination
+    s.send(END)
+    s.send(b"*.tgz")
+    scr = s.screen()
+    check("masks: both fields show", "*.tar.gz" in scr and "*.tgz" in scr, scr[:300])
+    s.send(b"\r", wait=STEP * 3)
+
+    check("masks: the match was renamed on the way",
+          os.path.exists(os.path.join(other, "foo.tgz")),
+          str(sorted(os.listdir(other))))
+    check("masks: under its new name only",
+          not os.path.exists(os.path.join(other, "foo.tar.gz")))
+    check("masks: and the rest was left alone",
+          not os.path.exists(os.path.join(other, "notes.txt")),
+          str(sorted(os.listdir(other))))
     s.quit()
     shutil.rmtree(root)
 
@@ -2136,6 +2175,7 @@ def main():
         test_panelmenus,
         test_overwrite,
         test_copyform,
+        test_masks,
         test_mcimport,
         test_keycontexts,
         test_options,

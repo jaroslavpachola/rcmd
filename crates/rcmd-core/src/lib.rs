@@ -4,6 +4,7 @@ pub mod entry;
 pub mod find;
 pub mod fsops;
 pub mod glob;
+pub mod mask;
 pub mod panel;
 pub mod rename;
 pub mod sftp;
