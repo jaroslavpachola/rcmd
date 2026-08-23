@@ -9,6 +9,7 @@ pub mod glob;
 pub mod mask;
 pub mod panel;
 pub mod rename;
+pub mod rpm;
 pub mod sftp;
 pub mod tree;
 pub mod vfs;

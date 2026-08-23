@@ -1,5 +1,6 @@
 //! Read-only archive VFS: zip, tar and cpio (each plain or gz/xz/bz2/
-//! zstd compressed), `ar` archives and Debian packages natively; rar
+//! zstd compressed), `ar` archives and Debian and RPM packages
+//! natively; rar
 //! and 7z through an external tool (the 7z family, or unrar for .rar) -
 //! listed once at open, members streamed out per read.
 //!
@@ -19,6 +20,7 @@ use flate2::read::GzDecoder;
 use crate::ar;
 use crate::cpio;
 use crate::entry::{Entry, EntryKind};
+use crate::rpm;
 use crate::vfs::FsProvider;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -30,6 +32,8 @@ enum Kind {
     Ar,
     /// A Debian package: an `ar` archive holding two tarballs.
     Deb,
+    /// An RPM package: two headers and a compressed cpio payload.
+    Rpm,
     /// rar / 7z via an external lister+extractor.
     Cmd,
 }
@@ -44,6 +48,9 @@ enum Comp {
     Xz,
     Bz2,
     Zstd,
+    /// Raw LZMA, which only rpm still ships - decoded by the same
+    /// library as xz, told to work out which of the two it has.
+    Lzma,
 }
 
 /// Which external tool serves a [`Kind::Cmd`] archive.
@@ -73,6 +80,11 @@ pub struct ArchiveFs {
     /// Prefix → the tarball nested at that point in the tree. A .deb
     /// is two of these plus one loose file.
     nested: Vec<(PathBuf, Slice)>,
+    /// Files rcmd writes itself rather than finds: an rpm's tags are
+    /// not a file in the package, but they read best as one.
+    generated: HashMap<PathBuf, String>,
+    /// Where a cpio payload sits, when the container has one.
+    payload: Option<(PathBuf, Slice)>,
 }
 
 /// A run of bytes inside the container, and what it is wrapped in.
@@ -102,6 +114,8 @@ impl ArchiveFs {
             Kind::Tar(Comp::Zstd)
         } else if name.ends_with(".deb") || name.ends_with(".udeb") {
             Kind::Deb
+        } else if name.ends_with(".rpm") {
+            Kind::Rpm
         } else if name.ends_with(".a") || name.ends_with(".ar") {
             Kind::Ar
         } else if name.ends_with(".rar") || name.ends_with(".7z") {
@@ -127,6 +141,8 @@ impl ArchiveFs {
             links: HashMap::new(),
             slices: HashMap::new(),
             nested: Vec::new(),
+            generated: HashMap::new(),
+            payload: None,
         };
         match kind {
             Kind::Zip => fs.index_zip()?,
@@ -134,6 +150,7 @@ impl ArchiveFs {
             Kind::Cpio(_) => fs.index_cpio()?,
             Kind::Ar => fs.index_ar()?,
             Kind::Deb => fs.index_deb()?,
+            Kind::Rpm => fs.index_rpm()?,
             Kind::Tar(_) => fs.index_tar()?,
         }
         Ok(fs)
@@ -204,7 +221,12 @@ impl ArchiveFs {
     /// with the data attached to just one of the names, so the empty
     /// aliases are collected and pointed at the one that has it.
     fn index_cpio(&mut self) -> io::Result<()> {
-        let mut reader = cpio::Reader::new(self.raw_reader()?);
+        let reader = self.raw_reader()?;
+        self.index_cpio_from(reader, Path::new(""))
+    }
+
+    fn index_cpio_from(&mut self, reader: Box<dyn Read>, prefix: &Path) -> io::Result<()> {
+        let mut reader = cpio::Reader::new(reader);
         // (dev, ino) → the member carrying the bytes, and its size
         let mut bodies: HashMap<(u64, u64), (PathBuf, u64)> = HashMap::new();
         let mut aliases: Vec<(PathBuf, (u64, u64))> = Vec::new();
@@ -226,13 +248,20 @@ impl ArchiveFs {
             if kind == EntryKind::File && header.nlink > 1 {
                 let id = (header.dev, header.ino);
                 if header.size > 0 {
-                    bodies.insert(id, (rel.clone(), header.size));
+                    bodies.insert(id, (prefix.join(&rel), header.size));
                 } else {
-                    aliases.push((rel.clone(), id));
+                    aliases.push((prefix.join(&rel), id));
                 }
             }
             let mtime = Some(UNIX_EPOCH + Duration::from_secs(header.mtime));
-            self.add(&rel, kind, header.size, header.perm(), link, mtime);
+            self.add(
+                &prefix.join(&rel),
+                kind,
+                header.size,
+                header.perm(),
+                link,
+                mtime,
+            );
         }
         for (alias, id) in aliases {
             if let Some((body, size)) = bodies.get(&id).filter(|(body, _)| *body != alias) {
@@ -324,9 +353,72 @@ impl ArchiveFs {
         Ok(())
     }
 
+    /// An RPM package: the tags become a `CONTROL/header` you can read
+    /// and the scriptlets become files beside it, while the payload -
+    /// a cpio stream under whatever compressor the package names -
+    /// hangs under `CONTENTS/`, the same shape a .deb gets.
+    fn index_rpm(&mut self) -> io::Result<()> {
+        let pkg = rpm::open(&self.path)?;
+        if pkg.format != "cpio" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported rpm payload format: {}", pkg.format),
+            ));
+        }
+        let comp = match pkg.compressor.as_str() {
+            "gzip" => Comp::Gz,
+            "xz" => Comp::Xz,
+            "lzma" => Comp::Lzma,
+            "bzip2" => Comp::Bz2,
+            "zstd" => Comp::Zstd,
+            "none" => Comp::None,
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unsupported rpm payload compressor: {other}"),
+                ));
+            }
+        };
+
+        let control = PathBuf::from("CONTROL");
+        self.ensure_dir_chain(&control);
+        let mut generated = vec![("header".to_string(), rpm::header_text(&pkg))];
+        generated.extend(
+            rpm::scriptlets(&pkg)
+                .into_iter()
+                .map(|(name, body)| (name.to_string(), body)),
+        );
+        for (name, body) in generated {
+            let rel = control.join(&name);
+            let mode = if name == "header" { 0o644 } else { 0o755 };
+            self.add(&rel, EntryKind::File, body.len() as u64, mode, None, None);
+            self.generated.insert(rel, body);
+        }
+
+        let contents = PathBuf::from("CONTENTS");
+        self.ensure_dir_chain(&contents);
+        let len = std::fs::metadata(&self.path)?.len() - pkg.payload_at;
+        let slice = Slice {
+            at: pkg.payload_at,
+            len,
+            comp,
+        };
+        let reader = self.slice_reader(slice)?;
+        self.index_cpio_from(reader, &contents)?;
+        self.payload = Some((contents, slice));
+        Ok(())
+    }
+
     /// Read a path that lives in a slice of the container: either the
     /// slice *is* the file, or it is a tarball the path reaches into.
     fn read_slice(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
+        if let Some(body) = self.generated.get(rel) {
+            return Ok(Box::new(Cursor::new(body.clone().into_bytes())));
+        }
+        if let Some((prefix, slice)) = self.payload.as_ref().filter(|(p, _)| rel.starts_with(p)) {
+            let reader = self.slice_reader(*slice)?;
+            return self.read_cpio_from(reader, rel, prefix);
+        }
         if let Some(slice) = self.slices.get(rel) {
             let mut file = File::open(&self.path)?;
             file.seek(SeekFrom::Start(slice.at))?;
@@ -523,10 +615,20 @@ impl ArchiveFs {
     /// Stream one member out by walking the archive again - the only
     /// way in without an index, and the same cost tar already pays.
     fn read_cpio(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
+        let reader = self.raw_reader()?;
+        self.read_cpio_from(reader, rel, Path::new(""))
+    }
+
+    fn read_cpio_from(
+        &self,
+        reader: Box<dyn Read>,
+        rel: &Path,
+        prefix: &Path,
+    ) -> io::Result<Box<dyn Read + Send>> {
         let wanted = self.links.get(rel).unwrap_or(&rel.to_path_buf()).clone();
-        let mut reader = cpio::Reader::new(self.raw_reader()?);
+        let mut reader = cpio::Reader::new(reader);
         while let Some(header) = reader.next_member()? {
-            if normalize_rel(&header.path) == wanted {
+            if prefix.join(normalize_rel(&header.path)) == wanted {
                 return Ok(Box::new(Cursor::new(reader.data()?)));
             }
         }
@@ -579,7 +681,7 @@ impl FsProvider for ArchiveFs {
         match self.kind {
             Kind::Cmd => self.read_cmd(&rel),
             Kind::Cpio(_) => self.read_cpio(&rel),
-            Kind::Ar | Kind::Deb => self.read_slice(&rel),
+            Kind::Ar | Kind::Deb | Kind::Rpm => self.read_slice(&rel),
             Kind::Zip => {
                 let mut zip = zip::ZipArchive::new(File::open(&self.path)?).map_err(zip_err)?;
                 for i in 0..zip.len() {
@@ -791,6 +893,11 @@ fn decompress(reader: Box<dyn Read>, comp: Comp) -> io::Result<Box<dyn Read>> {
             ruzstd::decoding::StreamingDecoder::new(reader)
                 .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?,
         ),
+        Comp::Lzma => {
+            let stream = xz2::stream::Stream::new_auto_decoder(u64::MAX, 0)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
+            Box::new(xz2::read::XzDecoder::new_stream(reader, stream))
+        }
     })
 }
 
@@ -1305,6 +1412,87 @@ mod tests {
             .read_to_string(&mut content)
             .unwrap();
         assert_eq!(content, "squeezed\n");
+    }
+
+    #[test]
+    fn rpm_shows_the_header_the_scripts_and_the_payload() {
+        use crate::rpm::fixture::{Tag, build};
+
+        let tmp = tempfile::tempdir().unwrap();
+        // the payload is a gzipped cpio, the way an older rpm ships one
+        let stream = write_newc(&[
+            ("./usr/bin/hello", 0o100_755, 1, 1, b"#!/bin/sh\necho hi\n"),
+            (
+                "./usr/share/doc/hello/README",
+                0o100_644,
+                1,
+                2,
+                b"read me\n",
+            ),
+        ]);
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        gz.write_all(&stream).unwrap();
+        let payload = gz.finish().unwrap();
+
+        let path = tmp.path().join("hello-1.0-3.noarch.rpm");
+        std::fs::write(
+            &path,
+            build(
+                &[
+                    Tag::Str(crate::rpm::NAME, "hello"),
+                    Tag::Str(crate::rpm::VERSION, "1.0"),
+                    Tag::Str(crate::rpm::RELEASE, "3"),
+                    Tag::Str(crate::rpm::SUMMARY, "a fixture"),
+                    Tag::Str(crate::rpm::PREUN, "#!/bin/sh\nexit 0"),
+                    Tag::Str(crate::rpm::PAYLOADFORMAT, "cpio"),
+                    Tag::Str(crate::rpm::PAYLOADCOMPRESSOR, "gzip"),
+                ],
+                &payload,
+            ),
+        )
+        .unwrap();
+
+        let fs = ArchiveFs::open(&path).unwrap();
+        let mut names: Vec<_> = fs
+            .read_dir(Path::new(""))
+            .unwrap()
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["CONTENTS", "CONTROL"]);
+
+        let mut control: Vec<_> = fs
+            .read_dir(Path::new("CONTROL"))
+            .unwrap()
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
+        control.sort();
+        assert_eq!(control, ["header", "preun"]);
+
+        let mut text = String::new();
+        fs.open_read(Path::new("CONTROL/header"))
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert!(text.contains("Summary       a fixture"), "{text}");
+        // the listed size has to be the text's own, not a leftover zero
+        assert_eq!(
+            fs.stat(Path::new("CONTROL/header")).unwrap().size,
+            text.len() as u64
+        );
+
+        // the payload's "./" prefix must not survive into the tree
+        assert!(fs.stat(Path::new("CONTENTS/usr/bin")).unwrap().is_dir());
+        let hello = fs.stat(Path::new("CONTENTS/usr/bin/hello")).unwrap();
+        assert_eq!(hello.mode, 0o755);
+        let mut script = String::new();
+        fs.open_read(Path::new("CONTENTS/usr/bin/hello"))
+            .unwrap()
+            .read_to_string(&mut script)
+            .unwrap();
+        assert_eq!(script, "#!/bin/sh\necho hi\n");
     }
 
     #[test]

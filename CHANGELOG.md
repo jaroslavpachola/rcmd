@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.24.0 - 2026-08-23
+
+- **RPM packages** (4.0 S3): Enter on a `.rpm` and it opens in the same
+  shape a `.deb` does. `CONTROL/header` is the package's tags rendered
+  as text - name, version, license, summary, description, what the
+  payload is wrapped in - and the install scriptlets sit beside it as
+  `prein`, `postin`, `preun`, `postun`, since they are shell scripts and
+  reading them is the point. `CONTENTS/` is the payload.
+- The payload is a **cpio stream**, which is why `rcmd-core::cpio` was
+  built first and on its own. It arrives under gzip, xz, lzma, bzip2 or
+  zstd, and all five are read - lzma through the same library as xz,
+  told to work out which of the two it has.
+- **Signatures are stepped over, not checked.** The signature header has
+  to be located to find where the next one starts, and that is all rcmd
+  does with it: this is a file browser, and a listing is not a claim
+  that a package is authentic.
+- A header that claims more entries than could fit, or an index entry
+  pointing outside its own data store, is refused or dropped rather than
+  trusted. Untrusted files get parsed here, and a length field is only a
+  suggestion.
+
 ## 3.23.0 - 2026-08-23
 
 - **Debian packages** (4.0 S3): Enter on a `.deb` or `.udeb` and the

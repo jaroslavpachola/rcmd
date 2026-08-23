@@ -306,7 +306,15 @@ opens as the file it shares its bytes with.
 members, and a **Debian package** (`.deb`, `.udeb`) opens as one tree
 rather than three: `debian-binary` at the root, the metadata and
 maintainer scripts under `CONTROL/`, and everything the package
-installs under `CONTENTS/`. F5 copies members out with the
+installs under `CONTENTS/`.
+
+An **RPM package** (`.rpm`, source packages included) takes the same
+shape. `CONTROL/header` is the package's tags rendered as text - name,
+version, license, summary, description, what the payload is wrapped in -
+and any install scriptlets sit beside it as `prein`, `postin`, `preun`,
+`postun`. `CONTENTS/` is the payload, which is a cpio stream under gzip,
+xz, lzma, bzip2 or zstd. Signatures are stepped over, not checked: a
+listing is not a claim that a package is authentic. F5 copies members out with the
 usual progress/overwrite dialogs, F3 views them; move, delete, and mkdir
 are disabled inside. Copying **into** an archive works for zip only
 (members are appended in place - tar formats would need a full rewrite):

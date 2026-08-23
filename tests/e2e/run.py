@@ -483,6 +483,74 @@ def test_deb():
     shutil.rmtree(root)
 
 
+def write_rpm(tags, payload):
+    """A package: the lead, a signature header to step over, the header
+    that describes it, then the payload. `tags` is {tag: str}."""
+    def header(entries):
+        index, store = bytearray(), bytearray()
+        for tag, value in entries.items():
+            at = len(store)
+            store += value.encode() + b"\0"
+            index += struct.pack(">IIII", tag, 6, at, 1)
+        return (b"\x8e\xad\xe8\x01" + b"\0" * 4
+                + struct.pack(">II", len(entries), len(store)) + index + store)
+
+    out = bytearray(b"\xed\xab\xee\xdb")
+    out += b"\0" * (96 - len(out))
+    out += header({1000: "sig"})
+    out += b"\0" * (-len(out) % 8)      # the next header is 8-byte aligned
+    out += header(tags)
+    return bytes(out) + payload
+
+
+def test_rpm():
+    """An RPM package: the tags read as a file, the payload as a tree."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "out"))
+    stream = write_newc([
+        ("./usr/bin/hello", 0o100755, 1, 1, b"#!/bin/sh\necho hi\n"),
+        ("./usr/share/doc/hello/README", 0o100644, 1, 2, b"shipped by the rpm\n"),
+    ])
+    open(os.path.join(play, "hello-1.0-3.noarch.rpm"), "wb").write(write_rpm({
+        1000: "hello", 1001: "1.0", 1002: "3", 1004: "a fixture package",
+        1022: "noarch", 1124: "cpio", 1125: "gzip",
+    }, gzip.compress(stream)))
+
+    s = Session(play, home, args=(play, os.path.join(play, "out")))
+    s.send(b"\x13hello\r", wait=STEP)   # quick search -> the package
+    s.send(b"\r", wait=STEP * 2)
+    scr = s.screen()
+    check("rpm: entered", "hello-1.0-3.noarch.rpm://" in scr)
+    check("rpm: both halves listed", "CONTROL" in scr and "CONTENTS" in scr)
+
+    s.send(DOWN + DOWN)                 # .., CONTENTS, CONTROL
+    s.send(b"\r", wait=STEP * 2)        # into CONTROL/
+    check("rpm: the header is a file", "header" in s.screen())
+    s.send(DOWN)
+    s.send(F3, wait=STEP * 2)
+    scr = s.screen()
+    check("rpm: F3 reads the header", "Name" in scr and "hello" in scr)
+    check("rpm: the summary is there", "a fixture package" in scr)
+    s.send(b"q")
+
+    s.send(BACKSPACE, wait=STEP)
+    s.send(HOME_K + DOWN)               # -> CONTENTS
+    s.send(b"\r", wait=STEP * 2)
+    check("rpm: the payload tree opens", "usr" in s.screen())
+    s.send(DOWN)
+    s.send(b"\r", wait=STEP)            # usr/
+    s.send(DOWN)
+    s.send(b"\r", wait=STEP)            # bin/
+    s.send(DOWN)                        # -> hello
+    s.send(F5)
+    s.send(b"\r", wait=STEP * 3)
+    extracted = os.path.join(play, "out", "hello")
+    check("rpm: F5 extracts a payload file",
+          wait_for(s, "done -") and open(extracted).read() == "#!/bin/sh\necho hi\n")
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_find():
     root, play, home = sandbox()
     os.makedirs(os.path.join(play, "sub"))
@@ -2557,6 +2625,7 @@ def main():
         test_cmdarchive,
         test_cpio,
         test_deb,
+        test_rpm,
         test_find,
         test_compare,
         test_watch,
