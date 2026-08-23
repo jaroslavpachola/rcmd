@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.17.0 - 2026-08-23
+
+- **MC's chmod bit matrix** (4.0 S2): Ctrl+X c was a one-line octal
+  prompt, which is fine if you already know that 0754 is what you want
+  and no help at all otherwise. It is now mc's window: the twelve
+  attribute bits as check boxes on the left, the entry's name, mode,
+  owner and group on the right, and the octal field kept underneath.
+  Space flips a box and the octal follows; type an octal and the boxes
+  follow. Neither is the source of truth - they are two views of the
+  same mode.
+- The **octal field has the focus** when the window opens, so the old
+  Ctrl+X c, type a mode, Enter still works exactly as it did; the boxes
+  are there for everyone who does not already know the number.
+- The buttons are mc's three ways of spending the bits: **Set** writes
+  the mode exactly, **Set marked** adds the checked bits to each entry's
+  own mode, **Clear marked** takes them away. The last two leave every
+  other bit of every file alone, which is the whole point of chmod'ing a
+  group at once - and the boxes start from the cursor entry, so what
+  gets added or removed is what you can see.
+
 ## 3.16.0 - 2026-08-23
 
 - **Progress with throughput, time left and a per-file bar** (4.0 S2):

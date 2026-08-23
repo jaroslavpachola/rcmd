@@ -340,8 +340,15 @@ const HELP_TEXT: &[&str] = &[
     "  Alt+Y / Alt+U   history back / forward (same as Alt+Left/Right)",
     "  Alt+C           quick cd dialog   Alt+?  find file   Ctrl+L  redraw",
     "  Ctrl+X t / p    paste tagged names / the panel path to the cmdline",
-    "  Ctrl+X c / o    chmod (octal) / chown (user[:group]) the marked",
-    "                  entries - both work on sftp panels too",
+    "  Ctrl+X c        chmod: MC's bit matrix - the twelve attribute bits",
+    "                  as check boxes with the octal beside them (Space",
+    "                  flips a box, typing an octal moves the boxes), the",
+    "                  file's name/mode/owner/group on the right, and Set /",
+    "                  Set marked / Clear marked - the last two add or",
+    "                  remove the checked bits and leave each entry's",
+    "                  others alone",
+    "  Ctrl+X o        chown (user[:group]) the marked entries",
+    "                  - both work on sftp panels too",
     "  Ctrl+X s        create a symlink to the cursor entry",
     "  F9 > Left/Right   listing format: brief (names), full, long (ls -l,",
     "                  full-width), user defined, tree; the panel footer",
@@ -646,6 +653,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Confirm(d) => draw_confirm(frame, d),
             Dialog::Tree(tree) => draw_tree_dialog(frame, tree),
             Dialog::Transfer(d) => draw_transfer(frame, d),
+            Dialog::Chmod(d) => draw_chmod(frame, d),
             Dialog::Hotlist(selected) => {
                 draw_hotlist(frame, &app.config.hotlist, &app.hotlist_recent(), *selected)
             }
@@ -1391,7 +1399,7 @@ fn entry_row(
 
 /// Owner/group column text: resolved name locally, the bare id on
 /// remote panels (the server's ids mean nothing to our passwd).
-fn owner_label(id: Option<u32>, remote: bool, user: bool) -> String {
+pub fn owner_label(id: Option<u32>, remote: bool, user: bool) -> String {
     match id {
         None => String::new(),
         Some(id) if remote => id.to_string(),
@@ -2773,6 +2781,87 @@ fn draw_tree_rows(frame: &mut Frame, area: Rect, tree: &Tree, base: Style, selec
 /// F9 > Command > Directory tree. Enter takes the current panel to the
 /// selected directory and closes - the panel's own tree mode is the one
 /// that stays open and moves the *other* panel.
+/// C-x c: MC's chmod window. The bits on the left as check boxes, what
+/// is being changed on the right, and the octal underneath - typing in
+/// it moves the boxes, flipping a box rewrites it.
+fn draw_chmod(frame: &mut Frame, d: &crate::app::ChmodDialog) {
+    use crate::app::{CHMOD_BITS, CHMOD_BUTTONS, CHMOD_OCTAL_ROW, CHMOD_ROWS};
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let head = Style::new().fg(th().header_fg).bg(th().dialog_bg);
+    // a heading row, the bits, the octal, a blank, the buttons
+    let area = centered(58, CHMOD_BITS.len() as u16 + 6, frame.area());
+    let inner = popup(frame, area, " Chmod ", base);
+    let row_at = |i: u16| Rect {
+        x: inner.x + 1,
+        y: inner.y + i,
+        width: inner.width.saturating_sub(2),
+        height: 1,
+    };
+    let left = 22usize; // where the File column starts
+
+    frame.render_widget(
+        Line::from(format!(" {:<left$}{}", "Permissions", "File")).style(head),
+        row_at(0),
+    );
+    // the File column, beside the first rows of bits
+    let facts = [
+        format!("name  {}", tail(&d.name, 28)),
+        format!("perm  {:04o}", d.mode),
+        format!("owner {}", d.owner),
+        format!("group {}", d.group),
+    ];
+    for (i, (label, bit)) in CHMOD_BITS.iter().enumerate() {
+        let mark = if d.mode & bit != 0 { "[x]" } else { "[ ]" };
+        let text = format!(" {mark} {label}");
+        let row = row_at(i as u16 + 1);
+        // the bit half highlights on its own; the facts sit past it
+        frame.render_widget(
+            Line::from(format!("{text:<left$}")).style(if d.row == i { sel } else { base }),
+            Rect {
+                width: left as u16,
+                ..row
+            },
+        );
+        if let Some(fact) = facts.get(i) {
+            frame.render_widget(
+                Line::from(fact.as_str()).style(base),
+                Rect {
+                    x: row.x + left as u16,
+                    width: row.width.saturating_sub(left as u16),
+                    ..row
+                },
+            );
+        }
+    }
+    let octal_row = CHMOD_OCTAL_ROW as u16 + 1;
+    frame.render_widget(
+        Line::from(format!(
+            " octal {:<w$}",
+            d.octal,
+            w = left.saturating_sub(7)
+        ))
+        .style(if d.row == CHMOD_OCTAL_ROW { sel } else { base }),
+        Rect {
+            width: left as u16,
+            ..row_at(octal_row)
+        },
+    );
+    let selected = if d.row == CHMOD_ROWS {
+        d.button
+    } else {
+        usize::MAX
+    };
+    frame.render_widget(
+        buttons_line(CHMOD_BUTTONS, selected, base, sel),
+        row_at(octal_row + 2),
+    );
+    if d.row == CHMOD_OCTAL_ROW {
+        let x = inner.x + 7 + d.octal_cursor.min(8) as u16;
+        frame.set_cursor_position((x, inner.y + octal_row));
+    }
+}
+
 /// F5/F6: MC's copy/move form. The destination on top, the switches
 /// that change what the copy does under it, then OK / Background /
 /// Cancel - Background starts the job detached, which is otherwise only

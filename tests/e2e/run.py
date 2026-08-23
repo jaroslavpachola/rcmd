@@ -1436,6 +1436,66 @@ def test_masks():
     shutil.rmtree(root)
 
 
+def test_chmod():
+    """PLAN4 S2: MC's chmod window - twelve bits as check boxes, the
+    octal beside them, and its three ways of spending them."""
+    root, play, home = sandbox()
+    for name, mode in (("a.sh", 0o754), ("b.sh", 0o600)):
+        open(os.path.join(play, name), "w").write("#!/bin/sh\n")
+        os.chmod(os.path.join(play, name), mode)
+    s = Session(play, home)
+
+    s.send(DOWN)                            # onto a.sh
+    s.send(b"\x18c", wait=STEP)             # Ctrl+X c
+    scr = s.screen()
+    check("chmod: the matrix opens", "Chmod" in scr and "Permissions" in scr, scr[:200])
+    check("chmod: the file section names what changes",
+          "a.sh" in scr and "owner" in scr, scr[:400])
+    check("chmod: it starts from the file's own mode", "0754" in scr, scr[:400])
+    check("chmod: the bits are drawn", "[x] read    owner" in scr and
+          "[ ] write   group" in scr, scr[:600])
+
+    # Space on a bit rewrites the octal: 0754 + group write = 0774
+    # (the dialog opens on the octal field, so the bits are above it)
+    s.send(b"\x1b[A" * 5)                   # -> write   group
+    s.send(b" ")
+    check("chmod: space flips a bit", "[x] write   group" in s.screen(), s.screen()[:600])
+    check("chmod: and the octal follows", "octal 774" in s.screen(), s.screen()[:600])
+    s.send(b"\r", wait=STEP * 2)             # Set
+    check("chmod: Set applied it",
+          oct(os.stat(os.path.join(play, "a.sh")).st_mode & 0o777) == "0o774",
+          oct(os.stat(os.path.join(play, "a.sh")).st_mode & 0o777))
+
+    # typing an octal moves the boxes the other way
+    s.send(b"\x18c", wait=STEP)             # opens on the octal field
+    s.send(b"\x15")                         # Ctrl+U clears it
+    s.send(b"640")
+    check("chmod: the octal moves the boxes", "[ ] exec    owner" in s.screen(),
+          s.screen()[:600])
+    s.send(b"\r", wait=STEP * 2)
+    check("chmod: and Set wrote that mode",
+          oct(os.stat(os.path.join(play, "a.sh")).st_mode & 0o777) == "0o640")
+
+    # "Clear marked" takes the *checked* bits off every marked file and
+    # leaves each file's other bits alone. a.sh is 0640, b.sh is 0600,
+    # and the boxes come from the cursor entry - b.sh - so 0600 comes
+    # off both: b.sh empties, a.sh keeps the group-read bit it alone had
+    s.send(HOME_K)
+    s.send(DOWN + INSERT + INSERT)          # mark a.sh and b.sh
+    s.send(b"\x18c", wait=STEP)
+    check("chmod: the boxes come from the cursor entry", "0600" in s.screen(),
+          s.screen()[:400])
+    s.send(DOWN)                            # -> the button row
+    s.send(b"\x1b[C" * 2)                   # -> Clear marked
+    s.send(b"\r", wait=STEP * 3)
+    a = os.stat(os.path.join(play, "a.sh")).st_mode & 0o777
+    b = os.stat(os.path.join(play, "b.sh")).st_mode & 0o777
+    check("chmod: clear marked cleared only those bits",
+          a == 0o040 and b == 0o000, "%o %o" % (a, b))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_mcimport():
     """PLAN4 S0: `rcmd --import-mc DIR` converts mc's menu, mc.ext and
     keymap into an rcmd config fragment on stdout, warning on stderr
@@ -2176,6 +2236,7 @@ def main():
         test_overwrite,
         test_copyform,
         test_masks,
+        test_chmod,
         test_mcimport,
         test_keycontexts,
         test_options,

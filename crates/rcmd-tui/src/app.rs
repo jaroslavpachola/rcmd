@@ -59,10 +59,6 @@ pub enum InputAction {
     EditNew,
     /// M-c: the value is a cd target (path or sftp:// URL).
     QuickCd,
-    /// C-x c: the value is an octal mode for these paths.
-    Chmod {
-        paths: Vec<PathBuf>,
-    },
     /// C-x o: the value is `user[:group]` for these paths.
     Chown {
         paths: Vec<PathBuf>,
@@ -199,6 +195,62 @@ impl TransferDialog {
     }
 }
 
+/// C-x c: MC's chmod window - the twelve attribute bits as check
+/// boxes, the octal beside them, and what is being changed on screen.
+pub struct ChmodDialog {
+    pub paths: Vec<PathBuf>,
+    /// What the boxes currently say, as a mode.
+    pub mode: u32,
+    /// The octal field, kept as text so a half-typed value survives.
+    pub octal: String,
+    pub octal_cursor: usize,
+    /// The entry the File section describes (the cursor one).
+    pub name: String,
+    pub owner: String,
+    pub group: String,
+    /// Focused row: one per bit, then [`CHMOD_OCTAL_ROW`], then the
+    /// buttons.
+    pub row: usize,
+    pub button: usize,
+}
+
+/// The bits, top to bottom, as MC lists them.
+pub const CHMOD_BITS: &[(&str, u32)] = &[
+    ("set-uid", 0o4000),
+    ("set-gid", 0o2000),
+    ("sticky", 0o1000),
+    ("read    owner", 0o400),
+    ("write   owner", 0o200),
+    ("exec    owner", 0o100),
+    ("read    group", 0o040),
+    ("write   group", 0o020),
+    ("exec    group", 0o010),
+    ("read    other", 0o004),
+    ("write   other", 0o002),
+    ("exec    other", 0o001),
+];
+pub const CHMOD_OCTAL_ROW: usize = CHMOD_BITS.len();
+pub const CHMOD_ROWS: usize = CHMOD_BITS.len() + 1;
+/// What the buttons do to each selected entry's own mode.
+pub const CHMOD_BUTTONS: &[&str] = &["Set", "Set marked", "Clear marked", "Cancel"];
+
+impl ChmodDialog {
+    /// Re-render the octal field from the boxes.
+    fn sync_octal(&mut self) {
+        self.octal = format!("{:o}", self.mode);
+        self.octal_cursor = self.octal.chars().count();
+    }
+
+    /// ...and the other way, for whatever the octal field now says.
+    fn sync_mode(&mut self) {
+        if let Ok(mode) = u32::from_str_radix(self.octal.trim(), 8)
+            && mode <= 0o7777
+        {
+            self.mode = mode;
+        }
+    }
+}
+
 pub struct ConfirmDialog {
     pub title: String,
     pub message: String,
@@ -236,6 +288,8 @@ pub enum Dialog {
     Tree(Box<Tree>),
     /// F5/F6: the copy/move form.
     Transfer(Box<TransferDialog>),
+    /// C-x c: the chmod bit matrix.
+    Chmod(Box<ChmodDialog>),
 }
 
 /// The confirmation step of a bulk rename - nothing has touched the
@@ -4295,6 +4349,43 @@ impl App {
                     _ => self.dialog = Some(Dialog::Hotlist(selected)),
                 }
             }
+            Dialog::Chmod(mut d) => {
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Up => {
+                        d.row = d.row.checked_sub(1).unwrap_or(CHMOD_ROWS);
+                        self.dialog = Some(Dialog::Chmod(d));
+                    }
+                    KeyCode::Down | KeyCode::Tab => {
+                        d.row = if d.row >= CHMOD_ROWS { 0 } else { d.row + 1 };
+                        self.dialog = Some(Dialog::Chmod(d));
+                    }
+                    KeyCode::Left | KeyCode::Right if d.row == CHMOD_ROWS => {
+                        let count = CHMOD_BUTTONS.len();
+                        d.button = if key.code == KeyCode::Left {
+                            d.button.checked_sub(1).unwrap_or(count - 1)
+                        } else {
+                            (d.button + 1) % count
+                        };
+                        self.dialog = Some(Dialog::Chmod(d));
+                    }
+                    // Space flips a bit, and the octal follows along
+                    KeyCode::Char(' ') if d.row < CHMOD_BITS.len() => {
+                        d.mode ^= CHMOD_BITS[d.row].1;
+                        d.sync_octal();
+                        self.dialog = Some(Dialog::Chmod(d));
+                    }
+                    KeyCode::Enter => self.submit_chmod(*d),
+                    code => {
+                        // ...and typing in the octal moves the bits
+                        if d.row == CHMOD_OCTAL_ROW {
+                            edit_line(&mut d.octal, &mut d.octal_cursor, code, key.modifiers);
+                            d.sync_mode();
+                        }
+                        self.dialog = Some(Dialog::Chmod(d));
+                    }
+                }
+            }
             Dialog::Transfer(mut d) => {
                 match key.code {
                     KeyCode::Esc => {}
@@ -4824,17 +4915,6 @@ impl App {
                     self.do_cd(value.trim());
                 }
             }
-            InputAction::Chmod { paths } => {
-                let Ok(mode) = u32::from_str_radix(value.trim(), 8) else {
-                    self.status = Some(format!(" chmod: '{}' is not octal ", value.trim()));
-                    return;
-                };
-                if mode > 0o7777 {
-                    self.status = Some(" chmod: mode out of range ".into());
-                    return;
-                }
-                self.apply_fs_op(&paths, "chmod", |w, p| w.set_mode(p, mode));
-            }
             InputAction::Chown { paths } => {
                 let remote = self.panels[self.active].is_remote();
                 match parse_owner_spec(value.trim(), remote) {
@@ -4863,6 +4943,36 @@ impl App {
     /// Send F5/F6 to the right job for the source panel and the typed
     /// destination: plain copy/move, archive pack/extract, or a
     /// cross-provider transfer when SFTP is on either side.
+    /// A button on the chmod matrix. MC's three ways to spend the bits:
+    /// set them exactly, add them, or take them away - the last two
+    /// leave every other bit of each file alone, which is the whole
+    /// point of chmod'ing a group of files at once.
+    fn submit_chmod(&mut self, d: ChmodDialog) {
+        let Some(action) = CHMOD_BUTTONS.get(d.button) else {
+            return;
+        };
+        if *action == "Cancel" {
+            return;
+        }
+        let mode = d.mode;
+        // each entry's current mode, for the add/remove variants
+        let current: std::collections::HashMap<PathBuf, u32> = self.panels[self.active]
+            .entries
+            .iter()
+            .map(|e| (self.panels[self.active].cwd.join(&e.name), e.mode & 0o7777))
+            .collect();
+        let apply = |path: &Path| -> u32 {
+            let was = current.get(path).copied().unwrap_or(0);
+            match *action {
+                "Set marked" => was | mode,
+                "Clear marked" => was & !mode,
+                _ => mode,
+            }
+        };
+        let paths = d.paths.clone();
+        self.apply_fs_op(&paths, "chmod", |w, p| w.set_mode(p, apply(p)));
+    }
+
     /// OK or Background on the copy/move form. Cancel never gets here.
     fn submit_transfer(&mut self, d: TransferDialog) {
         if d.button == 2 {
@@ -5751,16 +5861,29 @@ impl App {
         let Some(paths) = self.writable_targets() else {
             return;
         };
-        let mode = self.panels[self.active]
-            .selected()
-            .map(|e| format!("{:o}", e.mode))
-            .unwrap_or_else(|| "644".into());
-        self.dialog = Some(Dialog::Input(InputDialog {
-            title: format!(" Chmod {} (octal) ", Self::describe(&paths)),
-            cursor: mode.chars().count(),
-            value: mode,
-            action: InputAction::Chmod { paths },
-        }));
+        let remote = self.panels[self.active].is_remote();
+        let entry = self.panels[self.active].selected();
+        let mode = entry.map_or(0o644, |e| e.mode & 0o7777);
+        let mut dialog = ChmodDialog {
+            paths,
+            mode,
+            octal: String::new(),
+            octal_cursor: 0,
+            name: entry.map_or_else(String::new, |e| e.name.to_string_lossy().into_owned()),
+            owner: entry.map_or_else(String::new, |e| {
+                crate::ui::owner_label(e.extra.uid, remote, true)
+            }),
+            group: entry.map_or_else(String::new, |e| {
+                crate::ui::owner_label(e.extra.gid, remote, false)
+            }),
+            // the octal has the focus: anyone who already knows the mode
+            // types it and presses Enter, as they always could, and the
+            // boxes are there for everyone else
+            row: CHMOD_OCTAL_ROW,
+            button: 0,
+        };
+        dialog.sync_octal();
+        self.dialog = Some(Dialog::Chmod(Box::new(dialog)));
     }
 
     /// C-x o: chown on the marked entries (or the cursor entry).
