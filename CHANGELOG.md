@@ -1,5 +1,30 @@
 # Changelog
 
+## 3.30.0 - 2026-08-23
+
+- **Archives are writable** (4.0 S3): inside a `.zip` or a `.tar`
+  (plain or compressed), **F8 deletes**, **F6 renames** and **F7 makes a
+  directory**. Deleting a directory takes what is inside it; renaming
+  one takes its whole subtree along.
+- **One rewrite per batch, not per file.** An archive has no way to
+  remove a member in place, so deleting five of them one at a time
+  would rewrite the container five times. Every change in a batch is
+  applied in a single pass into a temp file that renames over the
+  original, which also means the archive on disk is never a half-written
+  one: either the old archive or the new, nothing between.
+- **F6 inside an archive takes a bare name**, and prefills one. An
+  absolute destination would mean leaving the archive, which is a copy
+  followed by a delete and is better asked for as those two things -
+  the status line says so rather than doing something surprising.
+- **Copying into a zip replaces instead of shadowing.** It used to
+  append in place, which was cheaper and left two members carrying one
+  name for readers to resolve however they each do. Now the zip is
+  rewritten, surviving members copied across still compressed so nothing
+  is decoded and re-encoded on the way.
+- deb, rpm, iso, cpio and the 7z-backed formats stay read-only. Not for
+  want of code: rewriting a package or a disc image is not what a panel
+  is for.
+
 ## 3.29.0 - 2026-08-23
 
 - **Active VFS list** (4.0 S3): `C-x a`, or F9 → Command → Active VFS

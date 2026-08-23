@@ -1532,27 +1532,63 @@ fn try_extract_file(
     Ok(())
 }
 
-/// Copy local files INTO a zip archive by appending members. Only zip
-/// supports in-place append; tar would need a full rewrite. Existing
-/// members are never touched - a same-named member is appended and
-/// shadows the old one for readers that pick the latest entry.
+/// Copy local files INTO a zip archive. The archive is rewritten to a
+/// temp file that renames over it: surviving members are copied across
+/// still compressed, so nothing is decoded and re-encoded, and a member
+/// with the same name as one being written is **replaced** rather than
+/// shadowed by a second copy of the name. Appending in place was
+/// cheaper and left two members with one name, which every reader
+/// resolves its own way.
 pub fn spawn_pack_zip(sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) -> JobHandle {
     spawn(move |ctx| {
         let (files, bytes) = scan(&sources);
         let _ = ctx.tx.send(JobEvent::Total { files, bytes });
-        let Some(file) = ctx.with_retry(&archive, || {
-            fs::OpenOptions::new().read(true).write(true).open(&archive)
-        })?
-        else {
-            return Ok(());
+        // what is about to be written; a member already there under one
+        // of these names is replaced rather than shadowed
+        let replacing: Vec<PathBuf> = sources
+            .iter()
+            .map(|src| inside.join(src.file_name().unwrap_or_default()))
+            .collect();
+        let temp = {
+            let dir = archive.parent().unwrap_or_else(|| Path::new("."));
+            let name = archive.file_name().unwrap_or_default().to_string_lossy();
+            dir.join(format!(".{name}.rcmd-{}", std::process::id()))
         };
-        let mut zip = match zip::ZipWriter::new_append(file) {
-            Ok(zip) => zip,
+        let mut zip = match fs::File::create(&temp) {
+            Ok(file) => zip::ZipWriter::new(file),
             Err(err) => {
                 ctx.error(&archive, &err.to_string())?;
                 return Ok(());
             }
         };
+        // stream the members that survive across, uncompressed-copied
+        // so nothing is decoded and re-encoded on the way
+        let carried = (|| -> io::Result<()> {
+            let file = fs::File::open(&archive)?;
+            let mut old = zip::ZipArchive::new(file)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            for i in 0..old.len() {
+                let member = old
+                    .by_index_raw(i)
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+                let Some(rel) = member.enclosed_name() else {
+                    continue;
+                };
+                if replacing.iter().any(|target| under(&rel, target)) {
+                    continue;
+                }
+                zip.raw_copy_file(member)
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            }
+            Ok(())
+        })();
+        if let Err(err) = carried {
+            let _ = zip.finish();
+            let _ = fs::remove_file(&temp);
+            ctx.error(&archive, &err.to_string())?;
+            return Ok(());
+        }
+
         let mut outcome = Ok(());
         for src in &sources {
             if ctx.cancelled() {
@@ -1569,8 +1605,247 @@ pub fn spawn_pack_zip(sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) 
         if let Err(err) = zip.finish() {
             let _ = ctx.error(&archive, &format!("finalizing archive: {err}"));
         }
-        outcome
+        match outcome {
+            Ok(()) => {
+                if let Err(err) = fs::rename(&temp, &archive) {
+                    let _ = fs::remove_file(&temp);
+                    return ctx.error(&archive, &format!("replacing archive: {err}"));
+                }
+                Ok(())
+            }
+            Err(abort) => {
+                // the original is untouched: only the temp is discarded
+                let _ = fs::remove_file(&temp);
+                Err(abort)
+            }
+        }
     })
+}
+
+/// One change to make inside an archive. A path is relative to the
+/// archive's root, the way a panel inside one addresses things.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArchiveOp {
+    /// Drop this member, and everything under it if it is a directory.
+    Remove(PathBuf),
+    /// Move a member, and everything under it, to a new path.
+    Rename { from: PathBuf, to: PathBuf },
+    /// Add a directory entry that holds nothing yet.
+    Mkdir(PathBuf),
+}
+
+impl ArchiveOp {
+    /// What this op does to one existing member's path: `None` drops
+    /// it, `Some(path)` keeps it there.
+    fn apply(ops: &[ArchiveOp], path: &Path) -> Option<PathBuf> {
+        let mut path = path.to_path_buf();
+        for op in ops {
+            match op {
+                ArchiveOp::Remove(target) => {
+                    if under(&path, target) {
+                        return None;
+                    }
+                }
+                ArchiveOp::Rename { from, to } => {
+                    if let Ok(rest) = path.strip_prefix(from) {
+                        // joining an empty rest would append a separator,
+                        // and a trailing slash is how an archive says
+                        // "directory" - renaming a file must not do that
+                        path = if rest.as_os_str().is_empty() {
+                            to.clone()
+                        } else {
+                            to.join(rest)
+                        };
+                    }
+                }
+                ArchiveOp::Mkdir(_) => {}
+            }
+        }
+        Some(path)
+    }
+}
+
+/// A member is "under" a target if it is the target or lives inside it.
+fn under(path: &Path, target: &Path) -> bool {
+    path == target || path.starts_with(target)
+}
+
+/// Edit an archive in one pass: every op is applied while the members
+/// stream from the old container into a new one, which then renames
+/// over the original.
+///
+/// One job per *batch*, not per file, which is the whole point - an
+/// archive has no way to remove one member in place, so deleting five
+/// of them one at a time would rewrite the container five times.
+pub fn spawn_archive_edit(archive: PathBuf, ops: Vec<ArchiveOp>) -> JobHandle {
+    spawn(move |ctx| {
+        let _ = ctx.tx.send(JobEvent::Total {
+            files: ops.len() as u64,
+            bytes: 0,
+        });
+        let name = archive
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+        let temp = {
+            let dir = archive.parent().unwrap_or_else(|| Path::new("."));
+            dir.join(format!(".{name}.rcmd-{}", std::process::id()))
+        };
+        let result = if name.ends_with(".zip") {
+            edit_zip(ctx, &archive, &ops, &temp)
+        } else if is_tar_name(&name) {
+            edit_tar(ctx, &archive, &ops, &name, &temp)
+        } else {
+            Ok(Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "only .zip and .tar[.gz/xz/bz2] archives can be changed",
+            )))
+        };
+        match result {
+            Ok(Ok(())) => {
+                if let Err(err) = fs::rename(&temp, &archive) {
+                    let _ = fs::remove_file(&temp);
+                    return ctx.error(&archive, &format!("replacing archive: {err}"));
+                }
+                // the container was rewritten once, so the count that
+                // means anything is how many changes it carried
+                ctx.files_done = ops.len() as u64;
+                ctx.progress(&archive);
+                Ok(())
+            }
+            Ok(Err(err)) => {
+                let _ = fs::remove_file(&temp);
+                ctx.error(&archive, &err.to_string())?;
+                Ok(())
+            }
+            Err(Aborted) => {
+                let _ = fs::remove_file(&temp);
+                Err(Aborted)
+            }
+        }
+    })
+}
+
+/// Filenames [`spawn_archive_edit`] and the pack jobs treat as tar.
+pub fn is_tar_name(name: &str) -> bool {
+    [
+        ".tar", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tbz",
+    ]
+    .iter()
+    .any(|ext| name.ends_with(ext))
+}
+
+fn edit_zip(
+    ctx: &mut Ctx,
+    archive: &Path,
+    ops: &[ArchiveOp],
+    temp: &Path,
+) -> Result<Result<(), io::Error>, Aborted> {
+    let mut old = match fs::File::open(archive).and_then(|f| {
+        zip::ZipArchive::new(f).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
+    }) {
+        Ok(zip) => zip,
+        Err(err) => return Ok(Err(err)),
+    };
+    let mut zip = match fs::File::create(temp) {
+        Ok(file) => zip::ZipWriter::new(file),
+        Err(err) => return Ok(Err(err)),
+    };
+    let copied = (|| -> io::Result<()> {
+        for i in 0..old.len() {
+            let member = old
+                .by_index_raw(i)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            let Some(rel) = member.enclosed_name() else {
+                continue;
+            };
+            let is_dir = member.is_dir();
+            let Some(kept) = ArchiveOp::apply(ops, &rel) else {
+                continue;
+            };
+            // a directory member keeps its trailing slash, which is
+            // how a zip says it is one
+            let name = if is_dir {
+                format!("{}/", kept.display())
+            } else {
+                kept.display().to_string()
+            };
+            zip.raw_copy_file_rename(member, name)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        }
+        for op in ops {
+            if let ArchiveOp::Mkdir(dir) = op {
+                let options = zip::write::SimpleFileOptions::default();
+                zip.add_directory(dir.display().to_string(), options)
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            }
+        }
+        Ok(())
+    })();
+    if ctx.cancelled() {
+        return Err(Aborted);
+    }
+    if let Err(err) = copied {
+        return Ok(Err(err));
+    }
+    match zip.finish() {
+        Ok(_) => Ok(Ok(())),
+        Err(err) => Ok(Err(io::Error::new(io::ErrorKind::InvalidData, err))),
+    }
+}
+
+fn edit_tar(
+    ctx: &mut Ctx,
+    archive: &Path,
+    ops: &[ArchiveOp],
+    name: &str,
+    temp: &Path,
+) -> Result<Result<(), io::Error>, Aborted> {
+    let mut tar = match TarSink::create(temp, name) {
+        Ok(sink) => tar::Builder::new(sink),
+        Err(err) => return Ok(Err(err)),
+    };
+    tar.follow_symlinks(false);
+    let copied = (|| -> io::Result<()> {
+        let mut old = tar::Archive::new(tar_source(archive, name)?);
+        for entry in old.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.into_owned();
+            let Some(kept) = ArchiveOp::apply(ops, &path) else {
+                continue;
+            };
+            let mut header = entry.header().clone();
+            let kind = header.entry_type();
+            match entry.link_name()? {
+                Some(link) if kind.is_symlink() || kind.is_hard_link() => {
+                    tar.append_link(&mut header, &kept, &link)?;
+                }
+                _ => tar.append_data(&mut header, &kept, &mut entry)?,
+            }
+        }
+        for op in ops {
+            if let ArchiveOp::Mkdir(dir) = op {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Directory);
+                header.set_size(0);
+                header.set_mode(0o755);
+                header.set_cksum();
+                tar.append_data(&mut header, dir, &mut io::empty())?;
+            }
+        }
+        Ok(())
+    })();
+    if ctx.cancelled() {
+        return Err(Aborted);
+    }
+    if let Err(err) = copied {
+        return Ok(Err(err));
+    }
+    match tar.into_inner().and_then(TarSink::finish) {
+        Ok(()) => Ok(Ok(())),
+        Err(err) => Ok(Err(err)),
+    }
 }
 
 /// Copy INTO a tar archive (R4): tars cannot append in place across
@@ -2692,6 +2967,183 @@ mod tests {
             .read_to_string(&mut content)
             .unwrap();
         assert_eq!(content, "was here");
+    }
+
+    /// An archive with a small tree in it, in whichever container.
+    fn seed_archive(dir: &Path, name: &str) -> PathBuf {
+        let archive = dir.join(name);
+        if name.ends_with(".zip") {
+            let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+            let options = zip::write::SimpleFileOptions::default();
+            for (member, body) in [
+                ("keep.txt", &b"kept"[..]),
+                ("drop.txt", &b"dropped"[..]),
+                ("dir/inner.txt", &b"inside"[..]),
+                ("dir/second.txt", &b"also inside"[..]),
+            ] {
+                zip.start_file(member, options).unwrap();
+                zip.write_all(body).unwrap();
+            }
+            zip.finish().unwrap();
+        } else {
+            let sink = TarSink::create(&archive, name).unwrap();
+            let mut tar = tar::Builder::new(sink);
+            for (member, body) in [
+                ("keep.txt", &b"kept"[..]),
+                ("drop.txt", &b"dropped"[..]),
+                ("dir/inner.txt", &b"inside"[..]),
+                ("dir/second.txt", &b"also inside"[..]),
+            ] {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(body.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                tar.append_data(&mut header, member, body).unwrap();
+            }
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+        archive
+    }
+
+    fn member(archive: &Path, path: &str) -> Option<String> {
+        let afs = crate::archive::ArchiveFs::open(archive).ok()?;
+        let mut text = String::new();
+        afs.open_read(Path::new(path))
+            .ok()?
+            .read_to_string(&mut text)
+            .ok()?;
+        Some(text)
+    }
+
+    #[test]
+    fn archive_edit_removes_renames_and_makes_directories() {
+        for name in ["box.zip", "box.tar", "box.tar.gz"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let archive = seed_archive(tmp.path(), name);
+            let result = run(
+                spawn_archive_edit(
+                    archive.clone(),
+                    vec![
+                        ArchiveOp::Remove(PathBuf::from("drop.txt")),
+                        ArchiveOp::Rename {
+                            from: PathBuf::from("dir"),
+                            to: PathBuf::from("moved"),
+                        },
+                        ArchiveOp::Mkdir(PathBuf::from("fresh")),
+                    ],
+                ),
+                vec![],
+            );
+            assert!(!result.aborted, "{name}");
+
+            assert_eq!(
+                member(&archive, "keep.txt").as_deref(),
+                Some("kept"),
+                "{name}"
+            );
+            assert!(member(&archive, "drop.txt").is_none(), "{name}");
+            // a rename takes the whole subtree with it
+            assert_eq!(
+                member(&archive, "moved/inner.txt").as_deref(),
+                Some("inside"),
+                "{name}"
+            );
+            assert_eq!(
+                member(&archive, "moved/second.txt").as_deref(),
+                Some("also inside"),
+                "{name}"
+            );
+            assert!(member(&archive, "dir/inner.txt").is_none(), "{name}");
+
+            let afs = crate::archive::ArchiveFs::open(&archive).unwrap();
+            assert!(afs.stat(Path::new("fresh")).unwrap().is_dir(), "{name}");
+            assert!(afs.stat(Path::new("moved")).unwrap().is_dir(), "{name}");
+        }
+    }
+
+    #[test]
+    fn renaming_one_file_does_not_turn_it_into_a_directory() {
+        // joining an empty remainder onto the new name appends a
+        // separator, and a trailing slash is how an archive spells
+        // "directory" - the file would arrive as an empty folder
+        let ops = [ArchiveOp::Rename {
+            from: PathBuf::from("keep.txt"),
+            to: PathBuf::from("renamed.txt"),
+        }];
+        assert_eq!(
+            ArchiveOp::apply(&ops, Path::new("keep.txt")),
+            Some(PathBuf::from("renamed.txt"))
+        );
+        assert_eq!(
+            ArchiveOp::apply(&ops, Path::new("keep.txt.bak")),
+            Some(PathBuf::from("keep.txt.bak"))
+        );
+    }
+
+    #[test]
+    fn removing_a_directory_takes_what_is_inside_it() {
+        for name in ["box.zip", "box.tar"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let archive = seed_archive(tmp.path(), name);
+            let result = run(
+                spawn_archive_edit(
+                    archive.clone(),
+                    vec![ArchiveOp::Remove(PathBuf::from("dir"))],
+                ),
+                vec![],
+            );
+            assert!(!result.aborted, "{name}");
+            assert!(member(&archive, "dir/inner.txt").is_none(), "{name}");
+            assert!(member(&archive, "dir/second.txt").is_none(), "{name}");
+            assert_eq!(
+                member(&archive, "keep.txt").as_deref(),
+                Some("kept"),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_archive_no_one_can_change_says_so_and_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("box.cpio");
+        fs::write(&archive, b"whatever").unwrap();
+        let result = run(
+            spawn_archive_edit(archive.clone(), vec![ArchiveOp::Remove(PathBuf::from("x"))]),
+            vec![Reply::Skip],
+        );
+        assert!(!result.aborted);
+        assert!(
+            result.asks.iter().any(|a| a.contains("can be changed")),
+            "{:?}",
+            result.asks
+        );
+        // the archive it could not change is exactly as it was
+        assert_eq!(fs::read(&archive).unwrap(), b"whatever");
+    }
+
+    #[test]
+    fn packing_into_a_zip_replaces_rather_than_shadows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = seed_archive(tmp.path(), "box.zip");
+        let payload = tmp.path().join("keep.txt");
+        fs::write(&payload, b"the new bytes").unwrap();
+
+        let result = run(
+            spawn_pack_zip(vec![payload], archive.clone(), PathBuf::new()),
+            vec![],
+        );
+        assert!(!result.aborted);
+        assert_eq!(
+            member(&archive, "keep.txt").as_deref(),
+            Some("the new bytes")
+        );
+        // one member with that name, not two with the old one hidden
+        let zip = zip::ZipArchive::new(fs::File::open(&archive).unwrap()).unwrap();
+        let count = zip.file_names().filter(|n| *n == "keep.txt").count();
+        assert_eq!(count, 1);
+        // and everything else survived the rewrite
+        assert_eq!(member(&archive, "dir/inner.txt").as_deref(), Some("inside"));
     }
 
     #[test]

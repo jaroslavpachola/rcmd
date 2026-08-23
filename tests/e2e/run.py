@@ -24,6 +24,7 @@ import tarfile
 import tempfile
 import termios
 import time
+import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BIN = sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO, "target/debug/rcmd")
@@ -273,9 +274,12 @@ def test_archive():
     s.send(DOWN + DOWN)                 # .., out, b.tar.gz -> b.tar.gz
     s.send(b"\r", wait=STEP * 2)        # enter archive
     check("archive: entered", "b.tar.gz://" in s.screen())
-    s.send(F8)                          # must refuse
-    check("archive: read-only", "read-only" in s.screen())
     s.send(END)                         # -> inside.txt
+    # a tar is writable now: F8 offers to delete rather than refusing.
+    # Say no - the rest of this scenario wants the member still there.
+    s.send(F8, wait=STEP)
+    check("archive: delete offered", "Delete" in s.screen())
+    s.send(b"n", wait=STEP)
     s.send(F5)
     s.send(b"\r", wait=STEP * 3)        # extract to out/
     extracted = os.path.join(play, "out/inside.txt")
@@ -345,8 +349,8 @@ def test_cpio():
     scr = s.screen()
     check("cpio: entered", "box.cpio.gz://" in scr)
     check("cpio: listing", "hello.txt" in scr and "sub" in scr and "point" in scr)
-    s.send(F8)                          # must refuse
-    check("cpio: read-only", "read-only" in s.screen())
+    s.send(F8, wait=STEP)               # cpio cannot be rewritten
+    check("cpio: read-only", "only .zip and .tar" in s.screen())
     s.send(b"\x13hello\r", wait=STEP)   # -> hello.txt
     s.send(F3, wait=STEP * 2)
     check("cpio: F3 views member", "from the cpio" in s.screen())
@@ -578,8 +582,8 @@ def test_iso():
     scr = s.screen()
     check("iso: entered", "disc.iso://" in scr)
     check("iso: rock ridge names", "readme.txt" in scr and "docs" in scr)
-    s.send(F8)                          # must refuse
-    check("iso: read-only", "read-only" in s.screen())
+    s.send(F8, wait=STEP)               # a disc image cannot be rewritten
+    check("iso: read-only", "only .zip and .tar" in s.screen())
     s.send(END)                         # -> readme.txt
     s.send(F3, wait=STEP * 2)
     check("iso: F3 views a file", "burned to the disc" in s.screen())
@@ -714,6 +718,70 @@ def test_vfslist():
     check("vfslist: the panel left the archive", "b.tar.gz://" not in scr)
     check("vfslist: and is local again", play in scr)
     s.quit()
+    shutil.rmtree(root)
+
+
+def test_archive_write():
+    """Delete, rename and mkdir inside a zip, and F5 replacing a member
+    instead of shadowing it."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "out"))
+    box = os.path.join(play, "box.zip")
+    with zipfile.ZipFile(box, "w") as z:
+        z.writestr("keep.txt", "kept\n")
+        z.writestr("drop.txt", "dropped\n")
+        z.writestr("dir/inner.txt", "inside\n")
+
+    s = Session(play, home, args=(play, os.path.join(play, "out")))
+    s.send(b"\x13box\r", wait=STEP)     # quick search -> box.zip
+    s.send(b"\r", wait=STEP * 2)
+    check("archwrite: entered", "box.zip://" in s.screen())
+
+    # .., dir, drop.txt, keep.txt
+    s.send(DOWN + DOWN)                 # -> drop.txt
+    s.send(F8, wait=STEP)
+    check("archwrite: delete asks first", "Delete" in s.screen())
+    s.send(b"y", wait=STEP * 3)
+    check("archwrite: delete ran", wait_for(s, "done - 1 item"))
+    with zipfile.ZipFile(box) as z:
+        names = z.namelist()
+    check("archwrite: the member is gone",
+          "drop.txt" not in names and "keep.txt" in names)
+
+    # rename the surviving file with F6 and a bare name
+    s.send(HOME_K + DOWN + DOWN)        # .., dir, keep.txt -> keep.txt
+    s.send(F6, wait=STEP)
+    s.send(b"\x15renamed.txt\r", wait=STEP * 3)
+    check("archwrite: rename ran", wait_for(s, "done -"))
+    with zipfile.ZipFile(box) as z:
+        names = z.namelist()
+        body = z.read("renamed.txt").decode()
+    check("archwrite: the member moved",
+          "renamed.txt" in names and "keep.txt" not in names and body == "kept\n")
+
+    # F7 makes a directory inside the archive
+    s.send(F7, wait=STEP)
+    s.send(b"fresh\r", wait=STEP * 3)
+    check("archwrite: mkdir ran", wait_for(s, "done -"))
+    with zipfile.ZipFile(box) as z:
+        names = z.namelist()
+    check("archwrite: the directory is there", "fresh/" in names)
+    check("archwrite: and the tree survived", "dir/inner.txt" in names)
+
+    # F5 a same-named file in: one member, not two
+    s.quit()
+    open(os.path.join(play, "out", "renamed.txt"), "w").write("replaced\n")
+    s = Session(play, home, args=(os.path.join(play, "out"), play))
+    s.send(b"\x13renamed\r", wait=STEP)
+    s.send(F5)
+    s.send(b"\x15" + box.encode() + b"://\r", wait=STEP * 4)
+    check("archwrite: packed over the member", wait_for(s, "done -"))
+    s.quit()
+    with zipfile.ZipFile(box) as z:
+        names = z.namelist()
+        body = z.read("renamed.txt").decode()
+    check("archwrite: replaced, not shadowed",
+          names.count("renamed.txt") == 1 and body == "replaced\n")
     shutil.rmtree(root)
 
 
@@ -2796,6 +2864,7 @@ def main():
         test_patch,
         test_mbox,
         test_vfslist,
+        test_archive_write,
         test_find,
         test_compare,
         test_watch,

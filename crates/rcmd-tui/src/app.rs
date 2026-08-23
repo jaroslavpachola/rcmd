@@ -5309,6 +5309,11 @@ impl App {
                     self.remote_mkdir(&value);
                     return;
                 }
+                if let Some(archive) = self.panels[self.active].archive.clone() {
+                    let dir = self.panels[self.active].cwd.join(value.trim_matches('/'));
+                    self.start_archive_edit(archive, vec![fsops::ArchiveOp::Mkdir(dir)], "create");
+                    return;
+                }
                 let path = self.resolve(&value);
                 match std::fs::create_dir_all(&path) {
                     Ok(()) => {
@@ -5509,7 +5514,17 @@ impl App {
         // local or archive source, local or zip:// destination
         if is_move {
             if src_archive {
-                self.status = Some(" archive is read-only ".into());
+                // a relative destination stays inside the archive: that
+                // is a rename, which a rewrite can do. An absolute one
+                // means leaving the archive, which is a copy followed by
+                // a delete and is better asked for as those two things.
+                if value.is_empty() || Path::new(value).is_absolute() || value.contains("://") {
+                    self.status = Some(" moving out of an archive is a copy - use F5 ".into());
+                } else if let Some(archive) = self.editable_archive() {
+                    let inside = self.panels[self.active].cwd.join(value.trim_matches('/'));
+                    let ops = self.archive_rename_ops(&sources, &inside);
+                    self.start_archive_edit(archive, ops, "move");
+                }
             } else if split_vfs_dest(value).is_some() {
                 self.status = Some(" cannot move into an archive ".into());
             } else {
@@ -5726,7 +5741,81 @@ impl App {
         });
     }
 
+    /// Where each source lands under `inside`. One source renamed onto a
+    /// name that is not an existing directory is a plain rename - which
+    /// is what F6 on a single entry means - and everything else moves
+    /// into the destination directory under its own name.
+    fn archive_rename_ops(&self, sources: &[PathBuf], inside: &Path) -> Vec<fsops::ArchiveOp> {
+        let panel = &self.panels[self.active];
+        let into_dir = sources.len() > 1
+            || panel
+                .fs
+                .stat(inside)
+                .map(|entry| entry.is_dir())
+                .unwrap_or(false);
+        sources
+            .iter()
+            .map(|from| fsops::ArchiveOp::Rename {
+                from: from.clone(),
+                to: if into_dir {
+                    inside.join(from.file_name().unwrap_or_default())
+                } else {
+                    inside.to_path_buf()
+                },
+            })
+            .collect()
+    }
+
+    /// The archive the active panel is inside, if that container is one
+    /// rcmd can rewrite. zip and tar can be; a deb, an rpm, an iso or a
+    /// cpio cannot - not because the code is missing but because
+    /// rewriting a package or a disc image is not what a panel is for.
+    fn editable_archive(&mut self) -> Option<PathBuf> {
+        let archive = self.panels[self.active].archive.clone()?;
+        let name = archive
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+        if name.ends_with(".zip") || fsops::is_tar_name(&name) {
+            return Some(archive);
+        }
+        self.status = Some(" only .zip and .tar archives can be changed ".into());
+        None
+    }
+
+    /// Run one batch of changes against an archive. Every op goes in one
+    /// job because the container is rewritten once, however many members
+    /// the batch touches.
+    fn start_archive_edit(&mut self, archive: PathBuf, ops: Vec<fsops::ArchiveOp>, verb: &str) {
+        let count = ops.len();
+        let handle = fsops::spawn_archive_edit(archive, ops);
+        self.jobs.push(Job {
+            title: format!(" {verb} {count} item(s) in the archive "),
+            handle,
+            total_files: 0,
+            total_bytes: 0,
+            files_done: 0,
+            bytes_done: 0,
+            current: PathBuf::new(),
+            file_done: 0,
+            file_total: 0,
+            rate: 0.0,
+            rate_mark: (Instant::now(), 0),
+            started: Instant::now(),
+            ask: None,
+            button: 0,
+            src_panel: self.active,
+            background: false,
+        });
+    }
+
     fn start_delete(&mut self, paths: Vec<PathBuf>, permanent: bool) {
+        if let Some(archive) = self.panels[self.active].archive.clone() {
+            let ops = paths.into_iter().map(fsops::ArchiveOp::Remove).collect();
+            self.start_archive_edit(archive, ops, "delete");
+            return;
+        }
         let verb = if permanent { "delete" } else { "trash" };
         let count = paths.len();
         let handle = if self.panels[self.active].is_remote() {
@@ -6187,8 +6276,8 @@ impl App {
     }
 
     fn open_transfer(&mut self, is_move: bool) {
-        if is_move && self.panels[self.active].archive.is_some() {
-            self.status = Some(" archive is read-only ".into());
+        let in_archive = self.panels[self.active].archive.is_some();
+        if is_move && in_archive && self.editable_archive().is_none() {
             return;
         }
         let sources = self.panels[self.active].targets();
@@ -6200,14 +6289,23 @@ impl App {
         let other = &self.panels[self.active ^ 1];
         // a remote or archive panel on the other side prefills its
         // virtual path - accepting it uploads / packs into the zip
-        let mut dest = if other.is_remote() {
+        // moving inside an archive is a rename, so the bare name is the
+        // useful default; an absolute path there would mean leaving the
+        // archive, which F5 does and F6 does not
+        let mut dest = if is_move && in_archive {
+            sources
+                .first()
+                .and_then(|src| src.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        } else if other.is_remote() {
             other.display_path()
         } else if other.is_local() || is_move {
             other.local_cwd().display().to_string()
         } else {
             other.display_path()
         };
-        if !dest.ends_with('/') {
+        if !(is_move && in_archive) && !dest.ends_with('/') {
             dest.push('/');
         }
         self.dialog = Some(Dialog::Transfer(Box::new(TransferDialog {
@@ -6229,7 +6327,12 @@ impl App {
     /// S-F5 / S-F6: copy or rename the cursor file without leaving the
     /// directory - the dialog prefills the bare name for editing.
     fn open_transfer_here(&mut self, is_move: bool) {
-        if !self.require_local() {
+        let in_archive = self.panels[self.active].archive.is_some();
+        if in_archive {
+            if self.editable_archive().is_none() {
+                return;
+            }
+        } else if !self.require_local() {
             return;
         }
         let panel = &self.panels[self.active];
@@ -6516,8 +6619,7 @@ impl App {
     }
 
     fn open_mkdir(&mut self) {
-        if self.panels[self.active].archive.is_some() {
-            self.status = Some(" archive is read-only ".into());
+        if self.panels[self.active].archive.is_some() && self.editable_archive().is_none() {
             return;
         }
         self.dialog = Some(Dialog::Input(InputDialog {
@@ -6543,13 +6645,12 @@ impl App {
     }
 
     fn open_delete(&mut self, permanent: bool) {
-        let panel = &self.panels[self.active];
-        if panel.archive.is_some() {
-            self.status = Some(" archive is read-only ".into());
+        if self.panels[self.active].archive.is_some() && self.editable_archive().is_none() {
             return;
         }
-        // no remote trash: F8 on an SFTP panel deletes permanently
-        let permanent = permanent || panel.is_remote();
+        let panel = &self.panels[self.active];
+        // no trash inside an archive or on a server: both delete outright
+        let permanent = permanent || panel.is_remote() || panel.archive.is_some();
         let paths = panel.targets();
         if paths.is_empty() {
             self.status = Some(" nothing selected ".into());

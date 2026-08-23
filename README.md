@@ -345,11 +345,18 @@ and any install scriptlets sit beside it as `prein`, `postin`, `preun`,
 xz, lzma, bzip2 or zstd. Signatures are stepped over, not checked: a
 listing is not a claim that a package is authentic. F5 copies members out with the
 usual progress/overwrite dialogs, F3 views them; move, delete, and mkdir
-are disabled inside. Copying **into** an archive works for zip only
-(members are appended in place - tar formats would need a full rewrite):
-F5 with the destination panel inside a zip, or any destination written
-as `path/to/archive.zip://dir`. The archive index loads once at open;
-each member read decodes only that member.
+are disabled inside. Copying **into** an archive works for zip and tar: F5 with the
+destination panel inside one, or any destination written as
+`path/to/archive.zip://dir`. A member with the same name is **replaced**,
+not shadowed by a second copy of the name. The archive index loads once
+at open; each member read decodes only that member.
+
+Inside a `.zip` or `.tar`, **F8 deletes**, **F6 renames** (type a bare
+name - an absolute one would mean leaving the archive, which is a copy)
+and **F7 makes a directory**. Each batch rewrites the container once, so
+deleting five members costs one rewrite rather than five, and the
+original is only replaced when the new one is complete. The other
+formats - deb, rpm, iso, cpio and the 7z-backed ones - stay read-only.
 
 **Editor** (F4): a built-in mcedit-style editor. F2 saves (atomically,
 preserving permissions and CRLF line endings), F3 starts marking

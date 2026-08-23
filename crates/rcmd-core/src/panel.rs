@@ -397,14 +397,28 @@ impl Panel {
         if let Some(archive) = &self.archive {
             self.fs = Arc::new(ArchiveFs::open(archive)?);
         }
-        let mut entries = prepare_listing(
-            &*self.fs,
-            &self.cwd,
-            self.show_hidden,
-            self.filter.as_deref(),
-            self.sort_key,
-            self.sort_reverse,
-        )?;
+        let listing = |dir: &Path, fs: &dyn FsProvider| {
+            prepare_listing(
+                fs,
+                dir,
+                self.show_hidden,
+                self.filter.as_deref(),
+                self.sort_key,
+                self.sort_reverse,
+            )
+        };
+        // the directory this panel is standing in can be renamed or
+        // removed by an edit to the archive; falling back to its root
+        // beats showing a listing that is no longer there
+        let mut entries = match listing(&self.cwd, &*self.fs) {
+            Ok(entries) => entries,
+            Err(_) if !self.cwd.as_os_str().is_empty() => {
+                self.cwd = PathBuf::new();
+                self.cursor = 0;
+                listing(&self.cwd, &*self.fs)?
+            }
+            Err(err) => return Err(err),
+        };
         // ".." also at an archive's root: it leads back out of the archive
         entries.insert(0, Entry::parent());
         self.marked
