@@ -8,7 +8,7 @@
 
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -106,6 +106,38 @@ impl FileFacts {
     }
 }
 
+/// What a copy or move does beyond moving the bytes - MC's copy dialog
+/// checkboxes. The defaults are the careful ones and deliberately not
+/// mc's: attributes are kept, links are recreated rather than followed,
+/// relative symlinks keep pointing where they pointed, and a directory
+/// copied onto an existing directory of its own name goes *inside* it
+/// instead of merging into it. mc's default there is the merge, which is
+/// the one that can silently mix two trees together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransferOpts {
+    /// Copy permissions and modification times onto the target.
+    pub preserve: bool,
+    /// Copy what a symlink points at, instead of the link itself.
+    pub follow_links: bool,
+    /// A directory copied onto an existing directory goes inside it;
+    /// off merges the source's contents into the target, as mc does.
+    pub dive: bool,
+    /// Recompute relative symlinks so they resolve to the same file
+    /// from wherever they land.
+    pub stable_symlinks: bool,
+}
+
+impl Default for TransferOpts {
+    fn default() -> TransferOpts {
+        TransferOpts {
+            preserve: true,
+            follow_links: false,
+            dive: true,
+            stable_symlinks: true,
+        }
+    }
+}
+
 /// What to do with a target that already exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Overwrite {
@@ -139,23 +171,26 @@ impl JobHandle {
     }
 }
 
-pub fn spawn_copy(sources: Vec<PathBuf>, dest: PathBuf) -> JobHandle {
-    spawn(move |ctx| {
+pub fn spawn_copy(sources: Vec<PathBuf>, dest: PathBuf, opts: TransferOpts) -> JobHandle {
+    spawn_with(opts, move |ctx| {
         let (files, bytes) = scan(&sources);
         let _ = ctx.tx.send(JobEvent::Total { files, bytes });
-        let into_dir = dest.is_dir() || sources.len() > 1;
+        let multiple = sources.len() > 1;
+        let into_dir = dest.is_dir() || multiple;
         for src in &sources {
             if ctx.cancelled() {
                 return Err(Aborted);
             }
-            copy_tree(ctx, src, &target_for(src, &dest, into_dir))?;
+            let target = transfer_target(src, &dest, multiple, into_dir, ctx.opts);
+            ctx.copy_root = Some(src.clone());
+            copy_tree(ctx, src, &target)?;
         }
         Ok(())
     })
 }
 
-pub fn spawn_move(sources: Vec<PathBuf>, dest: PathBuf) -> JobHandle {
-    spawn(move |ctx| {
+pub fn spawn_move(sources: Vec<PathBuf>, dest: PathBuf, opts: TransferOpts) -> JobHandle {
+    spawn_with(opts, move |ctx| {
         // Totals start as item counts; a cross-device fallback re-announces
         // them with real file/byte numbers for that subtree.
         let mut totals = (sources.len() as u64, 0u64);
@@ -163,12 +198,14 @@ pub fn spawn_move(sources: Vec<PathBuf>, dest: PathBuf) -> JobHandle {
             files: totals.0,
             bytes: totals.1,
         });
-        let into_dir = dest.is_dir() || sources.len() > 1;
+        let multiple = sources.len() > 1;
+        let into_dir = dest.is_dir() || multiple;
         for src in &sources {
             if ctx.cancelled() {
                 return Err(Aborted);
             }
-            move_one(ctx, src, &target_for(src, &dest, into_dir), &mut totals)?;
+            let target = transfer_target(src, &dest, multiple, into_dir, ctx.opts);
+            move_one(ctx, src, &target, &mut totals)?;
         }
         Ok(())
     })
@@ -563,6 +600,10 @@ struct Ctx {
     /// The sticky answer to existing targets, once one has been given.
     policy: Policy,
     skip_all_errors: bool,
+    opts: TransferOpts,
+    /// The source currently being copied, so a symlink can tell whether
+    /// it points inside the copy or out of it.
+    copy_root: Option<PathBuf>,
 }
 
 impl Ctx {
@@ -744,6 +785,13 @@ impl Ctx {
 }
 
 fn spawn(work: impl FnOnce(&mut Ctx) -> Result<(), Aborted> + Send + 'static) -> JobHandle {
+    spawn_with(TransferOpts::default(), work)
+}
+
+fn spawn_with(
+    opts: TransferOpts,
+    work: impl FnOnce(&mut Ctx) -> Result<(), Aborted> + Send + 'static,
+) -> JobHandle {
     let (event_tx, event_rx) = mpsc::channel();
     let (reply_tx, reply_rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -758,6 +806,8 @@ fn spawn(work: impl FnOnce(&mut Ctx) -> Result<(), Aborted> + Send + 'static) ->
             skipped: 0,
             policy: Policy::Ask,
             skip_all_errors: false,
+            opts,
+            copy_root: None,
         };
         let aborted = work(&mut ctx).is_err();
         let _ = ctx.tx.send(JobEvent::Done {
@@ -801,12 +851,106 @@ fn scan(paths: &[PathBuf]) -> (u64, u64) {
     (files, bytes)
 }
 
+/// MC's stable symlinks: a *relative* link copied somewhere else would
+/// point at a different file, so its value is recomputed from the new
+/// location back to the same target.
+///
+/// With one refinement mc does not make, and which is very likely why mc
+/// ships this switched off: a link pointing *inside* the tree being
+/// copied is left exactly as it is. Rewriting those would aim the copy
+/// back at the original tree, leaving it depending on a directory the
+/// user may be about to delete; leaving them keeps the copy
+/// self-contained. Only links reaching outside the copy - the ones that
+/// would otherwise break - are rewritten.
+fn stable_link_target(target: &Path, src: &Path, dst: &Path, root: Option<&Path>) -> PathBuf {
+    if target.is_absolute() {
+        return target.to_path_buf();
+    }
+    let (Some(src_dir), Some(dst_dir)) = (src.parent(), dst.parent()) else {
+        return target.to_path_buf();
+    };
+    let pointed_at = lexical_join(src_dir, target);
+    if let Some(root) = root
+        && pointed_at.starts_with(root)
+    {
+        return target.to_path_buf();
+    }
+    relative_to(&pointed_at, &lexical_join(dst_dir, Path::new(""))).unwrap_or(pointed_at)
+}
+
+/// `base` + `rest`, with `.` dropped and `..` cancelled against the
+/// component before it. Purely textual: the file it names need not
+/// exist, which matters for a link that is copied before its target is.
+fn lexical_join(base: &Path, rest: &Path) -> PathBuf {
+    let mut out: Vec<std::ffi::OsString> = Vec::new();
+    let mut absolute = false;
+    for component in base.components().chain(rest.components()) {
+        match component {
+            Component::RootDir => {
+                absolute = true;
+                out.clear();
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if out.last().is_some_and(|last| last != "..") {
+                    out.pop();
+                } else if !absolute {
+                    out.push("..".into());
+                }
+            }
+            other => out.push(other.as_os_str().to_os_string()),
+        }
+    }
+    let mut path = if absolute {
+        PathBuf::from("/")
+    } else {
+        PathBuf::new()
+    };
+    path.extend(out);
+    path
+}
+
+/// `path` written relative to `base`, with `..` for each level that has
+/// to be climbed. Both are taken as literal component lists.
+fn relative_to(path: &Path, base: &Path) -> Option<PathBuf> {
+    let mut theirs = path.components().peekable();
+    let mut ours = base.components().peekable();
+    while theirs.peek().is_some() && theirs.peek() == ours.peek() {
+        theirs.next();
+        ours.next();
+    }
+    let mut out = PathBuf::new();
+    for _ in ours {
+        out.push("..");
+    }
+    out.extend(theirs);
+    (!out.as_os_str().is_empty()).then_some(out)
+}
+
 fn target_for(src: &Path, dest: &Path, into_dir: bool) -> PathBuf {
     if into_dir {
         dest.join(src.file_name().unwrap_or_default())
     } else {
         dest.to_path_buf()
     }
+}
+
+/// Where one source lands, with mc's "dive into subdirs" taken into
+/// account: turned off, a lone directory copied onto an existing
+/// directory merges its *contents* into it instead of landing inside
+/// it. Only meaningful for a single source - several sources have to
+/// keep their names apart.
+fn transfer_target(
+    src: &Path,
+    dest: &Path,
+    multiple: bool,
+    into_dir: bool,
+    opts: TransferOpts,
+) -> PathBuf {
+    if !multiple && !opts.dive && into_dir && src.is_dir() {
+        return dest.to_path_buf();
+    }
+    target_for(src, dest, into_dir)
 }
 
 fn read_names(ctx: &mut Ctx, dir: &Path) -> Result<Option<Vec<std::ffi::OsString>>, Aborted> {
@@ -823,7 +967,18 @@ fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
     if ctx.cancelled() {
         return Err(Aborted);
     }
-    let Some(meta) = ctx.with_retry(src, || src.symlink_metadata())? else {
+    // "Follow links" copies what a link points at, so the metadata that
+    // decides the branch below is the followed one. A dangling link has
+    // nothing to follow and is recreated as a link, which beats failing.
+    let meta = if ctx.opts.follow_links {
+        match fs::metadata(src) {
+            Ok(meta) => Some(meta),
+            Err(_) => ctx.with_retry(src, || src.symlink_metadata())?,
+        }
+    } else {
+        ctx.with_retry(src, || src.symlink_metadata())?
+    };
+    let Some(meta) = meta else {
         return Ok(());
     };
     if meta.is_dir() {
@@ -844,7 +999,8 @@ fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
             copy_tree(ctx, &src.join(&name), &dst.join(&name))?;
         }
         // after the children, so their creation doesn't bump it again
-        if let Ok(modified) = meta.modified()
+        if ctx.opts.preserve
+            && let Ok(modified) = meta.modified()
             && let Ok(dir) = fs::File::open(dst)
         {
             let _ = dir.set_times(fs::FileTimes::new().set_modified(modified));
@@ -858,8 +1014,15 @@ fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
         if ctx.may_overwrite(FileFacts::of_path(src), dst, false)? == Overwrite::Skip {
             return Ok(());
         }
+        let stable = ctx.opts.stable_symlinks;
+        let root = ctx.copy_root.clone();
         let done = ctx.with_retry(src, || {
             let target = fs::read_link(src)?;
+            let target = if stable {
+                stable_link_target(&target, src, dst, root.as_deref())
+            } else {
+                target
+            };
             let _ = fs::remove_file(dst); // overwrite was approved above
             make_symlink(&target, dst)
         })?;
@@ -956,7 +1119,7 @@ fn try_copy_file(ctx: &mut Ctx, src: &Path, dst: &Path, mode: Overwrite) -> Resu
     }
     // an appended-to file keeps its own mode and its new mtime: it is
     // not a copy of the source, it is the target with more in it
-    if fresh {
+    if fresh && ctx.opts.preserve {
         output
             .set_permissions(meta.permissions())
             .map_err(CopyErr::Io)?;
@@ -1583,7 +1746,10 @@ mod tests {
         let dst = tmp.path().join("dst");
         fs::create_dir(&dst).unwrap();
 
-        let out = run(spawn_copy(vec![src.clone()], dst.clone()), vec![]);
+        let out = run(
+            spawn_copy(vec![src.clone()], dst.clone(), TransferOpts::default()),
+            vec![],
+        );
 
         assert!(!out.aborted);
         assert!(out.asks.is_empty());
@@ -1596,6 +1762,183 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stable_symlinks_keep_pointing_at_the_same_file() {
+        // /src/link -> ../target/file, copied to /out/deeper/link
+        let target = stable_link_target(
+            Path::new("../target/file"),
+            Path::new("/src/link"),
+            Path::new("/out/deeper/link"),
+            None,
+        );
+        assert_eq!(target, Path::new("../../target/file"));
+
+        // an absolute link already points where it points
+        assert_eq!(
+            stable_link_target(
+                Path::new("/etc/hosts"),
+                Path::new("/a/l"),
+                Path::new("/b/l"),
+                None
+            ),
+            Path::new("/etc/hosts")
+        );
+
+        // a link that does not move keeps its own value
+        assert_eq!(
+            stable_link_target(
+                Path::new("sibling"),
+                Path::new("/a/l"),
+                Path::new("/a/l2"),
+                None
+            ),
+            Path::new("sibling")
+        );
+
+        // ...and neither is a link that points inside the tree being
+        // copied: rewriting it would tie the copy to the original
+        assert_eq!(
+            stable_link_target(
+                Path::new("../a.txt"),
+                Path::new("/tree/nested/link"),
+                Path::new("/out/tree/nested/link"),
+                Some(Path::new("/tree")),
+            ),
+            Path::new("../a.txt")
+        );
+    }
+
+    #[test]
+    fn a_copied_relative_link_still_resolves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        let out_dir = tmp.path().join("out/deeper");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&out_dir).unwrap();
+        fs::write(tmp.path().join("data.txt"), b"payload").unwrap();
+        std::os::unix::fs::symlink("../data.txt", src_dir.join("link")).unwrap();
+
+        let out = run(
+            spawn_copy(
+                vec![src_dir.join("link")],
+                out_dir.clone(),
+                TransferOpts::default(),
+            ),
+            vec![],
+        );
+        assert_eq!(out.files_done, 1);
+        // it is still a link, and it still reads the same bytes
+        let copied = out_dir.join("link");
+        assert!(copied.symlink_metadata().unwrap().is_symlink());
+        assert_eq!(fs::read(&copied).unwrap(), b"payload");
+
+        // ...which it would not without the rewrite
+        let plain = TransferOpts {
+            stable_symlinks: false,
+            ..TransferOpts::default()
+        };
+        let out_dir2 = tmp.path().join("out2");
+        fs::create_dir_all(&out_dir2).unwrap();
+        run(
+            spawn_copy(vec![src_dir.join("link")], out_dir2.clone(), plain),
+            vec![],
+        );
+        assert_eq!(
+            fs::read_link(out_dir2.join("link")).unwrap(),
+            Path::new("../data.txt")
+        );
+    }
+
+    #[test]
+    fn follow_links_copies_the_content_instead_of_the_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("data.txt"), b"payload").unwrap();
+        std::os::unix::fs::symlink("data.txt", tmp.path().join("link")).unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+
+        let opts = TransferOpts {
+            follow_links: true,
+            ..TransferOpts::default()
+        };
+        run(
+            spawn_copy(vec![tmp.path().join("link")], out.clone(), opts),
+            vec![],
+        );
+        let copied = out.join("link");
+        assert!(
+            !copied.symlink_metadata().unwrap().is_symlink(),
+            "a real file now"
+        );
+        assert_eq!(fs::read(&copied).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn preserve_off_leaves_the_targets_own_times() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("f.txt");
+        fs::write(&src, b"x").unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        set_mtime(&src, old);
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+
+        let opts = TransferOpts {
+            preserve: false,
+            ..TransferOpts::default()
+        };
+        run(spawn_copy(vec![src.clone()], out.clone(), opts), vec![]);
+        let copied = fs::metadata(out.join("f.txt")).unwrap().modified().unwrap();
+        assert!(copied > old, "the copy is new, not as old as the source");
+
+        // ...and on, the source's time comes along
+        let out2 = tmp.path().join("out2");
+        fs::create_dir(&out2).unwrap();
+        run(
+            spawn_copy(vec![src], out2.clone(), TransferOpts::default()),
+            vec![],
+        );
+        assert_eq!(
+            fs::metadata(out2.join("f.txt"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            old
+        );
+    }
+
+    /// MC's "dive into subdirs": off, a directory copied onto an
+    /// existing one of its own name merges into it.
+    #[test]
+    fn dive_decides_whether_a_directory_lands_inside_or_merges() {
+        let make = |root: &Path| {
+            let foo = root.join("foo");
+            fs::create_dir_all(&foo).unwrap();
+            fs::write(foo.join("bar"), b"x").unwrap();
+            let bla_foo = root.join("bla/foo");
+            fs::create_dir_all(&bla_foo).unwrap();
+            (foo, bla_foo)
+        };
+
+        let on = tempfile::tempdir().unwrap();
+        let (foo, bla_foo) = make(on.path());
+        run(
+            spawn_copy(vec![foo], bla_foo.clone(), TransferOpts::default()),
+            vec![],
+        );
+        assert!(bla_foo.join("foo/bar").is_file(), "dive on: inside it");
+
+        let off = tempfile::tempdir().unwrap();
+        let (foo, bla_foo) = make(off.path());
+        let opts = TransferOpts {
+            dive: false,
+            ..TransferOpts::default()
+        };
+        run(spawn_copy(vec![foo], bla_foo.clone(), opts), vec![]);
+        assert!(bla_foo.join("bar").is_file(), "dive off: merged in");
+        assert!(!bla_foo.join("foo").exists());
+    }
+
     /// MC's Append: the source goes on the end of what is already there.
     #[test]
     fn append_adds_to_the_target_instead_of_replacing_it() {
@@ -1606,7 +1949,10 @@ mod tests {
         fs::create_dir(&dst_dir).unwrap();
         fs::write(dst_dir.join("log.txt"), b"first\n").unwrap();
 
-        let out = run(spawn_copy(vec![src], dst_dir.clone()), vec![Reply::Append]);
+        let out = run(
+            spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default()),
+            vec![Reply::Append],
+        );
         assert_eq!(out.files_done, 1);
         assert_eq!(out.skipped, 0);
         assert_eq!(
@@ -1627,14 +1973,17 @@ mod tests {
         fs::write(dst_dir.join("big.bin"), b"0123").unwrap();
 
         let out = run(
-            spawn_copy(vec![src.clone()], dst_dir.clone()),
+            spawn_copy(vec![src.clone()], dst_dir.clone(), TransferOpts::default()),
             vec![Reply::Reget],
         );
         assert_eq!(out.files_done, 1);
         assert_eq!(fs::read(dst_dir.join("big.bin")).unwrap(), b"0123456789");
 
         // a target that is already as long as the source has nothing left
-        let out = run(spawn_copy(vec![src], dst_dir.clone()), vec![Reply::Reget]);
+        let out = run(
+            spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default()),
+            vec![Reply::Reget],
+        );
         assert_eq!(out.files_done, 1);
         assert_eq!(fs::read(dst_dir.join("big.bin")).unwrap(), b"0123456789");
     }
@@ -1664,7 +2013,7 @@ mod tests {
         set_mtime(&dst_dir.join("b.txt"), new);
 
         let out = run(
-            spawn_copy(vec![a, b], dst_dir.clone()),
+            spawn_copy(vec![a, b], dst_dir.clone(), TransferOpts::default()),
             vec![Reply::UpdateAll],
         );
         // asked once, then the policy answered the rest
@@ -1690,7 +2039,7 @@ mod tests {
         fs::write(dst_dir.join("grown.txt"), b"abcd").unwrap();
 
         let out = run(
-            spawn_copy(vec![grown, same], dst_dir.clone()),
+            spawn_copy(vec![grown, same], dst_dir.clone(), TransferOpts::default()),
             vec![Reply::SizeDiffersAll],
         );
         assert_eq!(out.asks.len(), 1);
@@ -1709,7 +2058,7 @@ mod tests {
         fs::create_dir(&dst_dir).unwrap();
         fs::write(dst_dir.join("f.txt"), b"ab").unwrap();
 
-        let handle = spawn_copy(vec![src], dst_dir.clone());
+        let handle = spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default());
         let (mut asked_src, mut asked_dst, mut appendable) = (0, 0, false);
         loop {
             match handle.events.recv().unwrap() {
@@ -1748,7 +2097,7 @@ mod tests {
         fs::write(dst_dir.join("new.txt"), b"old").unwrap();
 
         let out = run(
-            spawn_copy(vec![src.clone()], dst_dir.clone()),
+            spawn_copy(vec![src.clone()], dst_dir.clone(), TransferOpts::default()),
             vec![Reply::Skip],
         );
         assert_eq!(out.asks.len(), 1);
@@ -1756,7 +2105,7 @@ mod tests {
         assert_eq!(fs::read(dst_dir.join("new.txt")).unwrap(), b"old");
 
         let out = run(
-            spawn_copy(vec![src], dst_dir.clone()),
+            spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default()),
             vec![Reply::Overwrite],
         );
         assert_eq!(out.files_done, 1);
@@ -1771,7 +2120,7 @@ mod tests {
         fs::write(dir.join("f"), b"x").unwrap();
 
         let out = run(
-            spawn_copy(vec![dir.clone()], dir.clone()),
+            spawn_copy(vec![dir.clone()], dir.clone(), TransferOpts::default()),
             vec![Reply::Skip],
         );
 
@@ -1789,7 +2138,10 @@ mod tests {
         let dst_dir = tmp.path().join("out");
         fs::create_dir(&dst_dir).unwrap();
 
-        let out = run(spawn_move(vec![src.clone()], dst_dir.clone()), vec![]);
+        let out = run(
+            spawn_move(vec![src.clone()], dst_dir.clone(), TransferOpts::default()),
+            vec![],
+        );
 
         assert!(!out.aborted);
         assert!(!src.exists());
@@ -1868,7 +2220,10 @@ mod tests {
         let out = tmp.path().join("out");
         fs::create_dir(&out).unwrap();
 
-        let result = run(spawn_copy(vec![src], out.clone()), vec![]);
+        let result = run(
+            spawn_copy(vec![src], out.clone(), TransferOpts::default()),
+            vec![],
+        );
 
         assert!(!result.aborted);
         let copied = fs::metadata(out.join("old.txt"))
@@ -2143,7 +2498,10 @@ mod tests {
         fs::create_dir(&dst_dir).unwrap();
         fs::write(dst_dir.join("a"), b"old").unwrap();
 
-        let out = run(spawn_copy(vec![src], dst_dir.clone()), vec![Reply::Abort]);
+        let out = run(
+            spawn_copy(vec![src], dst_dir.clone(), TransferOpts::default()),
+            vec![Reply::Abort],
+        );
 
         assert!(out.aborted);
         assert_eq!(fs::read(dst_dir.join("a")).unwrap(), b"old");

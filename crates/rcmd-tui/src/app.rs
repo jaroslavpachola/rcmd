@@ -15,7 +15,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 use rcmd_core::entry;
 use rcmd_core::find::{self, FindEvent, FindHandle};
-use rcmd_core::fsops::{self, FileFacts, JobEvent, JobHandle, Reply};
+use rcmd_core::fsops::{self, FileFacts, JobEvent, JobHandle, Reply, TransferOpts};
 use rcmd_core::glob::glob_match;
 use rcmd_core::panel::{ListMode, LoadKind, Panel, SortKey};
 use rcmd_core::sftp::{self, ConnectEvent, ConnectReply, SftpFs, SftpUrl};
@@ -148,6 +148,49 @@ pub struct InputDialog {
     pub action: InputAction,
 }
 
+/// F5/F6: MC's copy/move form - where the files go, the switches that
+/// change what "copy" means, and OK / Background / Cancel.
+pub struct TransferDialog {
+    pub title: String,
+    pub dest: String,
+    /// Cursor position in the destination, in characters.
+    pub cursor: usize,
+    pub is_move: bool,
+    pub sources: Vec<PathBuf>,
+    pub opts: TransferOpts,
+    /// Focused row: 0 is the destination, then one per checkbox, then
+    /// [`TRANSFER_ROWS`] for the button row.
+    pub row: usize,
+    /// 0 = OK, 1 = Background, 2 = Cancel.
+    pub button: usize,
+}
+
+/// The field one checkbox drives, reached by reference so the same
+/// function both reads and flips it.
+type OptField = fn(&mut TransferOpts) -> &mut bool;
+
+/// The checkboxes, in the order they are drawn.
+pub const TRANSFER_OPTS: &[(&str, OptField)] = &[
+    ("Preserve attributes", |o| &mut o.preserve),
+    ("Follow links", |o| &mut o.follow_links),
+    ("Dive into subdirs", |o| &mut o.dive),
+    ("Stable symlinks", |o| &mut o.stable_symlinks),
+];
+/// Row index of the button line: after the destination and the boxes.
+pub const TRANSFER_ROWS: usize = TRANSFER_OPTS.len() + 1;
+
+impl TransferDialog {
+    pub fn checked(&self, i: usize) -> bool {
+        let mut opts = self.opts;
+        *(TRANSFER_OPTS[i].1)(&mut opts)
+    }
+
+    fn toggle(&mut self, i: usize) {
+        let field = (TRANSFER_OPTS[i].1)(&mut self.opts);
+        *field = !*field;
+    }
+}
+
 pub struct ConfirmDialog {
     pub title: String,
     pub message: String,
@@ -183,6 +226,8 @@ pub enum Dialog {
     /// panel and closes, which is mc's rule for the dialog - the tree
     /// listing mode moves the other panel instead.
     Tree(Box<Tree>),
+    /// F5/F6: the copy/move form.
+    Transfer(Box<TransferDialog>),
 }
 
 /// The confirmation step of a bulk rename - nothing has touched the
@@ -4182,6 +4227,42 @@ impl App {
                     _ => self.dialog = Some(Dialog::Hotlist(selected)),
                 }
             }
+            Dialog::Transfer(mut d) => {
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Up => {
+                        d.row = d.row.checked_sub(1).unwrap_or(TRANSFER_ROWS);
+                        self.dialog = Some(Dialog::Transfer(d));
+                    }
+                    KeyCode::Down | KeyCode::Tab => {
+                        d.row = if d.row >= TRANSFER_ROWS { 0 } else { d.row + 1 };
+                        self.dialog = Some(Dialog::Transfer(d));
+                    }
+                    KeyCode::Enter => self.submit_transfer(*d),
+                    // on the button row the arrows pick a button, on a
+                    // checkbox row Space flips it, and the destination
+                    // line takes everything else as typing
+                    KeyCode::Left | KeyCode::Right if d.row == TRANSFER_ROWS => {
+                        d.button = if key.code == KeyCode::Left {
+                            d.button.checked_sub(1).unwrap_or(2)
+                        } else {
+                            (d.button + 1) % 3
+                        };
+                        self.dialog = Some(Dialog::Transfer(d));
+                    }
+                    KeyCode::Char(' ') if (1..=TRANSFER_OPTS.len()).contains(&d.row) => {
+                        let row = d.row - 1;
+                        d.toggle(row);
+                        self.dialog = Some(Dialog::Transfer(d));
+                    }
+                    code => {
+                        if d.row == 0 {
+                            edit_line(&mut d.dest, &mut d.cursor, code, key.modifiers);
+                        }
+                        self.dialog = Some(Dialog::Transfer(d));
+                    }
+                }
+            }
             Dialog::Tree(mut tree) => {
                 let plain = !key.modifiers.contains(KeyModifiers::ALT)
                     && !key.modifiers.contains(KeyModifiers::CONTROL);
@@ -4624,8 +4705,12 @@ impl App {
             return;
         }
         match dialog.action {
-            InputAction::CopyTo { sources } => self.route_transfer(sources, &value, false),
-            InputAction::MoveTo { sources } => self.route_transfer(sources, &value, true),
+            InputAction::CopyTo { sources } => {
+                self.route_transfer(sources, &value, false, TransferOpts::default())
+            }
+            InputAction::MoveTo { sources } => {
+                self.route_transfer(sources, &value, true, TransferOpts::default())
+            }
             InputAction::Mkdir => {
                 if self.panels[self.active].is_remote() {
                     self.remote_mkdir(&value);
@@ -4702,7 +4787,30 @@ impl App {
     /// Send F5/F6 to the right job for the source panel and the typed
     /// destination: plain copy/move, archive pack/extract, or a
     /// cross-provider transfer when SFTP is on either side.
-    fn route_transfer(&mut self, sources: Vec<PathBuf>, value: &str, is_move: bool) {
+    /// OK or Background on the copy/move form. Cancel never gets here.
+    fn submit_transfer(&mut self, d: TransferDialog) {
+        if d.button == 2 {
+            return; // Cancel
+        }
+        let background = d.button == 1;
+        self.route_transfer(d.sources, &d.dest, d.is_move, d.opts);
+        // every route ends in a pushed job, or in a status message and
+        // no job at all - marking the last one is right either way
+        if background && let Some(job) = self.jobs.last_mut() {
+            job.background = true;
+        }
+    }
+
+    /// `opts` is what the copy/move form asked for; the paths that do
+    /// not go through it (S-F5, drops into an archive, VFS transfers)
+    /// use the defaults, which is what they did before there was a form.
+    fn route_transfer(
+        &mut self,
+        sources: Vec<PathBuf>,
+        value: &str,
+        is_move: bool,
+        opts: TransferOpts,
+    ) {
         let src_panel = &self.panels[self.active];
         let src_archive = src_panel.archive.is_some();
         // sftp:// destination (must match before the zip:// syntax -
@@ -4747,14 +4855,14 @@ impl App {
             } else if split_vfs_dest(value).is_some() {
                 self.status = Some(" cannot move into an archive ".into());
             } else {
-                self.start_transfer(sources, value, fsops::spawn_move, "move");
+                self.start_transfer(sources, value, fsops::spawn_move, "move", opts);
             }
             return;
         }
         match (split_vfs_dest(value), !src_archive) {
             (Some(_), false) => self.status = Some(" cannot copy from archive to archive ".into()),
             (Some((archive, inside)), true) => self.start_pack(sources, archive, inside),
-            (None, true) => self.start_transfer(sources, value, fsops::spawn_copy, "copy"),
+            (None, true) => self.start_transfer(sources, value, fsops::spawn_copy, "copy", opts),
             (None, false) => self.start_extract(sources, value),
         }
     }
@@ -4859,13 +4967,14 @@ impl App {
         &mut self,
         sources: Vec<PathBuf>,
         dest: &str,
-        spawn: fn(Vec<PathBuf>, PathBuf) -> JobHandle,
+        spawn: fn(Vec<PathBuf>, PathBuf, TransferOpts) -> JobHandle,
         verb: &str,
+        opts: TransferOpts,
     ) {
         let dest = self.resolve(dest);
         self.jobs.push(Job {
             title: format!(" {verb} {} item(s) to {} ", sources.len(), dest.display()),
-            handle: spawn(sources, dest),
+            handle: spawn(sources, dest, opts),
             total_files: 0,
             total_bytes: 0,
             files_done: 0,
@@ -5408,21 +5517,16 @@ impl App {
         if !dest.ends_with('/') {
             dest.push('/');
         }
-        let action = if is_move {
-            InputAction::MoveTo {
-                sources: sources.clone(),
-            }
-        } else {
-            InputAction::CopyTo {
-                sources: sources.clone(),
-            }
-        };
-        self.dialog = Some(Dialog::Input(InputDialog {
+        self.dialog = Some(Dialog::Transfer(Box::new(TransferDialog {
             title: format!(" {verb} {} to: ", Self::describe(&sources)),
             cursor: dest.chars().count(),
-            value: dest,
-            action,
-        }));
+            dest,
+            is_move,
+            sources,
+            opts: TransferOpts::default(),
+            row: 0,
+            button: 0,
+        })));
     }
 
     /// S-F5 / S-F6: copy or rename the cursor file without leaving the

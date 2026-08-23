@@ -1339,6 +1339,64 @@ def test_overwrite():
     shutil.rmtree(root)
 
 
+def test_copyform():
+    """PLAN4 S2: MC's copy/move form - the destination, the switches that
+    change what a copy does, and a Background button."""
+    root, play, home = sandbox()
+    other = os.path.join(root, "other")
+    os.makedirs(other)
+    open(os.path.join(play, "a.txt"), "w").write("hi\n")
+    os.utime(os.path.join(play, "a.txt"), (1_000_000, 1_000_000))
+    open(os.path.join(play, "b.txt"), "w").write("bye\n")
+    s = Session(play, home, args=(play, other))
+
+    s.send(DOWN)                            # onto a.txt
+    s.send(F5, wait=STEP)
+    scr = s.screen()
+    check("copyform: the form opens", "Copy" in scr and "/other" in scr, scr[:200])
+    for label in ("Preserve attributes", "Follow links", "Dive into subdirs",
+                  "Stable symlinks"):
+        check("copyform: %s offered" % label.split()[0].lower(), label in scr, scr[:400])
+    check("copyform: rcmd's defaults are the careful ones",
+          "[x] Preserve attributes" in scr and "[ ] Follow links" in scr, scr[:400])
+    check("copyform: OK/Background/Cancel", "[ Background ]" in scr, scr[:400])
+
+    # Cancel really cancels: down to the buttons, along to Cancel, Enter
+    s.send(DOWN * 5)
+    s.send(b"\x1b[C" * 2)
+    s.send(b"\r", wait=STEP * 2)
+    check("copyform: cancel copied nothing",
+          not os.path.exists(os.path.join(other, "a.txt")))
+
+    # Preserve off: the copy gets its own timestamp, not the source's
+    s.send(F5, wait=STEP)
+    s.send(DOWN)                            # -> Preserve attributes
+    s.send(b" ")
+    check("copyform: space flips the box", "[ ] Preserve attributes" in s.screen(),
+          s.screen()[:400])
+    s.send(b"\r", wait=STEP * 3)
+    copied = os.path.join(other, "a.txt")
+    check("copyform: OK ran the copy", os.path.exists(copied))
+    check("copyform: preserve off leaves a fresh mtime",
+          os.path.exists(copied) and os.stat(copied).st_mtime > 1_000_000,
+          str(os.stat(copied).st_mtime if os.path.exists(copied) else "missing"))
+
+    # Background: the job detaches, the panels come straight back
+    s.send(DOWN, wait=STEP)                 # onto b.txt
+    if "b.txt" not in status_line(s):
+        s.send(DOWN, wait=STEP)
+    s.send(F5, wait=STEP)
+    s.send(DOWN * 5)
+    s.send(b"\x1b[C")                       # -> Background
+    s.send(b"\r", wait=STEP * 3)
+    scr = s.screen()
+    check("copyform: background leaves no dialog up", "[ Background ]" not in scr, scr[:200])
+    check("copyform: and the copy still happened",
+          os.path.exists(os.path.join(other, "b.txt")))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_mcimport():
     """PLAN4 S0: `rcmd --import-mc DIR` converts mc's menu, mc.ext and
     keymap into an rcmd config fragment on stdout, warning on stderr
@@ -2077,6 +2135,7 @@ def main():
         test_highlight,
         test_panelmenus,
         test_overwrite,
+        test_copyform,
         test_mcimport,
         test_keycontexts,
         test_options,

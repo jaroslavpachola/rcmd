@@ -363,8 +363,12 @@ const HELP_TEXT: &[&str] = &[
     "  (the four keys above work while the command line is empty)",
     "",
     "# File operations  (marked entries, or the cursor entry)",
-    "  F5              copy",
-    "  F6              move / rename",
+    "  F5              copy - a form: where to, then MC's switches for",
+    "                  what a copy means (preserve attributes, follow",
+    "                  links, dive into subdirs, stable symlinks), then",
+    "                  OK / Background / Cancel. Space flips a box,",
+    "                  Up/Down move, Background starts the job detached",
+    "  F6              move / rename (the same form)",
     "  F7              make directory",
     "  F8              delete to trash",
     "  Shift+F8        delete permanently",
@@ -632,6 +636,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Input(d) => draw_input(frame, d),
             Dialog::Confirm(d) => draw_confirm(frame, d),
             Dialog::Tree(tree) => draw_tree_dialog(frame, tree),
+            Dialog::Transfer(d) => draw_transfer(frame, d),
             Dialog::Hotlist(selected) => {
                 draw_hotlist(frame, &app.config.hotlist, &app.hotlist_recent(), *selected)
             }
@@ -2759,6 +2764,59 @@ fn draw_tree_rows(frame: &mut Frame, area: Rect, tree: &Tree, base: Style, selec
 /// F9 > Command > Directory tree. Enter takes the current panel to the
 /// selected directory and closes - the panel's own tree mode is the one
 /// that stays open and moves the *other* panel.
+/// F5/F6: MC's copy/move form. The destination on top, the switches
+/// that change what the copy does under it, then OK / Background /
+/// Cancel - Background starts the job detached, which is otherwise only
+/// reachable by pressing b once it is already running.
+fn draw_transfer(frame: &mut Frame, d: &crate::app::TransferDialog) {
+    use crate::app::{TRANSFER_OPTS, TRANSFER_ROWS};
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    // destination + one row per option + a blank + the buttons
+    let area = centered(64, TRANSFER_OPTS.len() as u16 + 5, frame.area());
+    let inner = popup(frame, area, &d.title, base);
+    let row_at = |i: u16| Rect {
+        x: inner.x + 1,
+        y: inner.y + i,
+        width: inner.width.saturating_sub(2),
+        height: 1,
+    };
+    let width = inner.width.saturating_sub(2) as usize;
+
+    let dest = tail(&d.dest, width.saturating_sub(1));
+    frame.render_widget(
+        Line::from(format!(" {dest:<w$}", w = width.saturating_sub(1))).style(if d.row == 0 {
+            sel
+        } else {
+            base
+        }),
+        row_at(0),
+    );
+    for (i, (label, _)) in TRANSFER_OPTS.iter().enumerate() {
+        let mark = if d.checked(i) { "[x]" } else { "[ ]" };
+        let text = format!(" {mark} {label}");
+        frame.render_widget(
+            Line::from(format!("{text:<width$}")).style(if d.row == i + 1 { sel } else { base }),
+            row_at(i as u16 + 1),
+        );
+    }
+    let buttons = ["OK", "Background", "Cancel"];
+    let selected = if d.row == TRANSFER_ROWS {
+        d.button
+    } else {
+        usize::MAX
+    };
+    frame.render_widget(
+        buttons_line(&buttons, selected, base, sel),
+        row_at(TRANSFER_OPTS.len() as u16 + 2),
+    );
+    // the cursor sits in the destination while that row has the focus
+    if d.row == 0 {
+        let x = inner.x + 1 + (d.cursor.min(width.saturating_sub(2)) as u16);
+        frame.set_cursor_position((x, inner.y));
+    }
+}
+
 fn draw_tree_dialog(frame: &mut Frame, tree: &Tree) {
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let selected = Style::new().fg(th().select_fg).bg(th().select_bg);

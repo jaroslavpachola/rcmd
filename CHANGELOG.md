@@ -1,5 +1,30 @@
 # Changelog
 
+## 3.14.0 - 2026-08-23
+
+- **MC's copy/move form** (4.0 S2): F5 and F6 open a form rather than a
+  bare destination line. Under the destination are the four switches
+  that change what a copy *means* - **preserve attributes**, **follow
+  links**, **dive into subdirs**, **stable symlinks** - and the buttons
+  are **OK / Background / Cancel**, where Background starts the job
+  detached instead of making you press `b` once it is already running.
+  Space flips a box, Up/Down move between rows.
+- The defaults are rcmd's careful ones, deliberately not mc's:
+  attributes preserved, links recreated rather than followed, symlinks
+  kept stable, and a directory copied onto an existing directory of its
+  own name lands **inside** it. mc merges the two directories there,
+  which is the one behaviour that can silently mix two trees together;
+  turning "dive into subdirs" off gives you mc's version.
+- **Stable symlinks got a refinement mc does not have**, and it is
+  probably why mc ships the option off: a link pointing *inside* the
+  tree being copied is left alone. Rewriting those would aim the fresh
+  copy back at the original tree - which the user may be about to
+  delete - so only links reaching outside the copy, the ones that would
+  otherwise break, are recomputed.
+- Paths that do not go through the form (Shift+F5, copying into an
+  archive, transfers over SFTP) keep the defaults, which is what they
+  did before there was a form.
+
 ## 3.13.0 - 2026-08-23
 
 - **MC's overwrite prompt** (4.0 S2): "Target already exists -

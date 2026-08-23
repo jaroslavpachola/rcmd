@@ -136,7 +136,7 @@ end
 | Insert, Ctrl+T | Mark entry and advance |
 | `+` / `-` (or `\`) | Select / unselect by glob |
 | `*` | Invert marks |
-| F5 | Copy marked (or cursor) entry |
+| F5 | Copy marked (or cursor) entry - opens MC's form: destination, preserve attributes / follow links / dive into subdirs / stable symlinks, and OK / Background / Cancel |
 | F6 | Move / rename |
 | F7 | Make directory |
 | F8 | Delete to trash |
