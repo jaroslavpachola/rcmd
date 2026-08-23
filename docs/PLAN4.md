@@ -74,7 +74,7 @@ only way to script), rcmd keeps its own shape and imports mc's data.
 - `C-x l` hard link, `C-x C-s` edit symlink, relative-symlink option.
 - Wire the confirmation toggles from S0 through every prompt.
 
-### S3 - VFS breadth
+### S3 - VFS breadth - DONE (2026-08-23)
 
 - `fish://` and `ftp://` (the 3.0 refusal is overturned for these two).
 - extfs-class formats: deb, rpm, iso9660, cpio, lha/arj/cab, patchfs,

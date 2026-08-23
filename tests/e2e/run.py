@@ -2751,6 +2751,92 @@ def test_sftp():
     shutil.rmtree(root)
 
 
+def test_fish():
+    """fish://: a panel on a server's shell rather than its SFTP
+    subsystem - the same SSH connection, a different thing done with
+    it."""
+    if os.environ.get("RCMD_E2E_SFTP") == "0":
+        print("SKIP fish (RCMD_E2E_SFTP=0)")
+        return
+    py = sftp_python()
+    if py is None:
+        print("SKIP fish (no python with paramiko - pip install paramiko)")
+        return
+    root, play, home = sandbox()
+    remote = os.path.join(root, "remote")
+    os.makedirs(os.path.join(remote, "docs"))
+    open(os.path.join(remote, "server.txt"), "w").write("through the shell\n")
+    open(os.path.join(remote, "two words.txt"), "w").write("spaces survive\n")
+    open(os.path.join(play, "upload.txt"), "w").write("sent over fish\n")
+
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    server = subprocess.Popen(
+        [py, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "sftp_server.py"), str(port)],
+        env={**os.environ, "RCMD_SFTP_PASSWORD": "secret"},
+        stdout=subprocess.PIPE,
+    )
+    try:
+        assert server.stdout.readline().strip() == b"READY", "ssh server failed to start"
+
+        s = Session(play, home)
+        s.send(f"cd fish://tester@127.0.0.1:{port}{remote}\r".encode(), wait=STEP * 2)
+        check("fish: host key dialog", wait_for(s, "Unknown host"))
+        s.send(b"y")
+        check("fish: password prompt", wait_for(s, "SSH authentication"))
+        s.send(b"secret\r", wait=STEP * 3)
+        scr = s.screen()
+        check("fish: connected", "fish://tester@127.0.0.1" in scr)
+        check("fish: listing", "server.txt" in scr and "docs" in scr)
+        # ls -l could not promise this one; NUL-separated records can
+        check("fish: a name with a space in it", "two words.txt" in scr)
+
+        s.send(b"\x13server\r", wait=STEP)
+        s.send(F3, wait=STEP * 2)
+        check("fish: F3 reads through the shell", "through the shell" in s.screen())
+        s.send(b"q", wait=STEP)
+
+        s.send(F5)
+        s.send(b"\x15" + play.encode() + b"\r", wait=STEP * 3)
+        downloaded = os.path.join(play, "server.txt")
+        check("fish: download",
+              wait_for(s, "done -")
+              and os.path.isfile(downloaded)
+              and open(downloaded).read() == "through the shell\n")
+
+        s.send(F7, wait=STEP)
+        s.send(b"made-over-fish\r", wait=STEP * 2)
+        check("fish: remote mkdir", os.path.isdir(os.path.join(remote, "made-over-fish")))
+
+        s.send(b"\t", wait=STEP)
+        s.send(b"\x12", wait=STEP)
+        s.send(b"\x13upload\r", wait=STEP)
+        s.send(F5)
+        s.send(f"\x15fish://tester@127.0.0.1:{port}{remote}\r".encode(), wait=STEP * 4)
+        uploaded = os.path.join(remote, "upload.txt")
+        check("fish: upload",
+              wait_for(s, "done -")
+              and os.path.isfile(uploaded)
+              and open(uploaded).read() == "sent over fish\n")
+
+        s.send(b"\t", wait=STEP)
+        s.send(b"\x12", wait=STEP)
+        s.send(b"\x13upload\r", wait=STEP)
+        s.send(F8, wait=STEP)
+        check("fish: delete asks about the server", wait_for(s, "from the server?"))
+        s.send(b"y", wait=STEP * 3)
+        check("fish: remote delete",
+              wait_for(s, "done -") and not os.path.exists(uploaded))
+        s.quit()
+    finally:
+        server.kill()
+        server.wait()
+    shutil.rmtree(root)
+
+
 def test_sftp_auth():
     """R2: passphrase-protected key + keyboard-interactive auth."""
     if os.environ.get("RCMD_E2E_SFTP") == "0":
@@ -2985,6 +3071,7 @@ def main():
         test_editor,
         test_subshell,
         test_sftp,
+        test_fish,
         test_sftp_auth,
         test_scale,
     ):

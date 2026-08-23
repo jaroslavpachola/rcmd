@@ -4,6 +4,7 @@ pub mod complete;
 pub mod cpio;
 pub mod entry;
 pub mod find;
+pub mod fish;
 pub mod fsops;
 pub mod ftp;
 pub mod glob;

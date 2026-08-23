@@ -15,6 +15,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 use rcmd_core::entry;
 use rcmd_core::find::{self, FindEvent, FindHandle};
+use rcmd_core::fish;
 use rcmd_core::fsops::{self, FileFacts, JobEvent, JobHandle, Rename, Reply, TransferOpts};
 use rcmd_core::ftp::{self, FtpUrl};
 use rcmd_core::glob::glob_match;
@@ -1667,13 +1668,16 @@ impl App {
                 None => ftp::spawn_connect(url),
             }
         } else {
-            let Some(url) = SftpUrl::parse(input) else {
-                self.status = Some(" bad URL - sftp://[user@]host[:port][/path] ".into());
+            let fish = input.starts_with("fish://");
+            let scheme = if fish { "fish" } else { "sftp" };
+            let Some(url) = SftpUrl::parse_as(scheme, input) else {
+                self.status = Some(format!(" bad URL - {scheme}://[user@]host[:port][/path] "));
                 return;
             };
-            match self.connection(&url.prefix()) {
-                Some(fs) => remote::spawn_reuse(fs, url.path, url.host),
-                None => sftp::spawn_connect(url),
+            match (self.connection(&url.prefix()), fish) {
+                (Some(fs), _) => remote::spawn_reuse(fs, url.path, url.host),
+                (None, true) => fish::spawn_connect(url),
+                (None, false) => sftp::spawn_connect(url),
             }
         };
         self.status = Some(format!(" connecting to {}… - Esc cancels ", handle.host));
@@ -3042,7 +3046,7 @@ impl App {
             Action::Shell => self.pending_exec = Some(Exec::Shell),
             Action::SftpLink => {
                 self.dialog = Some(Dialog::Input(InputDialog {
-                    title: " Remote link (sftp:// or ftp://[user@]host[/path]) ".into(),
+                    title: " Remote link (sftp:// fish:// ftp://[user@]host[/path]) ".into(),
                     value: "sftp://".into(),
                     cursor: 7,
                     action: InputAction::SftpConnect,
@@ -5494,7 +5498,12 @@ impl App {
             let parsed = if value.starts_with("ftp://") {
                 FtpUrl::parse(value).map(|url| (url.prefix(), url.display(), url.path))
             } else {
-                SftpUrl::parse(value).map(|url| (url.prefix(), url.display(), url.path))
+                let scheme = if value.starts_with("fish://") {
+                    "fish"
+                } else {
+                    "sftp"
+                };
+                SftpUrl::parse_as(scheme, value).map(|url| (url.prefix(), url.display(), url.path))
             };
             let Some((prefix, label, path)) = parsed else {
                 self.status = Some(" bad URL - scheme://[user@]host[:port]/path ".into());
@@ -6997,7 +7006,7 @@ fn edit_line(value: &mut String, cursor: &mut usize, code: KeyCode, mods: KeyMod
 /// paths return None.
 /// A location that lives on a server rather than on this machine.
 fn is_remote_url(target: &str) -> bool {
-    target.starts_with("sftp://") || target.starts_with("ftp://")
+    target.starts_with("sftp://") || target.starts_with("ftp://") || target.starts_with("fish://")
 }
 
 fn split_vfs_dest(input: &str) -> Option<(PathBuf, PathBuf)> {

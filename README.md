@@ -308,6 +308,15 @@ rather than three: `debian-binary` at the root, the metadata and
 maintainer scripts under `CONTROL/`, and everything the package
 installs under `CONTENTS/`.
 
+**FISH**: `cd fish://[user@]host[:port][/path]` puts a panel on a
+server that has a shell but no SFTP subsystem. It is the same SSH
+connection, the same authentication and the same host-key dialog; what
+differs is what happens after login. Every operation is one small
+command, and the listing comes back as NUL-separated records rather than
+`ls -l` output, so a filename containing a space, a newline or a `->`
+survives - which `ls -l` cannot promise. `stat(1)` is used where the
+server has it and an `ls`-based fallback where it does not.
+
 **FTP**: `cd ftp://[user[:password]@]host[:port][/path]` connects a
 panel to an FTP server - no user means the anonymous login. Listings
 prefer `MLSD`, which says what everything is, and fall back to `LIST`

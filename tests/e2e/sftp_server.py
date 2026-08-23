@@ -11,7 +11,9 @@ $RCMD_SFTP_AUTH picks the accepted method:
 import base64
 import os
 import socket
+import subprocess
 import sys
+import threading
 
 import paramiko
 from paramiko import (
@@ -57,12 +59,43 @@ class Server(ServerInterface):
     def check_channel_request(self, kind, chanid):
         return OPEN_SUCCEEDED
 
+    def check_channel_exec_request(self, channel, command):
+        """What fish:// needs: run a shell command and hand back its
+        output. Real sshd does this; the SFTP subsystem alone does not."""
+        threading.Thread(target=run_exec, args=(channel, command),
+                         daemon=True).start()
+        return True
+
     def get_allowed_auths(self, username):
         return {
             "password": "password",
             "pubkey": "publickey",
             "interactive": "keyboard-interactive",
         }[AUTH]
+
+
+def run_exec(channel, command):
+    if isinstance(command, bytes):
+        command = command.decode("utf-8", "replace")
+    try:
+        stdin = channel.makefile("rb").read()
+        proc = subprocess.run(["/bin/sh", "-c", command], input=stdin,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        channel.sendall(proc.stdout)
+        if proc.stderr:
+            channel.sendall_stderr(proc.stderr)
+        channel.send_exit_status(proc.returncode)
+    except Exception as err:                       # noqa: BLE001 - a test server
+        try:
+            channel.sendall_stderr(str(err).encode())
+            channel.send_exit_status(1)
+        except OSError:
+            pass
+    finally:
+        try:
+            channel.close()
+        except OSError:
+            pass
 
 
 class Handle(SFTPHandle):

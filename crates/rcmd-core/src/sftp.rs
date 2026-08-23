@@ -30,6 +30,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// home directory", resolved once connected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SftpUrl {
+    /// "sftp" or "fish" - the same transport, a different thing done
+    /// with it once the session is up.
+    pub scheme: String,
     pub user: String,
     pub host: String,
     pub port: u16,
@@ -38,7 +41,13 @@ pub struct SftpUrl {
 
 impl SftpUrl {
     pub fn parse(s: &str) -> Option<SftpUrl> {
-        let rest = s.strip_prefix("sftp://")?;
+        SftpUrl::parse_as("sftp", s)
+    }
+
+    /// Parse under a given scheme. `fish://` reaches the same servers
+    /// over the same SSH transport, so it reaches the same type too.
+    pub fn parse_as(scheme: &str, s: &str) -> Option<SftpUrl> {
+        let rest = s.strip_prefix(&format!("{scheme}://"))?;
         let (hostpart, path) = match rest.find('/') {
             Some(i) => (&rest[..i], PathBuf::from(&rest[i..])),
             None => (rest, PathBuf::new()),
@@ -55,6 +64,7 @@ impl SftpUrl {
             return None;
         }
         Some(SftpUrl {
+            scheme: scheme.to_string(),
             user,
             host: host.to_string(),
             port,
@@ -63,12 +73,16 @@ impl SftpUrl {
     }
 
     /// `sftp://user@host[:port]` - the connection identity, also the
-    /// panel title prefix and the connection-cache key.
+    /// panel title prefix and the connection-cache key. The scheme is
+    /// part of it: the same host reached two ways is two connections.
     pub fn prefix(&self) -> String {
         if self.port == 22 {
-            format!("sftp://{}@{}", self.user, self.host)
+            format!("{}://{}@{}", self.scheme, self.user, self.host)
         } else {
-            format!("sftp://{}@{}:{}", self.user, self.host, self.port)
+            format!(
+                "{}://{}@{}:{}",
+                self.scheme, self.user, self.host, self.port
+            )
         }
     }
 
@@ -105,11 +119,14 @@ pub fn spawn_connect(url: SftpUrl) -> ConnectHandle {
     }
 }
 
-fn connect(
+/// Dial a host and authenticate. What is done with the session after
+/// that - the SFTP subsystem, or a shell - is the caller's business,
+/// which is what lets `fish://` reuse every question asked here.
+pub fn ssh_session(
     url: &SftpUrl,
     tx: &Sender<ConnectEvent>,
     rx: &Receiver<ConnectReply>,
-) -> Result<(Arc<SftpFs>, PathBuf, Vec<Entry>), String> {
+) -> Result<Session, String> {
     let info = |msg: String| {
         let _ = tx.send(ConnectEvent::Info(msg));
     };
@@ -139,7 +156,15 @@ fn connect(
 
     info(format!("Authenticating as {}…", url.user));
     authenticate(url, &sess, tx, rx)?;
+    Ok(sess)
+}
 
+fn connect(
+    url: &SftpUrl,
+    tx: &Sender<ConnectEvent>,
+    rx: &Receiver<ConnectReply>,
+) -> Result<(Arc<SftpFs>, PathBuf, Vec<Entry>), String> {
+    let sess = ssh_session(url, tx, rx)?;
     let sftp = sess.sftp().map_err(|e| format!("sftp: {e}"))?;
     let start = if url.path.as_os_str().is_empty() {
         sftp.realpath(Path::new("."))

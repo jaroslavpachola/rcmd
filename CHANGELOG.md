@@ -1,5 +1,31 @@
 # Changelog
 
+## 3.32.0 - 2026-08-23
+
+- **`fish://` panels** (4.0 S3, and the last of it): `cd
+  fish://[user@]host[:port][/path]` puts a panel on a server that has a
+  shell but no SFTP subsystem. Same SSH connection, same
+  authentication, same host-key dialog - what differs is only what
+  happens after login. Browsing, F3, F5 both ways, F6, F7 and F8 all
+  work, and so do symlinks, hard links, chmod and chown, because on the
+  far end they are just commands.
+- **The listing is NUL-separated records, not `ls -l`.** mc's fish
+  parses an `ls -l` variant, which cannot survive a filename with a
+  space, a newline or a `->` in it. rcmd asks the remote shell for one
+  record per entry with each field NUL-terminated, so all three do.
+  `stat(1)` is used where the server has it and an `ls`-based fallback
+  where it does not, which is the split between ordinary boxes and the
+  busybox ones.
+- **Every path reaches the shell as one quoted word.** A file called
+  `$(rm -rf /)` is a filename, and it is treated as one.
+- Each operation is one `exec` on the shared session rather than mc's
+  persistent helper shell. More round trips, and much easier to be sure
+  of: nothing can be left half-said on a channel that the next command
+  then reads as its own output.
+- **4.0 S3 is complete**: every extfs format mc shipped, writable zip
+  and tar archives, the active VFS list, and all three remote
+  protocols.
+
 ## 3.31.0 - 2026-08-23
 
 - **`ftp://` panels** (4.0 S3, overturning the 3.0 refusal):
