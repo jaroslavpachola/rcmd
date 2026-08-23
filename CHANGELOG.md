@@ -1,24 +1,24 @@
 # Changelog
 
-## Unreleased
+## 3.8.0 - 2026-08-23
+
+Toward parity ([docs/PLAN4.md](docs/PLAN4.md)): S0's foundations are
+complete - the config/state split, one grouped options dialog,
+per-context key bindings and the mc import layer - and S1 has begun
+turning the panels into mc's, with the Layout dialog, the per-panel
+mini status and the multi-column brief listing.
 
 - **Multi-column brief listing** (4.0 S1): the brief listing shows names
   in two columns by default, as MC does, filled column by column so
   Down still lands on the file drawn underneath. `brief_columns` sets
   the count (1 keeps the old single full-width column, up to 6); paging
   moves by whole screens of names and a click finds the right column.
-
-## Unreleased
-
 - **Mini status** (4.0 S1): each panel can carry its own status row
   describing the entry under *its* cursor (permissions, size, name,
   symlink target), MC-style. Off by default - rcmd's single status line
   already covers the active panel, so the row earns its space mainly by
   showing what the *other* panel is sitting on. Switch it on under
   F9 > Options > Panel options > Layout.
-
-## Unreleased
-
 - **Layout settings** (4.0 S1): MC's Layout dialog arrives as a section
   of the options form. The panels can be **stacked horizontally**
   instead of side by side, the **split size** is adjustable (20-80%,
@@ -27,9 +27,6 @@
   permanently, rcmd only had F9, and it is clickable like the rest.
   With the command line hidden, plain characters only trigger key
   bindings - there is nowhere for them to be typed.
-
-## Unreleased
-
 - **Import from Midnight Commander** (4.0 S0, completes it):
   `rcmd --import-mc [DIR]` reads mc's `menu`, `mc.ext` (or the newer
   `mc.ext.ini`) and `mc.keymap` and prints an rcmd config fragment on
@@ -40,9 +37,6 @@
   globs (including one alternation group, so `\.(png|jpg)$` becomes two
   rules); `type/` matchers, `%cd` commands, unsupported macros and
   unmappable keys are reported on stderr instead of being guessed at.
-
-## Unreleased
-
 - **Per-context key bindings** (4.0 S0): `[keys.viewer]` and
   `[keys.editor]` rebind keys inside the F3 viewer and the F4 editor,
   which were hardcoded until now; bare `[keys]` entries still bind in
@@ -52,9 +46,6 @@
   delete-line, undo, redo, copy, cut, paste, select-all, wrap. Unknown
   contexts, keys and action names warn in the status line instead of
   stopping the program.
-
-## Unreleased
-
 - **One grouped options dialog** (4.0 S0): F9 > Options > Panel options
   is now a sectioned form - Panel, Confirmation, Shell and editor,
   Appearance - covering MC's whole setting surface in one screen rather
@@ -64,9 +55,6 @@
   (off, keeping rcmd's instant F10). Turning the overwrite question off
   answers "overwrite all" for every job; turning the delete question off
   makes F8 act at once.
-
-## Unreleased
-
 - **MC command-line keys** (4.0 S0): `M-h` opens the command history as
   a pick list (Enter puts a line back on the command line), `M-p`/`M-n`
   walk it like MC (`C-p`/`C-n` still work), `M-a` inserts the panel
@@ -81,9 +69,6 @@
   prefix by hand (Esc 1..0 for F1..F10) needs the follow-up key inside
   that window - `esc_timeout_ms = 1000` in the config restores MC's
   older, roomier feel.
-
-## Unreleased
-
 - **Config/state split** (4.0 S0): `~/.config/rcmd/config.toml` is now
   read-only from rcmd's side - comments and hand formatting survive
   because nothing writes it back. Everything rcmd changes itself (panel

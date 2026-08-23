@@ -4,10 +4,11 @@ A Midnight Commander replacement in Rust: orthodox dual-pane file manager
 with MC keybindings, built on ratatui. The 1.0
 ([docs/PLAN.md](docs/PLAN.md)), 2.0 ([docs/PLAN2.md](docs/PLAN2.md)) and
 3.0 ([docs/PLAN3.md](docs/PLAN3.md)) roadmaps are complete - 3.0's
-flagship is the **persistent subshell** behind Ctrl+O. Next up: 4.0, the
-parity release ([docs/PLAN4.md](docs/PLAN4.md)), whose scope comes from
-a decision-by-decision comparison against mc
-([docs/MC-DIFF.md](docs/MC-DIFF.md)).
+flagship is the **persistent subshell** behind Ctrl+O. 4.0, the parity
+release ([docs/PLAN4.md](docs/PLAN4.md)), is under way: its scope comes
+from a decision-by-decision comparison against mc
+([docs/MC-DIFF.md](docs/MC-DIFF.md)), and its foundations phase shipped
+in 3.8.
 
 ![rcmd demo: browsing, the syntax-highlighted viewer, marking and
 copying, the persistent subshell](docs/demo.gif)
@@ -41,6 +42,16 @@ queue** with background transfers, chmod/chown/symlink dialogs, editor
 soft-wrap + `$1` capture groups + block ops, copy *into* tar, **rar and
 7z browsing** (via 7z/unrar), click-to-sort headers, and an MC alias
 batch (S-F4/S-F5/S-F6, C-x t/p, M-c quick cd…).
+
+**3.8** - toward parity with mc: `config.toml` is now yours alone, with
+everything rcmd changes itself moved to a state file; F9 > Options >
+Panel options is one grouped dialog covering mc's whole setting
+surface; `[keys.viewer]` and `[keys.editor]` rebind inside the viewer
+and the editor; `rcmd --import-mc` converts an existing mc
+configuration; the command line gained mc's keys, macros and a
+persistent history; and the panels gained the **Layout** settings
+(horizontal split, adjustable ratio, optional bars), a **per-panel mini
+status** and the **multi-column brief listing**.
 
 ## Install & run
 
