@@ -344,9 +344,9 @@ fn convert_command(command: &str) -> Option<String> {
     if let Some(after) = rest.strip_prefix("%view") {
         rest = after.trim_start();
         if rest.starts_with('{') {
-            match rest.find('}') {
-                Some(end) => rest = rest[end + 1..].trim_start(),
-                None => return None,
+            {
+                let end = rest.find('}')?;
+                rest = rest[end + 1..].trim_start()
             }
         }
     }
