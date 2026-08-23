@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod format;
 mod git;
 mod keymap;
 mod mcimport;

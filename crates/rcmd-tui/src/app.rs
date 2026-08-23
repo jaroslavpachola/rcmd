@@ -20,6 +20,8 @@ use rcmd_core::glob::glob_match;
 use rcmd_core::panel::{ListMode, LoadKind, Panel, SortKey};
 use rcmd_core::sftp::{self, ConnectEvent, ConnectReply, SftpFs, SftpUrl};
 use rcmd_core::tree::Tree;
+
+use crate::format::{self, Field, Format, Item};
 use rcmd_core::vfs::{FsProvider, LocalFs};
 use rcmd_core::view::FileView;
 
@@ -660,6 +662,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Full listing", "", Action::Listing(ListMode::Full))),
             Some(("&Long listing", "", Action::Listing(ListMode::Long))),
             Some(("&Tree", "", Action::Listing(ListMode::Tree))),
+            Some(("&User defined", "", Action::Listing(ListMode::User))),
             None,
             Some(("&Quick view", "C-x q", Action::QuickView)),
             Some(("&Info panel", "C-x i", Action::InfoView)),
@@ -847,6 +850,9 @@ pub struct App {
     /// Ctrl+X i: which panel shows the info pane, if any (mutually
     /// exclusive with `quick_view`).
     pub info: Option<usize>,
+    /// `listing_format`, parsed once at startup - the config file is
+    /// read-only while rcmd runs, so the format cannot change under it.
+    pub listing_format: Format,
     /// The directory-tree figure of each panel in [`ListMode::Tree`],
     /// built when the mode is entered and dropped when it is left, so
     /// the next visit starts from wherever the panel has got to.
@@ -951,6 +957,8 @@ impl App {
         } else {
             None
         };
+        let (listing_format, format_warnings) = format::parse(&config.listing_format);
+        warnings.extend(format_warnings);
         let status = if warnings.is_empty() {
             None
         } else {
@@ -978,6 +986,7 @@ impl App {
             editor: None,
             quick_view: None,
             info: None,
+            listing_format,
             trees,
             disk: [None, None],
             menu: None,
@@ -1945,8 +1954,15 @@ impl App {
         let offset = self.table_states[side].offset();
         // a brief listing fills column by column, so the x tells us
         // which column was clicked
-        let columns = self.config.columns();
-        let index = if self.panels[side].list_mode == ListMode::Brief && columns > 1 {
+        let columns = match self.panels[side].list_mode {
+            ListMode::User => self.listing_format.repeat.max(1),
+            _ => self.config.columns(),
+        };
+        let index = if matches!(
+            self.panels[side].list_mode,
+            ListMode::Brief | ListMode::User
+        ) && columns > 1
+        {
             let inner_w = area.width.saturating_sub(2).max(1);
             let col_w = (inner_w / columns).max(1);
             let col = (x.saturating_sub(area.x + 1) / col_w).min(columns - 1) as usize;
@@ -1975,10 +1991,38 @@ impl App {
         if rel >= inner_w {
             return;
         }
+        // a user-defined format sorts by whichever field was clicked,
+        // through the same layout the renderer used
+        if self.panels[side].list_mode == ListMode::User {
+            let sets = self.listing_format.repeat.max(1);
+            let set_width = (area.width.saturating_sub(2) / sets).max(1);
+            let mut x = rel as u16 % set_width.max(1);
+            let mut key = None;
+            for (item, width) in self.listing_format.layout(set_width) {
+                if x < width {
+                    key = match item {
+                        Item::Field(Field::Name, _) => Some(SortKey::Name),
+                        Item::Field(Field::Size | Field::BSize, _) => Some(SortKey::Size),
+                        Item::Field(Field::Mtime | Field::Atime | Field::Ctime, _) => {
+                            Some(SortKey::Mtime)
+                        }
+                        _ => None,
+                    };
+                    break;
+                }
+                // +1 for the gap the renderer puts between columns
+                x = x.saturating_sub(width + 1);
+            }
+            if let Some(key) = key {
+                self.panels[side].set_sort(key);
+            }
+            return;
+        }
         let panel = &mut self.panels[side];
         let key = match panel.list_mode {
-            // the tree draws no header row, so there is nothing to sort
-            ListMode::Tree => None,
+            // the tree draws no header row, and a user format was
+            // handled above; neither reaches here
+            ListMode::Tree | ListMode::User => None,
             ListMode::Brief => Some(SortKey::Name),
             ListMode::Full => {
                 // [Name (fill), Size 7, Modify time 12], spacing 1
@@ -2471,9 +2515,10 @@ impl App {
                 panel.list_mode = match panel.list_mode {
                     ListMode::Brief => ListMode::Full,
                     ListMode::Full => ListMode::Long,
-                    // the tree is not part of the cycle (mc does not
-                    // cycle into it either); it is a deliberate visit
-                    ListMode::Long | ListMode::Tree => ListMode::Brief,
+                    // neither the tree nor a user-defined format is
+                    // part of the cycle (mc does not cycle into them
+                    // either); both are a deliberate visit
+                    ListMode::Long | ListMode::Tree | ListMode::User => ListMode::Brief,
                 };
                 self.sync_tree(self.active);
             }

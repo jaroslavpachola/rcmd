@@ -25,8 +25,13 @@ pub struct Config {
     pub show_hidden: bool,
     pub sort_key: String,
     pub sort_reverse: bool,
-    /// Panel listing format: "brief" | "full" | "long".
+    /// Panel listing format: "brief" | "full" | "long" | "tree" |
+    /// "user" (the last one draws `listing_format`).
     pub listing: String,
+    /// MC's user-defined listing format, drawn when `listing = "user"`:
+    /// a panel size, an optional repeat count and then field names.
+    /// See [`crate::format`].
+    pub listing_format: String,
     /// Auto-reload panels when their directory changes on disk.
     pub watch: bool,
     /// Mouse support (click, double-click, wheel). Additive only -
@@ -204,6 +209,7 @@ impl Default for Config {
             sort_key: "name".into(),
             sort_reverse: false,
             listing: "full".into(),
+            listing_format: crate::format::DEFAULT.into(),
             watch: true,
             mouse: true,
             git: true,
@@ -287,6 +293,7 @@ pub fn list_mode_from_name(name: &str) -> ListMode {
         "brief" => ListMode::Brief,
         "long" => ListMode::Long,
         "tree" => ListMode::Tree,
+        "user" => ListMode::User,
         _ => ListMode::Full,
     }
 }
@@ -297,6 +304,7 @@ pub fn list_mode_name(mode: ListMode) -> &'static str {
         ListMode::Full => "full",
         ListMode::Long => "long",
         ListMode::Tree => "tree",
+        ListMode::User => "user",
     }
 }
 

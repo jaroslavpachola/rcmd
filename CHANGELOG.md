@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **User-defined listing format** (4.0 S1, completes the listing work):
+  `listing = "user"` draws whatever `listing_format` says, in mc's own
+  format language - a panel size (`half` or `full`, where `full` takes
+  the one-panel view), an optional repeat count 1-9 laying the field
+  set out side by side, then the fields: `name size bsize type mark
+  mtime atime ctime perm mode nlink ngid nuid owner group inode`, plus
+  `space` and `|`, each with an optional `:width` (`:width+` grows into
+  whatever room is left). mc's own listings are expressible in it -
+  Full is `half type name | size | mtime`, Long is `full perm space
+  nlink space owner space group space size space mtime space name`.
+  Column headers, click-to-sort and the marked/cursor colours all work
+  as in the built-in listings. `type` draws the marker rcmd already
+  uses (`/ ~ @ ! *`); mc's socket, device and pipe marks need the entry
+  model to learn those kinds first. A word the parser does not know costs
+  that one column and says so in the status line, rather than taking
+  the panel down with it.
+
+## Unreleased
+
 - **Directory tree** (4.0 S1): mc's tree figure, in both of its forms.
   F9 > Command > Directory tree opens it as a dialog where Enter takes
   *this* panel to the selected directory and closes; F9 > View > Tree

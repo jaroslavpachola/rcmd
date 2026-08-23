@@ -1132,6 +1132,60 @@ def test_tree():
     shutil.rmtree(root)
 
 
+def test_userformat():
+    """PLAN4 S1: mc's user-defined listing format - `listing = "user"`
+    draws whatever `listing_format` asks for, in mc's own little
+    language."""
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write(
+        'listing = "user"\n'
+        'listing_format = "half name | size:7 | type mode:3"\n'
+    )
+    os.makedirs(os.path.join(play, "subdir"))
+    os.chmod(os.path.join(play, "subdir"), 0o750)
+    open(os.path.join(play, "one.txt"), "w").write("x" * 300)
+    s = Session(play, home)
+    scr = s.screen().split("\n")
+    header, left = scr[1][:59], [ln[:59] for ln in scr]
+
+    check("userformat: fields become columns",
+          "Name" in header and "Size" in header and "T" in header, header)
+    check("userformat: | draws a rule", header.count("│") >= 2, header)
+    dir_row = next((ln for ln in left if "subdir" in ln), "")
+    check("userformat: the octal mode is not clipped", "750" in dir_row, dir_row)
+    check("userformat: type marks the directory", "/" in dir_row, dir_row)
+    file_row = next((ln for ln in left if "one.txt" in ln), "")
+    check("userformat: sizes line up right", "    300" in file_row, file_row)
+    s.quit()
+
+    # a field nobody knows costs one column, not the panel
+    home2 = os.path.join(root, "home2")
+    os.makedirs(os.path.join(home2, ".config", "rcmd"))
+    open(os.path.join(home2, ".config", "rcmd", "config.toml"), "w").write(
+        'listing = "user"\nlisting_format = "half name colour size"\n'
+    )
+    s = Session(play, home2)
+    check("userformat: an unknown field warns", "colour" in status_line(s), status_line(s))
+    check("userformat: and the rest still draws", "one.txt" in s.screen())
+    s.quit()
+
+    # `full` asks for the whole width, so only the active panel is drawn
+    home3 = os.path.join(root, "home3")
+    os.makedirs(os.path.join(home3, ".config", "rcmd"))
+    open(os.path.join(home3, ".config", "rcmd", "config.toml"), "w").write(
+        'listing = "user"\n'
+        'listing_format = "full perm space owner space size space name"\n'
+    )
+    s = Session(play, home3)
+    scr = s.screen().split("\n")
+    check("userformat: full takes the whole width", scr[0].count("┌") == 1, scr[0])
+    check("userformat: and shows its fields", "Perms" in scr[1] and "Owner" in scr[1], scr[1])
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_mcimport():
     """PLAN4 S0: `rcmd --import-mc DIR` converts mc's menu, mc.ext and
     keymap into an rcmd config fragment on stdout, warning on stderr
@@ -1866,6 +1920,7 @@ def main():
         test_brief,
         test_layout,
         test_tree,
+        test_userformat,
         test_mcimport,
         test_keycontexts,
         test_options,

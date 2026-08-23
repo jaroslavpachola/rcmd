@@ -8,6 +8,8 @@ use rcmd_core::entry::{Entry, EntryKind};
 use rcmd_core::panel::{ListMode, Panel};
 use rcmd_core::tree::Tree;
 
+use crate::format::{Field, Format, Item};
+
 use crate::app::{
     App, Ask, ConfirmDialog, ConnectAsk, Dialog, EditPrompt, FindDialog, InputDialog, Job, MENUS,
     MenuState, OptionsDialog, QuickView, menu_label,
@@ -148,6 +150,13 @@ const HELP_TEXT: &[&str] = &[
     "                  brief_columns in the config) / full / long",
     "                  (an active long panel takes the whole width, MC's",
     "                  one-panel view; Tab or cycling back restores the split)",
+    "  F9 > View > User defined   the panel draws listing_format from the",
+    "                  config: a panel size (half/full), an optional repeat",
+    "                  count 1-9, then fields - name size bsize type mark",
+    "                  mtime atime ctime perm mode nlink ngid nuid owner",
+    "                  group inode, plus space and | - each with an optional",
+    "                  :width (:width+ grows). MC's own Full listing is",
+    "                  \"half type name | size | mtime\"",
     "  F9 > View > Tree   the panel becomes a directory tree: Up/Down walk",
     "                  it, Left/Right go to parent/child, Enter opens the",
     "                  selection in the *other* panel and the tree stays,",
@@ -350,8 +359,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // split rather than invisibly forcing fullscreen - the state stays
     // visible and Alt+T on either side always behaves predictably.
     let qv_side = app.quick_view.as_ref().map(|q| q.side);
+    // a user format asks for the full width itself, by starting with
+    // `full` instead of `half`
+    let full_width = app.listing_format.full;
     let listing_long = |i: usize| {
-        qv_side != Some(i) && app.info != Some(i) && app.panels[i].list_mode == ListMode::Long
+        qv_side != Some(i)
+            && app.info != Some(i)
+            && match app.panels[i].list_mode {
+                ListMode::Long => true,
+                ListMode::User => full_width,
+                _ => false,
+            }
     };
     let [left, right] = if listing_long(app.active) {
         let hidden = Rect::new(main.x, main.y, 0, 0);
@@ -378,11 +396,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let visible_rows = active_area
         .height
         .saturating_sub(3 + u16::from(cfg.show_mini_status)) as usize;
-    // a brief listing pages by whole screens of names, not by rows
-    app.panel_rows = if app.panels[app.active].list_mode == ListMode::Brief {
-        visible_rows * cfg.columns() as usize
-    } else {
-        visible_rows
+    // listings laid out in columns page by whole screens of names,
+    // not by rows
+    app.panel_rows = match app.panels[app.active].list_mode {
+        ListMode::Brief => visible_rows * cfg.columns() as usize,
+        ListMode::User => visible_rows * app.listing_format.repeat.max(1) as usize,
+        _ => visible_rows,
     };
     app.areas = crate::app::Areas {
         screen: frame.area(),
@@ -423,6 +442,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     mini: app.config.show_mini_status,
                     columns: app.config.columns(),
                     tree: app.trees[i].as_ref(),
+                    format: &app.listing_format,
                 },
             );
         }
@@ -483,6 +503,8 @@ struct Chrome<'a> {
     columns: u16,
     /// The figure to draw instead of the listing, in tree mode.
     tree: Option<&'a Tree>,
+    /// The parsed `listing_format`, drawn in user mode.
+    format: &'a Format,
 }
 
 fn draw_panel(
@@ -602,6 +624,12 @@ fn draw_panel(
         }
         return;
     }
+    if panel.list_mode == ListMode::User {
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        draw_user_columns(frame, inner, panel, state, &chrome, git);
+        return;
+    }
     if panel.list_mode == ListMode::Brief && chrome.columns > 1 {
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -609,7 +637,9 @@ fn draw_panel(
         return;
     }
     let (labels, constraints): (&[&str], Vec<Constraint>) = match panel.list_mode {
-        ListMode::Brief | ListMode::Tree => (&["Name"], vec![Constraint::Fill(1)]),
+        // brief columns, the tree and a user format have renderers
+        // of their own; they never reach the table
+        ListMode::Brief | ListMode::Tree | ListMode::User => (&["Name"], vec![Constraint::Fill(1)]),
         ListMode::Full => (
             &["Name", "Size", "Modify time"],
             vec![
@@ -671,6 +701,191 @@ fn draw_panel(
         let style = Style::new().fg(th().header_fg).bg(th().panel_bg);
         frame.render_widget(Line::from(entry_summary(panel)).style(style), row);
     }
+}
+
+/// One field's text for one entry. `mark` is the panel's tag state and
+/// `remote` decides whether uid/gid can be resolved to names.
+fn field_text(field: Field, entry: &Entry, marked: bool, remote: bool) -> String {
+    let time = |t: Option<std::time::SystemTime>| {
+        t.map(|t| DateTime::<Local>::from(t).format("%b %e %H:%M").to_string())
+            .unwrap_or_default()
+    };
+    let number = |n: Option<u64>| n.map(|n| n.to_string()).unwrap_or_default();
+    match field {
+        Field::Name => entry.name.to_string_lossy().into_owned(),
+        Field::Size => format_size(entry.size),
+        // mc's bsize: directories say what they are instead of a byte count
+        Field::BSize => {
+            if entry.is_parent() {
+                "UP--DIR".into()
+            } else if entry.is_dir() {
+                "SUB-DIR".into()
+            } else {
+                format_size(entry.size)
+            }
+        }
+        Field::Type => entry_style(entry).0.to_string(),
+        Field::Mark => if marked { "*" } else { " " }.into(),
+        Field::Mtime => time(entry.mtime),
+        Field::Atime => time(entry.extra.atime),
+        Field::Ctime => time(entry.extra.ctime),
+        Field::Perm => entry.perm_string(),
+        // mc's mode is the plain octal, no zero padding - so a
+        // `mode:3` column shows 755 rather than a clipped 075
+        Field::Mode => format!("{:o}", entry.mode & 0o7777),
+        Field::Nlink => number(entry.extra.nlink),
+        Field::Ngid => number(entry.extra.gid.map(u64::from)),
+        Field::Nuid => number(entry.extra.uid.map(u64::from)),
+        Field::Owner => owner_label(entry.extra.uid, remote, true),
+        Field::Group => owner_label(entry.extra.gid, remote, false),
+        Field::Inode => number(entry.extra.inode),
+    }
+}
+
+/// Clip or pad `text` to exactly `width` columns, on the side the field
+/// wants it.
+fn fit(text: &str, width: usize, right: bool) -> String {
+    let len = text.chars().count();
+    if len > width {
+        return text.chars().take(width).collect();
+    }
+    let pad = " ".repeat(width - len);
+    if right {
+        format!("{pad}{text}")
+    } else {
+        format!("{text}{pad}")
+    }
+}
+
+/// MC's user-defined listing: the panel draws whatever `listing_format`
+/// asks for. A repeat count lays the field set out several times side by
+/// side, filled column by column like the brief listing, so Down is
+/// still "the next file".
+fn draw_user_columns(
+    frame: &mut Frame,
+    inner: Rect,
+    panel: &Panel,
+    state: &mut TableState,
+    chrome: &Chrome<'_>,
+    git: Option<&GitStatus>,
+) {
+    let format = chrome.format;
+    let sets = format.repeat.max(1);
+    let body_height = inner.height.saturating_sub(1 + u16::from(chrome.mini));
+    let rows = body_height.max(1) as usize;
+    let per_page = rows * sets as usize;
+    let set_width = (inner.width / sets).max(1);
+    let layout = format.layout(set_width);
+    let remote = panel.is_remote();
+
+    // keep the cursor on screen, scrolling a whole column at a time
+    let mut start = state.offset();
+    if !start.is_multiple_of(rows) {
+        start -= start % rows;
+    }
+    while panel.cursor < start {
+        start = start.saturating_sub(rows);
+    }
+    while panel.cursor >= start + per_page {
+        start += rows;
+    }
+    *state.offset_mut() = start;
+    state.select(None); // cells are highlighted, not whole rows
+
+    let header: Vec<Span> = (0..sets)
+        .flat_map(|_| {
+            layout.iter().map(|(item, width)| {
+                let width = *width as usize;
+                let text = match item {
+                    Item::Field(field, _) => format!("{:^width$}", field.label()),
+                    Item::Space => " ".repeat(width),
+                    Item::Bar => "│".into(),
+                };
+                Span::styled(fit(&text, width, false), Style::new().fg(th().header_fg))
+            })
+        })
+        .collect();
+    frame.render_widget(
+        Line::from(spaced(header, layout.len(), sets)).style(base_style()),
+        Rect { height: 1, ..inner },
+    );
+
+    for row in 0..rows {
+        let mut spans: Vec<Span> = Vec::new();
+        for col in 0..sets as usize {
+            let index = start + col * rows + row;
+            let entry = panel.entries.get(index);
+            let marked = entry.is_some_and(|e| panel.is_marked(e));
+            let under_cursor = chrome.active && entry.is_some() && index == panel.cursor;
+            let style = match entry {
+                Some(entry) => cell_style(marked, under_cursor, entry_style(entry).1),
+                None => base_style(),
+            };
+            for (item, width) in &layout {
+                let width = *width as usize;
+                let text = match (item, entry) {
+                    (Item::Space, _) | (_, None) => " ".repeat(width),
+                    (Item::Bar, _) => fit("│", width, false),
+                    (Item::Field(field, _), Some(entry)) => {
+                        let mut text = field_text(*field, entry, marked, remote);
+                        // the git column only exists inside a work tree,
+                        // and rides on the name like the other listings
+                        if *field == Field::Name
+                            && let Some(status) = git
+                        {
+                            let mark = status.marks.get(&entry.name).copied();
+                            text = format!("{}{text}", mark.unwrap_or(' '));
+                        }
+                        fit(&text, width, field.right_aligned())
+                    }
+                };
+                spans.push(Span::styled(text, style));
+            }
+        }
+        let area = Rect {
+            x: inner.x,
+            y: inner.y + 1 + row as u16,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Line::from(spaced(spans, layout.len(), sets)).style(base_style()),
+            area,
+        );
+    }
+
+    if chrome.mini && inner.height > 1 {
+        let row = Rect {
+            x: inner.x,
+            y: inner.y + inner.height - 1,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Line::from(entry_summary(panel))
+                .style(Style::new().fg(th().header_fg).bg(th().panel_bg)),
+            row,
+        );
+    }
+}
+
+fn base_style() -> Style {
+    Style::new().fg(th().panel_fg).bg(th().panel_bg)
+}
+
+/// Put the one-column gap the built-in listings have between fields -
+/// between columns of one set, not between the sets themselves.
+fn spaced(spans: Vec<Span<'_>>, per_set: usize, sets: u16) -> Vec<Span<'_>> {
+    let mut out = Vec::with_capacity(spans.len() * 2);
+    for (i, span) in spans.into_iter().enumerate() {
+        let last_of_set = per_set > 0 && (i + 1) % per_set == 0;
+        let last = i + 1 == per_set * sets as usize;
+        out.push(span);
+        if !last_of_set && !last {
+            out.push(Span::raw(" "));
+        }
+    }
+    out
 }
 
 /// MC's brief listing: names only, in several columns. Filled column by
@@ -961,8 +1176,9 @@ fn entry_row(
     };
     let size_cell = Cell::from(Line::from(size).right_aligned());
     match mode {
-        // the tree has its own renderer; it never builds table rows
-        ListMode::Brief | ListMode::Tree => Row::new(vec![name_cell]),
+        // the tree and the user format have their own renderers; they
+        // never build table rows
+        ListMode::Brief | ListMode::Tree | ListMode::User => Row::new(vec![name_cell]),
         ListMode::Full => Row::new(vec![name_cell, size_cell, Cell::from(mtime)]),
         ListMode::Long => Row::new(vec![
             Cell::from(entry.perm_string()),

@@ -180,6 +180,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "listing-full" => Action::Listing(ListMode::Full),
         "listing-long" => Action::Listing(ListMode::Long),
         "listing-tree" => Action::Listing(ListMode::Tree),
+        "listing-user" => Action::Listing(ListMode::User),
         "dir-tree" => Action::DirTree,
         "listing-cycle" => Action::ListingCycle,
         "other-same-dir" => Action::OtherSameDir,

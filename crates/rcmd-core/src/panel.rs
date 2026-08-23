@@ -42,16 +42,18 @@ pub enum SortKey {
 }
 
 /// Panel listing format: name-only, the classic three columns, an
-/// ls -l style long format, or mc's directory tree. Pure presentation -
-/// rendering reads it. `Tree` draws a figure of directories instead of
-/// the panel's entries, which is why it is the one mode that ignores
-/// the listing underneath it entirely.
+/// ls -l style long format, mc's directory tree, or whatever the user's
+/// own `listing_format` says. Pure presentation - rendering reads it.
+/// `Tree` draws a figure of directories instead of the panel's entries,
+/// which is why it is the one mode that ignores the listing underneath
+/// it entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListMode {
     Brief,
     Full,
     Long,
     Tree,
+    User,
 }
 
 /// One side of the two-panel view: a directory listing with a cursor and
