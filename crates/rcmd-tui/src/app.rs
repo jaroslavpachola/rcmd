@@ -308,6 +308,8 @@ pub struct ConfirmDialog {
     pub paths: Vec<PathBuf>,
     pub permanent: bool,
     pub kind: ConfirmKind,
+    /// A command the answer would run, for the kinds that need one.
+    pub command: Option<String>,
 }
 
 /// What a [`ConfirmDialog`] does when answered Yes.
@@ -315,6 +317,13 @@ pub struct ConfirmDialog {
 pub enum ConfirmKind {
     Delete,
     Quit,
+    /// Dropping a hotlist entry. There is one dialog slot, so the
+    /// confirm replaces the hotlist and puts it back either way.
+    HotlistDelete {
+        index: usize,
+    },
+    /// Enter about to run an `[[open]]` command.
+    Execute,
 }
 
 pub enum Dialog {
@@ -395,12 +404,14 @@ pub enum Opt {
     ConfirmDelete,
     ConfirmOverwrite,
     ConfirmExit,
+    ConfirmHotlistDelete,
+    ConfirmExecute,
     Subshell,
     ExternalEditor,
     DarkTheme,
 }
 
-pub const OPT_COUNT: usize = 17;
+pub const OPT_COUNT: usize = 19;
 
 /// A row of the options form: a section heading or a setting.
 pub enum OptRow {
@@ -434,6 +445,11 @@ pub const OPTION_ROWS: &[OptRow] = &[
     OptRow::Check(Opt::ConfirmDelete, "Ask before deleting"),
     OptRow::Check(Opt::ConfirmOverwrite, "Ask before overwriting"),
     OptRow::Check(Opt::ConfirmExit, "Ask before quitting"),
+    OptRow::Check(
+        Opt::ConfirmHotlistDelete,
+        "Ask before dropping a hotlist entry",
+    ),
+    OptRow::Check(Opt::ConfirmExecute, "Ask before Enter runs an opener"),
     OptRow::Head("Shell and editor"),
     OptRow::Check(Opt::Subshell, "Persistent subshell"),
     OptRow::Radio(Opt::ExternalEditor, "Editor", "internal", "external"),
@@ -2865,6 +2881,7 @@ impl App {
                         paths: Vec::new(),
                         permanent: false,
                         kind: ConfirmKind::Quit,
+                        command: None,
                     }));
                 } else {
                     self.quit = true;
@@ -2961,6 +2978,8 @@ impl App {
                 values[Opt::ConfirmDelete as usize] = cfg.confirm_delete;
                 values[Opt::ConfirmOverwrite as usize] = cfg.confirm_overwrite;
                 values[Opt::ConfirmExit as usize] = cfg.confirm_exit;
+                values[Opt::ConfirmHotlistDelete as usize] = cfg.confirm_hotlist_delete;
+                values[Opt::ConfirmExecute as usize] = cfg.confirm_execute;
                 values[Opt::Subshell as usize] = cfg.subshell;
                 values[Opt::ExternalEditor as usize] = cfg.editor == "external";
                 values[Opt::DarkTheme as usize] = cfg.theme == "dark";
@@ -3185,6 +3204,18 @@ impl App {
             None => return,
         };
         let cmd = self.expand_macros(&run);
+        if self.config.confirm_execute {
+            self.dialog = Some(Dialog::Confirm(ConfirmDialog {
+                title: " Execute ".into(),
+                message: format!("Run: {}", crate::ui::tail(&cmd, 60)),
+                yes: true,
+                paths: Vec::new(),
+                permanent: false,
+                kind: ConfirmKind::Execute,
+                command: Some(cmd),
+            }));
+            return;
+        }
         self.pending_exec = Some(Exec::Quiet(cmd));
     }
 
@@ -4323,11 +4354,13 @@ impl App {
                 }
             }
             Dialog::Confirm(mut d) => match key.code {
-                KeyCode::Esc | KeyCode::Char('n') => {}
+                KeyCode::Esc | KeyCode::Char('n') => self.confirm_no(&d),
                 KeyCode::Char('y') => self.confirm_yes(d),
                 KeyCode::Enter => {
                     if d.yes {
                         self.confirm_yes(d);
+                    } else {
+                        self.confirm_no(&d);
                     }
                 }
                 KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
@@ -4381,12 +4414,30 @@ impl App {
                         self.dialog = Some(Dialog::Hotlist(selected));
                     }
                     KeyCode::Char('d') => {
-                        if selected < len {
-                            self.config.hotlist.remove(selected);
-                            self.save_hotlist();
+                        match self.config.hotlist.get(selected) {
+                            // only the pinned half can be dropped; the
+                            // recent half is a log, not a list
+                            Some(entry) if self.config.confirm_hotlist_delete => {
+                                let label = entry.label.clone();
+                                self.dialog = Some(Dialog::Confirm(ConfirmDialog {
+                                    title: " Hotlist ".into(),
+                                    message: format!("Drop \"{label}\" from the hotlist?"),
+                                    yes: true,
+                                    paths: Vec::new(),
+                                    permanent: false,
+                                    kind: ConfirmKind::HotlistDelete { index: selected },
+                                    command: None,
+                                }));
+                            }
+                            Some(_) => {
+                                self.config.hotlist.remove(selected);
+                                self.save_hotlist();
+                                let total = self.config.hotlist.len() + recent.len();
+                                self.dialog =
+                                    Some(Dialog::Hotlist(selected.min(total.saturating_sub(1))));
+                            }
+                            None => self.dialog = Some(Dialog::Hotlist(selected)),
                         }
-                        let total = self.config.hotlist.len() + recent.len();
-                        self.dialog = Some(Dialog::Hotlist(selected.min(total.saturating_sub(1))));
                     }
                     KeyCode::Up => {
                         selected = selected.saturating_sub(1);
@@ -4766,6 +4817,8 @@ impl App {
         self.config.confirm_delete = d.get(Opt::ConfirmDelete);
         self.config.confirm_overwrite = d.get(Opt::ConfirmOverwrite);
         self.config.confirm_exit = d.get(Opt::ConfirmExit);
+        self.config.confirm_hotlist_delete = d.get(Opt::ConfirmHotlistDelete);
+        self.config.confirm_execute = d.get(Opt::ConfirmExecute);
         self.config.subshell = d.get(Opt::Subshell);
         if !self.config.subshell {
             self.subshell = None;
@@ -4795,6 +4848,7 @@ impl App {
             (cfg.lynx, cfg.mouse, cfg.watch, cfg.git, cfg.subshell);
         let (show_hidden, editor, theme) = (cfg.show_hidden, cfg.editor.clone(), cfg.theme.clone());
         let (del, over, exit) = (cfg.confirm_delete, cfg.confirm_overwrite, cfg.confirm_exit);
+        let (hot, exec) = (cfg.confirm_hotlist_delete, cfg.confirm_execute);
         let (split, ratio) = (cfg.split.clone(), cfg.split_ratio);
         let mini_status = cfg.show_mini_status;
         let (menubar, status_bar, cmdline, keybar) = (
@@ -4815,6 +4869,8 @@ impl App {
             s.confirm_delete = Some(del);
             s.confirm_overwrite = Some(over);
             s.confirm_exit = Some(exit);
+            s.confirm_hotlist_delete = Some(hot);
+            s.confirm_execute = Some(exec);
             s.split = Some(split);
             s.split_ratio = Some(ratio);
             s.show_menubar = Some(menubar);
@@ -6153,6 +6209,7 @@ impl App {
             paths,
             permanent,
             kind: ConfirmKind::Delete,
+            command: None,
         }));
     }
 
@@ -6161,6 +6218,27 @@ impl App {
         match d.kind {
             ConfirmKind::Delete => self.start_delete(d.paths, d.permanent),
             ConfirmKind::Quit => self.quit = true,
+            ConfirmKind::HotlistDelete { index } => {
+                if index < self.config.hotlist.len() {
+                    self.config.hotlist.remove(index);
+                    self.save_hotlist();
+                }
+                let total = self.config.hotlist.len() + self.hotlist_recent().len();
+                self.dialog = Some(Dialog::Hotlist(index.min(total.saturating_sub(1))));
+            }
+            ConfirmKind::Execute => {
+                if let Some(cmd) = d.command {
+                    self.pending_exec = Some(Exec::Quiet(cmd));
+                }
+            }
+        }
+    }
+
+    /// No (or Esc) on a confirm dialog. Only the hotlist needs anything
+    /// done: its own dialog was displaced to ask the question.
+    fn confirm_no(&mut self, d: &ConfirmDialog) {
+        if let ConfirmKind::HotlistDelete { index } = d.kind {
+            self.dialog = Some(Dialog::Hotlist(index));
         }
     }
 

@@ -327,7 +327,8 @@ const HELP_TEXT: &[&str] = &[
     "                  direction and size, which bars are drawn), Panel (hidden",
     "                  files, lynx-like motion, mouse, auto-reload, git),",
     "                  Confirmation (ask before deleting / overwriting /",
-    "                  quitting), Shell and editor, Appearance - applied",
+    "                  quitting / dropping a hotlist entry / letting Enter",
+    "                  run an opener), Shell and editor, Appearance - applied",
     "                  live and saved at once",
     "  In menus the highlighted letter runs the entry (F9 o p = options)",
     "  Alt+Up          directory hotlist (same as Ctrl+\\)",
@@ -2581,7 +2582,7 @@ fn popup(frame: &mut Frame, area: Rect, title: &str, style: Style) -> Rect {
 }
 
 /// Keep the tail of long paths visible; the tail is the interesting part.
-fn tail(text: &str, max: usize) -> String {
+pub fn tail(text: &str, max: usize) -> String {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= max {
         text.to_string()

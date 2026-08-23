@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.19.0 - 2026-08-23
+
+- **The rest of MC's confirmations** (4.0 S2): mc asks about six things,
+  rcmd asked about three. Two more are now wired, each with its own
+  toggle in F9 > Options > Panel options > Confirmation:
+  - **Dropping a hotlist entry** (`confirm_hotlist_delete`, on by
+    default). `d` in the hotlist removed a line with no way back; it
+    asks first now. rcmd has one dialog slot, so the question replaces
+    the hotlist and puts it back afterwards either way - answering No
+    leaves you where you were, not staring at a panel.
+  - **Enter running an `[[open]]` command** (`confirm_execute`, off by
+    default, as mc has it). You wrote the rule, so the usual answer is
+    "just run it"; the toggle is there for anyone who opens files they
+    did not put there.
+- mc's sixth, history cleanup, has nothing to confirm: rcmd has no
+  clear-history command to guard.
+- Checked the other prompts while wiring these. Bulk rename already
+  refuses to rename onto an existing file rather than overwriting it,
+  and archive extraction goes through the same overwrite question as a
+  copy, so `confirm_overwrite` covers it.
+
 ## 3.18.0 - 2026-08-23
 
 - **MC's chown pick lists** (4.0 S2): Ctrl+X o asked for `user[:group]`

@@ -1540,6 +1540,61 @@ def test_chown():
     shutil.rmtree(root)
 
 
+def test_confirmations():
+    """PLAN4 S2: MC's confirmation set - dropping a hotlist entry and
+    Enter running an opener now ask, and both are toggles."""
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write(
+        'confirm_execute = true\n\n'
+        '[[open]]\nmatch = "*.run"\nrun = "touch ran.marker"\n'
+    )
+    open(os.path.join(play, "thing.run"), "w").write("x\n")
+    s = Session(play, home)
+
+    # the hotlist: 'a' adds this directory, 'd' now asks before dropping
+    s.send(b"\x1c", wait=STEP)              # Ctrl+\ hotlist
+    s.send(b"a")
+    check("confirm: hotlist entry added", "play" in s.screen(), s.screen()[:400])
+    s.send(b"d")
+    scr = s.screen()
+    check("confirm: dropping asks first", "Hotlist" in scr and "Drop" in scr, scr[:400])
+    s.send(b"n", wait=STEP)                 # No puts the hotlist back
+    check("confirm: no keeps the entry",
+          "Directory hotlist" in s.screen() and "play" in s.screen(), s.screen()[:400])
+    s.send(b"d")
+    s.send(b"y", wait=STEP)
+    scr = s.screen()
+    check("confirm: yes dropped it and came back",
+          "Directory hotlist" in scr and "empty" in scr, scr[:400])
+    s.send(b"\x1b", wait=STEP)
+
+    # Enter on a file with an opener asks before running it
+    s.send(DOWN)
+    s.send(b"\r", wait=STEP)
+    check("confirm: execute asks", "Execute" in s.screen() and "touch" in s.screen(),
+          s.screen()[:400])
+    s.send(b"n", wait=STEP)
+    check("confirm: no did not run it",
+          not os.path.exists(os.path.join(play, "ran.marker")))
+    s.send(b"\r", wait=STEP)
+    s.send(b"y", wait=STEP * 4)
+    check("confirm: yes ran it", os.path.exists(os.path.join(play, "ran.marker")),
+          str(sorted(os.listdir(play))))
+
+    # and both are in the options form
+    s.send(b"\x1b[20~")
+    s.send(b"o")
+    s.send(b"p", wait=STEP)
+    scr = s.screen()
+    check("confirm: the form offers both toggles",
+          "hotlist entry" in scr and "opener" in scr, scr[:600])
+    s.send(b"\x1b", wait=STEP)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_mcimport():
     """PLAN4 S0: `rcmd --import-mc DIR` converts mc's menu, mc.ext and
     keymap into an rcmd config fragment on stdout, warning on stderr
@@ -2282,6 +2337,7 @@ def main():
         test_masks,
         test_chmod,
         test_chown,
+        test_confirmations,
         test_mcimport,
         test_keycontexts,
         test_options,

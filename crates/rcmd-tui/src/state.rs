@@ -63,6 +63,10 @@ pub struct State {
     pub confirm_overwrite: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confirm_exit: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirm_hotlist_delete: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirm_execute: Option<bool>,
     /// `None` = never edited in rcmd, so `config.toml`'s list stands.
     /// Once `a`/`d` touches it, this owns the list outright.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -142,6 +146,8 @@ pub fn apply(state: &State, config: &mut Config) {
         confirm_delete,
         confirm_overwrite,
         confirm_exit,
+        confirm_hotlist_delete,
+        confirm_execute,
         brief_columns,
         split,
         split_ratio,
