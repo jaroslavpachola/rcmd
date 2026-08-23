@@ -355,7 +355,7 @@ esc_timeout_ms = 250 # how long a lone Esc waits for its meta follow-up
 show_hidden = true
 sort_key = "name"   # name | ext | size | mtime
 sort_reverse = false
-listing = "full"    # brief | full | long (panel listing format)
+listing = "full"    # brief | full | long | tree (panel listing format)
 
 [keys]              # custom bindings on top of the preset
 "ctrl+y" = "swap-panels"     # bare entries bind in the panel
@@ -371,8 +371,9 @@ listing = "full"    # brief | full | long (panel listing format)
 #   toggle-hidden sort-name sort-ext sort-size sort-mtime sort-reverse
 #   menu mark quick-search hotlist filter up-dir enter history-back
 #   history-forward quick-view info-view user-menu listing-brief
-#   listing-full listing-long listing-cycle other-same-dir other-open-dir
-#   sftp-link find-file panelize compare-dirs dir-size
+#   listing-full listing-long listing-tree listing-cycle other-same-dir
+#   other-open-dir sftp-link find-file panelize compare-dirs dir-size
+#   dir-tree
 
 [[hotlist]]
 label = "projects"

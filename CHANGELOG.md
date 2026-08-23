@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- **Directory tree** (4.0 S1): mc's tree figure, in both of its forms.
+  F9 > Command > Directory tree opens it as a dialog where Enter takes
+  *this* panel to the selected directory and closes; F9 > View > Tree
+  (or `listing = "tree"`) turns the panel itself into the figure, where
+  Enter opens the selection in the **other** panel and the tree stays
+  put - mc's split of the two, and what makes the panel mode a
+  navigator rather than a one-shot chooser. Up/Down walk the figure,
+  Left/Right go to parent/child, F4 switches between mc's dynamic
+  navigation (the default: the figure re-shapes itself around the
+  cursor) and static (everything scanned stays visible), Ctrl+R/F2
+  rescans a branch that has gone stale and F3 forgets one. Typing in
+  the dialog jumps to the next matching directory. Nothing is scanned
+  until it is opened - there is no tree cache to go stale, which is the
+  one thing mc's own figure warns you about. While a panel shows the
+  tree, the actions that mean "the entry under the cursor" (F3-F8,
+  marking, directory size) say so instead of acting on the listing
+  hidden underneath.
+
 ## 3.8.0 - 2026-08-23
 
 Toward parity ([docs/PLAN4.md](docs/PLAN4.md)): S0's foundations are

@@ -286,6 +286,7 @@ pub fn list_mode_from_name(name: &str) -> ListMode {
     match name {
         "brief" => ListMode::Brief,
         "long" => ListMode::Long,
+        "tree" => ListMode::Tree,
         _ => ListMode::Full,
     }
 }
@@ -295,6 +296,7 @@ pub fn list_mode_name(mode: ListMode) -> &'static str {
         ListMode::Brief => "brief",
         ListMode::Full => "full",
         ListMode::Long => "long",
+        ListMode::Tree => "tree",
     }
 }
 

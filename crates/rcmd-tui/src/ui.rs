@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Clear, Gauge, Row, Table, TableState};
 use rcmd_core::entry::{Entry, EntryKind};
 use rcmd_core::panel::{ListMode, Panel};
+use rcmd_core::tree::Tree;
 
 use crate::app::{
     App, Ask, ConfirmDialog, ConnectAsk, Dialog, EditPrompt, FindDialog, InputDialog, Job, MENUS,
@@ -147,6 +148,13 @@ const HELP_TEXT: &[&str] = &[
     "                  brief_columns in the config) / full / long",
     "                  (an active long panel takes the whole width, MC's",
     "                  one-panel view; Tab or cycling back restores the split)",
+    "  F9 > View > Tree   the panel becomes a directory tree: Up/Down walk",
+    "                  it, Left/Right go to parent/child, Enter opens the",
+    "                  selection in the *other* panel and the tree stays,",
+    "                  F4 switches dynamic/static navigation, Ctrl+R rescans",
+    "  F9 > Command > Directory tree   the same figure in a dialog, where",
+    "                  Enter takes *this* panel there and closes; typing",
+    "                  jumps to a directory, F2 rescans, F3 forgets a branch",
     "  Alt+Left/Right  walk the panel's directory history (back/forward)",
     "  F9 > Options    one options form, in sections: Layout (split",
     "                  direction and size, which bars are drawn), Panel (hidden",
@@ -414,6 +422,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     disk,
                     mini: app.config.show_mini_status,
                     columns: app.config.columns(),
+                    tree: app.trees[i].as_ref(),
                 },
             );
         }
@@ -438,6 +447,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         match dialog {
             Dialog::Input(d) => draw_input(frame, d),
             Dialog::Confirm(d) => draw_confirm(frame, d),
+            Dialog::Tree(tree) => draw_tree_dialog(frame, tree),
             Dialog::Hotlist(selected) => {
                 draw_hotlist(frame, &app.config.hotlist, &app.hotlist_recent(), *selected)
             }
@@ -471,6 +481,8 @@ struct Chrome<'a> {
     mini: bool,
     /// Name columns in a brief listing (MC shows two).
     columns: u16,
+    /// The figure to draw instead of the listing, in tree mode.
+    tree: Option<&'a Tree>,
 }
 
 fn draw_panel(
@@ -557,6 +569,39 @@ fn draw_panel(
         );
     }
 
+    // Tree mode draws a figure of directories instead of the listing,
+    // so it takes the whole inside of the frame.
+    if panel.list_mode == ListMode::Tree {
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let Some(tree) = chrome.tree else { return };
+        let body = Rect {
+            height: inner.height.saturating_sub(u16::from(mini)),
+            ..inner
+        };
+        let base = Style::new().fg(th().panel_fg).bg(th().panel_bg);
+        let sel = if active {
+            Style::new().fg(th().select_fg).bg(th().select_bg)
+        } else {
+            base
+        };
+        draw_tree_rows(frame, body, tree, base, sel);
+        if mini && inner.height > 0 {
+            let row = Rect {
+                x: inner.x,
+                y: inner.y + inner.height - 1,
+                width: inner.width,
+                height: 1,
+            };
+            let text = tree
+                .selected()
+                .map(|r| abbrev_home(&r.path))
+                .unwrap_or_default();
+            let style = Style::new().fg(th().header_fg).bg(th().panel_bg);
+            frame.render_widget(Line::from(text).style(style), row);
+        }
+        return;
+    }
     if panel.list_mode == ListMode::Brief && chrome.columns > 1 {
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -564,7 +609,7 @@ fn draw_panel(
         return;
     }
     let (labels, constraints): (&[&str], Vec<Constraint>) = match panel.list_mode {
-        ListMode::Brief => (&["Name"], vec![Constraint::Fill(1)]),
+        ListMode::Brief | ListMode::Tree => (&["Name"], vec![Constraint::Fill(1)]),
         ListMode::Full => (
             &["Name", "Size", "Modify time"],
             vec![
@@ -916,7 +961,8 @@ fn entry_row(
     };
     let size_cell = Cell::from(Line::from(size).right_aligned());
     match mode {
-        ListMode::Brief => Row::new(vec![name_cell]),
+        // the tree has its own renderer; it never builds table rows
+        ListMode::Brief | ListMode::Tree => Row::new(vec![name_cell]),
         ListMode::Full => Row::new(vec![name_cell, size_cell, Cell::from(mtime)]),
         ListMode::Long => Row::new(vec![
             Cell::from(entry.perm_string()),
@@ -1157,6 +1203,15 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     } else if let Some(prefix) = &app.quick_search {
         Line::from(format!("Search: {prefix}"))
             .style(Style::new().fg(th().select_fg).bg(th().select_bg))
+    } else if app.panels[app.active].list_mode == ListMode::Tree {
+        // the listing is hidden, so its cursor entry would be a lie -
+        // the tree's own selection is what the user is looking at
+        let path = app.trees[app.active]
+            .as_ref()
+            .and_then(|tree| tree.selected())
+            .map(|row| abbrev_home(&row.path))
+            .unwrap_or_default();
+        Line::from(path).style(Style::new().fg(th().panel_fg))
     } else {
         Line::from(entry_summary(&app.panels[app.active])).style(Style::new().fg(th().panel_fg))
     };
@@ -2250,6 +2305,74 @@ fn draw_user_menu(frame: &mut Frame, commands: &[crate::config::UserCommand], se
             row,
         );
     }
+}
+
+/// One line of the figure: the trunk, drawn from the ancestors' "does
+/// this level still continue below" flags, then this row's corner, then
+/// the name. The root draws as its bare path.
+fn tree_line(row: &rcmd_core::tree::Row) -> String {
+    let mut line = String::new();
+    for continues in &row.trunk {
+        line.push_str(if *continues { "│  " } else { "   " });
+    }
+    if row.depth > 0 {
+        line.push_str(if row.last { "└─ " } else { "├─ " });
+    }
+    line.push_str(&row.name);
+    line
+}
+
+/// The figure itself, scrolled to keep the cursor on screen and padded
+/// so the selected row highlights across the full width. Shared by the
+/// panel's tree mode and the tree dialog.
+fn draw_tree_rows(frame: &mut Frame, area: Rect, tree: &Tree, base: Style, selected: Style) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let height = area.height as usize;
+    let width = area.width as usize;
+    let cursor = tree.cursor();
+    let first = tree.first_visible(height);
+    for (i, row) in tree.rows().iter().enumerate().skip(first).take(height) {
+        let mut text = format!(" {}", tree_line(row));
+        let len = text.chars().count();
+        if len > width {
+            text = text.chars().take(width).collect();
+        } else {
+            text.push_str(&" ".repeat(width - len));
+        }
+        let rect = Rect {
+            x: area.x,
+            y: area.y + (i - first) as u16,
+            width: area.width,
+            height: 1,
+        };
+        let style = if i == cursor { selected } else { base };
+        frame.render_widget(Line::from(text).style(style), rect);
+    }
+}
+
+/// F9 > Command > Directory tree. Enter takes the current panel to the
+/// selected directory and closes - the panel's own tree mode is the one
+/// that stays open and moves the *other* panel.
+fn draw_tree_dialog(frame: &mut Frame, tree: &Tree) {
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let selected = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let area = centered(60, crate::app::TREE_ROWS as u16 + 2, frame.area());
+    frame.render_widget(Clear, area);
+    let mode = if tree.dynamic() { "dynamic" } else { "static" };
+    let hint = if tree.search.is_empty() {
+        format!(" Enter cd · F2 rescan · F3 forget · F4 {mode} ")
+    } else {
+        format!(" search: {} ", tree.search)
+    };
+    let block = Block::bordered()
+        .title(" Directory tree ")
+        .title_bottom(Line::from(hint).centered())
+        .style(base);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    draw_tree_rows(frame, inner, tree, base, selected);
 }
 
 fn draw_hotlist(frame: &mut Frame, entries: &[HotEntry], recent: &[String], selected: usize) {

@@ -358,10 +358,10 @@ def test_find():
 
     def find(keys):
         # F9 -> Command -> Find file...
-        # (Help, User menu, Quick search, Hotlist, Find)
+        # (Help, User menu, Quick search, Hotlist, Directory tree, Find)
         s.send(b"\x1b[20~")                 # F9
         s.send(b"\x1b[C")                   # Right -> Command
-        s.send(DOWN + DOWN + DOWN + DOWN)   # -> Find file...
+        s.send(DOWN * 5)                    # -> Find file...
         s.send(b"\r")                       # open find dialog
         s.send(b"\x15")                     # Ctrl+U clears the "*" prefill
         s.send(keys)
@@ -1042,6 +1042,92 @@ def test_layout():
     both = [line for line in framed if "hello.txt" in line and "UP--DIR" in line]
     check("layout: each panel has its own mini status", len(both) == 1, str(framed[-3:]))
     check("layout: mini status shows permissions", "rw" in both[0] if both else False)
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_tree():
+    """PLAN4 S1: mc's directory tree. In the Command-menu dialog Enter
+    moves *this* panel and closes; in the tree listing mode Enter moves
+    the *other* panel and the figure stays put."""
+    root, play, home = sandbox()
+    for path in ["alpha/one", "alpha/two", "beta/deep", "gamma"]:
+        os.makedirs(os.path.join(play, path))
+    open(os.path.join(play, "file.txt"), "w").write("x\n")
+    s = Session(play, home)
+
+    def figure(screen, left=0, right=COLS):
+        """Tree-figure lines inside a column range - the dialog and the
+        tree panel both sit on top of a listing that must not be read as
+        part of the figure."""
+        cut = [ln[left:right] for ln in screen.split("\n")]
+        return [ln for ln in cut if "├─" in ln or "└─" in ln]
+
+    def dialog(screen):
+        lines = screen.split("\n")
+        title = next((ln for ln in lines if "Directory tree" in ln), "")
+        start = title.index("┌") if "┌" in title else 0
+        return figure(screen, start, start + 60)
+
+    # F9 -> Command -> Directory tree...
+    # (Help, User menu, Quick search, Hotlist, *Directory tree*)
+    s.send(b"\x1b[20~")
+    s.send(b"\x1b[C")
+    s.send(DOWN * 4 + b"\r")
+    scr = s.screen()
+    check("tree: dialog opens", "Directory tree" in scr, scr[:120])
+    fig = dialog(scr)
+    check("tree: figure drawn", len(fig) > 3, str(fig[:2]))
+    check("tree: the panel's directory is revealed", any("play" in ln for ln in fig))
+    check("tree: its subdirectories are open", any("alpha" in ln for ln in fig))
+    check("tree: directories only", not any("file.txt" in ln for ln in fig), str(fig[:3]))
+
+    # F4 flips mc's navigation mode; the hint line names the next one
+    s.send(F4)
+    check("tree: F4 goes static", "F4 static" in s.screen())
+    s.send(F4)
+    check("tree: F4 goes back to dynamic", "F4 dynamic" in s.screen())
+
+    # type-to-search, then Enter takes *this* panel to the selection
+    s.send(b"b")
+    check("tree: search string shown", "search: b" in s.screen())
+    s.send(b"\r")
+    scr = s.screen()
+    check("tree: dialog closed", "Directory tree" not in scr)
+    check("tree: Enter cd'd this panel", "play/beta" in scr, scr[:120])
+    check("tree: and only this one", scr.count("play/beta") < 3, scr[:240])
+
+    # the listing mode: F9 -> View -> Tree (Brief, Full, Long, *Tree*)
+    s.send(b"\x1b[20~")
+    s.send(b"\x1b[C\x1b[C\x1b[C")
+    s.send(DOWN * 3 + b"\r")
+    scr = s.screen()
+    left_half = [ln[:60] for ln in scr.split("\n")]
+    check("tree: listing mode draws the figure", len(figure(scr, 0, 60)) > 3, scr[:120])
+    check("tree: no listing header left", "Modify time" not in left_half[1], left_half[1])
+    check("tree: the other panel keeps its listing", "Modify time" in scr.split("\n")[1][60:])
+
+    # Enter moves the *other* panel and stays in the tree. The cursor
+    # sits on beta (the panel's directory), so Up lands on its sibling.
+    s.send(b"\x1b[A")
+    s.send(b"\r")
+    scr = s.screen()
+    check("tree: mode survives Enter", len(figure(scr, 0, 60)) > 3, scr[:120])
+    check("tree: Enter moved the other panel", "play/alpha" in scr.split("\n")[0][60:],
+          scr.split("\n")[0][60:])
+    check("tree: this panel did not move", "play/beta" in scr.split("\n")[0][:60],
+          scr.split("\n")[0][:60])
+
+    # Ctrl+S searches the figure - in a tree view mc keeps plain
+    # characters for the command line until the search is switched on
+    s.send(b"\x13")
+    s.send(b"g")
+    check("tree: Ctrl+S searches the figure", "Search: g" in status_line(s), status_line(s))
+    s.send(b"\r")                  # end the search
+    s.send(b"\r")                  # Enter on the match
+    scr = s.screen()
+    check("tree: the search landed on gamma", "play/gamma" in scr.split("\n")[0][60:],
+          scr.split("\n")[0][60:])
     s.quit()
     shutil.rmtree(root)
 
@@ -1779,6 +1865,7 @@ def main():
         test_extensibility,
         test_brief,
         test_layout,
+        test_tree,
         test_mcimport,
         test_keycontexts,
         test_options,

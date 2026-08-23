@@ -19,6 +19,7 @@ use rcmd_core::fsops::{self, JobEvent, JobHandle, Reply};
 use rcmd_core::glob::glob_match;
 use rcmd_core::panel::{ListMode, LoadKind, Panel, SortKey};
 use rcmd_core::sftp::{self, ConnectEvent, ConnectReply, SftpFs, SftpUrl};
+use rcmd_core::tree::Tree;
 use rcmd_core::vfs::{FsProvider, LocalFs};
 use rcmd_core::view::FileView;
 
@@ -176,6 +177,10 @@ pub enum Dialog {
     Jobs(usize),
     /// M-h: the command-line history; the payload is the selected row.
     History(usize),
+    /// F9 > Command > Directory tree. Enter here changes the *current*
+    /// panel and closes, which is mc's rule for the dialog - the tree
+    /// listing mode moves the other panel instead.
+    Tree(Box<Tree>),
 }
 
 /// The confirmation step of a bulk rename - nothing has touched the
@@ -515,6 +520,9 @@ pub struct Viewer {
     pub temp: Option<PathBuf>,
 }
 
+/// Rows the tree dialog shows at most - also its page step.
+pub const TREE_ROWS: usize = 18;
+
 #[derive(Debug, Clone, Copy)]
 pub enum Action {
     Help,
@@ -522,6 +530,8 @@ pub enum Action {
     Mark,
     QuickSearch,
     Hotlist,
+    /// F9 > Command > Directory tree: the tree in a dialog.
+    DirTree,
     Filter,
     UpDir,
     Enter,
@@ -550,7 +560,8 @@ pub enum Action {
     /// Run `config.commands[i]` directly (per-command `key = "..."`).
     UserCommand(usize),
     Listing(ListMode),
-    /// M-t, like MC: brief → full → long → brief.
+    /// M-t, like MC: brief → full → long → brief. The tree is not in
+    /// the rotation - it is entered on purpose, not stumbled into.
     ListingCycle,
     OtherSameDir,
     OtherOpenDir,
@@ -618,6 +629,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&User menu...", "F2", Action::UserMenu)),
             Some(("&Quick search", "C-s", Action::QuickSearch)),
             Some(("Directory ho&tlist...", "C-\\", Action::Hotlist)),
+            Some(("Directory tr&ee...", "", Action::DirTree)),
             Some(("&Find file...", "M-F7", Action::FindFile)),
             Some(("&Panelize command...", "", Action::Panelize)),
             Some(("&Compare directories", "C-x d", Action::CompareDirs)),
@@ -647,6 +659,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Brief listing", "", Action::Listing(ListMode::Brief))),
             Some(("&Full listing", "", Action::Listing(ListMode::Full))),
             Some(("&Long listing", "", Action::Listing(ListMode::Long))),
+            Some(("&Tree", "", Action::Listing(ListMode::Tree))),
             None,
             Some(("&Quick view", "C-x q", Action::QuickView)),
             Some(("&Info panel", "C-x i", Action::InfoView)),
@@ -834,6 +847,10 @@ pub struct App {
     /// Ctrl+X i: which panel shows the info pane, if any (mutually
     /// exclusive with `quick_view`).
     pub info: Option<usize>,
+    /// The directory-tree figure of each panel in [`ListMode::Tree`],
+    /// built when the mode is entered and dropped when it is left, so
+    /// the next visit starts from wherever the panel has got to.
+    pub trees: [Option<Tree>; 2],
     /// Free space per side: (dir it was measured for, when, free/total
     /// bytes). Local panels only, refreshed by [`Self::disk_tick`].
     pub disk: [DiskSpace; 2],
@@ -939,6 +956,12 @@ impl App {
         } else {
             Some(format!(" {} ", warnings.join(" · ")))
         };
+        // a panel that starts in tree mode (`listing = "tree"`) needs
+        // its figure before the first draw
+        let trees = [&left, &right].map(|panel| {
+            (panel.list_mode == ListMode::Tree)
+                .then(|| Tree::new(&panel.local_cwd(), panel.show_hidden))
+        });
         let (git_tx, git_rx) = std::sync::mpsc::channel();
         // command history survives sessions (it lives in the state file)
         let mut cmdline = CmdLine::default();
@@ -955,6 +978,7 @@ impl App {
             editor: None,
             quick_view: None,
             info: None,
+            trees,
             disk: [None, None],
             menu: None,
             help: None,
@@ -1888,6 +1912,26 @@ impl App {
         if self.quick_view.as_ref().is_some_and(|q| q.side == side) || self.info == Some(side) {
             return;
         }
+        // The tree has no header row and scrolls itself, so a click in
+        // one maps through the figure's own visible window.
+        if self.panels[side].list_mode == ListMode::Tree {
+            let top = area.y + 1;
+            let height = area
+                .height
+                .saturating_sub(2 + u16::from(self.config.show_mini_status));
+            if y < top || y >= top + height {
+                return;
+            }
+            let row = (y - top) as usize;
+            if let Some(tree) = self.trees[side].as_mut() {
+                let first = tree.first_visible(height as usize);
+                tree.select_row(first + row);
+            }
+            if double {
+                self.tree_enter();
+            }
+            return;
+        }
         if y == area.y + 1 {
             self.header_click(side, area, x);
             return;
@@ -1933,6 +1977,8 @@ impl App {
         }
         let panel = &mut self.panels[side];
         let key = match panel.list_mode {
+            // the tree draws no header row, so there is nothing to sort
+            ListMode::Tree => None,
             ListMode::Brief => Some(SortKey::Name),
             ListMode::Full => {
                 // [Name (fill), Size 7, Modify time 12], spacing 1
@@ -2045,6 +2091,19 @@ impl App {
             if self.info == Some(side) {
                 return;
             }
+            // a tree panel scrolls its figure, not the listing beneath
+            if self.panels[side].list_mode == ListMode::Tree {
+                if let Some(tree) = self.trees[side].as_mut() {
+                    for _ in 0..delta.unsigned_abs() {
+                        if delta < 0 {
+                            tree.up();
+                        } else {
+                            tree.down();
+                        }
+                    }
+                }
+                return;
+            }
             // scroll the hovered panel's cursor without stealing focus
             let panel = &mut self.panels[side];
             for _ in 0..delta.unsigned_abs() {
@@ -2064,6 +2123,34 @@ impl App {
     fn on_quick_search_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        // In tree mode the search runs over the figure instead of the
+        // listing. This is mc's rule for a tree *view*: plain characters
+        // stay with the command line until Ctrl+S switches the search on.
+        if self.panels[self.active].list_mode == ListMode::Tree {
+            let mut close = true;
+            if let Some(tree) = self.trees[self.active].as_mut() {
+                close = false;
+                match key.code {
+                    KeyCode::Char('s') if ctrl => tree.search_next(),
+                    KeyCode::Char(c) if !ctrl && !alt => {
+                        tree.search_push(c);
+                    }
+                    KeyCode::Backspace => tree.search_pop(),
+                    _ => {
+                        tree.clear_search();
+                        close = true;
+                    }
+                }
+            }
+            let search = self.trees[self.active].as_ref().map(|t| t.search.clone());
+            self.quick_search = if close { None } else { search };
+            // Esc and Enter only end the search; anything else was meant
+            // for the panel underneath
+            if close && !matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+                self.on_panel_key(key);
+            }
+            return;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Enter => self.quick_search = None,
             KeyCode::Char('s') if ctrl => {
@@ -2277,7 +2364,36 @@ impl App {
         }
     }
 
+    /// Actions that mean "do this to the entry under the cursor" have
+    /// nothing to act on while the tree has replaced the listing. The
+    /// entries are still loaded underneath, which is exactly the
+    /// problem: acting on a file nobody can see is not on. (mc runs
+    /// F5-F8 against the selected *directory* instead; that belongs
+    /// with the file-operation dialogs in S2.)
+    fn blocked_in_tree(action: Action) -> bool {
+        matches!(
+            action,
+            Action::View
+                | Action::Edit
+                | Action::Copy
+                | Action::Move
+                | Action::Mkdir
+                | Action::Delete
+                | Action::DeletePerm
+                | Action::Mark
+                | Action::SelectGroup
+                | Action::UnselectGroup
+                | Action::InvertSelection
+                | Action::DirSize
+                | Action::BulkRename
+        )
+    }
+
     fn run_action(&mut self, action: Action) {
+        if self.panels[self.active].list_mode == ListMode::Tree && Self::blocked_in_tree(action) {
+            self.status = Some(" not while this panel shows the tree ".into());
+            return;
+        }
         match action {
             Action::Help => self.help = Some(HelpState { top: 0, rows: 1 }),
             Action::Menu => {
@@ -2342,14 +2458,33 @@ impl App {
                 }
             }
             Action::UserCommand(i) => self.run_user_command(i),
-            Action::Listing(mode) => self.panel().list_mode = mode,
+            Action::Listing(mode) => {
+                if mode == ListMode::Tree && !self.panels[self.active].is_local() {
+                    self.status = Some(" the tree works on local panels only ".into());
+                } else {
+                    self.panel().list_mode = mode;
+                    self.sync_tree(self.active);
+                }
+            }
             Action::ListingCycle => {
                 let panel = self.panel();
                 panel.list_mode = match panel.list_mode {
                     ListMode::Brief => ListMode::Full,
                     ListMode::Full => ListMode::Long,
-                    ListMode::Long => ListMode::Brief,
+                    // the tree is not part of the cycle (mc does not
+                    // cycle into it either); it is a deliberate visit
+                    ListMode::Long | ListMode::Tree => ListMode::Brief,
                 };
+                self.sync_tree(self.active);
+            }
+            Action::DirTree => {
+                let panel = &self.panels[self.active];
+                if panel.is_local() {
+                    let tree = Tree::new(&panel.local_cwd(), panel.show_hidden);
+                    self.dialog = Some(Dialog::Tree(Box::new(tree)));
+                } else {
+                    self.status = Some(" the tree works on local panels only ".into());
+                }
             }
             Action::OtherSameDir => self.other_panel_dir(false),
             Action::OtherOpenDir => self.other_panel_dir(true),
@@ -2367,7 +2502,20 @@ impl App {
                     *side ^= 1;
                 }
             }
-            Action::ToggleHidden => self.fallible(|p| p.toggle_hidden().map(|()| true)),
+            Action::ToggleHidden => {
+                self.fallible(|p| p.toggle_hidden().map(|()| true));
+                // the figure was scanned under the old flag, so rebuild
+                // it rather than leave the tree and the listing at odds
+                let side = self.active;
+                if self.trees[side].is_some() {
+                    let path = self.trees[side].as_ref().and_then(Tree::selected_path);
+                    self.trees[side] = None;
+                    self.sync_tree(side);
+                    if let (Some(tree), Some(path)) = (self.trees[side].as_mut(), path) {
+                        tree.reveal(&path);
+                    }
+                }
+            }
             Action::Options => {
                 let cfg = &self.config;
                 let mut values = [false; OPT_COUNT];
@@ -3811,6 +3959,54 @@ impl App {
                     _ => self.dialog = Some(Dialog::Hotlist(selected)),
                 }
             }
+            Dialog::Tree(mut tree) => {
+                let plain = !key.modifiers.contains(KeyModifiers::ALT)
+                    && !key.modifiers.contains(KeyModifiers::CONTROL);
+                match key.code {
+                    KeyCode::Esc => {}
+                    // mc: Enter leaves the tree and takes *this* panel
+                    // to the selected directory
+                    KeyCode::Enter => {
+                        if let Some(target) = tree.selected_path() {
+                            let panel = &mut self.panels[self.active];
+                            let moved = if panel.is_remote() {
+                                panel.to_local(target)
+                            } else {
+                                panel.cd(target)
+                            };
+                            if let Err(err) = moved {
+                                self.status = Some(format!(" tree: {err} "));
+                            }
+                        }
+                    }
+                    code => {
+                        match code {
+                            KeyCode::Up => tree.up(),
+                            KeyCode::Down => tree.down(),
+                            KeyCode::PageUp => tree.page_up(TREE_ROWS),
+                            KeyCode::PageDown => tree.page_down(TREE_ROWS),
+                            KeyCode::Home => tree.first(),
+                            KeyCode::End => tree.last(),
+                            KeyCode::Left => tree.left(),
+                            KeyCode::Right => tree.right(),
+                            KeyCode::F(2) => tree.rescan(),
+                            KeyCode::F(3) => tree.forget(),
+                            KeyCode::F(4) => tree.toggle_mode(),
+                            KeyCode::Char('r') if !plain => tree.rescan(),
+                            KeyCode::Char('s') if !plain => tree.search_next(),
+                            KeyCode::Backspace => tree.search_pop(),
+                            // mc's type-to-search: any other character
+                            // jumps to the next directory starting with
+                            // what has been typed so far
+                            KeyCode::Char(c) if plain => {
+                                tree.search_push(c);
+                            }
+                            _ => {}
+                        }
+                        self.dialog = Some(Dialog::Tree(tree));
+                    }
+                }
+            }
             Dialog::UserMenu(mut selected) => {
                 let len = self.config.commands.len();
                 match key.code {
@@ -4639,6 +4835,40 @@ impl App {
             }
             return;
         }
+        // A panel in tree mode: the figure has replaced the listing, so
+        // it takes the movement keys and Enter. Everything else - Tab,
+        // the command line, the F-keys - still belongs to the panel.
+        if self.panels[self.active].list_mode == ListMode::Tree {
+            let plain = !alt && !ctrl;
+            let mut handled = true;
+            if let Some(tree) = self.trees[self.active].as_mut() {
+                match key.code {
+                    KeyCode::Up if plain => tree.up(),
+                    KeyCode::Down if plain => tree.down(),
+                    KeyCode::PageUp if plain => tree.page_up(page),
+                    KeyCode::PageDown if plain => tree.page_down(page),
+                    KeyCode::Home if plain => tree.first(),
+                    KeyCode::End if plain => tree.last(),
+                    KeyCode::Left if plain => tree.left(),
+                    KeyCode::Right if plain => tree.right(),
+                    // mc's tree keys: F4 switches navigation mode, C-r
+                    // (rcmd's reload) rescans the selected branch
+                    KeyCode::F(4) => tree.toggle_mode(),
+                    KeyCode::Char('r') if ctrl => tree.rescan(),
+                    _ => handled = false,
+                }
+            } else {
+                handled = false;
+            }
+            // Enter needs the whole App: it moves the *other* panel
+            if !handled && key.code == KeyCode::Enter && cmd_empty {
+                self.tree_enter();
+                handled = true;
+            }
+            if handled {
+                return;
+            }
+        }
         // Focused info pane: nothing to scroll - Tab back or quit.
         if self.info == Some(self.active) {
             match key.code {
@@ -5211,6 +5441,41 @@ impl App {
         match d.kind {
             ConfirmKind::Delete => self.start_delete(d.paths, d.permanent),
             ConfirmKind::Quit => self.quit = true,
+        }
+    }
+
+    /// A panel in tree mode needs its figure; leaving the mode drops
+    /// it, so coming back starts from wherever the panel has got to.
+    fn sync_tree(&mut self, side: usize) {
+        if self.panels[side].list_mode != ListMode::Tree {
+            self.trees[side] = None;
+            return;
+        }
+        if self.trees[side].is_none() {
+            let panel = &self.panels[side];
+            self.trees[side] = Some(Tree::new(&panel.local_cwd(), panel.show_hidden));
+        }
+    }
+
+    /// Enter in a tree *panel*: mc changes the **other** panel and
+    /// stays in the tree, which is what makes the mode a navigator
+    /// rather than a one-shot chooser. (The tree *dialog* is the
+    /// one-shot chooser, and moves this panel instead.)
+    fn tree_enter(&mut self) {
+        let Some(path) = self.trees[self.active]
+            .as_ref()
+            .and_then(Tree::selected_path)
+        else {
+            return;
+        };
+        let other = &mut self.panels[self.active ^ 1];
+        let result = if other.is_local() {
+            other.cd(path)
+        } else {
+            other.to_local(path)
+        };
+        if let Err(err) = result {
+            self.status = Some(format!(" {err} "));
         }
     }
 

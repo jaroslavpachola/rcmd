@@ -7,5 +7,6 @@ pub mod glob;
 pub mod panel;
 pub mod rename;
 pub mod sftp;
+pub mod tree;
 pub mod vfs;
 pub mod view;

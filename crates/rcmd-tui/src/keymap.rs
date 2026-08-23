@@ -179,6 +179,8 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "listing-brief" => Action::Listing(ListMode::Brief),
         "listing-full" => Action::Listing(ListMode::Full),
         "listing-long" => Action::Listing(ListMode::Long),
+        "listing-tree" => Action::Listing(ListMode::Tree),
+        "dir-tree" => Action::DirTree,
         "listing-cycle" => Action::ListingCycle,
         "other-same-dir" => Action::OtherSameDir,
         "other-open-dir" => Action::OtherOpenDir,
