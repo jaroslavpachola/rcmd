@@ -1,6 +1,6 @@
 //! Read-only archive VFS: zip, tar and cpio (each plain or gz/xz/bz2/
 //! zstd compressed), `ar` archives and Debian and RPM packages
-//! and ISO 9660 images natively; rar
+//! ISO 9660 images and patch files natively; rar
 //! and 7z through an external tool (the 7z family, or unrar for .rar) -
 //! listed once at open, members streamed out per read.
 //!
@@ -21,6 +21,7 @@ use crate::ar;
 use crate::cpio;
 use crate::entry::{Entry, EntryKind};
 use crate::iso;
+use crate::patch;
 use crate::rpm;
 use crate::vfs::FsProvider;
 
@@ -37,6 +38,8 @@ enum Kind {
     Rpm,
     /// An ISO 9660 image - a disc, browsed where it lies.
     Iso,
+    /// A patch, browsed as the files it touches.
+    Patch(Comp),
     /// rar / 7z via an external lister+extractor.
     Cmd,
 }
@@ -90,6 +93,9 @@ pub struct ArchiveFs {
     payload: Option<(PathBuf, Slice)>,
     /// An opened disc image, which locates its own members.
     iso: Option<iso::Image>,
+    /// A patch's whole text and where each file's part of it starts.
+    /// The text is kept once; the entries point into it.
+    patch: Option<(String, Vec<patch::Piece>)>,
 }
 
 /// A run of bytes inside the container, and what it is wrapped in.
@@ -133,6 +139,8 @@ impl ArchiveFs {
                 Kind::Tar(comp)
             } else if stem.ends_with(".cpio") {
                 Kind::Cpio(comp)
+            } else if stem.ends_with(".patch") || stem.ends_with(".diff") {
+                Kind::Patch(comp)
             } else {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -151,6 +159,7 @@ impl ArchiveFs {
             generated: HashMap::new(),
             payload: None,
             iso: None,
+            patch: None,
         };
         match kind {
             Kind::Zip => fs.index_zip()?,
@@ -160,6 +169,7 @@ impl ArchiveFs {
             Kind::Deb => fs.index_deb()?,
             Kind::Rpm => fs.index_rpm()?,
             Kind::Iso => fs.index_iso()?,
+            Kind::Patch(_) => fs.index_patch()?,
             Kind::Tar(_) => fs.index_tar()?,
         }
         Ok(fs)
@@ -466,6 +476,46 @@ impl ArchiveFs {
             .and_then(|entry| image.read(entry))
     }
 
+    /// A patch lists as the tree it would apply to: one entry per file
+    /// it touches, holding that file's hunks and nothing else. Because
+    /// the names are paths, `src/main.rs` in a patch that also touches
+    /// `docs/` shows up under a `src/` of its own.
+    fn index_patch(&mut self) -> io::Result<()> {
+        let mut text = String::new();
+        self.raw_reader()?.read_to_string(&mut text)?;
+        let pieces = patch::split(&text);
+        if pieces.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "no diff headers in this file",
+            ));
+        }
+        for piece in &pieces {
+            let rel = normalize_rel(&piece.path);
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+            self.add(&rel, EntryKind::File, piece.len as u64, 0o644, None, None);
+        }
+        self.patch = Some((text, pieces));
+        Ok(())
+    }
+
+    fn read_patch(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
+        let (text, pieces) = self
+            .patch
+            .as_ref()
+            .ok_or_else(|| io::Error::other("no patch"))?;
+        pieces
+            .iter()
+            .find(|piece| normalize_rel(&piece.path) == rel)
+            .map(|piece| {
+                let body = text[piece.at..piece.at + piece.len].to_string();
+                Box::new(Cursor::new(body.into_bytes())) as Box<dyn Read + Send>
+            })
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not in this patch"))
+    }
+
     /// Read a path that lives in a slice of the container: either the
     /// slice *is* the file, or it is a tarball the path reaches into.
     fn read_slice(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
@@ -697,7 +747,7 @@ impl ArchiveFs {
 
     fn raw_reader(&self) -> io::Result<Box<dyn Read>> {
         let comp = match self.kind {
-            Kind::Tar(comp) | Kind::Cpio(comp) => comp,
+            Kind::Tar(comp) | Kind::Cpio(comp) | Kind::Patch(comp) => comp,
             _ => unreachable!("zip, ar, deb and cmd use their own readers"),
         };
         decompress(Box::new(File::open(&self.path)?), comp)
@@ -740,6 +790,7 @@ impl FsProvider for ArchiveFs {
             Kind::Cpio(_) => self.read_cpio(&rel),
             Kind::Ar | Kind::Deb | Kind::Rpm => self.read_slice(&rel),
             Kind::Iso => self.read_iso(&rel),
+            Kind::Patch(_) => self.read_patch(&rel),
             Kind::Zip => {
                 let mut zip = zip::ZipArchive::new(File::open(&self.path)?).map_err(zip_err)?;
                 for i in 0..zip.len() {
@@ -1604,6 +1655,83 @@ mod tests {
             .unwrap();
         assert_eq!(text, "# manual\n");
         assert!(fs.open_read(Path::new("docs/missing.md")).is_err());
+    }
+
+    const PATCH: &str = "\
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1 +1 @@
+-old
++new
+diff --git a/docs/readme.md b/docs/readme.md
+--- a/docs/readme.md
++++ b/docs/readme.md
+@@ -1 +1 @@
+-old title
++new title
+";
+
+    #[test]
+    fn patch_lists_as_the_tree_it_would_apply_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("change.patch");
+        std::fs::write(&path, PATCH).unwrap();
+        let fs = ArchiveFs::open(&path).unwrap();
+
+        let mut names: Vec<_> = fs
+            .read_dir(Path::new(""))
+            .unwrap()
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        // the paths become directories, not one flat list of long names
+        assert_eq!(names, ["docs", "src"]);
+        assert!(fs.stat(Path::new("src")).unwrap().is_dir());
+
+        let mut body = String::new();
+        fs.open_read(Path::new("src/main.rs"))
+            .unwrap()
+            .read_to_string(&mut body)
+            .unwrap();
+        assert!(body.starts_with("diff --git a/src/main.rs"), "{body}");
+        assert!(body.contains("+new"));
+        assert!(!body.contains("readme"), "{body}");
+        assert_eq!(
+            fs.stat(Path::new("src/main.rs")).unwrap().size,
+            body.len() as u64
+        );
+    }
+
+    #[test]
+    fn a_compressed_patch_is_the_same_patch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("change.diff.gz");
+        let mut gz = GzEncoder::new(File::create(&path).unwrap(), Compression::default());
+        gz.write_all(PATCH.as_bytes()).unwrap();
+        gz.finish().unwrap();
+
+        let fs = ArchiveFs::open(&path).unwrap();
+        let mut body = String::new();
+        fs.open_read(Path::new("docs/readme.md"))
+            .unwrap()
+            .read_to_string(&mut body)
+            .unwrap();
+        assert!(body.contains("+new title"), "{body}");
+    }
+
+    #[test]
+    fn a_file_with_no_diff_in_it_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("notes.patch");
+        std::fs::write(
+            &path,
+            b"these are just notes
+",
+        )
+        .unwrap();
+        assert!(ArchiveFs::open(&path).is_err());
     }
 
     #[test]

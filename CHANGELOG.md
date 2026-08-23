@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.26.0 - 2026-08-23
+
+- **Patches browse as directories** (4.0 S3): Enter on a `.patch` or
+  `.diff` - plain or compressed - and it lists as the tree it would
+  apply to. Each entry is one file's slice of the diff, so `src/main.rs`
+  inside a four-thousand-line patch opens as just the hunks that touch
+  it, and because the names are paths they file themselves under the
+  directories they name rather than crowding into one flat list.
+- Unified diffs, git's own `diff --git`, context diffs and Subversion's
+  `Index:` headers all start a section. A deleted file is named by its
+  old path, since `+++ /dev/null` has no name to give.
+- F5 on an entry writes that file's hunks out as a patch of its own,
+  which is the fastest way to split one patch into several.
+- **Nothing is applied or reversed.** This is a way of reading a patch,
+  not of using one: `patch` is one shell command away and it is better
+  at its job than a file manager would be.
+
 ## 3.25.0 - 2026-08-23
 
 - **ISO 9660 images** (4.0 S3): Enter on a `.iso` and the disc browses

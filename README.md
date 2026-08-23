@@ -308,6 +308,13 @@ rather than three: `debian-binary` at the root, the metadata and
 maintainer scripts under `CONTROL/`, and everything the package
 installs under `CONTENTS/`.
 
+A **patch** (`.patch`, `.diff`, plain or compressed) browses as the tree
+it would apply to: one entry per file it touches, holding that file's
+hunks and nothing else, filed under the directories its paths name.
+Unified, git, context and Subversion headers all start a section.
+Nothing is applied or reversed - this is a way of reading a patch, not
+of using one.
+
 An **ISO 9660 image** (`.iso`) browses in place. **Rock Ridge** names,
 modes and symlinks are used where the disc carries them, **Joliet**'s
 UTF-16 names where it does not, and the base format's shouted 8.3 names

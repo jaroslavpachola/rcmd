@@ -593,6 +593,52 @@ def test_iso():
     shutil.rmtree(root)
 
 
+def test_patch():
+    """A patch browses as the tree it would apply to, each entry holding
+    that one file's hunks."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "out"))
+    open(os.path.join(play, "change.patch"), "w").write(
+        "diff --git a/src/main.rs b/src/main.rs\n"
+        "--- a/src/main.rs\n"
+        "+++ b/src/main.rs\n"
+        "@@ -1 +1 @@\n"
+        "-the old line\n"
+        "+the new line\n"
+        "diff --git a/docs/readme.md b/docs/readme.md\n"
+        "--- a/docs/readme.md\n"
+        "+++ b/docs/readme.md\n"
+        "@@ -1 +1 @@\n"
+        "-old title\n"
+        "+new title\n")
+
+    s = Session(play, home, args=(play, os.path.join(play, "out")))
+    s.send(b"\x13change\r", wait=STEP)  # quick search -> change.patch
+    s.send(b"\r", wait=STEP * 2)
+    scr = s.screen()
+    check("patch: entered", "change.patch://" in scr)
+    check("patch: paths became directories", "docs" in scr and "src" in scr)
+
+    s.send(DOWN + DOWN + DOWN)          # .., docs, src -> src
+    s.send(b"\r", wait=STEP * 2)
+    check("patch: the file is inside its directory", "main.rs" in s.screen())
+    s.send(DOWN)
+    s.send(F3, wait=STEP * 2)
+    scr = s.screen()
+    check("patch: F3 shows only this file's hunks",
+          "the new line" in scr and "old title" not in scr)
+    s.send(b"q")
+    s.send(F5)
+    s.send(b"\r", wait=STEP * 3)
+    extracted = os.path.join(play, "out", "main.rs")
+    check("patch: F5 writes the slice out",
+          wait_for(s, "done -")
+          and "+the new line" in open(extracted).read()
+          and "readme" not in open(extracted).read())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_find():
     root, play, home = sandbox()
     os.makedirs(os.path.join(play, "sub"))
@@ -2669,6 +2715,7 @@ def main():
         test_deb,
         test_rpm,
         test_iso,
+        test_patch,
         test_find,
         test_compare,
         test_watch,
