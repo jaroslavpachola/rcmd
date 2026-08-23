@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.25.0 - 2026-08-23
+
+- **ISO 9660 images** (4.0 S3): Enter on a `.iso` and the disc browses
+  in place, with F3 on files and F5 to extract. Nothing is unpacked at
+  open - the image is a plain seekable file, so each entry just records
+  the sector its data starts at.
+- **All three naming schemes are read.** The base format shouts its
+  names in 8.3 with a `;1` version suffix, so two extensions exist to
+  carry real ones. **Rock Ridge** wins where a disc has it, because it
+  brings Unix modes and symlinks along with the names; **Joliet**'s
+  UTF-16 names are used where it does not; and the plain 8.3 names,
+  version suffix stripped, are the fallback. Which one a disc got is
+  worked out by looking at its root directory's own record rather than
+  by guessing from the extension.
+- Symlinks on a Rock Ridge disc list as symlinks, target and all - the
+  component records are reassembled, including the ones that mean "."
+  and ".." and "/".
+
 ## 3.24.0 - 2026-08-23
 
 - **RPM packages** (4.0 S3): Enter on a `.rpm` and it opens in the same

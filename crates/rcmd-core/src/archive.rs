@@ -1,6 +1,6 @@
 //! Read-only archive VFS: zip, tar and cpio (each plain or gz/xz/bz2/
 //! zstd compressed), `ar` archives and Debian and RPM packages
-//! natively; rar
+//! and ISO 9660 images natively; rar
 //! and 7z through an external tool (the 7z family, or unrar for .rar) -
 //! listed once at open, members streamed out per read.
 //!
@@ -20,6 +20,7 @@ use flate2::read::GzDecoder;
 use crate::ar;
 use crate::cpio;
 use crate::entry::{Entry, EntryKind};
+use crate::iso;
 use crate::rpm;
 use crate::vfs::FsProvider;
 
@@ -34,6 +35,8 @@ enum Kind {
     Deb,
     /// An RPM package: two headers and a compressed cpio payload.
     Rpm,
+    /// An ISO 9660 image - a disc, browsed where it lies.
+    Iso,
     /// rar / 7z via an external lister+extractor.
     Cmd,
 }
@@ -85,6 +88,8 @@ pub struct ArchiveFs {
     generated: HashMap<PathBuf, String>,
     /// Where a cpio payload sits, when the container has one.
     payload: Option<(PathBuf, Slice)>,
+    /// An opened disc image, which locates its own members.
+    iso: Option<iso::Image>,
 }
 
 /// A run of bytes inside the container, and what it is wrapped in.
@@ -116,6 +121,8 @@ impl ArchiveFs {
             Kind::Deb
         } else if name.ends_with(".rpm") {
             Kind::Rpm
+        } else if name.ends_with(".iso") {
+            Kind::Iso
         } else if name.ends_with(".a") || name.ends_with(".ar") {
             Kind::Ar
         } else if name.ends_with(".rar") || name.ends_with(".7z") {
@@ -143,6 +150,7 @@ impl ArchiveFs {
             nested: Vec::new(),
             generated: HashMap::new(),
             payload: None,
+            iso: None,
         };
         match kind {
             Kind::Zip => fs.index_zip()?,
@@ -151,6 +159,7 @@ impl ArchiveFs {
             Kind::Ar => fs.index_ar()?,
             Kind::Deb => fs.index_deb()?,
             Kind::Rpm => fs.index_rpm()?,
+            Kind::Iso => fs.index_iso()?,
             Kind::Tar(_) => fs.index_tar()?,
         }
         Ok(fs)
@@ -407,6 +416,54 @@ impl ArchiveFs {
         self.index_cpio_from(reader, &contents)?;
         self.payload = Some((contents, slice));
         Ok(())
+    }
+
+    /// An ISO 9660 image already indexes itself - the walk happens at
+    /// open, and every entry knows the sector its data starts at - so
+    /// this only has to turn that tree into the panel's.
+    fn index_iso(&mut self) -> io::Result<()> {
+        let image = iso::Image::open(&self.path)?;
+        for (dir, entries) in &image.tree {
+            self.ensure_dir_chain(dir);
+            for entry in entries {
+                let kind = if entry.link.is_some() {
+                    EntryKind::SymlinkFile
+                } else if entry.is_dir {
+                    EntryKind::Dir
+                } else {
+                    EntryKind::File
+                };
+                let mtime = Some(UNIX_EPOCH + Duration::from_secs(entry.mtime));
+                self.add(
+                    &dir.join(&entry.name),
+                    kind,
+                    entry.size,
+                    entry.mode,
+                    entry.link.as_ref().map(PathBuf::from),
+                    mtime,
+                );
+            }
+        }
+        self.iso = Some(image);
+        Ok(())
+    }
+
+    fn read_iso(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
+        let image = self
+            .iso
+            .as_ref()
+            .ok_or_else(|| io::Error::other("no image"))?;
+        let parent = rel.parent().unwrap_or(Path::new(""));
+        let name = rel
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty path"))?;
+        image
+            .tree
+            .get(parent)
+            .and_then(|list| list.iter().find(|e| e.name == name))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found in image"))
+            .and_then(|entry| image.read(entry))
     }
 
     /// Read a path that lives in a slice of the container: either the
@@ -682,6 +739,7 @@ impl FsProvider for ArchiveFs {
             Kind::Cmd => self.read_cmd(&rel),
             Kind::Cpio(_) => self.read_cpio(&rel),
             Kind::Ar | Kind::Deb | Kind::Rpm => self.read_slice(&rel),
+            Kind::Iso => self.read_iso(&rel),
             Kind::Zip => {
                 let mut zip = zip::ZipArchive::new(File::open(&self.path)?).map_err(zip_err)?;
                 for i in 0..zip.len() {
@@ -1493,6 +1551,59 @@ mod tests {
             .read_to_string(&mut script)
             .unwrap();
         assert_eq!(script, "#!/bin/sh\necho hi\n");
+    }
+
+    #[test]
+    fn iso_browses_a_disc_image() {
+        let Some(tool) = ["xorriso", "genisoimage", "mkisofs"]
+            .into_iter()
+            .find(|t| tool_available(t, "-version"))
+        else {
+            eprintln!("skipping: no ISO authoring tool");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("docs")).unwrap();
+        std::fs::write(src.join("readme.txt"), b"on the disc\n").unwrap();
+        std::fs::write(src.join("docs/manual.md"), b"# manual\n").unwrap();
+        let path = tmp.path().join("disc.iso");
+        let mut cmd = std::process::Command::new(tool);
+        if tool == "xorriso" {
+            cmd.args(["-as", "mkisofs"]);
+        }
+        let built = cmd
+            .args(["-R", "-J", "-o"])
+            .arg(&path)
+            .arg(&src)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !built {
+            eprintln!("skipping: the tool refused to build the fixture");
+            return;
+        }
+
+        let fs = ArchiveFs::open(&path).unwrap();
+        let mut names: Vec<_> = fs
+            .read_dir(Path::new(""))
+            .unwrap()
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["docs", "readme.txt"]);
+        assert!(fs.stat(Path::new("docs")).unwrap().is_dir());
+
+        let mut text = String::new();
+        fs.open_read(Path::new("docs/manual.md"))
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(text, "# manual\n");
+        assert!(fs.open_read(Path::new("docs/missing.md")).is_err());
     }
 
     #[test]

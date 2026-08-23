@@ -308,6 +308,11 @@ rather than three: `debian-binary` at the root, the metadata and
 maintainer scripts under `CONTROL/`, and everything the package
 installs under `CONTENTS/`.
 
+An **ISO 9660 image** (`.iso`) browses in place. **Rock Ridge** names,
+modes and symlinks are used where the disc carries them, **Joliet**'s
+UTF-16 names where it does not, and the base format's shouted 8.3 names
+(minus the `;1` version suffix) where it has neither.
+
 An **RPM package** (`.rpm`, source packages included) takes the same
 shape. `CONTROL/header` is the package's tags rendered as text - name,
 version, license, summary, description, what the payload is wrapped in -

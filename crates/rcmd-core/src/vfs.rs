@@ -173,6 +173,7 @@ pub fn is_archive_name(name: &OsStr) -> bool {
         ".deb",
         ".udeb",
         ".rpm",
+        ".iso",
         ".a",
         ".ar",
         ".rar",

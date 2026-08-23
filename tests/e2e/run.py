@@ -551,6 +551,48 @@ def test_rpm():
     shutil.rmtree(root)
 
 
+def test_iso():
+    """An ISO 9660 image browses like any other archive - with Rock
+    Ridge names, since a disc authored on Unix carries them."""
+    tool = None
+    for candidate in ("xorriso", "genisoimage", "mkisofs"):
+        if shutil.which(candidate):
+            tool = candidate
+            break
+    if tool is None:
+        print("SKIP iso (no xorriso/genisoimage/mkisofs)")
+        return
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "out"))
+    src = os.path.join(root, "src")
+    os.makedirs(os.path.join(src, "docs"))
+    open(os.path.join(src, "readme.txt"), "w").write("burned to the disc\n")
+    open(os.path.join(src, "docs", "manual.md"), "w").write("# manual\n")
+    cmd = [tool] + (["-as", "mkisofs"] if tool == "xorriso" else [])
+    subprocess.run(cmd + ["-R", "-J", "-o", os.path.join(play, "disc.iso"), src],
+                   check=True, capture_output=True)
+
+    s = Session(play, home, args=(play, os.path.join(play, "out")))
+    s.send(b"\x13disc\r", wait=STEP)    # quick search -> disc.iso
+    s.send(b"\r", wait=STEP * 2)
+    scr = s.screen()
+    check("iso: entered", "disc.iso://" in scr)
+    check("iso: rock ridge names", "readme.txt" in scr and "docs" in scr)
+    s.send(F8)                          # must refuse
+    check("iso: read-only", "read-only" in s.screen())
+    s.send(END)                         # -> readme.txt
+    s.send(F3, wait=STEP * 2)
+    check("iso: F3 views a file", "burned to the disc" in s.screen())
+    s.send(b"q")
+    s.send(F5)
+    s.send(b"\r", wait=STEP * 3)
+    extracted = os.path.join(play, "out", "readme.txt")
+    check("iso: F5 extracts",
+          wait_for(s, "done -") and open(extracted).read() == "burned to the disc\n")
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_find():
     root, play, home = sandbox()
     os.makedirs(os.path.join(play, "sub"))
@@ -2626,6 +2668,7 @@ def main():
         test_cpio,
         test_deb,
         test_rpm,
+        test_iso,
         test_find,
         test_compare,
         test_watch,

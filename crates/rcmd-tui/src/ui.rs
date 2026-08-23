@@ -274,7 +274,7 @@ const HELP_TEXT: &[&str] = &[
     "# Panels",
     "  Tab             switch active panel",
     "  Up/Down, PgUp/PgDn, Home/End   move the cursor",
-    "  Enter           enter dir or archive (zip, tar, cpio, deb, rpm)",
+    "  Enter           enter dir or archive (zip/tar/cpio/deb/rpm/iso)",
     "  Backspace       go to parent directory / leave the archive",
     "  Ctrl+S, Alt+S   quick search (type to jump, Ctrl+S again = next)",
     "  Ctrl+U          swap the two panels",
