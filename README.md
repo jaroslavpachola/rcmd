@@ -308,6 +308,12 @@ rather than three: `debian-binary` at the root, the metadata and
 maintainer scripts under `CONTROL/`, and everything the package
 installs under `CONTENTS/`.
 
+**Ctrl+X A** lists what the panels are sitting on that is not the local
+filesystem - open archives and live SFTP connections, with the panel
+each one belongs to. Enter goes there (a connection is reused, so no
+second login), `f` frees one: the panel returns to a local directory and
+an idle connection is forgotten.
+
 **rar, 7z, lha/lzh, arj and cab** browse through an installed `7z`
 (p7zip - rar needs its nonfree codec) or `unrar`, read-only and streamed
 one member at a time. Without one of those tools installed, opening one

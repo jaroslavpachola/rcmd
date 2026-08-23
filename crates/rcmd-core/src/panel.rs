@@ -496,6 +496,12 @@ impl Panel {
         Ok(true)
     }
 
+    /// Open an archive without going through Enter on a listing - the
+    /// active VFS list needs this to send a panel back into one.
+    pub fn open_archive(&mut self, path: PathBuf) -> io::Result<()> {
+        self.enter_archive(path)
+    }
+
     fn enter_archive(&mut self, path: PathBuf) -> io::Result<()> {
         let archive_fs = Arc::new(ArchiveFs::open(&path)?);
         let prev_fs = std::mem::replace(&mut self.fs, archive_fs);

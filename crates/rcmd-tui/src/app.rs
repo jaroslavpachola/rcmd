@@ -403,6 +403,27 @@ pub enum Dialog {
     Chown(Box<ChownDialog>),
     /// C-x l / s / v / C-s: the link form.
     Link(Box<LinkDialog>),
+    /// C-x a: what the panels are sitting on that is not the local
+    /// filesystem.
+    Vfs(VfsDialog),
+}
+
+/// One line of the active VFS list.
+pub struct VfsRow {
+    /// What the row says.
+    pub label: String,
+    /// Where Enter goes: the `sftp://` prefix, or the archive's path.
+    pub target: String,
+    /// Which panels are on it right now - 0 left, 1 right.
+    pub used_by: Vec<usize>,
+    /// An SFTP connection can outlive the panel that opened it; an
+    /// archive cannot, so only the first kind is ever idle.
+    pub remote: bool,
+}
+
+pub struct VfsDialog {
+    pub rows: Vec<VfsRow>,
+    pub selected: usize,
 }
 
 /// The confirmation step of a bulk rename - nothing has touched the
@@ -958,6 +979,9 @@ pub enum Action {
     /// Marked names open as an editable list; the saved diff becomes
     /// renames and deletes (after a preview).
     BulkRename,
+    /// The active VFS list (C-x a / F9 > Command): archives and remote
+    /// connections the panels are on.
+    VfsList,
     /// The running-jobs list (C-x j / F9 > Command > Jobs).
     Jobs,
     /// M-h: the command-line history as a pick list.
@@ -1018,6 +1042,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Other panel: this &dir", "M-o", Action::OtherOpenDir)),
             None,
             Some(("&Jobs...", "C-x j", Action::Jobs)),
+            Some(("Acti&ve VFS list...", "C-x a", Action::VfsList)),
             Some(("Command histor&y...", "M-h", Action::HistoryList)),
         ],
     ),
@@ -1645,6 +1670,64 @@ impl App {
             panel: self.active,
             ask: None,
         });
+    }
+
+    /// What the panels are sitting on that is not the local filesystem,
+    /// plus any SFTP connection still cached. An archive belongs to the
+    /// panel that opened it and disappears with it; a connection is
+    /// kept so that going back to the same host does not mean logging
+    /// in again, which is why one can be listed with no panel on it.
+    fn vfs_rows(&mut self) -> Vec<VfsRow> {
+        self.connections.retain(|(_, weak)| weak.strong_count() > 0);
+        let mut rows: Vec<VfsRow> = Vec::new();
+        for (prefix, _) in &self.connections {
+            let used_by = (0..self.panels.len())
+                .filter(|i| self.panels[*i].remote.as_deref() == Some(prefix.as_str()))
+                .collect();
+            rows.push(VfsRow {
+                label: prefix.clone(),
+                target: prefix.clone(),
+                used_by,
+                remote: true,
+            });
+        }
+        for (index, panel) in self.panels.iter().enumerate() {
+            let Some(archive) = &panel.archive else {
+                continue;
+            };
+            let target = archive.display().to_string();
+            if let Some(row) = rows
+                .iter_mut()
+                .find(|row| !row.remote && row.target == target)
+            {
+                row.used_by.push(index);
+                continue;
+            }
+            rows.push(VfsRow {
+                label: format!("{target}://"),
+                target,
+                used_by: vec![index],
+                remote: false,
+            });
+        }
+        rows
+    }
+
+    /// Send whichever panels are on this entry back to a local
+    /// directory, and forget the connection if it was one. mc calls
+    /// this "free"; what it frees is the panel as much as the handle.
+    fn free_vfs(&mut self, row: &VfsRow) {
+        for index in row.used_by.iter().copied() {
+            let home = self.panels[index].local_cwd();
+            if let Err(err) = self.panels[index].to_local(home) {
+                self.status = Some(format!(" {err} "));
+                return;
+            }
+        }
+        if row.remote {
+            self.connections.retain(|(prefix, _)| prefix != &row.target);
+        }
+        self.status = Some(format!(" freed {} ", row.label));
     }
 
     /// Look up a live connection by URL prefix, dropping dead ones.
@@ -3079,6 +3162,14 @@ impl App {
             }
             Action::Repaint => self.repaint = true,
             Action::BulkRename => self.open_bulk_rename(),
+            Action::VfsList => {
+                let rows = self.vfs_rows();
+                if rows.is_empty() {
+                    self.status = Some(" no archives or connections open ".into());
+                } else {
+                    self.dialog = Some(Dialog::Vfs(VfsDialog { rows, selected: 0 }));
+                }
+            }
             Action::Jobs => {
                 if self.jobs.is_empty() {
                     self.status = Some(" no jobs running ".into());
@@ -4381,6 +4472,53 @@ impl App {
                     _ => self.dialog = Some(Dialog::History(selected)),
                 }
             }
+            Dialog::Vfs(mut d) => {
+                let len = d.rows.len();
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => {
+                        if let Some(row) = d.rows.get(d.selected) {
+                            let (target, remote) = (row.target.clone(), row.remote);
+                            if remote {
+                                // through the cache: no second login
+                                self.connect_sftp(&target);
+                            } else if let Err(err) =
+                                self.panels[self.active].open_archive(PathBuf::from(&target))
+                            {
+                                self.status = Some(format!(" {err} "));
+                            }
+                        }
+                    }
+                    KeyCode::F(8) | KeyCode::Delete | KeyCode::Char('f' | 'F') => {
+                        if let Some(row) = d.rows.get(d.selected) {
+                            let row = VfsRow {
+                                label: row.label.clone(),
+                                target: row.target.clone(),
+                                used_by: row.used_by.clone(),
+                                remote: row.remote,
+                            };
+                            self.free_vfs(&row);
+                        }
+                        // freeing changes the list under the cursor
+                        let rows = self.vfs_rows();
+                        if !rows.is_empty() {
+                            let selected = d.selected.min(rows.len() - 1);
+                            self.dialog = Some(Dialog::Vfs(VfsDialog { rows, selected }));
+                        }
+                    }
+                    KeyCode::Up => {
+                        d.selected = d.selected.saturating_sub(1);
+                        self.dialog = Some(Dialog::Vfs(d));
+                    }
+                    KeyCode::Down => {
+                        if d.selected + 1 < len {
+                            d.selected += 1;
+                        }
+                        self.dialog = Some(Dialog::Vfs(d));
+                    }
+                    _ => self.dialog = Some(Dialog::Vfs(d)),
+                }
+            }
             Dialog::Jobs(mut selected) => {
                 let len = self.jobs.len();
                 match key.code {
@@ -5664,6 +5802,7 @@ impl App {
                 KeyCode::Char('v' | 'V') => self.open_link(LinkKind::Symbolic, true),
                 KeyCode::Char('l' | 'L') => self.open_link(LinkKind::Hard, false),
                 KeyCode::Char('j' | 'J') => self.run_action(Action::Jobs),
+                KeyCode::Char('a' | 'A') => self.run_action(Action::VfsList),
                 KeyCode::Char('!') => self.run_action(Action::Panelize),
                 _ => {}
             }
@@ -5673,8 +5812,8 @@ impl App {
             self.prefix_cx = true;
             self.status = Some(
                 " C-x  (d = compare, q = quick view, i = info, c = chmod, \
-                 o = chown, s = symlink, j = jobs, ! = panelize, \
-                 t/p = paste tags/path) "
+                 o = chown, s = symlink, j = jobs, a = active VFS, \
+                 ! = panelize, t/p = paste tags/path) "
                     .into(),
             );
             return;

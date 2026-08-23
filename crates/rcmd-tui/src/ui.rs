@@ -14,7 +14,7 @@ use crate::format::{Field, Format, Item};
 
 use crate::app::{
     App, Ask, ConfirmDialog, ConnectAsk, Dialog, EditPrompt, FindDialog, InputDialog, Job, MENUS,
-    MenuState, OptionsDialog, QuickView, menu_label,
+    MenuState, OptionsDialog, QuickView, VfsDialog, menu_label,
 };
 use crate::config::HotEntry;
 use crate::git::GitStatus;
@@ -412,6 +412,10 @@ const HELP_TEXT: &[&str] = &[
     "  Ctrl+X !        panelize a command's output (F9 > Command too)",
     "  Ctrl+X j        jobs list: Enter foregrounds, c cancels; the",
     "                  status line shows aggregate background progress",
+    "  Ctrl+X a        active VFS list: the archives and connections the",
+    "                  panels are on. Enter goes there, f frees it - the",
+    "                  panel goes back to a local directory, and an idle",
+    "                  connection (no panel on it) is forgotten",
     "  Overwrite prompt: both files' size and date, then MC's answers -",
     "                  this file: Overwrite / Append / Reget (resume);",
     "                  all files: All / Update (only where the source is",
@@ -677,6 +681,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Options(d) => draw_options(frame, d),
             Dialog::RenamePreview(d) => draw_rename_preview(frame, d),
             Dialog::Jobs(selected) => draw_jobs(frame, &app.jobs, *selected),
+            Dialog::Vfs(d) => draw_vfs(frame, d),
             Dialog::History(selected) => draw_history(frame, app.cmdline.history(), *selected),
         }
     }
@@ -3458,6 +3463,52 @@ fn draw_history(frame: &mut Frame, history: &[String], selected: usize) {
         frame.render_widget(
             Line::from(text).style(if i == selected { sel } else { style }),
             line,
+        );
+    }
+}
+
+/// The active VFS list: what the panels are sitting on that is not the
+/// local filesystem. The panel column is what makes the list actionable
+/// - it says which side freeing a row will move.
+fn draw_vfs(frame: &mut Frame, dialog: &VfsDialog) {
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let rows = dialog.rows.len().max(1) as u16;
+    let area = centered(72, (rows + 2).min(16), frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .title(" Active VFS ")
+        .title_bottom(Line::from(" Enter go there · f free · Esc close ").centered())
+        .style(base);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if dialog.rows.is_empty() {
+        frame.render_widget(Line::from(" nothing open ").centered(), inner);
+        return;
+    }
+    let selected = dialog.selected.min(dialog.rows.len() - 1);
+    for (i, row) in dialog.rows.iter().enumerate() {
+        if i as u16 >= inner.height {
+            break;
+        }
+        let area = Rect {
+            y: inner.y + i as u16,
+            height: 1,
+            ..inner
+        };
+        let used = match row.used_by.as_slice() {
+            [] => "idle".to_string(),
+            [0] => "left".to_string(),
+            [1] => "right".to_string(),
+            _ => "both".to_string(),
+        };
+        let kind = if row.remote { "sftp" } else { "arch" };
+        let width = inner.width as usize;
+        let label = tail(&row.label, width.saturating_sub(13));
+        let text = format!(" {kind} {used:>5}  {label}");
+        frame.render_widget(
+            Line::from(format!("{text:<width$}")).style(if i == selected { sel } else { base }),
+            area,
         );
     }
 }

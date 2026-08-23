@@ -215,6 +215,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "bulk-rename" => Action::BulkRename,
         "history-list" => Action::HistoryList,
         "jobs" => Action::Jobs,
+        "vfs-list" => Action::VfsList,
         _ => return None,
     })
 }

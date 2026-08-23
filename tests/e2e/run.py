@@ -681,6 +681,42 @@ def test_mbox():
     shutil.rmtree(root)
 
 
+def test_vfslist():
+    """C-x a: the archives and connections the panels are on, with Enter
+    to go there and f to free one."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "out"))
+    src = os.path.join(root, "src")
+    os.makedirs(src)
+    open(os.path.join(src, "inside.txt"), "w").write("in the archive\n")
+    with tarfile.open(os.path.join(play, "b.tar.gz"), "w:gz") as t:
+        t.add(os.path.join(src, "inside.txt"), arcname="inside.txt")
+
+    s = Session(play, home, args=(play, os.path.join(play, "out")))
+    s.send(b"\x18a", wait=STEP)          # C-x a with nothing open
+    check("vfslist: says when nothing is open",
+          "no archives or connections open" in s.screen())
+
+    s.send(b"\x13b.tar\r", wait=STEP)   # quick search -> b.tar.gz
+    s.send(b"\r", wait=STEP * 2)        # enter the archive
+    check("vfslist: in the archive", "b.tar.gz://" in s.screen())
+
+    s.send(b"\x18a", wait=STEP)
+    scr = s.screen()
+    check("vfslist: dialog opens", "Active VFS" in scr)
+    check("vfslist: the archive is listed", "b.tar.gz://" in scr and "arch" in scr)
+    check("vfslist: it says which panel is on it", "left" in scr)
+
+    s.send(b"f", wait=STEP * 2)         # free it
+    check("vfslist: freeing says so", "freed" in s.screen())
+    s.send(b"\x1b", wait=STEP)          # the list is empty now: Esc out
+    scr = s.screen()
+    check("vfslist: the panel left the archive", "b.tar.gz://" not in scr)
+    check("vfslist: and is local again", play in scr)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_find():
     root, play, home = sandbox()
     os.makedirs(os.path.join(play, "sub"))
@@ -2759,6 +2795,7 @@ def main():
         test_iso,
         test_patch,
         test_mbox,
+        test_vfslist,
         test_find,
         test_compare,
         test_watch,

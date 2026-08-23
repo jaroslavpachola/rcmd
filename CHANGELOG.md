@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.29.0 - 2026-08-23
+
+- **Active VFS list** (4.0 S3): `C-x a`, or F9 → Command → Active VFS
+  list, shows what the panels are sitting on that is not the local
+  filesystem - open archives and live SFTP connections - with the panel
+  each one belongs to, so the list says which side an action will move.
+  Enter goes there, and a connection is reused rather than dialled
+  again.
+- **`f` frees a row**, which is mc's word for it: the panels on it go
+  back to a local directory and, if it was a connection, it is dropped
+  from the cache. An archive belongs to the panel that opened it; a
+  connection outlives one, which is why a connection can be listed as
+  idle and an archive never can.
+- **VFS settings are not here yet, on purpose.** mc's are all ftp ones -
+  timeouts, the anonymous password, the proxy - and rcmd has no ftp yet.
+  They will arrive with it rather than as an empty section now.
+
 ## 3.28.0 - 2026-08-23
 
 - **lha/lzh, arj and cab browse** (4.0 S3, finishing the extfs list):
