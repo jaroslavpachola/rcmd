@@ -7,12 +7,13 @@
 //! also unblocks a waiting worker because the reply channel closes.
 
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
+use std::time::SystemTime;
 
 use crate::entry::EntryKind;
 use crate::vfs::FsProvider;
@@ -28,8 +29,16 @@ pub enum JobEvent {
         bytes_done: u64,
         current: PathBuf,
     },
-    /// Target exists; answer with Overwrite/OverwriteAll/Skip/SkipAll/Abort.
-    AskOverwrite { path: PathBuf },
+    /// Target exists. `src` and `dst` are what the prompt puts on
+    /// screen and what the sticky Update / Size-differs answers compare;
+    /// `can_append` is false where the target is not a local file, so
+    /// Append and Reget have nothing to open.
+    AskOverwrite {
+        path: PathBuf,
+        src: FileFacts,
+        dst: FileFacts,
+        can_append: bool,
+    },
     /// Operation failed; answer with Retry/Skip/SkipAll/Abort.
     AskError { path: PathBuf, message: String },
     Done {
@@ -43,10 +52,78 @@ pub enum JobEvent {
 pub enum Reply {
     Overwrite,
     OverwriteAll,
+    /// mc's Update: from here on, overwrite only where the source is
+    /// newer than the target.
+    UpdateAll,
+    /// mc's "If size differs": from here on, overwrite only where the
+    /// two sizes disagree.
+    SizeDiffersAll,
+    /// mc's Append: put the source on the end of the target.
+    Append,
+    /// mc's Reget: resume - keep what is already there and copy only
+    /// the rest of the source.
+    Reget,
     Skip,
     SkipAll,
     Retry,
     Abort,
+}
+
+/// The size and modification time of one side of an overwrite question.
+/// Missing metadata reads as a zero-length file of unknown age, which is
+/// the safe way round: it never makes "newer" or "same size" true.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FileFacts {
+    pub size: u64,
+    pub mtime: Option<SystemTime>,
+}
+
+impl FileFacts {
+    pub fn of_path(path: &Path) -> FileFacts {
+        match path.symlink_metadata() {
+            Ok(meta) => FileFacts {
+                size: meta.len(),
+                mtime: meta.modified().ok(),
+            },
+            Err(_) => FileFacts::default(),
+        }
+    }
+
+    fn of_entry(entry: &crate::entry::Entry) -> FileFacts {
+        FileFacts {
+            size: entry.size,
+            mtime: entry.mtime,
+        }
+    }
+
+    /// Strictly newer than `other`. An unknown time is never newer, so
+    /// mc's Update leaves such a target alone rather than clobbering it.
+    fn newer_than(self, other: FileFacts) -> bool {
+        match (self.mtime, other.mtime) {
+            (Some(mine), Some(theirs)) => mine > theirs,
+            _ => false,
+        }
+    }
+}
+
+/// What to do with a target that already exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Overwrite {
+    Replace,
+    Append,
+    Reget,
+    Skip,
+}
+
+/// A sticky answer to "the target exists": mc's All, Update, "If size
+/// differs" and None answer every remaining file without asking again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Policy {
+    Ask,
+    All,
+    Newer,
+    SizeDiffers,
+    None,
 }
 
 pub struct JobHandle {
@@ -257,7 +334,7 @@ fn transfer_move_one(
     if dst.starts_with(src) {
         return ctx.error(src, "cannot move a directory into itself");
     }
-    if !ctx.may_overwrite_fs(fs, dst)? {
+    if ctx.may_overwrite_fs(fs, FileFacts::of_path(src), dst)? == Overwrite::Skip {
         return Ok(());
     }
     let writer = fs.writer().expect("checked in spawn_transfer");
@@ -334,7 +411,7 @@ fn transfer_tree(
         }
         EntryKind::SymlinkDir | EntryKind::SymlinkFile | EntryKind::SymlinkBroken => {
             ctx.progress(src);
-            if !ctx.may_overwrite_fs(dst_fs, dst)? {
+            if ctx.may_overwrite_fs(dst_fs, FileFacts::of_entry(&entry), dst)? == Overwrite::Skip {
                 return Ok(());
             }
             let target = entry.link_target.clone().unwrap_or_default();
@@ -356,7 +433,7 @@ fn transfer_tree(
             if same_fs && src == dst {
                 return ctx.error(src, "source and destination are the same file");
             }
-            if !ctx.may_overwrite_fs(dst_fs, dst)? {
+            if ctx.may_overwrite_fs(dst_fs, FileFacts::of_entry(&entry), dst)? == Overwrite::Skip {
                 return Ok(());
             }
             transfer_file(ctx, src_fs, dst_fs, src, dst, &entry, move_mode)?;
@@ -483,8 +560,8 @@ struct Ctx {
     files_done: u64,
     bytes_done: u64,
     skipped: u64,
-    overwrite_all: bool,
-    skip_all_overwrites: bool,
+    /// The sticky answer to existing targets, once one has been given.
+    policy: Policy,
     skip_all_errors: bool,
 }
 
@@ -562,55 +639,107 @@ impl Ctx {
         }
     }
 
-    /// Whether we may write over `dst`. Ok(false) means skip this item.
-    fn may_overwrite(&mut self, dst: &Path) -> Result<bool, Aborted> {
-        let exists = dst.symlink_metadata().is_ok();
-        self.may_overwrite_existing(exists, dst)
+    /// What to do about `dst` already existing. `can_append` says
+    /// whether Append and Reget are on the table - they need a local
+    /// file to open, so only the plain file copy offers them.
+    fn may_overwrite(
+        &mut self,
+        src: FileFacts,
+        dst: &Path,
+        can_append: bool,
+    ) -> Result<Overwrite, Aborted> {
+        match dst.symlink_metadata() {
+            Ok(meta) => self.decide_overwrite(
+                src,
+                FileFacts {
+                    size: meta.len(),
+                    mtime: meta.modified().ok(),
+                },
+                dst,
+                can_append,
+            ),
+            Err(_) => Ok(Overwrite::Replace), // nothing there
+        }
     }
 
-    /// Provider-aware variant: existence is checked through `fs`.
-    fn may_overwrite_fs(&mut self, fs: &dyn FsProvider, dst: &Path) -> Result<bool, Aborted> {
-        let exists = fs.stat(dst).is_ok();
-        self.may_overwrite_existing(exists, dst)
+    /// Provider-aware variant: existence and facts come through `fs`,
+    /// and appending is never offered - a provider hands out a writer,
+    /// not a file to seek in.
+    fn may_overwrite_fs(
+        &mut self,
+        fs: &dyn FsProvider,
+        src: FileFacts,
+        dst: &Path,
+    ) -> Result<Overwrite, Aborted> {
+        match fs.stat(dst) {
+            Ok(entry) => self.decide_overwrite(src, FileFacts::of_entry(&entry), dst, false),
+            Err(_) => Ok(Overwrite::Replace),
+        }
     }
 
-    fn may_overwrite_existing(&mut self, exists: bool, dst: &Path) -> Result<bool, Aborted> {
-        if !exists {
-            return Ok(true); // nothing there
-        }
-        if self.overwrite_all {
-            return Ok(true);
-        }
-        if self.skip_all_overwrites {
-            self.skipped += 1;
-            return Ok(false);
+    fn decide_overwrite(
+        &mut self,
+        src: FileFacts,
+        dst_facts: FileFacts,
+        dst: &Path,
+        can_append: bool,
+    ) -> Result<Overwrite, Aborted> {
+        match self.policy {
+            Policy::All => return Ok(Overwrite::Replace),
+            Policy::None => return Ok(self.skip()),
+            Policy::Newer => return Ok(self.sticky(src.newer_than(dst_facts))),
+            Policy::SizeDiffers => return Ok(self.sticky(src.size != dst_facts.size)),
+            Policy::Ask => {}
         }
         if self
             .tx
             .send(JobEvent::AskOverwrite {
                 path: dst.to_path_buf(),
+                src,
+                dst: dst_facts,
+                can_append,
             })
             .is_err()
         {
             return Err(Aborted);
         }
         match self.rx.recv() {
-            Ok(Reply::Overwrite) => Ok(true),
+            Ok(Reply::Overwrite) => Ok(Overwrite::Replace),
+            Ok(Reply::Append) => Ok(Overwrite::Append),
+            Ok(Reply::Reget) => Ok(Overwrite::Reget),
             Ok(Reply::OverwriteAll) => {
-                self.overwrite_all = true;
-                Ok(true)
+                self.policy = Policy::All;
+                Ok(Overwrite::Replace)
             }
-            Ok(Reply::Skip) => {
-                self.skipped += 1;
-                Ok(false)
+            // the sticky answers decide this file too, not just the rest
+            Ok(Reply::UpdateAll) => {
+                self.policy = Policy::Newer;
+                Ok(self.sticky(src.newer_than(dst_facts)))
             }
+            Ok(Reply::SizeDiffersAll) => {
+                self.policy = Policy::SizeDiffers;
+                Ok(self.sticky(src.size != dst_facts.size))
+            }
+            Ok(Reply::Skip) => Ok(self.skip()),
             Ok(Reply::SkipAll) => {
-                self.skip_all_overwrites = true;
-                self.skipped += 1;
-                Ok(false)
+                self.policy = Policy::None;
+                Ok(self.skip())
             }
             _ => Err(Aborted),
         }
+    }
+
+    fn sticky(&mut self, replace: bool) -> Overwrite {
+        if replace {
+            Overwrite::Replace
+        } else {
+            self.skip()
+        }
+    }
+
+    fn skip(&mut self) -> Overwrite {
+        self.skipped += 1;
+        Overwrite::Skip
     }
 }
 
@@ -627,8 +756,7 @@ fn spawn(work: impl FnOnce(&mut Ctx) -> Result<(), Aborted> + Send + 'static) ->
             files_done: 0,
             bytes_done: 0,
             skipped: 0,
-            overwrite_all: false,
-            skip_all_overwrites: false,
+            policy: Policy::Ask,
             skip_all_errors: false,
         };
         let aborted = work(&mut ctx).is_err();
@@ -727,7 +855,7 @@ fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
         if src == dst {
             return ctx.error(src, "source and destination are the same file");
         }
-        if !ctx.may_overwrite(dst)? {
+        if ctx.may_overwrite(FileFacts::of_path(src), dst, false)? == Overwrite::Skip {
             return Ok(());
         }
         let done = ctx.with_retry(src, || {
@@ -745,20 +873,29 @@ fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
         if src == dst {
             return ctx.error(src, "source and destination are the same file");
         }
-        if !ctx.may_overwrite(dst)? {
+        // the one place Append and Reget make sense: a local file
+        // copied onto a local file
+        let mode = ctx.may_overwrite(FileFacts::of_path(src), dst, true)?;
+        if mode == Overwrite::Skip {
             return Ok(());
         }
-        copy_file(ctx, src, dst, meta.len())
+        copy_file(ctx, src, dst, meta.len(), mode)
     }
 }
 
-fn copy_file(ctx: &mut Ctx, src: &Path, dst: &Path, size: u64) -> Result<(), Aborted> {
+fn copy_file(
+    ctx: &mut Ctx,
+    src: &Path,
+    dst: &Path,
+    size: u64,
+    mode: Overwrite,
+) -> Result<(), Aborted> {
     loop {
         if ctx.cancelled() {
             return Err(Aborted);
         }
         let start = ctx.bytes_done;
-        match try_copy_file(ctx, src, dst) {
+        match try_copy_file(ctx, src, dst, mode) {
             Ok(()) => {
                 ctx.files_done += 1;
                 ctx.bytes_done = start + size; // keep totals consistent with the scan
@@ -777,15 +914,36 @@ fn copy_file(ctx: &mut Ctx, src: &Path, dst: &Path, size: u64) -> Result<(), Abo
     }
 }
 
-fn try_copy_file(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), CopyErr> {
+fn try_copy_file(ctx: &mut Ctx, src: &Path, dst: &Path, mode: Overwrite) -> Result<(), CopyErr> {
     let mut input = fs::File::open(src).map_err(CopyErr::Io)?;
     let meta = input.metadata().map_err(CopyErr::Io)?;
-    let mut output = fs::File::create(dst).map_err(CopyErr::Io)?;
+    // Append and Reget add to a file that is already there; only a plain
+    // copy creates one, and only a plain copy may delete it again.
+    let fresh = mode == Overwrite::Replace;
+    let mut output = if fresh {
+        fs::File::create(dst).map_err(CopyErr::Io)?
+    } else {
+        if mode == Overwrite::Reget {
+            // resume: whatever is on disk is taken to be the head of the
+            // source, so start reading where the target ends
+            let have = fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
+            if have >= meta.len() {
+                return Ok(()); // nothing left to fetch
+            }
+            input.seek(SeekFrom::Start(have)).map_err(CopyErr::Io)?;
+        }
+        fs::OpenOptions::new()
+            .append(true)
+            .open(dst)
+            .map_err(CopyErr::Io)?
+    };
     let mut buf = vec![0u8; CHUNK];
     loop {
         if ctx.cancelled() {
             drop(output);
-            let _ = fs::remove_file(dst); // don't leave a torso behind
+            if fresh {
+                let _ = fs::remove_file(dst); // don't leave a torso behind
+            }
             return Err(CopyErr::Cancelled);
         }
         let n = input.read(&mut buf).map_err(CopyErr::Io)?;
@@ -796,11 +954,15 @@ fn try_copy_file(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), CopyErr> {
         ctx.bytes_done += n as u64;
         ctx.progress(src);
     }
-    output
-        .set_permissions(meta.permissions())
-        .map_err(CopyErr::Io)?;
-    if let Ok(modified) = meta.modified() {
-        let _ = output.set_times(fs::FileTimes::new().set_modified(modified));
+    // an appended-to file keeps its own mode and its new mtime: it is
+    // not a copy of the source, it is the target with more in it
+    if fresh {
+        output
+            .set_permissions(meta.permissions())
+            .map_err(CopyErr::Io)?;
+        if let Ok(modified) = meta.modified() {
+            let _ = output.set_times(fs::FileTimes::new().set_modified(modified));
+        }
     }
     Ok(())
 }
@@ -813,7 +975,7 @@ fn move_one(ctx: &mut Ctx, src: &Path, dst: &Path, totals: &mut (u64, u64)) -> R
     if dst.starts_with(src) {
         return ctx.error(src, "cannot move a directory into itself");
     }
-    if !ctx.may_overwrite(dst)? {
+    if ctx.may_overwrite(FileFacts::of_path(src), dst, false)? == Overwrite::Skip {
         return Ok(());
     }
     loop {
@@ -925,7 +1087,7 @@ fn extract_tree(ctx: &mut Ctx, fs: &dyn FsProvider, src: &Path, dst: &Path) -> R
         }
         EntryKind::SymlinkDir | EntryKind::SymlinkFile | EntryKind::SymlinkBroken => {
             ctx.progress(src);
-            if !ctx.may_overwrite(dst)? {
+            if ctx.may_overwrite(FileFacts::of_entry(&entry), dst, false)? == Overwrite::Skip {
                 return Ok(());
             }
             let target = entry.link_target.clone().unwrap_or_default();
@@ -941,7 +1103,7 @@ fn extract_tree(ctx: &mut Ctx, fs: &dyn FsProvider, src: &Path, dst: &Path) -> R
         }
         EntryKind::File => {
             ctx.progress(src);
-            if !ctx.may_overwrite(dst)? {
+            if ctx.may_overwrite(FileFacts::of_entry(&entry), dst, false)? == Overwrite::Skip {
                 return Ok(());
             }
             extract_file(ctx, fs, src, dst, &entry)
@@ -1385,7 +1547,7 @@ mod tests {
         let mut asks = Vec::new();
         loop {
             match handle.events.recv().expect("job died without Done") {
-                JobEvent::AskOverwrite { path } => {
+                JobEvent::AskOverwrite { path, .. } => {
                     asks.push(format!("overwrite:{}", path.display()));
                     handle.replies.send(replies.remove(0)).unwrap();
                 }
@@ -1432,6 +1594,148 @@ mod tests {
             fs::read_link(dst.join("tree/link")).unwrap(),
             PathBuf::from("a.txt")
         );
+    }
+
+    /// MC's Append: the source goes on the end of what is already there.
+    #[test]
+    fn append_adds_to_the_target_instead_of_replacing_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("log.txt");
+        fs::write(&src, b"second\n").unwrap();
+        let dst_dir = tmp.path().join("out");
+        fs::create_dir(&dst_dir).unwrap();
+        fs::write(dst_dir.join("log.txt"), b"first\n").unwrap();
+
+        let out = run(spawn_copy(vec![src], dst_dir.clone()), vec![Reply::Append]);
+        assert_eq!(out.files_done, 1);
+        assert_eq!(out.skipped, 0);
+        assert_eq!(
+            fs::read(dst_dir.join("log.txt")).unwrap(),
+            b"first\nsecond\n"
+        );
+    }
+
+    /// MC's Reget: what is on disk is taken to be the head of the
+    /// source, so only the rest is fetched.
+    #[test]
+    fn reget_resumes_a_half_copied_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("big.bin");
+        fs::write(&src, b"0123456789").unwrap();
+        let dst_dir = tmp.path().join("out");
+        fs::create_dir(&dst_dir).unwrap();
+        fs::write(dst_dir.join("big.bin"), b"0123").unwrap();
+
+        let out = run(
+            spawn_copy(vec![src.clone()], dst_dir.clone()),
+            vec![Reply::Reget],
+        );
+        assert_eq!(out.files_done, 1);
+        assert_eq!(fs::read(dst_dir.join("big.bin")).unwrap(), b"0123456789");
+
+        // a target that is already as long as the source has nothing left
+        let out = run(spawn_copy(vec![src], dst_dir.clone()), vec![Reply::Reget]);
+        assert_eq!(out.files_done, 1);
+        assert_eq!(fs::read(dst_dir.join("big.bin")).unwrap(), b"0123456789");
+    }
+
+    /// MC's Update: answered once, it decides every remaining file by
+    /// comparing modification times - including the file it was
+    /// answered on.
+    #[test]
+    fn update_overwrites_only_where_the_source_is_newer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dst_dir = tmp.path().join("out");
+        fs::create_dir(&dst_dir).unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        let new = old + std::time::Duration::from_secs(3600);
+
+        // a.txt: source newer than target; b.txt: the other way round
+        let a = tmp.path().join("a.txt");
+        fs::write(&a, b"new-a").unwrap();
+        set_mtime(&a, new);
+        fs::write(dst_dir.join("a.txt"), b"old-a").unwrap();
+        set_mtime(&dst_dir.join("a.txt"), old);
+
+        let b = tmp.path().join("b.txt");
+        fs::write(&b, b"old-b").unwrap();
+        set_mtime(&b, old);
+        fs::write(dst_dir.join("b.txt"), b"new-b").unwrap();
+        set_mtime(&dst_dir.join("b.txt"), new);
+
+        let out = run(
+            spawn_copy(vec![a, b], dst_dir.clone()),
+            vec![Reply::UpdateAll],
+        );
+        // asked once, then the policy answered the rest
+        assert_eq!(out.asks.len(), 1);
+        assert_eq!(fs::read(dst_dir.join("a.txt")).unwrap(), b"new-a");
+        assert_eq!(fs::read(dst_dir.join("b.txt")).unwrap(), b"new-b");
+        assert_eq!(out.skipped, 1);
+    }
+
+    /// MC's "If size differs": same shape, comparing lengths.
+    #[test]
+    fn size_differs_overwrites_only_the_ones_that_differ() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dst_dir = tmp.path().join("out");
+        fs::create_dir(&dst_dir).unwrap();
+
+        let same = tmp.path().join("same.txt");
+        fs::write(&same, b"1234").unwrap();
+        fs::write(dst_dir.join("same.txt"), b"abcd").unwrap();
+
+        let grown = tmp.path().join("grown.txt");
+        fs::write(&grown, b"123456").unwrap();
+        fs::write(dst_dir.join("grown.txt"), b"abcd").unwrap();
+
+        let out = run(
+            spawn_copy(vec![grown, same], dst_dir.clone()),
+            vec![Reply::SizeDiffersAll],
+        );
+        assert_eq!(out.asks.len(), 1);
+        assert_eq!(fs::read(dst_dir.join("grown.txt")).unwrap(), b"123456");
+        assert_eq!(fs::read(dst_dir.join("same.txt")).unwrap(), b"abcd");
+        assert_eq!(out.skipped, 1);
+    }
+
+    /// The prompt has to say what it is asking about.
+    #[test]
+    fn the_overwrite_question_carries_both_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("f.txt");
+        fs::write(&src, b"123456").unwrap();
+        let dst_dir = tmp.path().join("out");
+        fs::create_dir(&dst_dir).unwrap();
+        fs::write(dst_dir.join("f.txt"), b"ab").unwrap();
+
+        let handle = spawn_copy(vec![src], dst_dir.clone());
+        let (mut asked_src, mut asked_dst, mut appendable) = (0, 0, false);
+        loop {
+            match handle.events.recv().unwrap() {
+                JobEvent::AskOverwrite {
+                    src,
+                    dst,
+                    can_append,
+                    ..
+                } => {
+                    asked_src = src.size;
+                    asked_dst = dst.size;
+                    appendable = can_append;
+                    handle.replies.send(Reply::Skip).unwrap();
+                }
+                JobEvent::Done { .. } => break,
+                _ => {}
+            }
+        }
+        assert_eq!((asked_src, asked_dst), (6, 2));
+        assert!(appendable, "a local file copy can append");
+    }
+
+    fn set_mtime(path: &Path, when: std::time::SystemTime) {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(when))
+            .unwrap();
     }
 
     #[test]

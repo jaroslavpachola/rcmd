@@ -15,7 +15,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 use rcmd_core::entry;
 use rcmd_core::find::{self, FindEvent, FindHandle};
-use rcmd_core::fsops::{self, JobEvent, JobHandle, Reply};
+use rcmd_core::fsops::{self, FileFacts, JobEvent, JobHandle, Reply};
 use rcmd_core::glob::glob_match;
 use rcmd_core::panel::{ListMode, LoadKind, Panel, SortKey};
 use rcmd_core::sftp::{self, ConnectEvent, ConnectReply, SftpFs, SftpUrl};
@@ -348,27 +348,111 @@ impl OptionsDialog {
 }
 
 pub enum Ask {
-    Overwrite { path: PathBuf },
-    Error { path: PathBuf, message: String },
+    /// MC's overwrite prompt: what is on each side, and what may be
+    /// done about it. `can_append` is false unless both sides are local
+    /// files - Append and Reget have nothing to open otherwise.
+    Overwrite {
+        path: PathBuf,
+        src: FileFacts,
+        dst: FileFacts,
+        can_append: bool,
+    },
+    Error {
+        path: PathBuf,
+        message: String,
+    },
 }
+
+/// The overwrite buttons, in MC's two groups: what to do with *this*
+/// file, then what to do with every remaining one.
+const OVERWRITE_BUTTONS: &[&str] = &[
+    "Overwrite",
+    "Append",
+    "Reget",
+    "Skip",
+    "All",
+    "Update",
+    "Size differs",
+    "None",
+    "Abort",
+];
+const OVERWRITE_REPLIES: &[Reply] = &[
+    Reply::Overwrite,
+    Reply::Append,
+    Reply::Reget,
+    Reply::Skip,
+    Reply::OverwriteAll,
+    Reply::UpdateAll,
+    Reply::SizeDiffersAll,
+    Reply::SkipAll,
+    Reply::Abort,
+];
+/// The same without Append and Reget, for a target that is not a local
+/// file.
+const OVERWRITE_BUTTONS_PLAIN: &[&str] = &[
+    "Overwrite",
+    "Skip",
+    "All",
+    "Update",
+    "Size differs",
+    "None",
+    "Abort",
+];
+const OVERWRITE_REPLIES_PLAIN: &[Reply] = &[
+    Reply::Overwrite,
+    Reply::Skip,
+    Reply::OverwriteAll,
+    Reply::UpdateAll,
+    Reply::SizeDiffersAll,
+    Reply::SkipAll,
+    Reply::Abort,
+];
 
 impl Ask {
     pub fn buttons(&self) -> &'static [&'static str] {
         match self {
-            Ask::Overwrite { .. } => &["Overwrite", "All", "Skip", "Skip all", "Abort"],
+            Ask::Overwrite {
+                can_append: true, ..
+            } => OVERWRITE_BUTTONS,
+            Ask::Overwrite { .. } => OVERWRITE_BUTTONS_PLAIN,
             Ask::Error { .. } => &["Retry", "Skip", "Skip all", "Abort"],
         }
     }
 
+    /// How many buttons go on each drawn row. MC keeps "this file" and
+    /// "all files" apart, and Abort on a line of its own.
+    pub fn button_rows(&self) -> &'static [usize] {
+        match self {
+            Ask::Overwrite {
+                can_append: true, ..
+            } => &[4, 4, 1],
+            Ask::Overwrite { .. } => &[2, 4, 1],
+            Ask::Error { .. } => &[4],
+        }
+    }
+
+    /// Up/Down between the rows, keeping the column where it fits.
+    pub fn step_row(&self, button: usize, delta: isize) -> usize {
+        let rows = self.button_rows();
+        let mut start = 0;
+        for (r, len) in rows.iter().enumerate() {
+            if button < start + len {
+                let column = button - start;
+                let target = (r as isize + delta).rem_euclid(rows.len() as isize) as usize;
+                let target_start: usize = rows[..target].iter().sum();
+                return target_start + column.min(rows[target] - 1);
+            }
+            start += len;
+        }
+        button
+    }
+
     fn reply(&self, button: usize) -> Reply {
         match self {
-            Ask::Overwrite { .. } => [
-                Reply::Overwrite,
-                Reply::OverwriteAll,
-                Reply::Skip,
-                Reply::SkipAll,
-                Reply::Abort,
-            ][button],
+            Ask::Overwrite {
+                can_append: true, ..
+            } => OVERWRITE_REPLIES[button],
+            Ask::Overwrite { .. } => OVERWRITE_REPLIES_PLAIN[button],
             Ask::Error { .. } => [Reply::Retry, Reply::Skip, Reply::SkipAll, Reply::Abort][button],
         }
     }
@@ -1731,14 +1815,24 @@ impl App {
                         job.bytes_done = bytes_done;
                         job.current = current;
                     }
-                    JobEvent::AskOverwrite { path } => {
+                    JobEvent::AskOverwrite {
+                        path,
+                        src,
+                        dst,
+                        can_append,
+                    } => {
                         if !confirm_overwrite {
                             // the user turned the question off: answer it
                             // once, for every remaining file in this job
                             let _ = job.handle.replies.send(Reply::OverwriteAll);
                             continue;
                         }
-                        job.ask = Some(Ask::Overwrite { path });
+                        job.ask = Some(Ask::Overwrite {
+                            path,
+                            src,
+                            dst,
+                            can_append,
+                        });
                         job.button = 0;
                         // a question pulls a background job back up
                         job.background = false;
@@ -3899,6 +3993,14 @@ impl App {
             }
             KeyCode::Right | KeyCode::Tab => {
                 job.button = (job.button + 1) % count;
+                None
+            }
+            KeyCode::Up => {
+                job.button = ask.step_row(job.button, -1);
+                None
+            }
+            KeyCode::Down => {
+                job.button = ask.step_row(job.button, 1);
                 None
             }
             KeyCode::Enter => Some(ask.reply(job.button)),

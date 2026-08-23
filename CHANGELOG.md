@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.13.0 - 2026-08-23
+
+- **MC's overwrite prompt** (4.0 S2): "Target already exists -
+  overwrite?" was a question nobody could answer, so the prompt now
+  shows **both files' size and date** and offers what mc offers. For
+  this file: **Overwrite**, **Append** (the source goes on the end of
+  the target) and **Reget** (resume - whatever is on disk is taken to
+  be the head of the source, so only the rest is copied). For every
+  remaining one: **All**, **Update** (only where the source is newer),
+  **Size differs**, **None**. The sticky answers decide the file they
+  were given on as well, not just the ones after it, and an unknown
+  modification time never counts as newer - Update leaves such a target
+  alone rather than clobbering it. Up/Down move between the two rows of
+  buttons; the old o/a/s/S hotkeys still work. Append and Reget appear
+  only where both sides are local files: a VFS provider hands out a
+  writer, not a file to seek in, so there is nothing to append to.
+  Cancelling an append or a resume no longer deletes the target - that
+  file was there before the copy started.
+
 ## 3.12.0 - 2026-08-23
 
 - **Per-panel Left and Right menus** (4.0 S1, completes it): the menu

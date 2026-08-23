@@ -188,7 +188,11 @@ restores the old one-shot execution (also the automatic fallback if the
 shell cannot be spawned).
 
 In dialogs: arrows/Tab move between buttons, Enter confirms, Esc cancels;
-overwrite and error prompts also take hotkeys (o/a/s/S, r/s/S).
+overwrite and error prompts also take hotkeys (o/a/s/S, r/s/S). The
+overwrite prompt is MC's: both files' size and date on screen, then
+**Overwrite / Append / Reget** for this file and **All / Update / Size
+differs / None** for every remaining one (Up/Down switch rows). Append
+and Reget - MC's resume - need a local file on both sides.
 
 Esc doubles as MC's meta prefix everywhere: after a lone Esc, a digit is
 an F-key (Esc 1 = F1 … Esc 0 = F10) and any other key gets Alt added -

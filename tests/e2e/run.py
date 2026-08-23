@@ -1288,6 +1288,57 @@ def test_panelmenus():
     shutil.rmtree(root)
 
 
+def test_overwrite():
+    """PLAN4 S2: MC's overwrite prompt - both files on screen, and the
+    Append / Reget / Update / Size-differs answers behind it."""
+    root, play, home = sandbox()
+    other = os.path.join(root, "other")
+    os.makedirs(other)
+    open(os.path.join(play, "log.txt"), "w").write("second\n")
+    open(os.path.join(other, "log.txt"), "w").write("first\n")
+    s = Session(play, home, args=(play, other))
+
+    s.send(DOWN)                            # onto log.txt
+    s.send(F5, wait=STEP)                   # copy to the other panel
+    s.send(b"\r", wait=STEP * 2)            # ...which already has one
+    scr = s.screen()
+    check("overwrite: the prompt names the file", "File exists" in scr and "log.txt" in scr)
+    check("overwrite: both files are on screen",
+          "source" in scr and "target" in scr, scr[:200])
+    for label in ("Overwrite", "Append", "Reget", "Skip", "All", "Update",
+                  "Size differs", "None", "Abort"):
+        check("overwrite: %s offered" % label.lower(), "[ %s ]" % label in scr, scr[:400])
+
+    # Append puts the source on the end of what is already there
+    s.send(b"\x1b[C")                       # -> Append
+    s.send(b"\r", wait=STEP * 3)
+    check("overwrite: append kept both halves",
+          open(os.path.join(other, "log.txt")).read() == "first\nsecond\n",
+          repr(open(os.path.join(other, "log.txt")).read()))
+
+    # Update: answered once, it compares mtimes - here the target is the
+    # newer file, so it stays put
+    open(os.path.join(play, "keep.txt"), "w").write("older source\n")
+    open(os.path.join(other, "keep.txt"), "w").write("newer target\n")
+    os.utime(os.path.join(play, "keep.txt"), (1_000_000, 1_000_000))
+    os.utime(os.path.join(other, "keep.txt"), (2_000_000, 2_000_000))
+    s.send(b"\x12")                         # Ctrl+R: see the new file
+    s.send(HOME_K, wait=STEP)               # ".." , then the first entry
+    s.send(DOWN, wait=STEP)
+    check("overwrite: on keep.txt", "keep.txt" in status_line(s), status_line(s))
+    s.send(F5, wait=STEP)
+    s.send(b"\r", wait=STEP * 2)
+    check("overwrite: the prompt is back", "File exists" in s.screen())
+    s.send(b"\x1b[B")                       # Down: onto the "all files" row
+    s.send(b"\x1b[C")                       # -> Update
+    s.send(b"\r", wait=STEP * 3)
+    check("overwrite: update left the newer target alone",
+          open(os.path.join(other, "keep.txt")).read() == "newer target\n",
+          repr(open(os.path.join(other, "keep.txt")).read()))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_mcimport():
     """PLAN4 S0: `rcmd --import-mc DIR` converts mc's menu, mc.ext and
     keymap into an rcmd config fragment on stdout, warning on stderr
@@ -2025,6 +2076,7 @@ def main():
         test_userformat,
         test_highlight,
         test_panelmenus,
+        test_overwrite,
         test_mcimport,
         test_keycontexts,
         test_options,

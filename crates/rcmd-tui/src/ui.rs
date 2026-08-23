@@ -5,6 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Clear, Gauge, Row, Table, TableState};
 use rcmd_core::entry::{Entry, EntryKind};
+use rcmd_core::fsops::FileFacts;
 use rcmd_core::glob::glob_match;
 use rcmd_core::panel::{ListMode, Panel};
 use rcmd_core::tree::Tree;
@@ -378,7 +379,12 @@ const HELP_TEXT: &[&str] = &[
     "  Ctrl+X !        panelize a command's output (F9 > Command too)",
     "  Ctrl+X j        jobs list: Enter foregrounds, c cancels; the",
     "                  status line shows aggregate background progress",
-    "  Overwrite prompt hotkeys: o=overwrite a=all s=skip S=skip all",
+    "  Overwrite prompt: both files' size and date, then MC's answers -",
+    "                  this file: Overwrite / Append / Reget (resume);",
+    "                  all files: All / Update (only where the source is",
+    "                  newer) / Size differs / None. Up/Down move between",
+    "                  the rows. Append and Reget need a local file on both",
+    "                  sides. Hotkeys: o=overwrite a=all s=skip S=skip all",
     "  Error prompt hotkeys:     r=retry s=skip S=skip all",
     "",
     "# Archives",
@@ -3133,15 +3139,28 @@ fn draw_job(frame: &mut Frame, job: &Job) {
 fn draw_ask(frame: &mut Frame, ask: &Ask, button: usize) {
     let style = Style::new().fg(th().error_fg).bg(th().error_bg);
     let sel = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
-    let area = centered(68, 7, frame.area());
+    let rows = ask.button_rows();
+    // path + the two facts lines (or the message) + a blank + the buttons
+    let height = 3 + rows.len() as u16 + 3;
+    let area = centered(68, height, frame.area());
     let width = area.width.saturating_sub(4) as usize;
 
+    let facts = |label: &str, f: &FileFacts| {
+        let when = f
+            .mtime
+            .map(|t| DateTime::<Local>::from(t).format("%b %e %H:%M").to_string())
+            .unwrap_or_else(|| "unknown".into());
+        format!("{label} {:>9}  {when}", human_size(f.size))
+    };
     let (title, lines) = match ask {
-        Ask::Overwrite { path } => (
+        // MC puts both files on screen, because "overwrite?" is not a
+        // question anyone can answer without knowing which is which
+        Ask::Overwrite { path, src, dst, .. } => (
             " File exists ",
             vec![
                 tail(&path.display().to_string(), width),
-                "Target already exists - overwrite?".to_string(),
+                facts("source", src),
+                facts("target", dst),
             ],
         ),
         Ask::Error { path, message } => (
@@ -3153,22 +3172,26 @@ fn draw_ask(frame: &mut Frame, ask: &Ask, button: usize) {
         ),
     };
     let inner = popup(frame, area, title, style);
-    for (i, text) in lines.iter().enumerate() {
-        let row = Rect {
-            x: inner.x + 1,
-            y: inner.y + i as u16,
-            width: inner.width.saturating_sub(2),
-            height: 1,
-        };
-        frame.render_widget(Line::from(text.as_str()).centered(), row);
-    }
-    let buttons = Rect {
+    let row_at = |offset: u16| Rect {
         x: inner.x + 1,
-        y: inner.y + 3,
+        y: inner.y + offset,
         width: inner.width.saturating_sub(2),
         height: 1,
     };
-    frame.render_widget(buttons_line(ask.buttons(), button, style, sel), buttons);
+    for (i, text) in lines.iter().enumerate() {
+        frame.render_widget(Line::from(text.as_str()).centered(), row_at(i as u16));
+    }
+    let mut first = 0;
+    for (r, len) in rows.iter().enumerate() {
+        let labels = &ask.buttons()[first..first + len];
+        // the selected button is only in this row when the index is
+        let selected = button.checked_sub(first).filter(|i| *i < *len);
+        frame.render_widget(
+            buttons_line(labels, selected.unwrap_or(usize::MAX), style, sel),
+            row_at(lines.len() as u16 + 1 + r as u16),
+        );
+        first += len;
+    }
 }
 
 #[cfg(test)]
