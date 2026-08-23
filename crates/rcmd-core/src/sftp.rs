@@ -18,7 +18,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ssh2::{CheckResult, FileStat, HashType, KnownHostFileKind, OpenFlags, OpenType, Session};
 
 use crate::entry::{Entry, EntryKind};
-use crate::vfs::{FsProvider, FsWrite};
+use crate::remote::{ConnectEvent, ConnectHandle, ConnectReply};
+use crate::vfs::{FsProvider, FsWrite, RemoteFs};
 
 /// Blocking-call timeout on the session; a dead link surfaces as an
 /// error dialog instead of a hung worker.
@@ -86,43 +87,6 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-/// Streamed by the connect worker. `Ask*` events block the worker until
-/// the UI answers on the reply channel.
-pub enum ConnectEvent {
-    Info(String),
-    /// Unknown host: show the fingerprint, ask whether to trust and save.
-    AskHostKey {
-        fingerprint: String,
-    },
-    /// A secret to type: password, key passphrase, or a
-    /// keyboard-interactive challenge. `echo` mirrors the server's wish
-    /// for that prompt (false = mask the input).
-    AskPassword {
-        prompt: String,
-        echo: bool,
-    },
-    /// Connected; `entries` is the listing of `start`, prefetched so the
-    /// panel can switch over without blocking.
-    Ok {
-        fs: Arc<SftpFs>,
-        start: PathBuf,
-        entries: Vec<Entry>,
-    },
-    Err(String),
-}
-
-pub enum ConnectReply {
-    Accept(bool),
-    Password(String),
-    Cancel,
-}
-
-pub struct ConnectHandle {
-    pub events: Receiver<ConnectEvent>,
-    pub replies: Sender<ConnectReply>,
-    pub url: SftpUrl,
-}
-
 pub fn spawn_connect(url: SftpUrl) -> ConnectHandle {
     let (event_tx, event_rx) = mpsc::channel();
     let (reply_tx, reply_rx) = mpsc::channel();
@@ -137,32 +101,7 @@ pub fn spawn_connect(url: SftpUrl) -> ConnectHandle {
     ConnectHandle {
         events: event_rx,
         replies: reply_tx,
-        url,
-    }
-}
-
-/// Reuse an established connection for another `cd sftp://…` (same
-/// user@host:port): only the start directory is resolved and listed.
-pub fn spawn_reuse(fs: Arc<SftpFs>, url: SftpUrl) -> ConnectHandle {
-    let (event_tx, event_rx) = mpsc::channel();
-    let (reply_tx, _reply_rx) = mpsc::channel();
-    let worker_url = url.clone();
-    thread::spawn(move || {
-        let start = if worker_url.path.as_os_str().is_empty() {
-            fs.realpath(Path::new("."))
-                .unwrap_or_else(|_| PathBuf::from("/"))
-        } else {
-            worker_url.path.clone()
-        };
-        let _ = event_tx.send(match fs.read_dir(&start) {
-            Ok(entries) => ConnectEvent::Ok { fs, start, entries },
-            Err(e) => ConnectEvent::Err(format!("{}: {e}", start.display())),
-        });
-    });
-    ConnectHandle {
-        events: event_rx,
-        replies: reply_tx,
-        url,
+        host: url.host,
     }
 }
 
@@ -508,16 +447,18 @@ pub struct SftpFs {
     prefix: String,
 }
 
-impl SftpFs {
+impl RemoteFs for SftpFs {
     /// `sftp://user@host[:port]` - panel title prefix / cache key.
-    pub fn prefix(&self) -> &str {
+    fn prefix(&self) -> &str {
         &self.prefix
     }
 
-    pub fn realpath(&self, path: &Path) -> io::Result<PathBuf> {
+    fn realpath(&self, path: &Path) -> io::Result<PathBuf> {
         self.lock().sftp.realpath(path).map_err(ioerr)
     }
+}
 
+impl SftpFs {
     fn lock(&self) -> MutexGuard<'_, Raw> {
         self.raw.lock().unwrap_or_else(|p| p.into_inner())
     }

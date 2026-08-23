@@ -171,6 +171,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "quit" => Action::Quit,
         "shell" => Action::Shell,
         "sftp-link" => Action::SftpLink,
+        "remote-link" => Action::SftpLink,
         "history-back" => Action::HistoryBack,
         "history-forward" => Action::HistoryForward,
         "quick-view" => Action::QuickView,

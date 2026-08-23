@@ -308,6 +308,15 @@ rather than three: `debian-binary` at the root, the metadata and
 maintainer scripts under `CONTROL/`, and everything the package
 installs under `CONTENTS/`.
 
+**FTP**: `cd ftp://[user[:password]@]host[:port][/path]` connects a
+panel to an FTP server - no user means the anonymous login. Listings
+prefer `MLSD`, which says what everything is, and fall back to `LIST`
+where the server is too old for it. Browsing, F3, F5 in both directions,
+F6, F7 and F8 all work; FTP has no symlinks and no way to change
+ownership, so those report that rather than pretending. Every transfer
+needs a connection of its own, so a small pool of logged-in ones is kept
+and reused: one login covers a whole session of listing and copying.
+
 **Ctrl+X A** lists what the panels are sitting on that is not the local
 filesystem - open archives and live SFTP connections, with the panel
 each one belongs to. Enter goes there (a connection is reused, so no

@@ -1,5 +1,32 @@
 # Changelog
 
+## 3.31.0 - 2026-08-23
+
+- **`ftp://` panels** (4.0 S3, overturning the 3.0 refusal):
+  `cd ftp://[user[:password]@]host[:port][/path]`, or F9 → Command →
+  Remote link, puts a panel on an FTP server. Browsing, F3, F5 in both
+  directions, F6, F7 and F8 all work, and the connection shows up in
+  `C-x a` beside any SFTP ones. No user means the anonymous login.
+- **Listings prefer `MLSD`**, which is machine-readable and says what
+  everything is, and fall back to `LIST` - whose output is `ls -l` by
+  convention and by nothing else - on a server too old for it. The
+  refusal is remembered, so the next listing does not pay for it again.
+  A name with spaces in it survives either way.
+- **A small pool of logged-in connections.** FTP opens a second
+  connection for every transfer and cannot use the control connection
+  meanwhile, so a transfer takes one from the pool for its whole life
+  and hands it back when the reader or writer is dropped. One login
+  covers a whole session of listing and copying, and a listing can
+  still happen while a copy is running.
+- FTP has no symlinks and no way to change ownership; both say so
+  rather than pretending. Permissions and timestamps go through
+  `SITE CHMOD` and `MFMT`, which are conventions rather than protocol -
+  a server without them just leaves the attribute alone.
+- The connect machinery is now protocol-agnostic (`rcmd-core::remote`),
+  which is what lets one password prompt, one connection cache and one
+  active-VFS list serve both schemes. `fish://` is next and rides the
+  same rails.
+
 ## 3.30.0 - 2026-08-23
 
 - **Archives are writable** (4.0 S3): inside a `.zip` or a `.tar`

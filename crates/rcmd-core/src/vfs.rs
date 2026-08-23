@@ -5,7 +5,7 @@
 
 use std::ffi::OsStr;
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::entry::{self, Entry};
@@ -50,6 +50,19 @@ pub trait FsWrite: Send + Sync {
             "hard links are local only",
         ))
     }
+}
+
+/// A filesystem reached over the network. Beyond reading and writing it
+/// has an **identity** - the URL prefix that names the connection, which
+/// is what the panel title shows and what the connection cache is keyed
+/// on - and it can say where a path really is, since a server's idea of
+/// "." is its own.
+pub trait RemoteFs: FsProvider {
+    /// `sftp://user@host[:port]` or `ftp://user@host[:port]`.
+    fn prefix(&self) -> &str;
+    /// Resolve a path the way the server sees it; `.` is the login
+    /// directory.
+    fn realpath(&self, path: &Path) -> io::Result<PathBuf>;
 }
 
 pub struct LocalFs;

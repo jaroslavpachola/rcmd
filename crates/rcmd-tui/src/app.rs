@@ -16,14 +16,16 @@ use ratatui::widgets::TableState;
 use rcmd_core::entry;
 use rcmd_core::find::{self, FindEvent, FindHandle};
 use rcmd_core::fsops::{self, FileFacts, JobEvent, JobHandle, Rename, Reply, TransferOpts};
+use rcmd_core::ftp::{self, FtpUrl};
 use rcmd_core::glob::glob_match;
 use rcmd_core::mask::{self, Mask};
 use rcmd_core::panel::{ListMode, LoadKind, Panel, SortKey};
-use rcmd_core::sftp::{self, ConnectEvent, ConnectReply, SftpFs, SftpUrl};
+use rcmd_core::remote::{self, ConnectEvent, ConnectHandle, ConnectReply};
+use rcmd_core::sftp::{self, SftpUrl};
 use rcmd_core::tree::Tree;
 
 use crate::format::{self, Field, Format, Item};
-use rcmd_core::vfs::{FsProvider, LocalFs};
+use rcmd_core::vfs::{FsProvider, LocalFs, RemoteFs};
 use rcmd_core::view::FileView;
 
 use crate::config::{Config, HotEntry};
@@ -53,7 +55,7 @@ pub enum InputAction {
     },
     Filter,
     Panelize,
-    /// F9 → Command → SFTP link: the value is an sftp:// URL.
+    /// F9 → Command → Remote link: the value is an sftp:// or ftp:// URL.
     SftpConnect,
     /// S-F4: the value is the file to edit (created on first save).
     EditNew,
@@ -68,7 +70,7 @@ pub enum InputAction {
 /// An SFTP connection attempt on its worker thread; `ask` is the
 /// interactive question currently shown (host key / password).
 pub struct ConnectState {
-    handle: sftp::ConnectHandle,
+    handle: ConnectHandle,
     panel: usize,
     pub ask: Option<ConnectAsk>,
 }
@@ -1086,7 +1088,7 @@ const PANEL_MENU: &[MenuEntry] = &[
     Some(("&Glob filter...", "C-f", Action::Filter)),
     Some(("&Panelize command...", "", Action::Panelize)),
     Some(("Re&scan", "C-r", Action::Reload)),
-    Some(("SFTP lin&k...", "", Action::SftpLink)),
+    Some(("Remote lin&k...", "", Action::SftpLink)),
 ];
 
 /// The character after `&` in a menu label - its hotkey, lowercased.
@@ -1279,9 +1281,9 @@ pub struct App {
     pub quick_search: Option<String>,
     pub find: Option<FindState>,
     pub connect: Option<ConnectState>,
-    /// Live SFTP connections by URL prefix; weak so that leaving a
+    /// Live remote connections by URL prefix; weak so that leaving a
     /// remote directory on both panels closes the connection.
-    connections: Vec<(String, Weak<SftpFs>)>,
+    connections: Vec<(String, Weak<dyn RemoteFs>)>,
     remote_edit: Option<RemoteEdit>,
     bulk_rename: Option<BulkRename>,
     du: Option<DuJob>,
@@ -1647,24 +1649,34 @@ impl App {
         }
     }
 
-    /// Start (or resume) an SFTP connection for the active panel.
-    fn connect_sftp(&mut self, input: &str) {
+    /// Start (or resume) a connection for the active panel. The scheme
+    /// picks the protocol; everything after that - the password
+    /// prompt, the cache, the panel switch - is the same either way.
+    fn connect_remote(&mut self, input: &str) {
         if self.connect.is_some() {
             self.status = Some(" a connection attempt is already running ".into());
             return;
         }
-        let Some(url) = SftpUrl::parse(input) else {
-            self.status = Some(" bad URL - sftp://[user@]host[:port][/path] ".into());
-            return;
+        let handle = if input.starts_with("ftp://") {
+            let Some(url) = FtpUrl::parse(input) else {
+                self.status = Some(" bad URL - ftp://[user[:password]@]host[:port][/path] ".into());
+                return;
+            };
+            match self.connection(&url.prefix()) {
+                Some(fs) => remote::spawn_reuse(fs, url.path, url.host),
+                None => ftp::spawn_connect(url),
+            }
+        } else {
+            let Some(url) = SftpUrl::parse(input) else {
+                self.status = Some(" bad URL - sftp://[user@]host[:port][/path] ".into());
+                return;
+            };
+            match self.connection(&url.prefix()) {
+                Some(fs) => remote::spawn_reuse(fs, url.path, url.host),
+                None => sftp::spawn_connect(url),
+            }
         };
-        let handle = match self.connection(&url.prefix()) {
-            Some(fs) => sftp::spawn_reuse(fs, url),
-            None => sftp::spawn_connect(url),
-        };
-        self.status = Some(format!(
-            " connecting to {}… - Esc cancels ",
-            handle.url.host
-        ));
+        self.status = Some(format!(" connecting to {}… - Esc cancels ", handle.host));
         self.connect = Some(ConnectState {
             handle,
             panel: self.active,
@@ -1731,7 +1743,7 @@ impl App {
     }
 
     /// Look up a live connection by URL prefix, dropping dead ones.
-    fn connection(&mut self, prefix: &str) -> Option<Arc<SftpFs>> {
+    fn connection(&mut self, prefix: &str) -> Option<Arc<dyn RemoteFs>> {
         self.connections.retain(|(_, weak)| weak.strong_count() > 0);
         self.connections
             .iter()
@@ -3030,7 +3042,7 @@ impl App {
             Action::Shell => self.pending_exec = Some(Exec::Shell),
             Action::SftpLink => {
                 self.dialog = Some(Dialog::Input(InputDialog {
-                    title: " SFTP link (sftp://[user@]host[:port][/path]) ".into(),
+                    title: " Remote link (sftp:// or ftp://[user@]host[/path]) ".into(),
                     value: "sftp://".into(),
                     cursor: 7,
                     action: InputAction::SftpConnect,
@@ -3465,10 +3477,10 @@ impl App {
     }
 
     /// Send the active panel to a history location: a local path or a
-    /// full sftp:// URL (routed through the connection cache).
+    /// full sftp:// or ftp:// URL (routed through the connection cache).
     fn navigate(&mut self, target: &str) {
-        if target.starts_with("sftp://") {
-            self.connect_sftp(target);
+        if is_remote_url(target) {
+            self.connect_remote(target);
             return;
         }
         let path = PathBuf::from(target);
@@ -4481,7 +4493,7 @@ impl App {
                             let (target, remote) = (row.target.clone(), row.remote);
                             if remote {
                                 // through the cache: no second login
-                                self.connect_sftp(&target);
+                                self.connect_remote(&target);
                             } else if let Err(err) =
                                 self.panels[self.active].open_archive(PathBuf::from(&target))
                             {
@@ -4572,8 +4584,8 @@ impl App {
                     KeyCode::Esc => {}
                     KeyCode::Enter => {
                         if let Some(entry) = self.config.hotlist.get(selected).cloned() {
-                            if entry.path.starts_with("sftp://") {
-                                self.connect_sftp(&entry.path);
+                            if is_remote_url(&entry.path) {
+                                self.connect_remote(&entry.path);
                             } else {
                                 let target = self.resolve(&entry.path);
                                 let panel = &mut self.panels[self.active];
@@ -5334,7 +5346,7 @@ impl App {
             InputAction::SelectGlob { mark } => self.panels[self.active].mark_glob(&value, mark),
             InputAction::Filter => unreachable!("handled above"),
             InputAction::Panelize => self.run_panelize(&value),
-            InputAction::SftpConnect => self.connect_sftp(&value),
+            InputAction::SftpConnect => self.connect_remote(&value),
             InputAction::EditNew => {
                 let name = value.trim();
                 if !name.is_empty() {
@@ -5468,7 +5480,7 @@ impl App {
         // masks rename local files; the archive and SFTP routes below
         // build their own targets and would drop one on the floor
         if rename.is_some()
-            && (value.starts_with("sftp://")
+            && (is_remote_url(value)
                 || src_panel.is_remote()
                 || src_archive
                 || split_vfs_dest(value).is_some())
@@ -5476,28 +5488,32 @@ impl App {
             self.status = Some(" source masks work on local copies ".into());
             return;
         }
-        // sftp:// destination (must match before the zip:// syntax -
+        // a remote destination (must match before the zip:// syntax -
         // a URL also contains "://")
-        if value.starts_with("sftp://") {
-            let Some(url) = SftpUrl::parse(value) else {
-                self.status = Some(" bad URL - sftp://[user@]host[:port]/path ".into());
+        if is_remote_url(value) {
+            let parsed = if value.starts_with("ftp://") {
+                FtpUrl::parse(value).map(|url| (url.prefix(), url.display(), url.path))
+            } else {
+                SftpUrl::parse(value).map(|url| (url.prefix(), url.display(), url.path))
+            };
+            let Some((prefix, label, path)) = parsed else {
+                self.status = Some(" bad URL - scheme://[user@]host[:port]/path ".into());
                 return;
             };
-            if url.path.as_os_str().is_empty() {
+            if path.as_os_str().is_empty() {
                 self.status = Some(" destination URL needs a path ".into());
                 return;
             }
             if is_move && src_archive {
-                self.status = Some(" archive is read-only ".into());
+                self.status = Some(" moving out of an archive is a copy - use F5 ".into());
                 return;
             }
-            let Some(dst_fs) = self.connection(&url.prefix()) else {
-                self.status = Some(format!(" not connected - cd {} first ", url.prefix()));
+            let Some(dst_fs) = self.connection(&prefix) else {
+                self.status = Some(format!(" not connected - cd {prefix} first "));
                 return;
             };
             let src_fs = self.panels[self.active].fs.clone();
-            let label = url.display();
-            self.start_vfs_transfer(src_fs, sources, dst_fs, url.path, is_move, label);
+            self.start_vfs_transfer(src_fs, sources, dst_fs, path, is_move, label);
             return;
         }
         if src_panel.is_remote() {
@@ -6119,8 +6135,8 @@ impl App {
 
     /// `cd <dir>` - from the command line or the M-c quick-cd dialog.
     fn do_cd(&mut self, dir: &str) {
-        if dir.starts_with("sftp://") {
-            self.connect_sftp(dir);
+        if is_remote_url(dir) {
+            self.connect_remote(dir);
             return;
         }
         // `cd -`: back to where this panel came from, shell-style
@@ -6979,6 +6995,11 @@ fn edit_line(value: &mut String, cursor: &mut usize, code: KeyCode, mods: KeyMod
 
 /// "archive.zip://sub/dir" → (archive path, path inside). Plain local
 /// paths return None.
+/// A location that lives on a server rather than on this machine.
+fn is_remote_url(target: &str) -> bool {
+    target.starts_with("sftp://") || target.starts_with("ftp://")
+}
+
 fn split_vfs_dest(input: &str) -> Option<(PathBuf, PathBuf)> {
     let (archive, inside) = input.split_once("://")?;
     Some((

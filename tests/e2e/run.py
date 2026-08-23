@@ -785,6 +785,87 @@ def test_archive_write():
     shutil.rmtree(root)
 
 
+def test_ftp():
+    """ftp:// browsing, download, upload, and the writes FTP can do."""
+    root, play, home = sandbox()
+    remote = os.path.join(root, "remote")
+    os.makedirs(os.path.join(remote, "docs"))
+    open(os.path.join(remote, "server.txt"), "w").write("from the ftp server\n")
+    open(os.path.join(remote, "docs", "deep.txt"), "w").write("further in\n")
+    open(os.path.join(play, "upload.txt"), "w").write("to the ftp server\n")
+
+    server = subprocess.Popen(
+        ["python3", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "ftp_server.py"), remote],
+        stdout=subprocess.PIPE,
+    )
+    try:
+        line = server.stdout.readline().decode().split()
+        assert line and line[0] == "READY", "ftp server failed to start"
+        port = line[1]
+
+        s = Session(play, home)
+        s.send(f"cd ftp://tester@127.0.0.1:{port}/\r".encode(), wait=STEP * 2)
+        check("ftp: password prompt", wait_for(s, "password"))
+        s.send(b"secret\r", wait=STEP * 3)
+        scr = s.screen()
+        check("ftp: connected", "ftp://tester@127.0.0.1" in scr)
+        check("ftp: listing", "server.txt" in scr and "docs" in scr)
+
+        # F3 on a remote file reads it through the data connection
+        s.send(b"\x13server\r", wait=STEP)
+        s.send(F3, wait=STEP * 2)
+        check("ftp: F3 views a remote file", "from the ftp server" in s.screen())
+        s.send(b"q", wait=STEP)
+
+        # F5 downloads into the other panel
+        s.send(F5)
+        s.send(b"\x15" + play.encode() + b"\r", wait=STEP * 3)
+        downloaded = os.path.join(play, "server.txt")
+        check("ftp: download",
+              wait_for(s, "done -")
+              and os.path.isfile(downloaded)
+              and open(downloaded).read() == "from the ftp server\n")
+
+        # F7 makes a directory on the server
+        s.send(F7, wait=STEP)
+        s.send(b"made-remotely\r", wait=STEP * 2)
+        check("ftp: remote mkdir", os.path.isdir(os.path.join(remote, "made-remotely")))
+
+        # upload from the local panel back to the server
+        s.send(b"\t", wait=STEP)             # -> the local panel
+        s.send(b"\x12", wait=STEP)           # reload so upload.txt is listed
+        s.send(b"\x13upload\r", wait=STEP)
+        s.send(F5)
+        s.send(f"\x15ftp://tester@127.0.0.1:{port}/\r".encode(), wait=STEP * 4)
+        uploaded = os.path.join(remote, "upload.txt")
+        check("ftp: upload",
+              wait_for(s, "done -")
+              and os.path.isfile(uploaded)
+              and open(uploaded).read() == "to the ftp server\n")
+
+        # F8 on the server deletes there, with no trash to fall back on
+        s.send(b"\t", wait=STEP)             # -> the remote panel
+        s.send(b"\x12", wait=STEP)
+        s.send(b"\x13upload\r", wait=STEP)
+        s.send(F8, wait=STEP)
+        check("ftp: delete asks about the server", wait_for(s, "from the server?"))
+        s.send(b"y", wait=STEP * 3)
+        check("ftp: remote delete", wait_for(s, "done -") and not os.path.exists(uploaded))
+
+        # C-x a lists the connection as a remote one
+        s.send(b"\x18a", wait=STEP)
+        scr = s.screen()
+        check("ftp: listed in the active VFS list",
+              "Active VFS" in scr and "ftp://tester@127.0.0.1" in scr and "sftp" in scr)
+        s.send(b"\x1b", wait=STEP)
+        s.quit()
+    finally:
+        server.kill()
+        server.wait()
+    shutil.rmtree(root)
+
+
 def test_find():
     root, play, home = sandbox()
     os.makedirs(os.path.join(play, "sub"))
@@ -2865,6 +2946,7 @@ def main():
         test_mbox,
         test_vfslist,
         test_archive_write,
+        test_ftp,
         test_find,
         test_compare,
         test_watch,
