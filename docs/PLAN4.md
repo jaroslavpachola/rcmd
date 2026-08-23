@@ -60,7 +60,7 @@ only way to script), rcmd keeps its own shape and imports mc's data.
   rescan, encoding, links) - the mc menu structure. Encoding is the one
   entry still missing: it joins them in S5, with the codepage work.
 
-### S2 - file-operation dialogs
+### S2 - file-operation dialogs - DONE (2026-08-23)
 
 - Copy/move dialog: source file masks, preserve attributes, dive into
   subdirs, follow links, stable symlinks, Background button.
