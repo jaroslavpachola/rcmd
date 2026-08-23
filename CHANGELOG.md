@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.16.0 - 2026-08-23
+
+- **Progress with throughput, time left and a per-file bar** (4.0 S2):
+  the copy dialog now says how fast it is going and how long is left,
+  and carries a second bar for the file in hand. On one big file the
+  total bar barely moves for minutes, which reads as a hang; on a
+  thousand small ones the per-file bar is the one that flickers and the
+  total tells the story. Both are there because neither answers the
+  question on its own.
+- The rate is smoothed over quarter-second windows, since a reading
+  taken over a few milliseconds says either zero or gigabytes. Before
+  the first window closes the average since the job started stands in -
+  the opening seconds of a copy are exactly when someone is watching.
+- The per-file numbers come from the worker, so they are the bytes
+  actually written rather than a guess, and remote transfers report
+  them too.
+
 ## 3.15.0 - 2026-08-23
 
 - **MC's copy/rename masks** (4.0 S2, completes the copy dialog): the

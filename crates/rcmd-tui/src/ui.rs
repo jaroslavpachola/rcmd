@@ -385,6 +385,9 @@ const HELP_TEXT: &[&str] = &[
     "                  rename (swaps are fine), delete lines to delete;",
     "                  save, close, and confirm the preview",
     "  Esc             cancel a running operation",
+    "  The progress dialog shows the file in hand, how many items are",
+    "                  done, the throughput and the time left, a bar for",
+    "                  the whole job and a second one for the current file",
     "  b               send the running operation to the background",
     "  Ctrl+X !        panelize a command's output (F9 > Command too)",
     "  Ctrl+X j        jobs list: Enter foregrounds, c cancels; the",
@@ -3174,9 +3177,32 @@ fn draw_jobs(frame: &mut Frame, jobs: &[Job], selected: usize) {
     }
 }
 
+/// "2:05", or "1:02:05" once it runs past an hour. Anything longer than
+/// a day is not a number worth printing.
+fn human_time(seconds: f64) -> String {
+    if !seconds.is_finite() || seconds < 0.0 || seconds > 86_400.0 {
+        return "--:--".into();
+    }
+    let total = seconds.round() as u64;
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+/// Throughput, in the same units the panels use for sizes.
+fn human_rate(bytes_per_second: f64) -> String {
+    if !bytes_per_second.is_finite() || bytes_per_second < 1.0 {
+        return String::new();
+    }
+    format!("{}/s", human_size(bytes_per_second as u64))
+}
+
 fn draw_job(frame: &mut Frame, job: &Job) {
     let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
-    let area = centered(64, 8, frame.area());
+    let area = centered(64, 9, frame.area());
     let inner = popup(frame, area, &job.title, style);
     let width = inner.width.saturating_sub(2) as usize;
 
@@ -3196,21 +3222,36 @@ fn draw_job(frame: &mut Frame, job: &Job) {
     } else {
         format!("{} item(s)", job.files_done)
     };
-    frame.render_widget(Line::from(counts), row(2));
+    // rate and time left share the counts row, pushed to the right
+    let rate = human_rate(job.rate());
+    let eta = job
+        .eta()
+        .map(|left| format!("eta {}", human_time(left)))
+        .unwrap_or_default();
+    let right = format!("{rate}   {eta}");
+    let gap = width.saturating_sub(counts.chars().count() + right.chars().count());
+    frame.render_widget(
+        Line::from(format!("{counts}{}{right}", " ".repeat(gap))),
+        row(2),
+    );
+    let bar = |ratio: f64| {
+        Gauge::default()
+            .ratio(ratio.clamp(0.0, 1.0))
+            .gauge_style(Style::new().fg(th().panel_bg).bg(th().dialog_bg))
+    };
     if job.total_bytes > 0 {
-        let ratio = (job.bytes_done as f64 / job.total_bytes as f64).clamp(0.0, 1.0);
-        frame.render_widget(
-            Gauge::default()
-                .ratio(ratio)
-                .gauge_style(Style::new().fg(th().panel_bg).bg(th().dialog_bg)),
-            row(3),
-        );
+        frame.render_widget(bar(job.bytes_done as f64 / job.total_bytes as f64), row(3));
+    }
+    // the file in hand gets its own bar - on one big file the total bar
+    // barely moves, which looks like a hang
+    if job.file_total > 0 {
+        frame.render_widget(bar(job.file_done as f64 / job.file_total as f64), row(4));
     }
     frame.render_widget(
         Line::from("Esc - cancel   b - background")
             .centered()
             .style(style),
-        row(4),
+        row(5),
     );
 }
 
@@ -3296,6 +3337,26 @@ mod tests {
             link_target: None,
             extra: Default::default(),
         }
+    }
+
+    #[test]
+    fn time_left_reads_as_a_clock() {
+        assert_eq!(human_time(0.0), "0:00");
+        assert_eq!(human_time(9.4), "0:09");
+        assert_eq!(human_time(125.0), "2:05");
+        assert_eq!(human_time(3725.0), "1:02:05");
+        // nothing useful to say about these
+        assert_eq!(human_time(-1.0), "--:--");
+        assert_eq!(human_time(f64::INFINITY), "--:--");
+        assert_eq!(human_time(90_000.0), "--:--");
+    }
+
+    #[test]
+    fn throughput_reads_in_the_panels_units() {
+        assert!(human_rate(1_500_000.0).ends_with("/s"));
+        // too slow to be worth a number, or not a number at all
+        assert_eq!(human_rate(0.0), "");
+        assert_eq!(human_rate(f64::NAN), "");
     }
 
     #[test]

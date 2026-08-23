@@ -511,6 +511,49 @@ impl Ask {
     }
 }
 
+impl Job {
+    /// Fold a fresh byte count into the smoothed throughput. Samples
+    /// closer together than half a second are ignored: over a few
+    /// milliseconds the arithmetic says either zero or gigabytes.
+    pub fn sample_rate(&mut self, bytes_done: u64) {
+        let (when, bytes) = self.rate_mark;
+        let elapsed = when.elapsed().as_secs_f64();
+        if elapsed < 0.25 {
+            return;
+        }
+        let sample = bytes_done.saturating_sub(bytes) as f64 / elapsed;
+        // the first reading stands on its own; later ones ease in
+        self.rate = if self.rate == 0.0 {
+            sample
+        } else {
+            self.rate * 0.6 + sample * 0.4
+        };
+        self.rate_mark = (Instant::now(), bytes_done);
+    }
+
+    /// Throughput to show. Before the first window closes there is no
+    /// sample yet, so the average since the job started stands in - the
+    /// first seconds of a copy are exactly when someone is looking.
+    pub fn rate(&self) -> f64 {
+        if self.rate > 0.0 {
+            return self.rate;
+        }
+        let elapsed = self.started.elapsed().as_secs_f64();
+        if elapsed > 0.05 {
+            self.bytes_done as f64 / elapsed
+        } else {
+            0.0
+        }
+    }
+
+    /// Seconds left at the current rate, once there is enough to say.
+    pub fn eta(&self) -> Option<f64> {
+        let left = self.total_bytes.checked_sub(self.bytes_done)?;
+        let rate = self.rate();
+        (rate > 1.0 && self.total_bytes > 0).then(|| left as f64 / rate)
+    }
+}
+
 pub struct Job {
     pub handle: JobHandle,
     pub title: String,
@@ -519,6 +562,18 @@ pub struct Job {
     pub files_done: u64,
     pub bytes_done: u64,
     pub current: PathBuf,
+    /// Bytes done and total for the file in hand; 0/0 for an operation
+    /// that moves whole items rather than bytes.
+    pub file_done: u64,
+    pub file_total: u64,
+    /// Throughput in bytes per second, smoothed - a raw sample jumps
+    /// around too much to read while it is changing.
+    pub rate: f64,
+    /// The last sample the rate was taken from.
+    rate_mark: (Instant, u64),
+    /// When the job started, so the very first seconds can still quote
+    /// an average instead of nothing at all.
+    started: Instant,
     pub ask: Option<Ask>,
     pub button: usize,
     src_panel: usize,
@@ -1863,10 +1918,15 @@ impl App {
                         files_done,
                         bytes_done,
                         current,
+                        file_done,
+                        file_total,
                     } => {
                         job.files_done = files_done;
                         job.bytes_done = bytes_done;
                         job.current = current;
+                        job.file_done = file_done;
+                        job.file_total = file_total;
+                        job.sample_rate(bytes_done);
                     }
                     JobEvent::AskOverwrite {
                         path,
@@ -4925,6 +4985,11 @@ impl App {
             files_done: 0,
             bytes_done: 0,
             current: PathBuf::new(),
+            file_done: 0,
+            file_total: 0,
+            rate: 0.0,
+            rate_mark: (Instant::now(), 0),
+            started: Instant::now(),
             ask: None,
             button: 0,
             src_panel: self.active,
@@ -5021,6 +5086,11 @@ impl App {
             files_done: 0,
             bytes_done: 0,
             current: PathBuf::new(),
+            file_done: 0,
+            file_total: 0,
+            rate: 0.0,
+            rate_mark: (Instant::now(), 0),
+            started: Instant::now(),
             ask: None,
             button: 0,
             src_panel: self.active,
@@ -5061,6 +5131,11 @@ impl App {
             files_done: 0,
             bytes_done: 0,
             current: PathBuf::new(),
+            file_done: 0,
+            file_total: 0,
+            rate: 0.0,
+            rate_mark: (Instant::now(), 0),
+            started: Instant::now(),
             ask: None,
             button: 0,
             src_panel: self.active,
@@ -5079,6 +5154,11 @@ impl App {
             files_done: 0,
             bytes_done: 0,
             current: PathBuf::new(),
+            file_done: 0,
+            file_total: 0,
+            rate: 0.0,
+            rate_mark: (Instant::now(), 0),
+            started: Instant::now(),
             ask: None,
             button: 0,
             src_panel: self.active,
@@ -5102,6 +5182,11 @@ impl App {
             files_done: 0,
             bytes_done: 0,
             current: PathBuf::new(),
+            file_done: 0,
+            file_total: 0,
+            rate: 0.0,
+            rate_mark: (Instant::now(), 0),
+            started: Instant::now(),
             ask: None,
             button: 0,
             src_panel: self.active,

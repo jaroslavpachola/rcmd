@@ -29,6 +29,12 @@ pub enum JobEvent {
         files_done: u64,
         bytes_done: u64,
         current: PathBuf,
+        /// Bytes of `current` written so far, and how many it has in
+        /// total - both 0 where the operation moves whole items rather
+        /// than bytes (move, delete), which is what makes a per-file
+        /// bar something the UI can simply leave out.
+        file_done: u64,
+        file_total: u64,
     },
     /// Target exists. `src` and `dst` are what the prompt puts on
     /// screen and what the sticky Update / Size-differs answers compare;
@@ -576,6 +582,7 @@ fn try_transfer_file(
     entry: &crate::entry::Entry,
 ) -> Result<(), CopyErr> {
     let writer = dst_fs.writer().expect("checked in spawn_transfer");
+    ctx.begin_file(entry.size);
     let mut input = src_fs.open_read(src).map_err(CopyErr::Io)?;
     let mut output = writer.open_write(dst).map_err(CopyErr::Io)?;
     let mut buf = vec![0u8; CHUNK];
@@ -591,6 +598,7 @@ fn try_transfer_file(
         }
         output.write_all(&buf[..n]).map_err(CopyErr::Io)?;
         ctx.bytes_done += n as u64;
+        ctx.file_done += n as u64;
         ctx.progress(src);
     }
     output.flush().map_err(CopyErr::Io)?;
@@ -655,6 +663,9 @@ struct Ctx {
     /// The source currently being copied, so a symlink can tell whether
     /// it points inside the copy or out of it.
     copy_root: Option<PathBuf>,
+    /// Bytes written of the file in hand, and its size.
+    file_done: u64,
+    file_total: u64,
 }
 
 impl Ctx {
@@ -667,7 +678,16 @@ impl Ctx {
             files_done: self.files_done,
             bytes_done: self.bytes_done,
             current: current.to_path_buf(),
+            file_done: self.file_done,
+            file_total: self.file_total,
         });
+    }
+
+    /// Start counting a file's own bytes; `progress` reports them until
+    /// the next file replaces them.
+    fn begin_file(&mut self, size: u64) {
+        self.file_done = 0;
+        self.file_total = size;
     }
 
     fn ask_error(&mut self, path: &Path, message: String) -> Result<Decision, Aborted> {
@@ -859,6 +879,8 @@ fn spawn_with(
             skip_all_errors: false,
             opts,
             copy_root: None,
+            file_done: 0,
+            file_total: 0,
         };
         let aborted = work(&mut ctx).is_err();
         let _ = ctx.tx.send(JobEvent::Done {
@@ -1136,10 +1158,12 @@ fn copy_file(
             return Err(Aborted);
         }
         let start = ctx.bytes_done;
+        ctx.begin_file(size);
         match try_copy_file(ctx, src, dst, mode) {
             Ok(()) => {
                 ctx.files_done += 1;
                 ctx.bytes_done = start + size; // keep totals consistent with the scan
+                ctx.file_done = ctx.file_total;
                 ctx.progress(src);
                 return Ok(());
             }
@@ -1193,6 +1217,7 @@ fn try_copy_file(ctx: &mut Ctx, src: &Path, dst: &Path, mode: Overwrite) -> Resu
         }
         output.write_all(&buf[..n]).map_err(CopyErr::Io)?;
         ctx.bytes_done += n as u64;
+        ctx.file_done += n as u64;
         ctx.progress(src);
     }
     // an appended-to file keeps its own mode and its new mtime: it is
@@ -2024,6 +2049,38 @@ mod tests {
         run(spawn_copy(vec![foo], bla_foo.clone(), opts, None), vec![]);
         assert!(bla_foo.join("bar").is_file(), "dive off: merged in");
         assert!(!bla_foo.join("foo").exists());
+    }
+
+    /// The per-file bar needs the file's own numbers, not just the
+    /// running total.
+    #[test]
+    fn progress_reports_the_file_in_hand() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("big.bin");
+        fs::write(&src, vec![7u8; CHUNK * 3 + 11]).unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+
+        let handle = spawn_copy(vec![src], out, TransferOpts::default(), None);
+        let (mut seen_total, mut seen_partial) = (0u64, false);
+        loop {
+            match handle.events.recv().unwrap() {
+                JobEvent::Progress {
+                    file_done,
+                    file_total,
+                    ..
+                } => {
+                    seen_total = seen_total.max(file_total);
+                    if file_done > 0 && file_done < file_total {
+                        seen_partial = true;
+                    }
+                }
+                JobEvent::Done { .. } => break,
+                _ => {}
+            }
+        }
+        assert_eq!(seen_total, (CHUNK * 3 + 11) as u64);
+        assert!(seen_partial, "the bar needs something between 0 and done");
     }
 
     /// MC copies "all the files matching the source mask" - the rest
