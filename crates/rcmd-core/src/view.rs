@@ -12,6 +12,138 @@ use std::path::Path;
 pub const MAX_LINE: usize = 4096;
 const SCAN_CHUNK: usize = 64 * 1024;
 
+/// How the pattern is read. mc's viewer offers the same three.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchKind {
+    /// A literal substring.
+    #[default]
+    Normal,
+    /// A regular expression.
+    Regex,
+    /// A run of bytes written as hex ("7f 45 4c 46" or "7f454c46"),
+    /// which is the only way to look for something that is not text.
+    Hex,
+}
+
+/// What to look for and how, as the viewer's search dialog asks it.
+#[derive(Clone, Debug, Default)]
+pub struct Search {
+    pub pattern: String,
+    pub kind: SearchKind,
+    pub case_sensitive: bool,
+    /// Match only where the pattern stands as a word of its own.
+    pub whole_word: bool,
+    pub backwards: bool,
+}
+
+/// A compiled search: either a regular expression or a byte sequence.
+enum Matcher {
+    Text(regex::Regex),
+    Bytes(Vec<u8>),
+}
+
+impl Matcher {
+    fn matches(&self, line: &str) -> bool {
+        match self {
+            Matcher::Text(re) => re.is_match(line),
+            // a byte search never reaches here: find() takes it apart
+            Matcher::Bytes(_) => false,
+        }
+    }
+}
+
+impl Search {
+    /// Turn the dialog's answers into something that can be run against
+    /// a line. Errors are the user's regex, so they are worth showing.
+    fn compile(&self) -> Result<Matcher, String> {
+        if self.kind == SearchKind::Hex {
+            return parse_hex(&self.pattern).map(Matcher::Bytes);
+        }
+        let body = match self.kind {
+            SearchKind::Regex => self.pattern.clone(),
+            _ => regex::escape(&self.pattern),
+        };
+        let build = |pattern: &str| {
+            regex::RegexBuilder::new(pattern)
+                .case_insensitive(!self.case_sensitive)
+                .build()
+        };
+        // compile what was typed first, so a mistake in it is reported
+        // against the pattern the user wrote rather than against the
+        // wrapper below
+        build(&body).map_err(|err| err.to_string())?;
+        // \b would not do: it anchors on the pattern's own edges, and a
+        // pattern starting with punctuation has no word boundary there
+        let pattern = if self.whole_word {
+            format!(r"(?:^|\W)(?:{body})(?:$|\W)")
+        } else {
+            body
+        };
+        build(&pattern)
+            .map(Matcher::Text)
+            .map_err(|err| err.to_string())
+    }
+}
+
+impl Search {
+    /// Where this search matches inside one line, as character index
+    /// ranges, for painting the hits. A hexadecimal search matches
+    /// bytes rather than characters, so it highlights nothing - the
+    /// line the viewer jumped to is the answer it has.
+    pub fn ranges(&self, line: &str) -> Vec<(usize, usize)> {
+        let Ok(Matcher::Text(re)) = self.compile() else {
+            return Vec::new();
+        };
+        // byte offsets from the regex, character offsets to the caller,
+        // because a column on screen is a character
+        let mut chars: Vec<usize> = line.char_indices().map(|(at, _)| at).collect();
+        chars.push(line.len());
+        let index_of = |byte: usize| chars.partition_point(|at| *at < byte);
+        re.find_iter(line)
+            .map(|m| (index_of(m.start()), index_of(m.end())))
+            .filter(|(from, to)| to > from)
+            .collect()
+    }
+}
+
+/// "7f 45 4c 46", "7f454c46" or "0x7f 0x45" - all the same four bytes.
+fn parse_hex(text: &str) -> Result<Vec<u8>, String> {
+    let cleaned: String = text
+        .split_whitespace()
+        .map(|token| token.trim_start_matches("0x").trim_start_matches("0X"))
+        .collect();
+    if cleaned.is_empty() {
+        return Err("no bytes in the pattern".into());
+    }
+    if !cleaned.len().is_multiple_of(2) {
+        return Err("a hexadecimal pattern needs whole bytes".into());
+    }
+    cleaned
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            u8::from_str_radix(std::str::from_utf8(pair).unwrap_or(""), 16).map_err(|_| {
+                format!(
+                    "'{}' is not a hexadecimal byte",
+                    String::from_utf8_lossy(pair)
+                )
+            })
+        })
+        .collect()
+}
+
+fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn rfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .rposition(|window| window == needle)
+}
+
 pub struct FileView {
     file: File,
     pub size: u64,
@@ -143,20 +275,98 @@ impl FileView {
     }
 
     /// Case-insensitive substring search, scanning forward from `start`.
+    /// The plain form, kept for callers that want no options at all.
     pub fn search_from(&mut self, start: usize, needle: &str) -> io::Result<Option<usize>> {
-        let needle = needle.to_lowercase();
-        let mut idx = start;
-        loop {
-            match self.line(idx)? {
-                None => return Ok(None),
-                Some(line) => {
-                    if line.to_lowercase().contains(&needle) {
-                        return Ok(Some(idx));
-                    }
+        let search = Search {
+            pattern: needle.to_string(),
+            ..Search::default()
+        };
+        self.find(start, &search)
+    }
+
+    /// Find the line matching `search`, starting at `from` and moving
+    /// the way the search says. Returns the line index, which is what
+    /// the viewer scrolls to - a hexadecimal search finds an offset and
+    /// this reports the line holding it.
+    pub fn find(&mut self, from: usize, search: &Search) -> io::Result<Option<usize>> {
+        let matcher = search.compile().map_err(io::Error::other)?;
+        if let Matcher::Bytes(needle) = &matcher {
+            let start = self.offset_of_line(from).unwrap_or(0);
+            return match self.find_bytes(start, needle, search.backwards)? {
+                Some(offset) => self.line_at_offset(offset).map(Some),
+                None => Ok(None),
+            };
+        }
+        if search.backwards {
+            for idx in (0..=from).rev() {
+                if let Some(line) = self.line(idx)?
+                    && matcher.matches(&line)
+                {
+                    return Ok(Some(idx));
                 }
+            }
+            return Ok(None);
+        }
+        let mut idx = from;
+        while let Some(line) = self.line(idx)? {
+            if matcher.matches(&line) {
+                return Ok(Some(idx));
             }
             idx += 1;
         }
+        Ok(None)
+    }
+
+    /// Find a byte sequence, which is what a hexadecimal search is for:
+    /// the bytes it names may not be text at all.
+    pub fn find_bytes(&self, from: u64, needle: &[u8], backwards: bool) -> io::Result<Option<u64>> {
+        if needle.is_empty() || needle.len() as u64 > self.size {
+            return Ok(None);
+        }
+        let overlap = needle.len() as u64 - 1;
+        if backwards {
+            let mut end = from.min(self.size);
+            while end > 0 {
+                let start = end.saturating_sub(SCAN_CHUNK as u64);
+                let buf = self.read_at(start, (end - start + overlap) as usize)?;
+                if let Some(at) = rfind(&buf, needle) {
+                    let hit = start + at as u64;
+                    if hit < from {
+                        return Ok(Some(hit));
+                    }
+                }
+                end = start;
+            }
+            return Ok(None);
+        }
+        let mut at = from;
+        while at < self.size {
+            let buf = self.read_at(at, SCAN_CHUNK + overlap as usize)?;
+            if buf.len() < needle.len() {
+                break;
+            }
+            if let Some(found) = find_sub(&buf, needle) {
+                return Ok(Some(at + found as u64));
+            }
+            at += SCAN_CHUNK as u64;
+        }
+        Ok(None)
+    }
+
+    /// Which line holds this byte offset.
+    pub fn line_at_offset(&mut self, offset: u64) -> io::Result<usize> {
+        // index far enough that the offset is inside what is known
+        while !self.fully_indexed && self.indexed_to <= offset {
+            let before = self.offsets.len();
+            self.ensure_lines(self.offsets.len() + 4096)?;
+            if self.offsets.len() == before {
+                break;
+            }
+        }
+        Ok(match self.offsets.binary_search(&offset) {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        })
     }
 
     /// Raw bytes for the hex view.
@@ -267,5 +477,152 @@ mod tests {
         let (_dir, v) = view_of(b"0123456789");
         assert_eq!(v.read_at(2, 4).unwrap(), b"2345");
         assert_eq!(v.read_at(8, 16).unwrap(), b"89"); // truncated at EOF
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    fn view(content: &[u8]) -> (tempfile::TempDir, FileView) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        std::fs::write(&path, content).unwrap();
+        let file = FileView::open(&path).unwrap();
+        (dir, file)
+    }
+
+    fn search(pattern: &str) -> Search {
+        Search {
+            pattern: pattern.to_string(),
+            ..Search::default()
+        }
+    }
+
+    const TEXT: &[u8] = b"first line\nsecond LINE here\nthe third\nlining up\nlast line\n";
+
+    #[test]
+    fn a_plain_search_ignores_case_until_told_not_to() {
+        let (_dir, mut f) = view(TEXT);
+        assert_eq!(f.find(0, &search("line")).unwrap(), Some(0));
+        assert_eq!(f.find(1, &search("line")).unwrap(), Some(1));
+
+        let mut cased = search("LINE");
+        cased.case_sensitive = true;
+        assert_eq!(f.find(0, &cased).unwrap(), Some(1));
+    }
+
+    #[test]
+    fn whole_words_does_not_match_inside_one() {
+        let (_dir, mut f) = view(TEXT);
+        let mut whole = search("line");
+        whole.whole_word = true;
+        // "lining" holds the letters but is not the word
+        assert_eq!(f.find(3, &whole).unwrap(), Some(4));
+        // and without the option it matches "lining up"
+        assert_eq!(f.find(3, &search("lin")).unwrap(), Some(3));
+    }
+
+    #[test]
+    fn a_pattern_is_literal_unless_it_is_a_regex() {
+        let (_dir, mut f) = view(b"a.c\nabc\n");
+        // "a.c" as a literal matches only the first line
+        assert_eq!(f.find(0, &search("a.c")).unwrap(), Some(0));
+        assert_eq!(f.find(1, &search("a.c")).unwrap(), None);
+
+        let mut re = search("a.c");
+        re.kind = SearchKind::Regex;
+        assert_eq!(f.find(1, &re).unwrap(), Some(1));
+    }
+
+    #[test]
+    fn backwards_walks_the_other_way_and_stops_at_the_top() {
+        let (_dir, mut f) = view(TEXT);
+        let mut back = search("line");
+        back.backwards = true;
+        assert_eq!(f.find(4, &back).unwrap(), Some(4));
+        assert_eq!(f.find(3, &back).unwrap(), Some(1));
+        assert_eq!(f.find(0, &back).unwrap(), Some(0));
+        let mut missing = search("nowhere");
+        missing.backwards = true;
+        assert_eq!(f.find(4, &missing).unwrap(), None);
+    }
+
+    #[test]
+    fn a_bad_regex_is_reported_rather_than_ignored() {
+        let (_dir, mut f) = view(TEXT);
+        let mut re = search("a(b");
+        re.kind = SearchKind::Regex;
+        let err = f.find(0, &re).unwrap_err().to_string();
+        assert!(err.contains("unclosed"), "{err}");
+        // the message quotes what was typed, not the whole-word
+        // wrapper rcmd would have put around it
+        assert!(err.contains("a(b"), "{err}");
+        assert!(!err.contains(r"(?:^|\W)"), "{err}");
+
+        re.whole_word = true;
+        let err = f.find(0, &re).unwrap_err().to_string();
+        assert!(!err.contains(r"(?:^|\W)"), "{err}");
+    }
+
+    #[test]
+    fn a_hexadecimal_search_finds_bytes_that_are_not_text() {
+        let mut content = b"header\n".to_vec();
+        content.extend_from_slice(&[0x7f, 0x45, 0x4c, 0x46, 0x00, 0xff]);
+        content.extend_from_slice(b"\ntrailer\n");
+        let (_dir, mut f) = view(&content);
+
+        let mut hex = search("7f 45 4c 46");
+        hex.kind = SearchKind::Hex;
+        // the ELF magic is on the second line
+        assert_eq!(f.find(0, &hex).unwrap(), Some(1));
+
+        // the spellings are interchangeable
+        for spelling in ["7f454c46", "0x7f 0x45 0x4c 0x46"] {
+            let mut hex = search(spelling);
+            hex.kind = SearchKind::Hex;
+            assert_eq!(f.find(0, &hex).unwrap(), Some(1), "{spelling}");
+        }
+
+        let mut absent = search("de ad be ef");
+        absent.kind = SearchKind::Hex;
+        assert_eq!(f.find(0, &absent).unwrap(), None);
+    }
+
+    #[test]
+    fn a_hexadecimal_pattern_has_to_be_hexadecimal() {
+        let (_dir, mut f) = view(TEXT);
+        for bad in ["", "7f4", "zz"] {
+            let mut hex = search(bad);
+            hex.kind = SearchKind::Hex;
+            assert!(f.find(0, &hex).is_err(), "{bad:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn a_byte_search_crosses_the_chunk_boundary_it_scans_in() {
+        // the needle straddles the seam between two scan chunks, which
+        // is the one place a chunked search can lose a match
+        let mut content = vec![b'.'; SCAN_CHUNK - 2];
+        content.extend_from_slice(b"NEEDLE");
+        content.extend_from_slice(&[b'.'; 100]);
+        let (_dir, f) = view(&content);
+        assert_eq!(
+            f.find_bytes(0, b"NEEDLE", false).unwrap(),
+            Some(SCAN_CHUNK as u64 - 2)
+        );
+        assert_eq!(
+            f.find_bytes(content.len() as u64, b"NEEDLE", true).unwrap(),
+            Some(SCAN_CHUNK as u64 - 2)
+        );
+    }
+
+    #[test]
+    fn an_offset_maps_back_to_the_line_holding_it() {
+        let (_dir, mut f) = view(TEXT);
+        assert_eq!(f.line_at_offset(0).unwrap(), 0);
+        assert_eq!(f.line_at_offset(3).unwrap(), 0);
+        assert_eq!(f.line_at_offset(11).unwrap(), 1);
+        assert_eq!(f.line_at_offset(TEXT.len() as u64 - 1).unwrap(), 4);
     }
 }

@@ -210,10 +210,19 @@ handy on terminals without working F-keys or Alt. Esc Esc is a real
 Escape; an unanswered Esc acts as one after a second.
 
 **Viewer** (F3): arrows/PgUp/PgDn/Home/End scroll, ←→ horizontal scroll,
-F2 toggles soft-wrap, F4 toggles hex mode, F7 or `/` searches
-(case-insensitive), `n` next match, F3/F10/Esc/q quit. Lines are indexed
-lazily, so huge files open instantly; very long lines are broken at 4096
-columns.
+F2 toggles soft-wrap, F4 toggles hex mode, F3/F10/Esc/q quit. Lines are
+indexed lazily, so huge files open instantly; very long lines are broken
+at 4096 columns.
+
+F7 or `/` opens mc's **search dialog**: the pattern, and the four
+answers that change what it means. The pattern is read as **Normal**
+(a literal), a **Regular expression**, or **Hexadecimal** bytes -
+`7f454c46`, `7f 45 4c 46` and `0x7f 0x45 0x4c 0x46` are the same four,
+and it is the only way to look for something that is not text. Alongside
+it: **Case sensitive**, **Whole words** and **Backwards**. Tab and the
+arrows move between rows, Space ticks, Enter searches; `n` repeats the
+search with its options intact. Matches are highlighted in the line and
+the found line is marked.
 
 **Responsiveness**: directory listings that take longer than ~100 ms
 (huge directories, cold network mounts) load in the background - the old

@@ -1,5 +1,31 @@
 # Changelog
 
+## 3.33.0 - 2026-08-23
+
+- **The viewer's search dialog** (4.0 S4): F7 or `/` now opens mc's
+  dialog rather than a bare prompt. The pattern is read as **Normal**
+  (a literal), a **Regular expression**, or **Hexadecimal** bytes, and
+  three answers sit beside it: **Case sensitive**, **Whole words** and
+  **Backwards**. Tab and the arrows move, Space ticks, Enter searches.
+- **`n` repeats the search with its options**, backwards included -
+  which is what makes a backwards search usable at all rather than a
+  one-shot.
+- **Hexadecimal search finds bytes, not text.** `7f454c46`,
+  `7f 45 4c 46` and `0x7f 0x45 0x4c 0x46` all name the same four, the
+  scan crosses its own chunk boundaries, and the viewer reports the
+  line holding the offset it found. It is the only way to look for
+  something that is not text, which is why it belongs next to the hex
+  view.
+- **Whole words means the word, not the letters.** `\b` would not do
+  it: that anchors on the pattern's own edges, and a pattern starting
+  with punctuation has no word boundary there.
+- A broken regular expression is reported **against the pattern that
+  was typed**, not against the wrapper rcmd puts around it for whole
+  words - the error is about your pattern and should quote your pattern.
+- Match highlighting follows the search: a regular expression paints
+  what it actually matched, where before every search painted plain
+  substrings.
+
 ## 3.32.0 - 2026-08-23
 
 - **`fish://` panels** (4.0 S3, and the last of it): `cd

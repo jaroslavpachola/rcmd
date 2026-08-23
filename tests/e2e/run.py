@@ -866,6 +866,115 @@ def test_ftp():
     shutil.rmtree(root)
 
 
+def test_viewsearch():
+    """MC's viewer search dialog: the pattern, plus the four answers
+    that change what it means. The file is long enough that every hit
+    is off screen to begin with, so "found" means the viewer moved."""
+    root, play, home = sandbox()
+    lines = [f"filler {n}" for n in range(500)]
+    lines[100] = "second LINE here"
+    lines[101] = "lining up"
+    lines[102] = "last line"
+    lines[250] = "abc regexy"
+    lines[450] = "a.c literally"
+    open(os.path.join(play, "text.txt"), "w").write("\n".join(lines) + "\n")
+
+    s = Session(play, home)
+    s.send(b"\x13text\r", wait=STEP)
+    s.send(F3, wait=STEP * 2)
+    check("viewsearch: viewer opens", "filler 0" in s.screen())
+
+    def dialog():
+        s.send(F7, wait=STEP * 2)
+        return s.screen()
+
+    def set_kind(want):
+        """The cursor is on the kind row; Space cycles it."""
+        for _ in range(4):
+            if want in s.screen():
+                return True
+            s.send(b" ", wait=STEP * 2)
+        return want in s.screen()
+
+    scr = dialog()
+    check("viewsearch: the dialog opens", "Search" in scr)
+    check("viewsearch: the kind is offered", "Normal" in scr)
+    check("viewsearch: case is offered", "Case sensitive" in scr)
+    check("viewsearch: whole words is offered", "Whole words" in scr)
+    check("viewsearch: backwards is offered", "Backwards" in scr)
+
+    # a plain search ignores case, and the hit is 100 lines down
+    s.send(b"LINE\r", wait=STEP * 2)
+    check("viewsearch: found ignoring case", "second LINE here" in s.screen())
+
+    # whole words: "lin" is inside "lining" but is not a word
+    dialog()
+    s.send(b"\x15lin", wait=STEP * 2)
+    s.send(b"\t\t\t ", wait=STEP * 2)  # -> whole words, tick
+    check("viewsearch: whole words ticked", "[x] Whole words" in s.screen())
+    s.send(b"\r", wait=STEP * 2)
+    check("viewsearch: whole words found nothing", wait_for(s, "not found"))
+    dialog()
+    s.send(b"\t\t\t ", wait=STEP * 2)  # untick it again
+    check("viewsearch: whole words unticked", "[ ] Whole words" in s.screen())
+    # Enter, not Esc: Esc throws the dialog's answers away, and the
+    # searches below want this one kept
+    s.send(b"\r", wait=STEP * 2)
+    check("viewsearch: without it lin matches lining", "lining up" in s.screen())
+
+    # "a.c" as a regular expression matches "abc" first, 200 lines
+    # before the line that holds "a.c" literally
+    dialog()
+    s.send(b"\x15a.c", wait=STEP * 2)
+    s.send(b"\t", wait=STEP * 2)
+    check("viewsearch: the kind can be set", set_kind("Regular expression"))
+    s.send(b"\r", wait=STEP * 2)
+    scr = s.screen()
+    check("viewsearch: the regex matched abc",
+          "abc regexy" in scr and "a.c literally" not in scr)
+
+    # the same pattern taken literally matches only the later line
+    dialog()
+    s.send(b"\t", wait=STEP * 2)
+    check("viewsearch: back to a literal pattern", set_kind("Normal"))
+    s.send(b"\r", wait=STEP * 2)
+    scr = s.screen()
+    check("viewsearch: the literal matched a.c",
+          "a.c literally" in scr and "abc regexy" not in scr)
+
+    # hexadecimal: the bytes of "abc". A search runs forward from where
+    # the viewer is, so go back to the top first
+    s.send(HOME_K, wait=STEP)
+    dialog()
+    s.send(b"\x15616263", wait=STEP * 2)
+    s.send(b"\t", wait=STEP * 2)
+    check("viewsearch: hexadecimal can be chosen", set_kind("Hexadecimal"))
+    s.send(b"\r", wait=STEP * 2)
+    check("viewsearch: hex found the bytes", "abc regexy" in s.screen())
+
+    # backwards, from there, back to the first hit
+    dialog()
+    s.send(b"\x15LINE", wait=STEP * 2)
+    s.send(b"\t", wait=STEP * 2)
+    check("viewsearch: back to normal", set_kind("Normal"))
+    s.send(b"\t\t\t ", wait=STEP * 2)  # -> backwards, tick
+    check("viewsearch: backwards ticked", "[x] Backwards" in s.screen())
+    s.send(b"\r", wait=STEP * 2)
+    check("viewsearch: backwards walked up the file",
+          "second LINE here" in s.screen())
+
+    # a broken regex says so instead of quietly finding nothing
+    dialog()
+    s.send(b"\x15a(b", wait=STEP * 2)
+    s.send(b"\t", wait=STEP * 2)
+    check("viewsearch: regex again", set_kind("Regular expression"))
+    s.send(b"\r", wait=STEP * 2)
+    check("viewsearch: a bad regex is reported", wait_for(s, "regex parse error"))
+    s.send(b"q", wait=STEP)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_find():
     root, play, home = sandbox()
     os.makedirs(os.path.join(play, "sub"))
@@ -2811,7 +2920,7 @@ def test_fish():
         s.send(b"made-over-fish\r", wait=STEP * 2)
         check("fish: remote mkdir", os.path.isdir(os.path.join(remote, "made-over-fish")))
 
-        s.send(b"\t", wait=STEP)
+        s.send(b"\t", wait=STEP * 2)
         s.send(b"\x12", wait=STEP)
         s.send(b"\x13upload\r", wait=STEP)
         s.send(F5)
@@ -2822,7 +2931,7 @@ def test_fish():
               and os.path.isfile(uploaded)
               and open(uploaded).read() == "sent over fish\n")
 
-        s.send(b"\t", wait=STEP)
+        s.send(b"\t", wait=STEP * 2)
         s.send(b"\x12", wait=STEP)
         s.send(b"\x13upload\r", wait=STEP)
         s.send(F8, wait=STEP)
@@ -3022,6 +3131,7 @@ def main():
         test_fileops,
         test_cmdline,
         test_viewer,
+        test_viewsearch,
         test_archive,
         test_cmdarchive,
         test_cpio,

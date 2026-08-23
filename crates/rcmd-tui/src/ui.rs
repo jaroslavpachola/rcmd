@@ -14,8 +14,10 @@ use crate::format::{Field, Format, Item};
 
 use crate::app::{
     App, Ask, ConfirmDialog, ConnectAsk, Dialog, EditPrompt, FindDialog, InputDialog, Job, MENUS,
-    MenuState, OptionsDialog, QuickView, VfsDialog, menu_label,
+    MenuState, OptionsDialog, QuickView, VfsDialog, ViewSearch, menu_label,
 };
+use rcmd_core::view::SearchKind;
+
 use crate::config::HotEntry;
 use crate::git::GitStatus;
 
@@ -499,8 +501,13 @@ const HELP_TEXT: &[&str] = &[
     "# Viewer (F3)",
     "  F2              toggle line wrap",
     "  F4              toggle hex dump",
-    "  F7 or /         search (case-insensitive), n = next match;",
-    "                  matches are highlighted, the found line marked",
+    "  F7 or /         search: a dialog with MC's four answers - the",
+    "                  pattern is Normal, a Regular expression or",
+    "                  Hexadecimal bytes (7f454c46 or 7f 45 4c 46),",
+    "                  plus Case sensitive, Whole words and Backwards.",
+    "                  Tab/arrows move, Space ticks, Enter searches.",
+    "                  n repeats it, options and all; matches are",
+    "                  highlighted and the found line is marked.",
     "  Files with a known syntax (≤2 MB) get syntax colors, like F4",
     "  Left/Right      horizontal scroll",
     "  f               follow mode (tail -f): stick to the growing end",
@@ -2205,7 +2212,7 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
 
     // syntax spans for the visible line range (empty without a
     // recognized syntax); search matches are overlaid per line below
-    let needle = v.search.clone();
+    let search = v.search.to_search();
     let all_spans = match v.hl.as_mut() {
         Some(hl) => hl.range_spans(&mut FileLines(&mut v.file), v.top, content.height as usize),
         None => Vec::new(),
@@ -2226,10 +2233,10 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
                         .collect()
                 })
                 .unwrap_or_default();
-            let matches = if needle.is_empty() {
+            let matches = if search.pattern.is_empty() {
                 Vec::new()
             } else {
-                match_ranges(&expanded, &needle)
+                search.ranges(&expanded)
             };
             let base = if v.found == Some(idx) {
                 Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD)
@@ -2306,12 +2313,55 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
         bottom,
     );
 
-    if let Some((value, cursor)) = &v.prompt {
-        let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
-        let area = centered(50, 5, frame.area());
-        let inner = popup(frame, area, " Search ", style);
-        draw_field(frame, inner, value, *cursor);
+    if let Some(dialog) = &v.prompt {
+        draw_view_search(frame, dialog);
     }
+}
+
+/// MC's viewer search dialog: the pattern on top, then the four
+/// answers that change what it means. The focused row is the one that
+/// Space acts on, so it has to be visible - the marker on the left
+/// says which.
+fn draw_view_search(frame: &mut Frame, dialog: &ViewSearch) {
+    let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let area = centered(56, 9, frame.area());
+    let inner = popup(frame, area, " Search ", style);
+    let field = Rect { height: 1, ..inner };
+    draw_field(frame, field, &dialog.value, dialog.cursor);
+
+    let kind = match dialog.kind {
+        SearchKind::Normal => "Normal",
+        SearchKind::Regex => "Regular expression",
+        SearchKind::Hex => "Hexadecimal",
+    };
+    let rows = [
+        format!("Pattern is  < {kind} >"),
+        format!("[{}] Case sensitive", tick(dialog.case_sensitive)),
+        format!("[{}] Whole words", tick(dialog.whole_word)),
+        format!("[{}] Backwards", tick(dialog.backwards)),
+    ];
+    for (i, text) in rows.iter().enumerate() {
+        let row = Rect {
+            y: inner.y + 2 + i as u16,
+            height: 1,
+            ..inner
+        };
+        let focused = dialog.row == i + 1;
+        let marker = if focused { ">" } else { " " };
+        frame.render_widget(
+            Line::from(format!(
+                "{marker} {text:<w$}",
+                w = (inner.width as usize).saturating_sub(2)
+            ))
+            .style(if focused { sel } else { style }),
+            row,
+        );
+    }
+}
+
+fn tick(on: bool) -> char {
+    if on { 'x' } else { ' ' }
 }
 
 /// Expand tabs to 8-column stops and hide control characters.
@@ -2363,34 +2413,6 @@ fn expand_with_map(text: &str) -> (String, Vec<usize>) {
     }
     map.push(col);
     (out, map)
-}
-
-/// Case-insensitive occurrences of `needle` in `text`, as char ranges
-/// (char-wise lowercase - the same approximation the search itself
-/// uses).
-fn match_ranges(text: &str, needle: &str) -> Vec<(usize, usize)> {
-    let ned: Vec<char> = needle
-        .chars()
-        .filter_map(|c| c.to_lowercase().next())
-        .collect();
-    if ned.is_empty() {
-        return Vec::new();
-    }
-    let hay: Vec<char> = text
-        .chars()
-        .filter_map(|c| c.to_lowercase().next())
-        .collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i + ned.len() <= hay.len() {
-        if hay[i..i + ned.len()] == ned[..] {
-            out.push((i, i + ned.len()));
-            i += ned.len();
-        } else {
-            i += 1;
-        }
-    }
-    out
 }
 
 /// One viewer row: syntax colors with the search matches overlaid,

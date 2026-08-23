@@ -27,7 +27,7 @@ use rcmd_core::tree::Tree;
 
 use crate::format::{self, Field, Format, Item};
 use rcmd_core::vfs::{FsProvider, LocalFs, RemoteFs};
-use rcmd_core::view::FileView;
+use rcmd_core::view::{FileView, Search, SearchKind};
 
 use crate::config::{Config, HotEntry};
 use crate::keymap::Keymap;
@@ -907,14 +907,71 @@ pub struct Viewer {
     pub hex_top: u64,
     /// Content rows; updated on every draw, drives paging.
     pub rows: usize,
-    pub search: String,
+    /// What the last search asked for, so "next" repeats it exactly.
+    pub search: ViewSearch,
     pub found: Option<usize>,
-    /// Search prompt (value, cursor) when open.
-    pub prompt: Option<(String, usize)>,
+    /// The search dialog when it is open.
+    pub prompt: Option<ViewSearch>,
     pub note: Option<String>,
     /// Extraction scratch file when viewing inside an archive;
     /// deleted when the viewer closes.
     pub temp: Option<PathBuf>,
+}
+
+/// MC's viewer search dialog: what to look for, and the four answers
+/// that change how. The same struct is the open dialog and the
+/// remembered search, so "search next" repeats the options too.
+#[derive(Clone, Debug, Default)]
+pub struct ViewSearch {
+    pub value: String,
+    pub cursor: usize,
+    pub kind: SearchKind,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub backwards: bool,
+    /// Which row has the focus, indexing [`VIEW_SEARCH_ROWS`].
+    pub row: usize,
+}
+
+/// The dialog's rows in display order: the field, then the answers.
+pub const VIEW_SEARCH_ROWS: usize = 5;
+/// The row holding the pattern itself.
+pub const VIEW_SEARCH_FIELD: usize = 0;
+/// The row holding the Normal / Regular expression / Hexadecimal choice.
+pub const VIEW_SEARCH_KIND: usize = 1;
+
+impl ViewSearch {
+    /// The core's shape of the same question.
+    pub fn to_search(&self) -> Search {
+        Search {
+            pattern: self.value.trim().to_string(),
+            kind: self.kind,
+            case_sensitive: self.case_sensitive,
+            whole_word: self.whole_word,
+            backwards: self.backwards,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.value.trim().is_empty()
+    }
+
+    /// Space on a row: the kind cycles, the rest tick.
+    pub fn toggle(&mut self) {
+        match self.row {
+            VIEW_SEARCH_KIND => {
+                self.kind = match self.kind {
+                    SearchKind::Normal => SearchKind::Regex,
+                    SearchKind::Regex => SearchKind::Hex,
+                    SearchKind::Hex => SearchKind::Normal,
+                }
+            }
+            2 => self.case_sensitive = !self.case_sensitive,
+            3 => self.whole_word = !self.whole_word,
+            4 => self.backwards = !self.backwards,
+            _ => {}
+        }
+    }
 }
 
 /// Rows the tree dialog shows at most - also its page step.
@@ -2753,20 +2810,35 @@ impl App {
             return;
         };
         v.note = None;
-        if let Some((value, cursor)) = v.prompt.as_mut() {
+        if let Some(dialog) = v.prompt.as_mut() {
             match key.code {
                 KeyCode::Esc => v.prompt = None,
                 KeyCode::Enter => {
-                    let needle = value.trim().to_string();
+                    let asked = dialog.clone();
                     v.prompt = None;
-                    if !needle.is_empty() {
-                        v.search = needle;
-                        viewer_search(v, v.top, false);
+                    if !asked.is_empty() {
+                        let from = if asked.backwards {
+                            v.top.saturating_sub(1)
+                        } else {
+                            v.top
+                        };
+                        v.search = asked;
+                        viewer_search(v, from, false);
                     }
                 }
-                code => {
+                KeyCode::Tab | KeyCode::Down => {
+                    dialog.row = (dialog.row + 1) % VIEW_SEARCH_ROWS;
+                }
+                KeyCode::BackTab | KeyCode::Up => {
+                    dialog.row = (dialog.row + VIEW_SEARCH_ROWS - 1) % VIEW_SEARCH_ROWS;
+                }
+                KeyCode::Char(' ') if dialog.row != VIEW_SEARCH_FIELD => dialog.toggle(),
+                KeyCode::Left | KeyCode::Right if dialog.row == VIEW_SEARCH_KIND => dialog.toggle(),
+                code if dialog.row == VIEW_SEARCH_FIELD => {
+                    let (value, cursor) = (&mut dialog.value, &mut dialog.cursor);
                     edit_line(value, cursor, code, key.modifiers);
                 }
+                _ => {}
             }
             return;
         }
@@ -2829,10 +2901,21 @@ impl App {
                 v.left = 0;
             }
             VA::ToggleHex => v.hex = !v.hex,
-            VA::Search => v.prompt = Some((v.search.clone(), v.search.chars().count())),
+            VA::Search => {
+                let mut dialog = v.search.clone();
+                dialog.cursor = dialog.value.chars().count();
+                dialog.row = VIEW_SEARCH_FIELD;
+                v.prompt = Some(dialog);
+            }
             VA::SearchNext => {
                 if !v.search.is_empty() {
-                    let from = v.found.map(|f| f + 1).unwrap_or(v.top);
+                    // step past the current hit, whichever way we go
+                    let from = match (v.found, v.search.backwards) {
+                        (Some(0), true) => return,
+                        (Some(found), true) => found - 1,
+                        (Some(found), false) => found + 1,
+                        (None, _) => v.top,
+                    };
                     viewer_search(v, from, true);
                 }
             }
@@ -3570,7 +3653,7 @@ impl App {
                     cols: 1,
                     hex_top: 0,
                     rows: 1,
-                    search: String::new(),
+                    search: ViewSearch::default(),
                     found: None,
                     prompt: None,
                     note: None,
@@ -3630,7 +3713,7 @@ impl App {
                     cols: 1,
                     hex_top: 0,
                     rows: 1,
-                    search: String::new(),
+                    search: ViewSearch::default(),
                     found: None,
                     prompt: None,
                     note: None,
@@ -6855,7 +6938,7 @@ fn viewer_end(v: &mut Viewer, rows: usize) {
 }
 
 fn viewer_search(v: &mut Viewer, from: usize, is_next: bool) {
-    match v.file.search_from(from, &v.search) {
+    match v.file.find(from, &v.search.to_search()) {
         Ok(Some(idx)) => {
             v.found = Some(idx);
             v.top = idx.saturating_sub(2);
