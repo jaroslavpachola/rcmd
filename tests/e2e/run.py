@@ -9,6 +9,7 @@ real config is never touched. Exits non-zero if any check fails.
 """
 import fcntl
 import gzip
+import io
 import os
 import pty
 import re
@@ -155,6 +156,7 @@ def sandbox():
 F3, F5, F7, F8 = b"\x1b[13~", b"\x1b[15~", b"\x1b[18~", b"\x1b[19~"
 SF8 = b"\x1b[19;2~"
 DOWN, END, HOME_K, INSERT = b"\x1b[B", b"\x1b[F", b"\x1b[H", b"\x1b[2~"
+BACKSPACE = b"\x7f"
 
 
 def test_smoke():
@@ -397,6 +399,86 @@ def test_cmdarchive():
     extracted = os.path.join(play, "out", "hello.txt")
     check("cmdarchive: F5 extracts",
           wait_for(s, "done -") and open(extracted).read() == "packed content\n")
+    s.quit()
+    shutil.rmtree(root)
+
+
+def write_ar(members):
+    """An `ar` archive: an 8-byte magic and a 60-byte header per member,
+    each padded to an even offset."""
+    out = bytearray(b"!<arch>\n")
+    for name, data in members:
+        out += ("%-16s%-12d%-6d%-6d%-8s%-10d" % (name, 1700000000, 0, 0, "100644",
+                                                 len(data))).encode()
+        out += b"\x60\n"
+        out += data
+        if len(data) % 2:
+            out += b"\n"
+    return bytes(out)
+
+
+def write_targz(files):
+    """A gzipped tar of (name, mode, bytes) triples, built in memory."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as t:
+        for name, mode, data in files:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = mode
+            info.mtime = 1700000000
+            t.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def test_deb():
+    """A Debian package browses as one tree: the version stamp, the
+    control half and the installed half."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "out"))
+    control = write_targz([
+        ("./control", 0o644, b"Package: hello\nVersion: 1.0\nArchitecture: all\n"),
+        ("./postinst", 0o755, b"#!/bin/sh\nexit 0\n"),
+    ])
+    data = write_targz([
+        ("./usr/share/doc/hello/README", 0o644, b"installed by the package\n"),
+    ])
+    open(os.path.join(play, "hello_1.0_all.deb"), "wb").write(write_ar([
+        ("debian-binary", b"2.0\n"),
+        ("control.tar.gz", control),
+        ("data.tar.gz", data),
+    ]))
+
+    s = Session(play, home, args=(play, os.path.join(play, "out")))
+    s.send(b"\x13hello\r", wait=STEP)   # quick search -> the package
+    s.send(b"\r", wait=STEP * 2)        # enter it
+    scr = s.screen()
+    check("deb: entered", "hello_1.0_all.deb://" in scr)
+    check("deb: both halves listed", "CONTROL" in scr and "CONTENTS" in scr)
+    check("deb: the version stamp rides along", "debian-binary" in scr)
+
+    # the root lists .., CONTENTS, CONTROL, debian-binary in that order
+    s.send(DOWN + DOWN)                 # -> CONTROL
+    s.send(b"\r", wait=STEP * 2)
+    scr = s.screen()
+    check("deb: control files listed", "control" in scr and "postinst" in scr)
+    s.send(DOWN)                        # -> control
+    s.send(F3, wait=STEP * 2)
+    check("deb: F3 reads the control file", "Package: hello" in s.screen())
+    s.send(b"q")
+
+    s.send(BACKSPACE, wait=STEP)        # back to the package root
+    s.send(HOME_K + DOWN)               # -> CONTENTS
+    s.send(b"\r", wait=STEP * 2)
+    check("deb: the installed tree opens", "usr" in s.screen())
+    for _ in range(4):                  # usr/ share/ doc/ hello/
+        s.send(DOWN)
+        s.send(b"\r", wait=STEP)
+    s.send(DOWN)                        # -> README
+    s.send(F5)
+    s.send(b"\r", wait=STEP * 3)
+    extracted = os.path.join(play, "out", "README")
+    check("deb: F5 extracts an installed file",
+          wait_for(s, "done -") and open(extracted).read() == "installed by the package\n")
     s.quit()
     shutil.rmtree(root)
 
@@ -2474,6 +2556,7 @@ def main():
         test_archive,
         test_cmdarchive,
         test_cpio,
+        test_deb,
         test_find,
         test_compare,
         test_watch,

@@ -1,7 +1,7 @@
-//! Read-only archive VFS: zip, tar and cpio (each plain or gz/xz/bz2
-//! compressed) natively; rar and 7z through an external tool (the 7z
-//! family, or unrar for .rar) - listed once at open, members streamed
-//! out per read.
+//! Read-only archive VFS: zip, tar and cpio (each plain or gz/xz/bz2/
+//! zstd compressed), `ar` archives and Debian packages natively; rar
+//! and 7z through an external tool (the 7z family, or unrar for .rar) -
+//! listed once at open, members streamed out per read.
 //!
 //! The entry table is indexed once at open; `open_read` re-opens the
 //! archive and decodes just the requested member into memory (compressed
@@ -10,12 +10,13 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, Cursor, Read};
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
 use flate2::read::GzDecoder;
 
+use crate::ar;
 use crate::cpio;
 use crate::entry::{Entry, EntryKind};
 use crate::vfs::FsProvider;
@@ -25,6 +26,10 @@ enum Kind {
     Zip,
     Tar(Comp),
     Cpio(Comp),
+    /// An `ar` archive - a static library, most often - listed flat.
+    Ar,
+    /// A Debian package: an `ar` archive holding two tarballs.
+    Deb,
     /// rar / 7z via an external lister+extractor.
     Cmd,
 }
@@ -32,12 +37,13 @@ enum Kind {
 /// What, if anything, the container stream is wrapped in. tar and cpio
 /// both come plain or squeezed, and they answer to the same three
 /// wrappers, so it is an axis of its own rather than a variant each.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Comp {
     None,
     Gz,
     Xz,
     Bz2,
+    Zstd,
 }
 
 /// Which external tool serves a [`Kind::Cmd`] archive.
@@ -62,6 +68,19 @@ pub struct ArchiveFs {
     /// A hard link's name → the member that actually carries the bytes.
     /// cpio writes the data once, with one of the names.
     links: HashMap<PathBuf, PathBuf>,
+    /// Paths whose bytes are a plain slice of the container file.
+    slices: HashMap<PathBuf, Slice>,
+    /// Prefix → the tarball nested at that point in the tree. A .deb
+    /// is two of these plus one loose file.
+    nested: Vec<(PathBuf, Slice)>,
+}
+
+/// A run of bytes inside the container, and what it is wrapped in.
+#[derive(Clone, Copy, Debug)]
+struct Slice {
+    at: u64,
+    len: u64,
+    comp: Comp,
 }
 
 impl ArchiveFs {
@@ -79,6 +98,12 @@ impl ArchiveFs {
             Kind::Tar(Comp::Xz)
         } else if name.ends_with(".tbz2") || name.ends_with(".tbz") {
             Kind::Tar(Comp::Bz2)
+        } else if name.ends_with(".tzst") {
+            Kind::Tar(Comp::Zstd)
+        } else if name.ends_with(".deb") || name.ends_with(".udeb") {
+            Kind::Deb
+        } else if name.ends_with(".a") || name.ends_with(".ar") {
+            Kind::Ar
         } else if name.ends_with(".rar") || name.ends_with(".7z") {
             Kind::Cmd
         } else {
@@ -100,11 +125,15 @@ impl ArchiveFs {
             cmd: None,
             index: HashMap::from([(PathBuf::new(), Vec::new())]),
             links: HashMap::new(),
+            slices: HashMap::new(),
+            nested: Vec::new(),
         };
         match kind {
             Kind::Zip => fs.index_zip()?,
             Kind::Cmd => fs.index_cmd(name.ends_with(".rar"))?,
             Kind::Cpio(_) => fs.index_cpio()?,
+            Kind::Ar => fs.index_ar()?,
+            Kind::Deb => fs.index_deb()?,
             Kind::Tar(_) => fs.index_tar()?,
         }
         Ok(fs)
@@ -131,7 +160,12 @@ impl ArchiveFs {
     }
 
     fn index_tar(&mut self) -> io::Result<()> {
-        let mut archive = tar::Archive::new(self.raw_reader()?);
+        let reader = self.raw_reader()?;
+        self.index_tar_from(reader, Path::new(""))
+    }
+
+    fn index_tar_from(&mut self, reader: Box<dyn Read>, prefix: &Path) -> io::Result<()> {
+        let mut archive = tar::Archive::new(reader);
         for member in archive.entries()? {
             let member = member?;
             let header = member.header();
@@ -153,7 +187,14 @@ impl ArchiveFs {
                 .map(|secs| UNIX_EPOCH + Duration::from_secs(secs));
             let mode = header.mode().unwrap_or(0) & 0o7777;
             let size = header.size().unwrap_or(0);
-            self.add(&rel, kind, size, mode, link, mtime);
+            self.add(
+                &prefix.join(normalize_rel(&rel)),
+                kind,
+                size,
+                mode,
+                link,
+                mtime,
+            );
         }
         Ok(())
     }
@@ -200,6 +241,115 @@ impl ArchiveFs {
             }
         }
         Ok(())
+    }
+
+    /// An `ar` archive is a flat list, so the listing is the member
+    /// table and nothing more.
+    fn index_ar(&mut self) -> io::Result<()> {
+        for member in ar::members(&self.path)? {
+            let rel = normalize_rel(Path::new(&member.name));
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+            let mtime = Some(UNIX_EPOCH + Duration::from_secs(member.mtime));
+            self.add(
+                &rel,
+                EntryKind::File,
+                member.size,
+                member.mode & 0o7777,
+                None,
+                mtime,
+            );
+            self.slices.insert(
+                rel,
+                Slice {
+                    at: member.at,
+                    len: member.size,
+                    comp: Comp::None,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// A Debian package is an `ar` archive of three members: a version
+    /// stamp and two tarballs. Both tarballs are folded into the tree
+    /// under a name of their own - `CONTROL/` for the package's
+    /// metadata and maintainer scripts, `CONTENTS/` for the files it
+    /// installs - so one panel shows the whole package instead of
+    /// making you open two more archives to see it.
+    fn index_deb(&mut self) -> io::Result<()> {
+        let mut seen = false;
+        for member in ar::members(&self.path)? {
+            let lower = member.name.to_lowercase();
+            let (stem, comp) = peel_comp(&lower);
+            let slice = Slice {
+                at: member.at,
+                len: member.size,
+                comp,
+            };
+            let prefix = match stem {
+                "control.tar" => "CONTROL",
+                "data.tar" => "CONTENTS",
+                _ => {
+                    // debian-binary and anything else rides along as a file
+                    let rel = normalize_rel(Path::new(&member.name));
+                    if !rel.as_os_str().is_empty() {
+                        let mtime = Some(UNIX_EPOCH + Duration::from_secs(member.mtime));
+                        self.add(&rel, EntryKind::File, member.size, 0o644, None, mtime);
+                        self.slices.insert(
+                            rel,
+                            Slice {
+                                comp: Comp::None,
+                                ..slice
+                            },
+                        );
+                    }
+                    continue;
+                }
+            };
+            let prefix = PathBuf::from(prefix);
+            self.ensure_dir_chain(&prefix);
+            let reader = self.slice_reader(slice)?;
+            self.index_tar_from(reader, &prefix)?;
+            self.nested.push((prefix, slice));
+            seen = true;
+        }
+        if !seen {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "no control.tar or data.tar in this package",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Read a path that lives in a slice of the container: either the
+    /// slice *is* the file, or it is a tarball the path reaches into.
+    fn read_slice(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
+        if let Some(slice) = self.slices.get(rel) {
+            let mut file = File::open(&self.path)?;
+            file.seek(SeekFrom::Start(slice.at))?;
+            return Ok(Box::new(file.take(slice.len)));
+        }
+        for (prefix, slice) in &self.nested {
+            let Ok(inner) = rel.strip_prefix(prefix) else {
+                continue;
+            };
+            let mut archive = tar::Archive::new(self.slice_reader(*slice)?);
+            for member in archive.entries()? {
+                let mut member = member?;
+                if normalize_rel(&member.path()?) == inner {
+                    let mut buf = Vec::with_capacity(member.size() as usize);
+                    member.read_to_end(&mut buf)?;
+                    return Ok(Box::new(Cursor::new(buf)));
+                }
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "not found in archive",
+        ))
     }
 
     /// A hard link's listing should show the size of what it points at,
@@ -387,17 +537,18 @@ impl ArchiveFs {
     }
 
     fn raw_reader(&self) -> io::Result<Box<dyn Read>> {
-        let file = File::open(&self.path)?;
         let comp = match self.kind {
             Kind::Tar(comp) | Kind::Cpio(comp) => comp,
-            Kind::Zip | Kind::Cmd => unreachable!("zip/cmd use their own readers"),
+            _ => unreachable!("zip, ar, deb and cmd use their own readers"),
         };
-        Ok(match comp {
-            Comp::None => Box::new(file),
-            Comp::Gz => Box::new(GzDecoder::new(file)),
-            Comp::Xz => Box::new(xz2::read::XzDecoder::new(file)),
-            Comp::Bz2 => Box::new(bzip2::read::BzDecoder::new(file)),
-        })
+        decompress(Box::new(File::open(&self.path)?), comp)
+    }
+
+    /// The bytes of one slice of the container, unwrapped.
+    fn slice_reader(&self, slice: Slice) -> io::Result<Box<dyn Read>> {
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(slice.at))?;
+        decompress(Box::new(file.take(slice.len)), slice.comp)
     }
 }
 
@@ -428,6 +579,7 @@ impl FsProvider for ArchiveFs {
         match self.kind {
             Kind::Cmd => self.read_cmd(&rel),
             Kind::Cpio(_) => self.read_cpio(&rel),
+            Kind::Ar | Kind::Deb => self.read_slice(&rel),
             Kind::Zip => {
                 let mut zip = zip::ZipArchive::new(File::open(&self.path)?).map_err(zip_err)?;
                 for i in 0..zip.len() {
@@ -627,11 +779,31 @@ fn parse_datetime(s: &str) -> Option<std::time::SystemTime> {
     Some(UNIX_EPOCH + Duration::from_secs(days as u64 * 86_400 + h * 3_600 + min * 60 + sec))
 }
 
+/// Unwrap a container stream. zstd's decoder is the one that can fail
+/// at construction - it reads the frame header up front.
+fn decompress(reader: Box<dyn Read>, comp: Comp) -> io::Result<Box<dyn Read>> {
+    Ok(match comp {
+        Comp::None => reader,
+        Comp::Gz => Box::new(GzDecoder::new(reader)),
+        Comp::Xz => Box::new(xz2::read::XzDecoder::new(reader)),
+        Comp::Bz2 => Box::new(bzip2::read::BzDecoder::new(reader)),
+        Comp::Zstd => Box::new(
+            ruzstd::decoding::StreamingDecoder::new(reader)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?,
+        ),
+    })
+}
+
 /// Split a trailing compression suffix off a lowercased filename, so
 /// "x.cpio.gz" and "x.tar.bz2" reach the same table as their plain
 /// forms.
 fn peel_comp(name: &str) -> (&str, Comp) {
-    for (suffix, comp) in [(".gz", Comp::Gz), (".xz", Comp::Xz), (".bz2", Comp::Bz2)] {
+    for (suffix, comp) in [
+        (".gz", Comp::Gz),
+        (".xz", Comp::Xz),
+        (".bz2", Comp::Bz2),
+        (".zst", Comp::Zstd),
+    ] {
         if let Some(stem) = name.strip_suffix(suffix) {
             return (stem, comp);
         }
@@ -969,11 +1141,181 @@ mod tests {
         }
     }
 
+    /// A .deb the way dpkg-deb builds one, so the fixture matches what
+    /// a package manager actually leaves on disk.
+    fn make_deb(dir: &Path) -> Option<PathBuf> {
+        if !tool_available("dpkg-deb", "--version") {
+            eprintln!("skipping: no dpkg-deb to build the fixture");
+            return None;
+        }
+        let root = dir.join("pkg");
+        std::fs::create_dir_all(root.join("DEBIAN")).unwrap();
+        std::fs::create_dir_all(root.join("usr/share/doc/hello")).unwrap();
+        std::fs::write(
+            root.join("DEBIAN/control"),
+            "Package: hello\nVersion: 1.0\nArchitecture: all\nMaintainer: t <t@example>\n             Description: a fixture\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("DEBIAN/postinst"), "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(
+            root.join("usr/share/doc/hello/README"),
+            "installed by the package\n",
+        )
+        .unwrap();
+        let path = dir.join("hello_1.0_all.deb");
+        let ok = std::process::Command::new("dpkg-deb")
+            .args(["--build", "--root-owner-group"])
+            .arg(&root)
+            .arg(&path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        ok.then_some(path)
+    }
+
+    #[test]
+    fn deb_shows_both_halves_of_the_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(path) = make_deb(tmp.path()) else {
+            return;
+        };
+        let fs = ArchiveFs::open(&path).unwrap();
+
+        let mut names: Vec<_> = fs
+            .read_dir(Path::new(""))
+            .unwrap()
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["CONTENTS", "CONTROL", "debian-binary"]);
+
+        // the version stamp is a plain ar member, read straight out
+        let mut stamp = String::new();
+        fs.open_read(Path::new("debian-binary"))
+            .unwrap()
+            .read_to_string(&mut stamp)
+            .unwrap();
+        assert_eq!(stamp, "2.0\n");
+
+        // the control half: metadata and maintainer scripts
+        let mut control = String::new();
+        fs.open_read(Path::new("CONTROL/control"))
+            .unwrap()
+            .read_to_string(&mut control)
+            .unwrap();
+        assert!(control.contains("Package: hello"), "{control}");
+        assert!(fs.stat(Path::new("CONTROL/postinst")).unwrap().size > 0);
+
+        // the installed half, with its directory chain intact
+        assert!(
+            fs.stat(Path::new("CONTENTS/usr/share/doc"))
+                .unwrap()
+                .is_dir()
+        );
+        let mut readme = String::new();
+        fs.open_read(Path::new("CONTENTS/usr/share/doc/hello/README"))
+            .unwrap()
+            .read_to_string(&mut readme)
+            .unwrap();
+        assert_eq!(readme, "installed by the package\n");
+
+        assert!(fs.open_read(Path::new("CONTENTS/nothing/here")).is_err());
+    }
+
+    #[test]
+    fn deb_reads_whichever_wrapper_dpkg_chose() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(path) = make_deb(tmp.path()) else {
+            return;
+        };
+        // dpkg-deb picks the compressor; whichever it was, the tarballs
+        // must have come out readable
+        let fs = ArchiveFs::open(&path).unwrap();
+        assert!(!fs.read_dir(Path::new("CONTENTS")).unwrap().is_empty());
+        assert!(!fs.read_dir(Path::new("CONTROL")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ar_lists_a_static_library_flat() {
+        if !tool_available("ar", "--version") {
+            eprintln!("skipping: no ar binary to build the fixture");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("one.txt"), b"first\n").unwrap();
+        std::fs::write(tmp.path().join("two.txt"), b"second\n").unwrap();
+        assert!(
+            std::process::Command::new("ar")
+                .args(["rc", "box.a", "one.txt", "two.txt"])
+                .current_dir(tmp.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        let fs = ArchiveFs::open(&tmp.path().join("box.a")).unwrap();
+        let mut names: Vec<_> = fs
+            .read_dir(Path::new(""))
+            .unwrap()
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["one.txt", "two.txt"]);
+        let mut text = String::new();
+        fs.open_read(Path::new("two.txt"))
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(text, "second\n");
+    }
+
+    #[test]
+    fn tar_zst_round_trip() {
+        if !tool_available("zstd", "--version") {
+            eprintln!("skipping: no zstd binary to build the fixture");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plain = tmp.path().join("t.tar");
+        let mut builder = tar::Builder::new(File::create(&plain).unwrap());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(9);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "x.txt", &b"squeezed\n"[..])
+            .unwrap();
+        builder.finish().unwrap();
+        drop(builder);
+        assert!(
+            std::process::Command::new("zstd")
+                .args(["-q", "-f", "t.tar", "-o", "t.tar.zst"])
+                .current_dir(tmp.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        let fs = ArchiveFs::open(&tmp.path().join("t.tar.zst")).unwrap();
+        let mut content = String::new();
+        fs.open_read(Path::new("x.txt"))
+            .unwrap()
+            .read_to_string(&mut content)
+            .unwrap();
+        assert_eq!(content, "squeezed\n");
+    }
+
     #[test]
     fn peels_compression_suffixes() {
         assert!(matches!(peel_comp("x.cpio.gz"), ("x.cpio", Comp::Gz)));
         assert!(matches!(peel_comp("x.tar.bz2"), ("x.tar", Comp::Bz2)));
         assert!(matches!(peel_comp("x.tar"), ("x.tar", Comp::None)));
+        assert!(matches!(
+            peel_comp("data.tar.zst"),
+            ("data.tar", Comp::Zstd)
+        ));
     }
 
     #[test]

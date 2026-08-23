@@ -167,6 +167,13 @@ pub fn is_archive_name(name: &OsStr) -> bool {
         ".cpio.gz",
         ".cpio.xz",
         ".cpio.bz2",
+        ".cpio.zst",
+        ".tar.zst",
+        ".tzst",
+        ".deb",
+        ".udeb",
+        ".a",
+        ".ar",
         ".rar",
         ".7z",
     ]

@@ -1,3 +1,4 @@
+pub mod ar;
 pub mod archive;
 pub mod complete;
 pub mod cpio;

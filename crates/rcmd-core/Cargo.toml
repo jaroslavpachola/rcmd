@@ -11,6 +11,7 @@ tar.workspace = true
 flate2.workspace = true
 xz2.workspace = true
 bzip2.workspace = true
+ruzstd.workspace = true
 ssh2.workspace = true
 
 [features]

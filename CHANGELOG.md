@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.23.0 - 2026-08-23
+
+- **Debian packages** (4.0 S3): Enter on a `.deb` or `.udeb` and the
+  package opens as **one tree** instead of the three archives it
+  really is - `debian-binary` at the root, the metadata and maintainer
+  scripts under `CONTROL/`, everything the package installs under
+  `CONTENTS/`. F3 reads a control file, F5 extracts an installed one.
+  Opening a package to see what is in it should not mean opening two
+  more archives to get there.
+- **`ar` archives** browse in their own right, so a `.a` static library
+  lists its members. GNU long names (the `//` table) and BSD long names
+  (`#1/NN`) both resolve; the symbol table is read and left out of the
+  listing, since nothing browses it.
+- **zstd**: `.tar.zst`, `.tzst` and `.cpio.zst` join the wrappers, which
+  is also what a modern `.deb` needs - Debian and Ubuntu have shipped
+  `data.tar.zst` for years now. The decoder is `ruzstd`: pure Rust and
+  decode-only, which is all a read-only VFS wants, and it keeps the musl
+  static build free of another C library.
+- Members of an `ar` archive are located rather than copied: the file is
+  on disk and seekable, so the index records an offset and a length and
+  reading one means seeking there.
+
 ## 3.22.0 - 2026-08-23
 
 - **cpio archives** (4.0 S3): Enter on a `.cpio` - plain or `.gz`,
