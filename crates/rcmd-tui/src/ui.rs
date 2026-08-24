@@ -515,6 +515,12 @@ const HELP_TEXT: &[&str] = &[
     "  m<digit>        set one of ten marks here; r<digit> returns",
     "  Alt+R           column ruler under the title",
     "  f               follow mode (tail -f): stick to the growing end",
+    "  F8              format: nroff overstrikes (_^Ht, t^Ht) read as",
+    "                  underline and bold rather than showing as bytes",
+    "  F6              swap the [[view]] filter in and out under the",
+    "                  same file - the parsed text or the raw one",
+    "  Ctrl+F / Ctrl+B the next / previous file of the panel, in the",
+    "                  same viewer, keeping wrap, hex and the search",
     "  Shift+F3        raw view (skip any [[view]] filter)",
     "  F3/F10/Esc/q    close the viewer",
     "",
@@ -2205,8 +2211,10 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
         "text"
     };
     let follow = if v.follow { " [follow]" } else { "" };
+    let nroff = if v.nroff { " [format]" } else { "" };
+    let filtered = if v.filtered { " [parsed]" } else { "" };
     let title = format!(
-        " {}  {} bytes  {percent}%  [{mode}]{follow}",
+        " {}  {} bytes  {percent}%  [{mode}]{nroff}{filtered}{follow}",
         v.path.display(),
         v.file.size,
     );
@@ -2236,8 +2244,21 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
                 Ok(Some(text)) => text,
                 _ => return None,
             };
+            // nroff mode: the overstrikes become attributes, so the
+            // text everything below works on is the text they spelled
+            let (text, nroff) = if v.nroff {
+                rcmd_core::view::nroff_line(&text)
+            } else {
+                (text, Vec::new())
+            };
             let (expanded, map) = expand_with_map(&text);
             let clamp = |i: usize| map[i.min(map.len() - 1)];
+            let mut attrs = vec![0u8; expanded.chars().count()];
+            for (i, &attr) in nroff.iter().enumerate() {
+                for col in map[i]..map[i + 1].min(attrs.len()) {
+                    attrs[col] = attr;
+                }
+            }
             let spans: Vec<(usize, usize, [u8; 3])> = all_spans
                 .get(idx.saturating_sub(v.top))
                 .map(|sp| {
@@ -2256,7 +2277,7 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
             } else {
                 Style::new()
             };
-            Some((expanded, spans, matches, base))
+            Some((expanded, spans, matches, base, attrs))
         };
     if v.wrap && !v.hex {
         // soft-wrapped: walk (line, segment) pairs from the top row
@@ -2268,7 +2289,8 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
                 height: 1,
                 ..content
             };
-            let Some((expanded, spans, matches, base)) = styled(v, line_idx, &all_spans) else {
+            let Some((expanded, spans, matches, base, attrs)) = styled(v, line_idx, &all_spans)
+            else {
                 break;
             };
             let len = expanded.chars().count();
@@ -2277,7 +2299,7 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
             }
             let start = (seg * width).min(len);
             frame.render_widget(
-                viewer_line(&expanded, &spans, &matches, start, width, base),
+                viewer_line(&expanded, &spans, &matches, &attrs, start, width, base),
                 row_area,
             );
             if (seg + 1) * width < len.max(1) {
@@ -2303,18 +2325,27 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
                 frame.render_widget(Line::from(hex_row(row_offset, &bytes)), row_area);
             } else {
                 let idx = v.top + row as usize;
-                let Some((expanded, spans, matches, base)) = styled(v, idx, &all_spans) else {
+                let Some((expanded, spans, matches, base, attrs)) = styled(v, idx, &all_spans)
+                else {
                     break;
                 };
                 frame.render_widget(
-                    viewer_line(&expanded, &spans, &matches, v.left, width, base),
+                    viewer_line(&expanded, &spans, &matches, &attrs, v.left, width, base),
                     row_area,
                 );
             }
         }
     }
 
-    let help = " F3/q Quit  F2 Wrap  F4 Hex  F7|/ Search  n Next  ←→ Scroll ";
+    // mc's button bar names what pressing the key does now, which for
+    // half of these is the opposite of what it did a moment ago
+    let help = format!(
+        " F3/q Quit  F2 {}  F4 {}  F6 {}  F8 {}  F7|/ Search  n Next  C-f/C-b File ",
+        if v.wrap { "Unwrap" } else { "Wrap" },
+        if v.hex { "Ascii" } else { "Hex" },
+        if v.filtered { "Raw" } else { "Parse" },
+        if v.nroff { "Unform" } else { "Format" },
+    );
     let note = v.note.clone().unwrap_or_default();
     frame.render_widget(
         Line::from(format!(
@@ -2462,6 +2493,7 @@ fn viewer_line(
     expanded: &str,
     spans: &[(usize, usize, [u8; 3])],
     matches: &[(usize, usize)],
+    attrs: &[u8],
     start: usize,
     width: usize,
     base: Style,
@@ -2477,6 +2509,19 @@ fn viewer_line(
         }
         if matches.iter().any(|&(a, b)| i >= a && i < b) {
             style = sel;
+        }
+        // nroff attributes ride on top of whatever colour won: they say
+        // what the character is, not what colour it has
+        match attrs.get(i).copied().unwrap_or(0) {
+            0 => {}
+            attr => {
+                if attr & rcmd_core::view::NROFF_BOLD != 0 {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                if attr & rcmd_core::view::NROFF_UNDERLINE != 0 {
+                    style = style.add_modifier(Modifier::UNDERLINED);
+                }
+            }
         }
         if style != run_style {
             if !run.is_empty() {

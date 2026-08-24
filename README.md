@@ -212,7 +212,8 @@ Escape; an unanswered Esc acts as one after a second.
 **Viewer** (F3): arrows/PgUp/PgDn/Home/End scroll, ←→ horizontal scroll,
 F2 toggles soft-wrap, F4 toggles hex mode, F3/F10/Esc/q quit. Lines are
 indexed lazily, so huge files open instantly; very long lines are broken
-at 4096 columns.
+at 4096 columns. The bottom bar names what each key does *now*, as mc's
+does: F2 says Unwrap once wrapping is on.
 
 **F5**, `Alt+L` or `:` opens **goto**, which takes all three of mc's
 destinations in one field, told apart by how the number is written: a
@@ -232,6 +233,24 @@ it: **Case sensitive**, **Whole words** and **Backwards**. Tab and the
 arrows move between rows, Space ticks, Enter searches; `n` repeats the
 search with its options intact. Matches are highlighted in the line and
 the found line is marked.
+
+**F8** turns nroff formatting on: `_^Ht` and `t^Ht` - a character, a
+backspace and another character, which is how a formatted man page has
+said "underline" and "bold" since printers could only move forward -
+are read as the attributes they stand for instead of showing up as
+control bytes. The search follows the mode, so with formatting on the
+word you can see is the word you can look for.
+
+**F6** swaps the `[[view]]` filter in and out under the same file: the
+parsed text from `pdftotext`, `tr`, `unzip -l` or whatever the rule
+runs, or the file as it actually is. It is the in-viewer form of the
+choice Shift+F3 makes when opening.
+
+**Ctrl+F** and **Ctrl+B** move to the next and previous file of the
+panel without leaving the viewer, keeping wrap, hex, the ruler, the
+formatting mode and the search - so reading through a directory is one
+key per file. The panel cursor follows, which is where you land when
+you quit.
 
 **Responsiveness**: directory listings that take longer than ~100 ms
 (huge directories, cold network mounts) load in the background - the old
@@ -486,6 +505,8 @@ listing_format = "half type name | size | mtime"
 "ctrl+y" = "swap-panels"     # bare entries bind in the panel
 [keys.viewer]                # ...and these inside the F3 viewer
 "ctrl+w" = "wrap"            # quit wrap hex search search-next follow
+                             # goto set-mark go-mark ruler nroff raw
+                             # next-file prev-file
 [keys.editor]                # ...and these inside the F4 editor
 "ctrl+q" = "quit"            # save quit mark replace search search-next
                              # block-copy block-move delete-line undo

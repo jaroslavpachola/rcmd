@@ -1,5 +1,34 @@
 # Changelog
 
+## 3.35.0 - 2026-08-24
+
+- **nroff formatting in the viewer** (4.0 S4): **F8** reads the
+  overstrikes a formatted file is written with - `_`, a backspace and a
+  character for underline, a character over itself for bold, which is
+  what a printer that could only move forward understood - as the
+  attributes they stand for, instead of showing the control bytes.
+  Off by default, because a file full of `^H` is rare and a file with a
+  stray one is not.
+- **The search follows the mode.** With formatting on, the word on the
+  screen is the word a search looks for; the bytes underneath spell it
+  with a backspace between every letter and nothing would ever match
+  them.
+- **F6 swaps the `[[view]]` filter in and out** under the same file:
+  the parsed text - `pdftotext`, `tr`, `unzip -l`, whatever the rule
+  runs - or the file as it is. It is the in-viewer form of the choice
+  Shift+F3 makes when opening one, and it is the same file either way:
+  the line numbers, the found line and the marks are dropped, because
+  they pointed into the other text.
+- **Ctrl+F and Ctrl+B are the next and previous file** of the panel,
+  read in the same viewer with the same wrap, hex, ruler, formatting
+  and search. The panel cursor follows along, so quitting leaves you on
+  what you were reading rather than back where you started. Directories
+  are stepped over; the ends of the listing say so rather than wrapping
+  around.
+- The bottom bar now names what each key does *now*, as mc's button bar
+  does: F2 is Unwrap once wrapping is on, F6 is Parse once the filter
+  is out, F8 is Unform once formatting is on.
+
 ## 3.34.0 - 2026-08-23
 
 - **Getting around a file in the viewer** (4.0 S4): **F5**, `Alt+L` or

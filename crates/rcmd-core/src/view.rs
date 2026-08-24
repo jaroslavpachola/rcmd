@@ -34,6 +34,11 @@ pub struct Search {
     /// Match only where the pattern stands as a word of its own.
     pub whole_word: bool,
     pub backwards: bool,
+    /// The viewer is in nroff mode: match the text the overstrikes
+    /// spell rather than the bytes on disk, so that what is searched
+    /// is what is on the screen. Not a dialog answer - the viewer sets
+    /// it from its own mode.
+    pub nroff: bool,
 }
 
 /// What a "goto" input asks for. One field takes all three because
@@ -68,6 +73,51 @@ pub fn parse_goto(input: &str) -> Option<Goto> {
         return number.trim().parse().ok().map(Goto::Offset);
     }
     text.parse().ok().map(Goto::Line)
+}
+
+/// Attribute bits [`nroff_line`] hands back, one byte per character.
+pub const NROFF_BOLD: u8 = 1;
+pub const NROFF_UNDERLINE: u8 = 2;
+
+/// Undo the overstrikes nroff writes into a formatted file: `_\x08t` is
+/// an underlined `t` and `t\x08t` a bold one, a backspace meaning "put
+/// the next character on top of the last one" on a printer that could
+/// only move forward. Returns the text those overstrikes stood for and
+/// one attribute byte per character of it, so a man page reads as a man
+/// page rather than as its own source.
+pub fn nroff_line(line: &str) -> (String, Vec<u8>) {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out: Vec<char> = Vec::with_capacity(chars.len());
+    let mut attrs: Vec<u8> = Vec::with_capacity(chars.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        // a backspace between two characters overstrikes them; one with
+        // nothing on either side is just a control character
+        if c == '\u{8}' && !out.is_empty() && i + 1 < chars.len() {
+            let over = chars[i + 1];
+            let last = out.len() - 1;
+            let prev = out[last];
+            if prev == '_' && over != '_' {
+                out[last] = over;
+                attrs[last] |= NROFF_UNDERLINE;
+            } else if over == '_' && prev != '_' {
+                attrs[last] |= NROFF_UNDERLINE;
+            } else if prev == over {
+                attrs[last] |= NROFF_BOLD;
+            } else {
+                // neither shape: the last write wins, as it would on
+                // the printer this notation came from
+                out[last] = over;
+            }
+            i += 2;
+            continue;
+        }
+        out.push(c);
+        attrs.push(0);
+        i += 1;
+    }
+    (out.into_iter().collect(), attrs)
 }
 
 /// A compiled search: either a regular expression or a byte sequence.
@@ -331,9 +381,15 @@ impl FileView {
                 None => Ok(None),
             };
         }
+        let read = |view: &mut Self, idx: usize| -> io::Result<Option<String>> {
+            Ok(view.line(idx)?.map(|line| match search.nroff {
+                true => nroff_line(&line).0,
+                false => line,
+            }))
+        };
         if search.backwards {
             for idx in (0..=from).rev() {
-                if let Some(line) = self.line(idx)?
+                if let Some(line) = read(self, idx)?
                     && matcher.matches(&line)
                 {
                     return Ok(Some(idx));
@@ -342,7 +398,7 @@ impl FileView {
             return Ok(None);
         }
         let mut idx = from;
-        while let Some(line) = self.line(idx)? {
+        while let Some(line) = read(self, idx)? {
             if matcher.matches(&line) {
                 return Ok(Some(idx));
             }
@@ -438,6 +494,27 @@ mod tests {
             .unwrap();
         let view = FileView::open(&path).unwrap();
         (dir, view)
+    }
+
+    #[test]
+    fn nroff_overstrikes_become_attributes() {
+        // "_\bm_\ba_\bn" is an underlined "man", "cc\bc" a bold "c"
+        let (text, attrs) = nroff_line("_\u{8}m_\u{8}a_\u{8}n and c\u{8}c");
+        assert_eq!(text, "man and c");
+        assert_eq!(&attrs[..3], &[NROFF_UNDERLINE; 3]);
+        assert_eq!(attrs[3], 0);
+        assert_eq!(attrs[8], NROFF_BOLD);
+        // both halves are one character wide, so a match still lands on
+        // the text a search was run against
+        assert_eq!(text.chars().count(), attrs.len());
+        // a backspace with nothing to overstrike is just a control char
+        let (text, attrs) = nroff_line("\u{8}x\u{8}");
+        assert_eq!(text, "\u{8}x\u{8}");
+        assert_eq!(attrs, vec![0; 3]);
+        // a trailing "_" is underlined rather than replaced
+        let (text, attrs) = nroff_line("x\u{8}_");
+        assert_eq!(text, "x");
+        assert_eq!(attrs, vec![NROFF_UNDERLINE]);
     }
 
     #[test]

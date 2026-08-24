@@ -344,6 +344,13 @@ pub enum ViewerAction {
     /// `r` then a digit.
     GoMark,
     ToggleRuler,
+    /// F8: nroff overstrikes read as bold and underline.
+    ToggleNroff,
+    /// F6: the `[[view]]` filter in or out under the same file.
+    ToggleRaw,
+    /// C-f / C-b: the next / previous file of the panel.
+    NextFile,
+    PrevFile,
 }
 
 /// What a key does in the F4 editor (text entry and plain cursor
@@ -387,6 +394,10 @@ const VIEWER_DEFAULTS: &[(&str, &str)] = &[
     ("m", "set-mark"),
     ("r", "go-mark"),
     ("alt+r", "ruler"),
+    ("f8", "nroff"),
+    ("f6", "raw"),
+    ("ctrl+f", "next-file"),
+    ("ctrl+b", "prev-file"),
 ];
 
 const EDITOR_DEFAULTS: &[(&str, &str)] = &[
@@ -422,6 +433,10 @@ pub fn parse_viewer_action(name: &str) -> Option<ViewerAction> {
         "set-mark" => ViewerAction::SetMark,
         "go-mark" => ViewerAction::GoMark,
         "ruler" => ViewerAction::ToggleRuler,
+        "nroff" => ViewerAction::ToggleNroff,
+        "raw" => ViewerAction::ToggleRaw,
+        "next-file" => ViewerAction::NextFile,
+        "prev-file" => ViewerAction::PrevFile,
         _ => return None,
     })
 }

@@ -155,6 +155,7 @@ def sandbox():
 
 # Key escape sequences
 F3, F5, F7, F8 = b"\x1b[13~", b"\x1b[15~", b"\x1b[18~", b"\x1b[19~"
+F6 = b"\x1b[17~"
 SF8 = b"\x1b[19;2~"
 DOWN, END, HOME_K, INSERT = b"\x1b[B", b"\x1b[F", b"\x1b[H", b"\x1b[2~"
 BACKSPACE = b"\x7f"
@@ -1030,6 +1031,81 @@ def test_viewgoto():
     check("viewgoto: the ruler appears", "----+----10" in s.screen())
     s.send(b"\x1br", wait=STEP * 2)
     check("viewgoto: and goes away again", "----+----10" not in s.screen())
+
+    s.send(b"q", wait=STEP)
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_viewfiles():
+    """The rest of reading a file in the viewer: nroff formatting, the
+    [[view]] filter swapped in and out under the same file, and the next
+    and previous file without leaving."""
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write(
+        '[[view]]\n'
+        'match = "*.dat"\n'
+        'run = "tr a-z A-Z < %f"\n'
+    )
+    open(os.path.join(play, "a.dat"), "w").write("alpha content\n")
+    open(os.path.join(play, "b.dat"), "w").write("bravo content\n")
+    # what nroff writes: "_\bN" is an underlined N, "N\bN" a bold one
+    def under(word):
+        return "".join("_\b" + c for c in word)
+    body = [under("NAME")] + ["filler %02d" % n for n in range(60)]
+    body += [under("SYNOPSIS")]
+    open(os.path.join(play, "page.man"), "w").write("\n".join(body) + "\n")
+    s = Session(play, home)
+
+    # F3 runs the [[view]] filter, F6 takes it back out again
+    s.send(b"\x13a.dat\r", wait=STEP)
+    s.send(F3, wait=STEP * 2)
+    check("viewfiles: the filter ran", "ALPHA CONTENT" in s.screen())
+    check("viewfiles: the title says it is parsed", "[parsed]" in s.screen())
+    s.send(F6, wait=STEP * 2)
+    scr = s.screen()
+    check("viewfiles: F6 shows the raw file",
+          "alpha content" in scr and "ALPHA CONTENT" not in scr, scr)
+    check("viewfiles: and offers to parse it again", "F6 Parse" in scr)
+    s.send(F6, wait=STEP * 2)
+    check("viewfiles: F6 puts the filter back", "ALPHA CONTENT" in s.screen())
+
+    # C-f / C-b step through the panel without leaving the viewer
+    s.send(b"\x06", wait=STEP * 2)
+    check("viewfiles: C-f is the next file", "BRAVO CONTENT" in s.screen())
+    s.send(b"\x02", wait=STEP * 2)
+    check("viewfiles: C-b is the previous one", "ALPHA CONTENT" in s.screen())
+    s.send(b"\x02", wait=STEP * 2)
+    check("viewfiles: there is nothing before it", wait_for(s, "no previous file"))
+
+    # the overstrikes: bytes until F8 says they are formatting
+    s.send(b"\x06\x06", wait=STEP * 3)     # -> b.dat -> page.man
+    scr = s.screen()
+    check("viewfiles: the overstrikes show as what they are",
+          "_\u00b7N" in scr and "NAME" not in scr, scr)
+    s.send(b"\x06", wait=STEP * 2)
+    check("viewfiles: and there is nothing after it", wait_for(s, "no next file"))
+    s.send(F8, wait=STEP * 2)
+    scr = s.screen()
+    check("viewfiles: F8 reads them as formatting",
+          "NAME" in scr and "_\u00b7N" not in scr, scr)
+
+    # the search reads what the screen shows, not the bytes under it
+    s.send(b"/", wait=STEP)
+    s.send(b"SYNOPSIS\r", wait=STEP * 2)
+    check("viewfiles: found the formatted word", "SYNOPSIS" in s.screen())
+    s.send(F8, wait=STEP * 2)
+    check("viewfiles: unformatted again", "_\u00b7S" in s.screen())
+
+    # how you were reading it survives the step to another file
+    s.send(b"\x1b[12~", wait=STEP)          # F2: wrap
+    check("viewfiles: wrap is on", "[wrap]" in s.screen())
+    s.send(b"\x02", wait=STEP * 2)
+    scr = s.screen()
+    check("viewfiles: the next file is read the same way",
+          "[wrap]" in scr and "BRAVO CONTENT" in scr, scr)
 
     s.send(b"q", wait=STEP)
     s.quit()
@@ -3194,6 +3270,7 @@ def main():
         test_viewer,
         test_viewsearch,
         test_viewgoto,
+        test_viewfiles,
         test_archive,
         test_cmdarchive,
         test_cpio,

@@ -922,10 +922,37 @@ pub struct Viewer {
     pub pending_mark: Option<bool>,
     /// A column ruler under the title.
     pub ruler: bool,
+    /// nroff mode (F8): overstrikes read as bold and underline rather
+    /// than shown as the control characters they are.
+    pub nroff: bool,
+    /// The file on disk to read when unfiltered - the file itself, or
+    /// the scratch copy of an archive member or a remote file.
+    pub source: PathBuf,
+    /// What the title says in that state.
+    pub source_title: PathBuf,
+    /// The `[[view]]` rule this file matches, if any: F6 swaps the
+    /// filter in and out without leaving the viewer.
+    pub filter: Option<crate::config::OpenRule>,
+    /// Whether what is on screen is the filter's output.
+    pub filtered: bool,
+    /// Whether the filter is unwanted - Shift+F3, or F6 - so that
+    /// stepping to the next file keeps the answer.
+    pub opened_raw: bool,
     pub note: Option<String>,
-    /// Extraction scratch file when viewing inside an archive;
-    /// deleted when the viewer closes.
-    pub temp: Option<PathBuf>,
+    /// Scratch files (an extracted archive member, a filter's output);
+    /// removed when the viewer closes.
+    pub temps: Vec<PathBuf>,
+}
+
+/// Viewer state that survives swapping the filter in and out or moving
+/// to the next file: how the text is shown, and what to look for in it.
+#[derive(Clone, Default)]
+pub struct ViewKeep {
+    pub wrap: bool,
+    pub hex: bool,
+    pub ruler: bool,
+    pub nroff: bool,
+    pub search: ViewSearch,
 }
 
 /// MC's viewer search dialog: what to look for, and the four answers
@@ -959,6 +986,8 @@ impl ViewSearch {
             case_sensitive: self.case_sensitive,
             whole_word: self.whole_word,
             backwards: self.backwards,
+            // the dialog does not ask; the viewer's mode answers
+            nroff: false,
         }
     }
 
@@ -2902,13 +2931,7 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Esc => {
-                if let Some(viewer) = self.viewer.take()
-                    && let Some(temp) = viewer.temp
-                {
-                    let _ = std::fs::remove_file(temp);
-                }
-            }
+            KeyCode::Esc => self.close_viewer(),
             KeyCode::Up => viewer_scroll(v, -1, rows),
             KeyCode::Down => viewer_scroll(v, 1, rows),
             KeyCode::PageUp => viewer_scroll(v, -page, rows),
@@ -2929,19 +2952,22 @@ impl App {
     /// One rebindable viewer action.
     fn viewer_action(&mut self, action: keymap::ViewerAction, rows: usize) {
         use keymap::ViewerAction as VA;
-        if action == VA::Quit {
-            if let Some(viewer) = self.viewer.take()
-                && let Some(temp) = viewer.temp
-            {
-                let _ = std::fs::remove_file(temp);
-            }
-            return;
+        // the actions that replace what the viewer is showing need the
+        // whole App, so they run before the borrow below
+        match action {
+            VA::Quit => return self.close_viewer(),
+            VA::ToggleRaw => return self.viewer_toggle_raw(),
+            VA::NextFile => return self.viewer_step_file(1),
+            VA::PrevFile => return self.viewer_step_file(-1),
+            _ => {}
         }
         let Some(v) = self.viewer.as_mut() else {
             return;
         };
         match action {
-            VA::Quit => unreachable!("handled above"),
+            VA::Quit | VA::ToggleRaw | VA::NextFile | VA::PrevFile => {
+                unreachable!("handled above")
+            }
             VA::ToggleWrap => {
                 v.wrap = !v.wrap;
                 v.top_seg = 0;
@@ -2980,6 +3006,15 @@ impl App {
                 v.note = Some(" go to mark: press a digit ".into());
             }
             VA::ToggleRuler => v.ruler = !v.ruler,
+            VA::ToggleNroff => {
+                v.nroff = !v.nroff;
+                v.note = Some(if v.nroff {
+                    " formatted: overstrikes read as bold and underline ".into()
+                } else {
+                    " unformatted ".into()
+                });
+            }
+
             VA::Follow => {
                 v.follow = !v.follow;
                 if v.follow {
@@ -3644,6 +3679,12 @@ impl App {
     }
 
     fn open_viewer(&mut self, raw: bool) {
+        self.open_viewer_keeping(raw, ViewKeep::default());
+    }
+
+    /// Open the cursor file in the internal viewer, carrying `keep`
+    /// over from the viewer this one replaces (F6, C-f / C-b).
+    fn open_viewer_keeping(&mut self, raw: bool, keep: ViewKeep) {
         let panel = &self.panels[self.active];
         let Some(entry) = panel.selected() else {
             return;
@@ -3653,60 +3694,48 @@ impl App {
             return;
         }
         let name = entry.name.clone();
-        // [[view]] filter (F3 only - Shift+F3 stays raw): the
-        // command's stdout becomes the viewed text
-        if !raw && panel.is_local() {
-            let lower = name.to_string_lossy().to_lowercase();
-            let rule = self
-                .config
+        let Some((source, source_title, mut temps)) = self.fetch_view_source(&name) else {
+            return;
+        };
+        // the [[view]] filter is a local-panel thing: its command runs
+        // on a path, and an archive member has none until it is fetched
+        let lower = name.to_string_lossy().to_lowercase();
+        let filter = self.panels[self.active].is_local().then(|| {
+            self.config
                 .view
                 .iter()
                 .find(|rule| glob_match(&rule.pattern.to_lowercase(), &lower))
-                .cloned();
-            if let Some(rule) = rule
-                && self.open_filtered_view(&rule)
-            {
-                return;
+                .cloned()
+        });
+        let filter = filter.flatten();
+        // F3 runs the filter, Shift+F3 does not; a filter that cannot
+        // run says so and the raw file is shown instead
+        let mut filtered = None;
+        if !raw && let Some(rule) = filter.as_ref() {
+            match self.run_view_filter(rule) {
+                Ok(pair) => filtered = Some(pair),
+                Err(err) => self.status = Some(format!(" view filter: {err} - showing raw ")),
             }
         }
-        let panel = &self.panels[self.active];
-        let (open_path, title_path, temp) = if panel.is_local() {
-            let path = panel.cwd.join(&name);
-            (path.clone(), path, None)
-        } else {
-            // fetch the archive member / remote file to a scratch file
-            let vpath = panel.cwd.join(&name);
-            let temp = std::env::temp_dir().join(format!(
-                "rcmd-view-{}-{}",
-                std::process::id(),
-                name.to_string_lossy()
-            ));
-            let fetched = panel.fs.open_read(&vpath).and_then(|mut reader| {
-                let mut out = std::fs::File::create(&temp)?;
-                std::io::copy(&mut reader, &mut out)?;
-                Ok(())
-            });
-            if let Err(err) = fetched {
-                let _ = std::fs::remove_file(&temp);
-                self.status = Some(format!(" view: {err} "));
-                return;
+        let (open_path, title_path, is_filtered) = match filtered {
+            Some((temp, title)) => {
+                temps.push(temp.clone());
+                (temp, title, true)
             }
-            let title = if let Some(prefix) = &panel.remote {
-                PathBuf::from(format!("{prefix}{}", vpath.display()))
-            } else {
-                let archive = panel.archive.clone().unwrap_or_default();
-                PathBuf::from(format!("{}://{}", archive.display(), vpath.display()))
-            };
-            (temp.clone(), title, Some(temp))
+            None => (source.clone(), source_title.clone(), false),
         };
         match FileView::open(&open_path) {
             Ok(file) => {
                 self.viewer = Some(Viewer {
-                    hl: rcmd_edit::Highlighter::new(&open_path, file.size as usize),
+                    // filter output carries the command's syntax, not
+                    // the file's, so it is shown plain
+                    hl: (!is_filtered)
+                        .then(|| rcmd_edit::Highlighter::new(&source, file.size as usize))
+                        .flatten(),
                     file,
                     path: title_path,
-                    hex: false,
-                    wrap: false,
+                    hex: keep.hex,
+                    wrap: keep.wrap,
                     follow: false,
                     top: 0,
                     top_seg: 0,
@@ -3714,19 +3743,25 @@ impl App {
                     cols: 1,
                     hex_top: 0,
                     rows: 1,
-                    search: ViewSearch::default(),
+                    search: keep.search,
                     goto: None,
                     bookmarks: [None; 10],
                     pending_mark: None,
-                    ruler: false,
+                    ruler: keep.ruler,
+                    nroff: keep.nroff,
                     found: None,
                     prompt: None,
+                    source,
+                    source_title,
+                    filter,
+                    filtered: is_filtered,
+                    opened_raw: raw,
                     note: None,
-                    temp,
+                    temps,
                 })
             }
             Err(err) => {
-                if let Some(temp) = temp {
+                for temp in temps {
                     let _ = std::fs::remove_file(temp);
                 }
                 self.status = Some(format!(" view: {err} "));
@@ -3734,10 +3769,50 @@ impl App {
         }
     }
 
-    /// Run a `[[view]]` filter and open the internal viewer on its
-    /// stdout. False = filter unusable (spawn failed, or it failed
-    /// with nothing to show) - the caller falls back to the raw view.
-    fn open_filtered_view(&mut self, rule: &crate::config::OpenRule) -> bool {
+    /// The cursor file as something on disk: itself on a local panel, a
+    /// scratch copy anywhere else. Returns the path, the title to show
+    /// for it, and any scratch file the viewer must clean up.
+    fn fetch_view_source(
+        &mut self,
+        name: &std::ffi::OsStr,
+    ) -> Option<(PathBuf, PathBuf, Vec<PathBuf>)> {
+        let panel = &self.panels[self.active];
+        if panel.is_local() {
+            let path = panel.cwd.join(name);
+            return Some((path.clone(), path, Vec::new()));
+        }
+        let vpath = panel.cwd.join(name);
+        let temp = std::env::temp_dir().join(format!(
+            "rcmd-view-{}-{}",
+            std::process::id(),
+            name.to_string_lossy()
+        ));
+        let fetched = panel.fs.open_read(&vpath).and_then(|mut reader| {
+            let mut out = std::fs::File::create(&temp)?;
+            std::io::copy(&mut reader, &mut out)?;
+            Ok(())
+        });
+        if let Err(err) = fetched {
+            let _ = std::fs::remove_file(&temp);
+            self.status = Some(format!(" view: {err} "));
+            return None;
+        }
+        let title = if let Some(prefix) = &panel.remote {
+            PathBuf::from(format!("{prefix}{}", vpath.display()))
+        } else {
+            let archive = panel.archive.clone().unwrap_or_default();
+            PathBuf::from(format!("{}://{}", archive.display(), vpath.display()))
+        };
+        Some((temp.clone(), title, vec![temp]))
+    }
+
+    /// Run a `[[view]]` filter into a scratch file. Ok = (that file,
+    /// the command to title the view with); Err = why it is unusable,
+    /// for the caller to put wherever it has room.
+    fn run_view_filter(
+        &mut self,
+        rule: &crate::config::OpenRule,
+    ) -> Result<(PathBuf, PathBuf), String> {
         let cwd = self.panels[self.active].local_cwd();
         let cmd = self.expand_macros(&rule.run);
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
@@ -3745,54 +3820,124 @@ impl App {
             .arg("-c")
             .arg(&cmd)
             .current_dir(&cwd)
-            .output();
-        let output = match output {
-            Ok(out) => out,
-            Err(err) => {
-                self.status = Some(format!(" view filter: {err} - showing raw "));
-                return false;
-            }
-        };
+            .output()
+            .map_err(|err| err.to_string())?;
         if output.stdout.is_empty() && !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
-            let first = err.lines().next().unwrap_or("failed").trim();
-            self.status = Some(format!(" view filter: {first} - showing raw "));
-            return false;
+            return Err(err.lines().next().unwrap_or("failed").trim().to_string());
         }
         let temp = std::env::temp_dir().join(format!("rcmd-view-{}-filtered", std::process::id()));
-        if std::fs::write(&temp, &output.stdout).is_err() {
-            return false;
-        }
-        match FileView::open(&temp) {
-            Ok(file) => {
-                self.viewer = Some(Viewer {
-                    hl: None, // filter output, not the file's syntax
-                    file,
-                    path: PathBuf::from(cmd),
-                    hex: false,
-                    wrap: false,
-                    follow: false,
-                    top: 0,
-                    top_seg: 0,
-                    left: 0,
-                    cols: 1,
-                    hex_top: 0,
-                    rows: 1,
-                    search: ViewSearch::default(),
-                    goto: None,
-                    bookmarks: [None; 10],
-                    pending_mark: None,
-                    ruler: false,
-                    found: None,
-                    prompt: None,
-                    note: None,
-                    temp: Some(temp),
-                });
-                true
+        std::fs::write(&temp, &output.stdout).map_err(|err| err.to_string())?;
+        Ok((temp, PathBuf::from(cmd)))
+    }
+
+    /// F6: swap the `[[view]]` filter in and out under the same file.
+    fn viewer_toggle_raw(&mut self) {
+        let Some(v) = self.viewer.as_ref() else {
+            return;
+        };
+        let (source, filter, filtered) = (v.source.clone(), v.filter.clone(), v.filtered);
+        let swapped = if filtered {
+            let size = std::fs::metadata(&source).map(|m| m.len()).unwrap_or(0);
+            FileView::open(&source)
+                .map(|file| {
+                    let hl = rcmd_edit::Highlighter::new(&source, size as usize);
+                    (file, source.clone(), hl, false, None)
+                })
+                .map_err(|err| err.to_string())
+        } else {
+            match filter.as_ref() {
+                Some(rule) => self.run_view_filter(rule).and_then(|(temp, title)| {
+                    FileView::open(&temp)
+                        .map(|file| (file, title, None, true, Some(temp)))
+                        .map_err(|err| err.to_string())
+                }),
+                None => Err("no [[view]] filter for this file".to_string()),
             }
-            Err(_) => {
-                let _ = std::fs::remove_file(&temp);
-                false
+        };
+        let Some(v) = self.viewer.as_mut() else {
+            return;
+        };
+        match swapped {
+            Ok((file, title, hl, now_filtered, temp)) => {
+                let title = if now_filtered {
+                    title
+                } else {
+                    v.source_title.clone()
+                };
+                v.file = file;
+                v.hl = hl;
+                v.path = title;
+                v.filtered = now_filtered;
+                v.opened_raw = !now_filtered;
+                if let Some(temp) = temp
+                    && !v.temps.contains(&temp)
+                {
+                    v.temps.push(temp);
+                }
+                // the text underneath changed: line numbers, the hit and
+                // the marks all pointed into the other one
+                v.top = 0;
+                v.top_seg = 0;
+                v.left = 0;
+                v.hex_top = 0;
+                v.found = None;
+                v.bookmarks = [None; 10];
+                v.note = Some(if now_filtered {
+                    " parsed ".into()
+                } else {
+                    " raw ".into()
+                });
+            }
+            Err(err) => v.note = Some(format!(" {err} ")),
+        }
+    }
+
+    /// C-f / C-b: the next or previous file of the panel, in the same
+    /// viewer with the same wrap, hex, ruler, nroff and search.
+    fn viewer_step_file(&mut self, delta: isize) {
+        let Some(v) = self.viewer.as_ref() else {
+            return;
+        };
+        let keep = ViewKeep {
+            wrap: v.wrap,
+            hex: v.hex,
+            ruler: v.ruler,
+            nroff: v.nroff,
+            search: v.search.clone(),
+        };
+        let raw = v.opened_raw;
+        let panel = &self.panels[self.active];
+        let mut idx = panel.cursor as isize;
+        let target = loop {
+            idx += delta;
+            if idx < 0 || idx as usize >= panel.entries.len() {
+                break None;
+            }
+            // directories are not files to read, and neither is ".."
+            if !panel.entries[idx as usize].is_dir() {
+                break Some(idx as usize);
+            }
+        };
+        let Some(target) = target else {
+            if let Some(v) = self.viewer.as_mut() {
+                v.note = Some(match delta {
+                    d if d > 0 => " no next file in the panel ".into(),
+                    _ => " no previous file in the panel ".into(),
+                });
+            }
+            return;
+        };
+        self.close_viewer();
+        self.panels[self.active].cursor = target;
+        self.open_viewer_keeping(raw, keep);
+    }
+
+    /// Close the viewer, taking its scratch files with it.
+    fn close_viewer(&mut self) {
+        if let Some(viewer) = self.viewer.take() {
+            for temp in viewer.temps {
+                let _ = std::fs::remove_file(temp);
             }
         }
     }
@@ -7029,7 +7174,13 @@ fn viewer_goto(v: &mut Viewer, input: &str) {
 }
 
 fn viewer_search(v: &mut Viewer, from: usize, is_next: bool) {
-    match v.file.find(from, &v.search.to_search()) {
+    // in nroff mode the search runs over what the overstrikes spell,
+    // which is what is on the screen to be looked for
+    let search = Search {
+        nroff: v.nroff,
+        ..v.search.to_search()
+    };
+    match v.file.find(from, &search) {
         Ok(Some(idx)) => {
             v.found = Some(idx);
             v.top = idx.saturating_sub(2);
