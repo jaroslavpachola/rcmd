@@ -501,6 +501,11 @@ const HELP_TEXT: &[&str] = &[
     "# Viewer (F3)",
     "  F2              toggle line wrap",
     "  F4              toggle hex dump",
+    "  F2 (in hex)     hex edit: a cursor on the bytes. Hex digits type",
+    "                  over them, Tab switches to the text column where",
+    "                  a character is itself, F6 writes them to the file",
+    "                  and Esc stops editing. Only on the file itself -",
+    "                  an archive member or a filter's output is a copy.",
     "  F7 or /         search: a dialog with MC's four answers - the",
     "                  pattern is Normal, a Regular expression or",
     "                  Hexadecimal bytes (7f454c46 or 7f 45 4c 46),",
@@ -2212,9 +2217,21 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
     };
     let follow = if v.follow { " [follow]" } else { "" };
     let nroff = if v.nroff { " [format]" } else { "" };
+    let editing = if v.hex && v.hex_edit {
+        format!(
+            " [edit @{:08X}{}]",
+            v.hex_cursor,
+            match v.hex_edits.len() {
+                0 => String::new(),
+                n => format!(", {n} unwritten"),
+            }
+        )
+    } else {
+        String::new()
+    };
     let filtered = if v.filtered { " [parsed]" } else { "" };
     let title = format!(
-        " {}  {} bytes  {percent}%  [{mode}]{nroff}{filtered}{follow}",
+        " {}  {} bytes  {percent}%  [{mode}]{editing}{nroff}{filtered}{follow}",
         v.path.display(),
         v.file.size,
     );
@@ -2322,7 +2339,7 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
                     break;
                 }
                 let bytes = v.file.read_at(row_offset, 16).unwrap_or_default();
-                frame.render_widget(Line::from(hex_row(row_offset, &bytes)), row_area);
+                frame.render_widget(hex_line(v, row_offset, &bytes), row_area);
             } else {
                 let idx = v.top + row as usize;
                 let Some((expanded, spans, matches, base, attrs)) = styled(v, idx, &all_spans)
@@ -2339,13 +2356,19 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
 
     // mc's button bar names what pressing the key does now, which for
     // half of these is the opposite of what it did a moment ago
-    let help = format!(
-        " F3/q Quit  F2 {}  F4 {}  F6 {}  F8 {}  F7|/ Search  n Next  C-f/C-b File ",
-        if v.wrap { "Unwrap" } else { "Wrap" },
-        if v.hex { "Ascii" } else { "Hex" },
-        if v.filtered { "Raw" } else { "Parse" },
-        if v.nroff { "Unform" } else { "Format" },
-    );
+    let help = if v.hex {
+        format!(
+            " F3/q Quit  F2 {}  F4 Ascii  F6 Save  F7|/ Search  n Next  C-f/C-b File ",
+            if v.hex_edit { "View" } else { "Edit" },
+        )
+    } else {
+        format!(
+            " F3/q Quit  F2 {}  F4 Hex  F6 {}  F8 {}  F7|/ Search  n Next  C-f/C-b File ",
+            if v.wrap { "Unwrap" } else { "Wrap" },
+            if v.filtered { "Raw" } else { "Parse" },
+            if v.nroff { "Unform" } else { "Format" },
+        )
+    };
     let note = v.note.clone().unwrap_or_default();
     frame.render_widget(
         Line::from(format!(
@@ -2366,6 +2389,81 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
         let inner = popup(frame, area, " Goto: line, 0x1f / 31b, or 50% ", style);
         draw_field(frame, inner, value, *cursor);
     }
+    if let Some(button) = v.confirm_quit {
+        let style = Style::new().fg(th().error_fg).bg(th().error_bg);
+        let sel = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+        let inner = popup(
+            frame,
+            centered(56, 6, frame.area()),
+            " Unwritten bytes ",
+            style,
+        );
+        let row = |offset: u16| Rect {
+            x: inner.x + 1,
+            y: inner.y + offset,
+            width: inner.width.saturating_sub(2),
+            height: 1,
+        };
+        frame.render_widget(
+            Line::from(format!(
+                "{} byte(s) were changed. Write them?",
+                v.hex_edits.len()
+            ))
+            .centered(),
+            row(1),
+        );
+        frame.render_widget(
+            buttons_line(&["Save", "Discard", "Cancel"], button, style, sel),
+            row(3),
+        );
+    }
+}
+
+/// One row of the hex view: the offset, sixteen bytes and their text,
+/// with the pending edits shown where they will land and the cursor on
+/// whichever of the two columns has it.
+fn hex_line(v: &crate::app::Viewer, offset: u64, bytes: &[u8]) -> Line<'static> {
+    let cursor = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let changed = Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD);
+    let at_cursor = |i: usize, ascii: bool| {
+        v.hex_edit && v.hex_ascii == ascii && offset + i as u64 == v.hex_cursor
+    };
+    let mut spans: Vec<Span> = vec![Span::raw(format!("{offset:08X}  "))];
+    for i in 0..16 {
+        if i == 8 {
+            spans.push(Span::raw(" "));
+        }
+        let Some(&raw) = bytes.get(i) else {
+            spans.push(Span::raw("   "));
+            continue;
+        };
+        let edit = v.hex_edits.get(&(offset + i as u64)).copied();
+        let style = match (at_cursor(i, false), edit.is_some()) {
+            (true, _) => cursor,
+            (false, true) => changed,
+            _ => Style::new(),
+        };
+        spans.push(Span::styled(format!("{:02X}", edit.unwrap_or(raw)), style));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::raw(" |"));
+    for (i, &raw) in bytes.iter().enumerate() {
+        let edit = v.hex_edits.get(&(offset + i as u64)).copied();
+        let byte = edit.unwrap_or(raw);
+        let style = match (at_cursor(i, true), edit.is_some()) {
+            (true, _) => cursor,
+            (false, true) => changed,
+            _ => Style::new(),
+        };
+        let shown = if (0x20..0x7F).contains(&byte) {
+            byte as char
+        } else {
+            '.'
+        };
+        spans.push(Span::styled(shown.to_string(), style));
+    }
+    spans.push(Span::raw("|"));
+    Line::from(spans)
 }
 
 /// A column ruler: a tick every ten columns, numbered, counting from

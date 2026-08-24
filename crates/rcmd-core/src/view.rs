@@ -228,6 +228,34 @@ fn rfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .rposition(|window| window == needle)
 }
 
+/// Write single-byte changes back into a file, in place. The viewer's
+/// hex editor only ever replaces bytes - no insert, no delete, which is
+/// mc's rule too - so the file's length never moves and nothing that
+/// reads it can be left with a half-shifted structure.
+pub fn patch_bytes(path: &Path, edits: &[(u64, u8)]) -> io::Result<()> {
+    let file = std::fs::OpenOptions::new().write(true).open(path)?;
+    // consecutive bytes go out as one write: an edited run is the
+    // common case, and a byte at a time is a syscall at a time
+    let mut run: Vec<u8> = Vec::new();
+    let mut at = 0u64;
+    for &(offset, byte) in edits {
+        if !run.is_empty() && offset == at + run.len() as u64 {
+            run.push(byte);
+            continue;
+        }
+        if !run.is_empty() {
+            file.write_at(&run, at)?;
+            run.clear();
+        }
+        at = offset;
+        run.push(byte);
+    }
+    if !run.is_empty() {
+        file.write_at(&run, at)?;
+    }
+    file.sync_all()
+}
+
 pub struct FileView {
     file: File,
     pub size: u64,
@@ -494,6 +522,18 @@ mod tests {
             .unwrap();
         let view = FileView::open(&path).unwrap();
         (dir, view)
+    }
+
+    #[test]
+    fn patched_bytes_land_where_they_were_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        std::fs::write(&path, b"hello world").unwrap();
+        // a run and a lone byte: the run goes out as one write
+        patch_bytes(&path, &[(0, b'H'), (1, b'E'), (6, b'W')]).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"HEllo World");
+        // the length never moves, whatever is written
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 11);
     }
 
     #[test]

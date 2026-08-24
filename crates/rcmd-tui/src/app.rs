@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -905,6 +906,23 @@ pub struct Viewer {
     pub cols: usize,
     /// Top row of the hex view (16 bytes per row).
     pub hex_top: u64,
+    /// Hex mode with a cursor on it: F2 turns it on where the viewer is
+    /// on the file itself rather than a copy of it.
+    pub hex_edit: bool,
+    /// Which byte that cursor is on.
+    pub hex_cursor: u64,
+    /// In the hex column: the low nibble is what the next digit fills.
+    pub hex_low: bool,
+    /// The cursor is in the ASCII column rather than the hex one.
+    pub hex_ascii: bool,
+    /// Bytes changed and not yet written, by offset - the file on disk
+    /// is untouched until F6.
+    pub hex_edits: BTreeMap<u64, u8>,
+    /// Leaving with bytes unwritten: Save / Discard / Cancel.
+    pub confirm_quit: Option<usize>,
+    /// The viewer is on a scratch copy (an archive member, a remote
+    /// file), so writing to it would write to nothing that lasts.
+    pub scratch: bool,
     /// Content rows; updated on every draw, drives paging.
     pub rows: usize,
     /// What the last search asked for, so "next" repeats it exactly.
@@ -953,6 +971,29 @@ pub struct ViewKeep {
     pub ruler: bool,
     pub nroff: bool,
     pub search: ViewSearch,
+}
+
+impl Viewer {
+    /// Whether the bytes on screen are bytes of a file that can be
+    /// written back: the file itself, not a copy and not a filter's
+    /// output.
+    pub fn editable(&self) -> Option<&'static str> {
+        if self.scratch {
+            return Some(" this is a copy, not the file - hex edit needs the file ");
+        }
+        if self.filtered {
+            return Some(" this is the filter's output - F6 for the file itself ");
+        }
+        None
+    }
+
+    /// The byte at `offset` as it stands, pending edits included.
+    pub fn byte_at(&self, offset: u64) -> Option<u8> {
+        if let Some(&byte) = self.hex_edits.get(&offset) {
+            return Some(byte);
+        }
+        self.file.read_at(offset, 1).ok()?.first().copied()
+    }
 }
 
 /// MC's viewer search dialog: what to look for, and the four answers
@@ -2849,6 +2890,38 @@ impl App {
             return;
         };
         v.note = None;
+        // leaving with bytes unwritten: Save / Discard / Cancel
+        if let Some(mut button) = v.confirm_quit {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('c') => v.confirm_quit = None,
+                KeyCode::Char('s') => {
+                    v.confirm_quit = None;
+                    hex_save(v);
+                    if v.hex_edits.is_empty() {
+                        self.close_viewer();
+                    }
+                }
+                KeyCode::Char('d') => self.close_viewer(),
+                KeyCode::Enter => match button {
+                    0 => {
+                        v.confirm_quit = None;
+                        hex_save(v);
+                        if v.hex_edits.is_empty() {
+                            self.close_viewer();
+                        }
+                    }
+                    1 => self.close_viewer(),
+                    _ => v.confirm_quit = None,
+                },
+                KeyCode::Left => {
+                    button = button.checked_sub(1).unwrap_or(2);
+                    v.confirm_quit = Some(button);
+                }
+                KeyCode::Right | KeyCode::Tab => v.confirm_quit = Some((button + 1) % 3),
+                _ => {}
+            }
+            return;
+        }
         if let Some((value, cursor)) = v.goto.as_mut() {
             match key.code {
                 KeyCode::Esc => v.goto = None,
@@ -2919,6 +2992,13 @@ impl App {
             return;
         }
         let rows = v.rows.max(1);
+        // in hex edit mode the keyboard is the file's: a letter is a
+        // byte, not the action that letter is bound to. The dialogs
+        // above have already had their say, so this is only the keys
+        // nothing else wanted.
+        if v.hex && v.hex_edit && hex_edit_key(v, key, rows) {
+            return;
+        }
         let page = rows.saturating_sub(1).max(1) as isize;
         // action keys first (rebindable via [keys.viewer]), then the
         // structural movement keys
@@ -2931,7 +3011,7 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::Esc => self.close_viewer(),
+            KeyCode::Esc => self.viewer_quit(),
             KeyCode::Up => viewer_scroll(v, -1, rows),
             KeyCode::Down => viewer_scroll(v, 1, rows),
             KeyCode::PageUp => viewer_scroll(v, -page, rows),
@@ -2954,8 +3034,15 @@ impl App {
         use keymap::ViewerAction as VA;
         // the actions that replace what the viewer is showing need the
         // whole App, so they run before the borrow below
+        let hex = self.viewer.as_ref().is_some_and(|v| v.hex);
         match action {
-            VA::Quit => return self.close_viewer(),
+            VA::Quit => return self.viewer_quit(),
+            // mc's button bar spends F2 and F6 twice: in hex mode they
+            // are the edit toggle and Save
+            VA::ToggleRaw if hex => return self.viewer_hex_save(),
+            VA::ToggleWrap if hex => return self.viewer_hex_edit(),
+            VA::HexSave => return self.viewer_hex_save(),
+            VA::HexEdit => return self.viewer_hex_edit(),
             VA::ToggleRaw => return self.viewer_toggle_raw(),
             VA::NextFile => return self.viewer_step_file(1),
             VA::PrevFile => return self.viewer_step_file(-1),
@@ -2965,7 +3052,7 @@ impl App {
             return;
         };
         match action {
-            VA::Quit | VA::ToggleRaw | VA::NextFile | VA::PrevFile => {
+            VA::Quit | VA::ToggleRaw | VA::NextFile | VA::PrevFile | VA::HexEdit | VA::HexSave => {
                 unreachable!("handled above")
             }
             VA::ToggleWrap => {
@@ -3697,6 +3784,9 @@ impl App {
         let Some((source, source_title, mut temps)) = self.fetch_view_source(&name) else {
             return;
         };
+        // anything but a local panel handed back a copy, and a copy is
+        // not something to write bytes into
+        let scratch = !temps.is_empty();
         // the [[view]] filter is a local-panel thing: its command runs
         // on a path, and an archive member has none until it is fetched
         let lower = name.to_string_lossy().to_lowercase();
@@ -3742,6 +3832,13 @@ impl App {
                     left: 0,
                     cols: 1,
                     hex_top: 0,
+                    hex_edit: false,
+                    hex_cursor: 0,
+                    hex_low: false,
+                    hex_ascii: false,
+                    hex_edits: BTreeMap::new(),
+                    confirm_quit: None,
+                    scratch,
                     rows: 1,
                     search: keep.search,
                     goto: None,
@@ -3907,6 +4004,12 @@ impl App {
             search: v.search.clone(),
         };
         let raw = v.opened_raw;
+        if !v.hex_edits.is_empty() {
+            if let Some(v) = self.viewer.as_mut() {
+                v.note = Some(" bytes are still unwritten - F6 writes them ".into());
+            }
+            return;
+        }
         let panel = &self.panels[self.active];
         let mut idx = panel.cursor as isize;
         let target = loop {
@@ -3931,6 +4034,44 @@ impl App {
         self.close_viewer();
         self.panels[self.active].cursor = target;
         self.open_viewer_keeping(raw, keep);
+    }
+
+    /// F2 in hex mode: the cursor that lets bytes be typed over. Only
+    /// where the viewer is on the file itself - editing a scratch copy
+    /// would write to something about to be deleted.
+    fn viewer_hex_edit(&mut self) {
+        let Some(v) = self.viewer.as_mut() else {
+            return;
+        };
+        if v.hex_edit {
+            v.hex_edit = false;
+            v.note = Some(" viewing ".into());
+            return;
+        }
+        if let Some(why) = v.editable() {
+            v.note = Some(why.into());
+            return;
+        }
+        v.hex_edit = true;
+        v.hex_low = false;
+        // start where the screen is rather than where the file is
+        v.hex_cursor = (v.hex_top * 16).min(v.file.size.saturating_sub(1));
+        v.note = Some(" editing: hex digits or Tab for the text column, F6 writes ".into());
+    }
+
+    /// F6 in hex mode: write the changed bytes into the file.
+    fn viewer_hex_save(&mut self) {
+        if let Some(v) = self.viewer.as_mut() {
+            hex_save(v);
+        }
+    }
+
+    /// Quit, unless there are bytes the file has not been told about.
+    fn viewer_quit(&mut self) {
+        match self.viewer.as_mut() {
+            Some(v) if !v.hex_edits.is_empty() => v.confirm_quit = Some(0),
+            _ => self.close_viewer(),
+        }
     }
 
     /// Close the viewer, taking its scratch files with it.
@@ -7112,6 +7253,116 @@ fn viewer_scroll_wrapped(v: &mut Viewer, delta: isize) {
             }
         }
     }
+}
+
+/// Write the pending bytes out. The file keeps its length - a hex
+/// editor replaces bytes and never moves them - so this is a handful of
+/// writes into the file that is already there, not a rewrite.
+fn hex_save(v: &mut Viewer) {
+    if v.hex_edits.is_empty() {
+        v.note = Some(" nothing changed ".into());
+        return;
+    }
+    if let Some(why) = v.editable() {
+        v.note = Some(why.into());
+        return;
+    }
+    let edits: Vec<(u64, u8)> = v.hex_edits.iter().map(|(&at, &b)| (at, b)).collect();
+    match rcmd_core::view::patch_bytes(&v.source, &edits) {
+        Ok(()) => {
+            v.note = Some(format!(" {} bytes written ", edits.len()));
+            v.hex_edits.clear();
+            // the text under the hex changed too
+            if let Some(hl) = v.hl.as_mut() {
+                hl.invalidate_from(0);
+            }
+        }
+        Err(err) => v.note = Some(format!(" save: {err} ")),
+    }
+}
+
+/// Keep the hex cursor on screen after it moves.
+fn hex_follow(v: &mut Viewer, rows: usize) {
+    let row = v.hex_cursor / 16;
+    if row < v.hex_top {
+        v.hex_top = row;
+    } else if row >= v.hex_top + rows as u64 {
+        v.hex_top = row - rows as u64 + 1;
+    }
+}
+
+/// One key while the hex cursor is on. True = the key was the file's
+/// rather than the viewer's, so nothing else may look at it - "q" is a
+/// byte here, not the command to quit.
+fn hex_edit_key(v: &mut Viewer, key: KeyEvent, rows: usize) -> bool {
+    let last = v.file.size.saturating_sub(1);
+    let step = |v: &mut Viewer, delta: i64| {
+        v.hex_cursor = v.hex_cursor.saturating_add_signed(delta).min(last);
+        v.hex_low = false;
+        hex_follow(v, rows);
+    };
+    match key.code {
+        KeyCode::Esc => {
+            v.hex_edit = false;
+            v.note = Some(" viewing ".into());
+        }
+        KeyCode::Tab | KeyCode::BackTab => {
+            v.hex_ascii = !v.hex_ascii;
+            v.hex_low = false;
+        }
+        KeyCode::Left | KeyCode::Backspace => step(v, -1),
+        KeyCode::Right => step(v, 1),
+        KeyCode::Up => step(v, -16),
+        KeyCode::Down => step(v, 16),
+        KeyCode::PageUp => step(v, -16 * rows as i64),
+        KeyCode::PageDown => step(v, 16 * rows as i64),
+        KeyCode::Home => {
+            v.hex_cursor -= v.hex_cursor % 16;
+            v.hex_low = false;
+        }
+        KeyCode::End => {
+            v.hex_cursor = (v.hex_cursor - v.hex_cursor % 16 + 15).min(last);
+            v.hex_low = false;
+        }
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            if v.file.size == 0 {
+                v.note = Some(" the file is empty ".into());
+                return true;
+            }
+            let at = v.hex_cursor;
+            let old = v.byte_at(at).unwrap_or(0);
+            if v.hex_ascii {
+                // the text column takes the character itself
+                if !c.is_ascii() {
+                    v.note = Some(" one byte per character here: type it in hex ".into());
+                    return true;
+                }
+                v.hex_edits.insert(at, c as u8);
+                step(v, 1);
+            } else if let Some(digit) = c.to_digit(16) {
+                // the hex column takes the two halves in turn
+                let byte = if v.hex_low {
+                    (old & 0xf0) | digit as u8
+                } else {
+                    (old & 0x0f) | (digit as u8) << 4
+                };
+                v.hex_edits.insert(at, byte);
+                if v.hex_low {
+                    step(v, 1);
+                } else {
+                    v.hex_low = true;
+                }
+            } else {
+                v.note = Some(" hex digits here; Tab switches to the text column ".into());
+            }
+        }
+        _ => return false,
+    }
+    true
 }
 
 fn viewer_scroll(v: &mut Viewer, delta: isize, rows: usize) {

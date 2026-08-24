@@ -351,6 +351,11 @@ pub enum ViewerAction {
     /// C-f / C-b: the next / previous file of the panel.
     NextFile,
     PrevFile,
+    /// The hex cursor, and writing what it changed. Both live on keys
+    /// that mean something else outside hex mode (F2 and F6, as mc's
+    /// button bar spends them), so they have no default of their own.
+    HexEdit,
+    HexSave,
 }
 
 /// What a key does in the F4 editor (text entry and plain cursor
@@ -437,6 +442,8 @@ pub fn parse_viewer_action(name: &str) -> Option<ViewerAction> {
         "raw" => ViewerAction::ToggleRaw,
         "next-file" => ViewerAction::NextFile,
         "prev-file" => ViewerAction::PrevFile,
+        "hex-edit" => ViewerAction::HexEdit,
+        "hex-save" => ViewerAction::HexSave,
         _ => return None,
     })
 }

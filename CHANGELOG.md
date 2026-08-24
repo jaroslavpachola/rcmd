@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.36.0 - 2026-08-24
+
+- **Hex editing** (4.0 S4, and the last of the viewer's list): in hex
+  mode **F2** puts a cursor on the bytes, which is what mc's button bar
+  spends F2 on there. Hex digits type over the byte it is on, two
+  halves to a byte; **Tab** switches to the text column, where a
+  character stands for itself; the arrows, PgUp/PgDn and Home/End move
+  it; **F6** writes and Esc stops editing.
+- **Nothing reaches the file until F6.** Changed bytes are marked where
+  they will land, the title counts them, and leaving with any still
+  unwritten asks - Save, Discard or Cancel - rather than dropping them
+  quietly. Stepping to another file with C-f says so too.
+- **Bytes are replaced, never inserted or deleted**, so the file's
+  length never moves. That is mc's rule as well, and it is what makes
+  changing four bytes of a multi-GB file a couple of writes into the
+  file that is already there rather than a rewrite of it.
+- **Editing needs the file itself.** On an archive member, a remote
+  file or a `[[view]]` filter's output the viewer is on a scratch copy
+  that is deleted when it closes; F2 says which of those it is instead
+  of writing bytes into something about to go away.
+- In the text column every printable key is a byte, `q` included, which
+  is why Esc leaves editing before `q` means quit again.
+
 ## 3.35.0 - 2026-08-24
 
 - **nroff formatting in the viewer** (4.0 S4): **F8** reads the

@@ -155,7 +155,6 @@ def sandbox():
 
 # Key escape sequences
 F3, F5, F7, F8 = b"\x1b[13~", b"\x1b[15~", b"\x1b[18~", b"\x1b[19~"
-F6 = b"\x1b[17~"
 SF8 = b"\x1b[19;2~"
 DOWN, END, HOME_K, INSERT = b"\x1b[B", b"\x1b[F", b"\x1b[H", b"\x1b[2~"
 BACKSPACE = b"\x7f"
@@ -1100,7 +1099,7 @@ def test_viewfiles():
     check("viewfiles: unformatted again", "_\u00b7S" in s.screen())
 
     # how you were reading it survives the step to another file
-    s.send(b"\x1b[12~", wait=STEP)          # F2: wrap
+    s.send(F2, wait=STEP)                   # wrap
     check("viewfiles: wrap is on", "[wrap]" in s.screen())
     s.send(b"\x02", wait=STEP * 2)
     scr = s.screen()
@@ -1108,6 +1107,71 @@ def test_viewfiles():
           "[wrap]" in scr and "BRAVO CONTENT" in scr, scr)
 
     s.send(b"q", wait=STEP)
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_hexedit():
+    """PLAN4 S4: the hex view takes a cursor, typed bytes and a save -
+    and says so before it drops anything."""
+    root, play, home = sandbox()
+    target = os.path.join(play, "bytes.bin")
+    open(target, "wb").write(b"hello world\n")
+    s = Session(play, home)
+    s.send(b"\x13bytes\r", wait=STEP)
+    s.send(F3, wait=STEP * 2)
+    s.send(F4, wait=STEP)                   # hex mode
+    check("hexedit: the hex view", "68 65 6C 6C 6F" in s.screen())
+
+    # F2 in hex mode is mc's Edit, not Wrap
+    s.send(F2, wait=STEP)
+    scr = s.screen()
+    check("hexedit: the cursor is on", "[edit @00000000]" in scr, scr)
+    check("hexedit: and the bar offers the way back", "F2 View" in scr)
+
+    # a letter that is not a hex digit is refused, not obeyed: "q" here
+    # is a byte that is not, and must not close the viewer
+    s.send(b"q", wait=STEP)
+    scr = s.screen()
+    check("hexedit: q is not the quit key here",
+          "hex digits here" in scr and "bytes.bin" in scr, scr)
+
+    # two digits make a byte, and the file stays as it was until F6
+    s.send(b"48", wait=STEP)                # 0x48 = "H"
+    scr = s.screen()
+    check("hexedit: the typed byte shows where it will land",
+          "48 65 6C 6C 6F" in scr and "1 unwritten" in scr, scr)
+    check("hexedit: the file is untouched until then",
+          open(target, "rb").read() == b"hello world\n")
+    s.send(F6, wait=STEP * 2)
+    check("hexedit: F6 wrote it", wait_for(s, "1 bytes written"))
+    check("hexedit: and the byte landed",
+          open(target, "rb").read() == b"Hello world\n",
+          open(target, "rb").read())
+
+    # Tab moves to the text column, where a character is itself
+    s.send(b"\t", wait=STEP)
+    s.send(b"E", wait=STEP)
+    check("hexedit: the text column takes the character",
+          "45 6C 6C 6F" in s.screen(), s.screen())
+    s.send(F6, wait=STEP * 2)
+    check("hexedit: written too", open(target, "rb").read() == b"HEllo world\n")
+
+    # leaving with bytes unwritten asks first. Tab first: in the text
+    # column every printable key is a byte, "q" included, which is why
+    # Esc is the way out of editing before "q" can mean quit again
+    s.send(b"\t", wait=STEP)
+    s.send(b"7A", wait=STEP)                # "z" over the first "l"
+    check("hexedit: the hex column again", "7A 6C 6F" in s.screen(), s.screen())
+    s.send(b"\x1b\x1b", wait=STEP * 2)      # Esc: stop editing
+    s.send(b"q", wait=STEP * 2)
+    scr = s.screen()
+    check("hexedit: quitting asks about them", "Unwritten bytes" in scr, scr)
+    s.send(b"d", wait=STEP * 2)             # discard
+    scr = s.screen()
+    check("hexedit: discarded closes the viewer", "Modify time" in scr, scr)
+    check("hexedit: and wrote nothing",
+          open(target, "rb").read() == b"HEllo world\n")
     s.quit()
     shutil.rmtree(root)
 
@@ -3271,6 +3335,7 @@ def main():
         test_viewsearch,
         test_viewgoto,
         test_viewfiles,
+        test_hexedit,
         test_archive,
         test_cmdarchive,
         test_cpio,

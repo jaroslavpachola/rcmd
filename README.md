@@ -252,6 +252,19 @@ formatting mode and the search - so reading through a directory is one
 key per file. The panel cursor follows, which is where you land when
 you quit.
 
+In **hex mode** (F4), **F2** puts a cursor on the bytes. Hex digits type
+over the byte it is on, two halves to a byte; Tab switches to the text
+column, where a character stands for itself; arrows, PgUp/PgDn and
+Home/End move it; **F6** writes the changed bytes into the file and Esc
+stops editing. Nothing reaches the file until F6, changed bytes are
+marked until then, and leaving with any still unwritten asks first.
+Bytes are replaced, never inserted or deleted, so the file's length
+never moves - which is what makes writing a handful of bytes into a
+multi-GB file instant. Editing needs the file itself: on an archive
+member, a remote file or a `[[view]]` filter's output the viewer is on a
+copy, and it says so rather than writing to something about to be
+deleted.
+
 **Responsiveness**: directory listings that take longer than ~100 ms
 (huge directories, cold network mounts) load in the background - the old
 listing stays up with a spinner, typing never blocks, Esc cancels.
@@ -506,7 +519,7 @@ listing_format = "half type name | size | mtime"
 [keys.viewer]                # ...and these inside the F3 viewer
 "ctrl+w" = "wrap"            # quit wrap hex search search-next follow
                              # goto set-mark go-mark ruler nroff raw
-                             # next-file prev-file
+                             # next-file prev-file hex-edit hex-save
 [keys.editor]                # ...and these inside the F4 editor
 "ctrl+q" = "quit"            # save quit mark replace search search-next
                              # block-copy block-move delete-line undo
