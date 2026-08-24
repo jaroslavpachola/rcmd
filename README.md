@@ -439,6 +439,21 @@ colors (skipped for files over 2 MB - a 50 MB log still opens in about
 back when you close the editor. Set `editor = "external"` in the config
 to keep using $VISUAL/$EDITOR.
 
+**F9 in the editor** opens its own menu bar - File, Edit, Search,
+Options - over the title row, with every entry naming the key that
+already does it: the menu is how you find the key, not a second way of
+working. **Options > General** is mc's editor options dialog: **tab
+size**, **fill tabs with spaces** (Tab inserts spaces up to the next
+stop, so the file has no tabs in it), **return does autoindent**,
+**backspace through tabs** (inside an indent one Backspace takes the
+whole stop rather than one space of it) and the **wrap column** the
+soft wrap folds at - `window` means the window's width, which is mc's
+dynamic wrapping. Left/Right nudge the numbers, Space ticks the
+switches, and OK applies them to the open editor and remembers them for
+the next session. They are `edit_tab_size`, `edit_fill_tabs`,
+`edit_auto_indent`, `edit_backspace_tabs` and `edit_wrap_column` in the
+config file.
+
 **Remote filesystems (SFTP)**: `cd sftp://[user@]host[:port][/path]`
 (or F9 → Left/Right → SFTP link) connects a panel to a server - user
 defaults to your login, path to the remote home. Authentication tries
@@ -504,6 +519,11 @@ confirm_hotlist_delete = true   # ask before dropping a hotlist entry
 confirm_execute = false    # ask before Enter runs an [[open]] command
 esc_timeout_ms = 250 # how long a lone Esc waits for its meta follow-up
                      # (1000 = MC's roomier window for typing Esc 1..0)
+edit_tab_size = 8          # the built-in editor, F9 > Options > General
+edit_fill_tabs = false     # Tab inserts spaces up to the next stop
+edit_auto_indent = true    # Enter copies the line's leading whitespace
+edit_backspace_tabs = false  # in an indent, Backspace takes a whole stop
+edit_wrap_column = 0       # column the soft wrap folds at; 0 = the window
 show_hidden = true
 sort_key = "name"   # name | ext | size | mtime
 sort_reverse = false
@@ -523,7 +543,7 @@ listing_format = "half type name | size | mtime"
 [keys.editor]                # ...and these inside the F4 editor
 "ctrl+q" = "quit"            # save quit mark replace search search-next
                              # block-copy block-move delete-line undo
-                             # redo copy cut paste select-all wrap
+                             # redo copy cut paste select-all wrap menu
 # key syntax:  [ctrl+][alt+][shift+]<key>  (f1..f20, letters, +, -, etc.)
 # actions: help view edit copy move mkdir delete delete-perm select-group
 #   unselect-group invert-selection quit shell reload swap-panels

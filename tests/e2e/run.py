@@ -3260,6 +3260,69 @@ def wait_buf(s, needle, timeout=40, start=0):
     return needle in s.buf[start:]
 
 
+def test_editmenu():
+    """PLAN4 S4: the editor's F9 menu bar and the options behind it -
+    tab size, filled tabs, autoindent and backspace through tabs."""
+    root, play, home = sandbox()
+    path = os.path.join(play, "code.txt")
+    open(path, "w").write("abc\n")
+    s = Session(play, home)
+    s.send(b"\x13code\r", wait=STEP)
+    s.send(F4, wait=STEP * 2)
+    check("editmenu: the editor opens", "abc" in s.screen())
+
+    # F9 is mc's menu bar, over the title row while it is open
+    F9 = b"\x1b[20~"
+    s.send(F9, wait=STEP)
+    scr = s.screen()
+    check("editmenu: the bar is there",
+          "File" in scr and "Edit" in scr and "Search" in scr and "Options" in scr, scr)
+    check("editmenu: and the File menu is open", "Save" in scr and "F2" in scr, scr)
+    s.send(b"\x1b\x1b", wait=STEP)
+    # ("Save" is no test of that: the key bar underneath says F2 Save)
+    check("editmenu: Esc closes it", "Options" not in s.screen(), s.screen())
+
+    # the title letters pick a menu, the entry letters run an entry
+    s.send(F9, wait=STEP)
+    s.send(b"o", wait=STEP)                 # -> Options
+    check("editmenu: the Options menu", "Soft" in s.screen(), s.screen())
+    s.send(b"g", wait=STEP)                 # -> General...
+    scr = s.screen()
+    check("editmenu: the options form", "Editor options" in scr and "Tab size" in scr, scr)
+
+    # tab size 8 -> 4, then tick the two switches that need it
+    s.send(b"\x1b[D" * 4, wait=STEP)        # Left: 8 -> 4
+    check("editmenu: tab size nudged", "Tab size" in s.screen() and " 4 " in s.screen())
+    s.send(b"\x1b[B", wait=STEP)            # -> Fill tabs with spaces
+    s.send(b" ", wait=STEP)
+    s.send(b"\x1b[B\x1b[B", wait=STEP)      # -> Backspace through tabs
+    s.send(b" ", wait=STEP)
+    scr = s.screen()
+    check("editmenu: both switches ticked",
+          scr.count("[x]") >= 3, scr)       # autoindent was already on
+    s.send(b"\r", wait=STEP * 2)            # OK
+    check("editmenu: saved", wait_for(s, "options saved"))
+
+    # a Tab is now four spaces, and one Backspace takes all four
+    s.send(b"\t", wait=STEP)
+    scr = s.screen()
+    check("editmenu: Tab filled to the stop", "    abc" in scr and "1:5" in scr, scr)
+    s.send(BACKSPACE, wait=STEP)
+    scr = s.screen()
+    check("editmenu: Backspace took the whole stop", "1:1" in scr, scr)
+
+    # and the setting outlived the dialog
+    state = os.path.join(home, ".local", "state", "rcmd", "state.toml")
+    check("editmenu: written to the state file",
+          os.path.exists(state) and "edit_tab_size = 4" in open(state).read(),
+          open(state).read() if os.path.exists(state) else "no state file")
+
+    s.send(F10, wait=STEP * 2)
+    s.send(b"d", wait=STEP * 2)             # discard the edit
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_subshell():
     """R1 per-shell scenarios: forced subshell=true in every suite mode."""
     shells = ["/bin/sh"]
@@ -3383,6 +3446,7 @@ def main():
         test_configstate,
         test_git,
         test_editor,
+        test_editmenu,
         test_subshell,
         test_sftp,
         test_fish,

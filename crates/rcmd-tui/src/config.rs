@@ -86,6 +86,19 @@ pub struct Config {
     /// a plain Escape (MC's meta prefix: Esc 1..0 = F1..F10, Esc x =
     /// Alt+X). Raise it towards MC's 1000 when typing those by hand.
     pub esc_timeout_ms: u64,
+    /// Built-in editor, mc's editor options: columns between tab
+    /// stops - what a tab is worth on screen and how far one Tab key
+    /// gets you when tabs are filled with spaces.
+    pub edit_tab_size: u16,
+    /// Tab inserts spaces up to the next stop instead of a tab.
+    pub edit_fill_tabs: bool,
+    /// Enter copies the current line's leading whitespace.
+    pub edit_auto_indent: bool,
+    /// Inside leading whitespace, Backspace takes the whole tab stop.
+    pub edit_backspace_tabs: bool,
+    /// Column the editor's soft wrap (Alt+W) folds at; 0 = the window
+    /// width, which is mc's "dynamic" wrap.
+    pub edit_wrap_column: u16,
     /// Custom bindings on top of the presets. Bare entries under
     /// `[keys]` bind in the panel, and `[keys.panel|viewer|editor]`
     /// sub-tables bind in that context:
@@ -259,12 +272,29 @@ impl Default for Config {
             confirm_hotlist_delete: true,
             confirm_execute: false,
             esc_timeout_ms: crate::app::ESC_TIMEOUT_MS,
+            edit_tab_size: 8,
+            edit_fill_tabs: false,
+            edit_auto_indent: true,
+            edit_backspace_tabs: false,
+            edit_wrap_column: 0,
             keys: BTreeMap::new(),
             hotlist: Vec::new(),
             open: Vec::new(),
             view: Vec::new(),
             commands: Vec::new(),
             highlight: Vec::new(),
+        }
+    }
+}
+
+impl Config {
+    /// The editor options as the editor core takes them.
+    pub fn edit_prefs(&self) -> rcmd_edit::Prefs {
+        rcmd_edit::Prefs {
+            tab_size: (self.edit_tab_size as usize).clamp(1, 16),
+            fill_tabs: self.edit_fill_tabs,
+            auto_indent: self.edit_auto_indent,
+            backspace_tabs: self.edit_backspace_tabs,
         }
     }
 }

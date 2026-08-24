@@ -27,6 +27,7 @@ fn main() -> Result<()> {
     }
     let (cfg, load_warning) = config::load();
     let theme_warning = ui::init_theme(&cfg.theme);
+    ui::set_tab_size(cfg.edit_tab_size as usize);
     let mouse = cfg.mouse;
     let mut terminal = ratatui::init();
     if mouse {

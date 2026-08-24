@@ -813,6 +813,23 @@ pub struct EditorState {
     pub cols: usize,
     pub prompt: Option<EditPrompt>,
     pub note: Option<String>,
+    /// Fixed soft-wrap column from the editor options; 0 = the window
+    /// width, which is mc's "dynamic" wrap.
+    pub wrap_column: usize,
+    /// The editor's own menu bar (F9) when it is open.
+    pub menu: Option<MenuState>,
+}
+
+impl EditorState {
+    /// How wide a wrapped row is: the window, or the column the options
+    /// pin it to when that is narrower.
+    pub fn wrap_width(&self) -> usize {
+        let cols = self.cols.max(1);
+        match self.wrap_column {
+            0 => cols,
+            fixed => fixed.clamp(1, cols),
+        }
+    }
 }
 
 pub enum EditPrompt {
@@ -841,7 +858,171 @@ pub enum EditPrompt {
     ConfirmQuit {
         button: usize,
     },
+    /// mc's editor options, as a form of the editor's own.
+    Options(EditOptions),
 }
+
+/// The editor's settings form. mc keeps these in a dialog of their own
+/// and so does rcmd: they belong to the editor, are set while editing,
+/// and the panel's grouped options dialog is already a screenful.
+#[derive(Clone)]
+pub struct EditOptions {
+    pub tab_size: u16,
+    pub fill_tabs: bool,
+    pub auto_indent: bool,
+    pub backspace_tabs: bool,
+    /// 0 = the window width (mc's dynamic wrap).
+    pub wrap_column: u16,
+    /// Focused row: an index into [`EDIT_OPTION_ROWS`], or its length
+    /// for the OK/Cancel row.
+    pub cursor: usize,
+    pub ok: bool,
+}
+
+/// One row of that form. The numbers are nudged with Left/Right, the
+/// rest tick with Space - the same hands the panel's form takes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EditOpt {
+    TabSize,
+    FillTabs,
+    AutoIndent,
+    BackspaceTabs,
+    WrapColumn,
+}
+
+pub const EDIT_OPTION_ROWS: &[(EditOpt, &str)] = &[
+    (EditOpt::TabSize, "Tab size"),
+    (EditOpt::FillTabs, "Fill tabs with spaces"),
+    (EditOpt::AutoIndent, "Return does autoindent"),
+    (EditOpt::BackspaceTabs, "Backspace through tabs"),
+    (EditOpt::WrapColumn, "Wrap column"),
+];
+
+impl EditOptions {
+    pub fn get(&self, opt: EditOpt) -> bool {
+        match opt {
+            EditOpt::FillTabs => self.fill_tabs,
+            EditOpt::AutoIndent => self.auto_indent,
+            EditOpt::BackspaceTabs => self.backspace_tabs,
+            _ => false,
+        }
+    }
+
+    /// How the row reads: a number shows its value, a switch its box.
+    pub fn value(&self, opt: EditOpt) -> String {
+        match opt {
+            EditOpt::TabSize => format!("{:>6}", self.tab_size),
+            // a column of zero is not a column: it is "as wide as the
+            // window is", which is what mc calls dynamic wrapping
+            EditOpt::WrapColumn => match self.wrap_column {
+                0 => "window".to_string(),
+                n => format!("{n:>6}"),
+            },
+            _ => String::new(),
+        }
+    }
+
+    fn toggle(&mut self) {
+        match EDIT_OPTION_ROWS.get(self.cursor).map(|(opt, _)| *opt) {
+            Some(EditOpt::FillTabs) => self.fill_tabs = !self.fill_tabs,
+            Some(EditOpt::AutoIndent) => self.auto_indent = !self.auto_indent,
+            Some(EditOpt::BackspaceTabs) => self.backspace_tabs = !self.backspace_tabs,
+            _ => {}
+        }
+    }
+
+    /// Left/Right on a number row. False = this row has no number, so
+    /// the key means something else.
+    fn nudge(&mut self, step: i32) -> bool {
+        match EDIT_OPTION_ROWS.get(self.cursor).map(|(opt, _)| *opt) {
+            Some(EditOpt::TabSize) => {
+                self.tab_size = (self.tab_size as i32 + step).clamp(1, 16) as u16;
+                true
+            }
+            Some(EditOpt::WrapColumn) => {
+                // 0, then the useful range: one step off zero lands on
+                // a column worth wrapping at rather than on 1
+                let now = self.wrap_column as i32;
+                let next = match (now, step) {
+                    (0, s) if s > 0 => 40,
+                    (40, s) if s < 0 => 0,
+                    (n, s) => (n + s * 5).clamp(0, 512),
+                };
+                self.wrap_column = if next < 40 && next != 0 {
+                    if step < 0 { 0 } else { 40 }
+                } else {
+                    next as u16
+                };
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn step(&mut self, step: isize) {
+        let last = EDIT_OPTION_ROWS.len() as isize; // the button row
+        let mut cursor = self.cursor as isize + step;
+        if cursor < 0 {
+            cursor = last;
+        } else if cursor > last {
+            cursor = 0;
+        }
+        self.cursor = cursor as usize;
+    }
+}
+
+/// What an entry of the editor's menu bar does: mostly the actions its
+/// keys already run, plus the one the menu owns.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EditMenuAction {
+    Key(keymap::EditorAction),
+    Options,
+}
+
+pub type EditMenuEntry = Option<(&'static str, &'static str, EditMenuAction)>;
+
+/// The editor's menu bar (F9), in mc's four groups. Every entry is
+/// something a key already does - the menu is how you find the key.
+pub const EDIT_MENUS: &[(&str, &[EditMenuEntry])] = &[
+    ("&File", EDIT_FILE_MENU),
+    ("&Edit", EDIT_EDIT_MENU),
+    ("&Search", EDIT_SEARCH_MENU),
+    ("&Options", EDIT_OPTIONS_MENU),
+];
+
+use keymap::EditorAction as EA;
+
+const EDIT_FILE_MENU: &[EditMenuEntry] = &[
+    Some(("&Save", "F2", EditMenuAction::Key(EA::Save))),
+    None,
+    Some(("&Quit", "F10", EditMenuAction::Key(EA::Quit))),
+];
+
+const EDIT_EDIT_MENU: &[EditMenuEntry] = &[
+    Some(("&Undo", "C-z", EditMenuAction::Key(EA::Undo))),
+    Some(("&Redo", "C-y", EditMenuAction::Key(EA::Redo))),
+    None,
+    Some(("&Copy", "C-c", EditMenuAction::Key(EA::Copy))),
+    Some(("Cu&t", "C-x", EditMenuAction::Key(EA::Cut))),
+    Some(("&Paste", "C-v", EditMenuAction::Key(EA::Paste))),
+    None,
+    Some(("&Mark", "F3", EditMenuAction::Key(EA::Mark))),
+    Some(("Select &all", "C-a", EditMenuAction::Key(EA::SelectAll))),
+    Some(("&Delete line", "F8", EditMenuAction::Key(EA::DeleteLine))),
+    Some(("Copy &block", "F5", EditMenuAction::Key(EA::BlockCopy))),
+    Some(("Mo&ve block", "F6", EditMenuAction::Key(EA::BlockMove))),
+];
+
+const EDIT_SEARCH_MENU: &[EditMenuEntry] = &[
+    Some(("&Search", "F7", EditMenuAction::Key(EA::Search))),
+    Some(("Search &next", "S-F7", EditMenuAction::Key(EA::SearchNext))),
+    Some(("&Replace", "F4", EditMenuAction::Key(EA::Replace))),
+];
+
+const EDIT_OPTIONS_MENU: &[EditMenuEntry] = &[
+    Some(("&General...", "", EditMenuAction::Options)),
+    Some(("Soft &wrap", "M-w", EditMenuAction::Key(EA::ToggleWrap))),
+];
 
 /// One panel side's cached free-space measurement.
 pub type DiskSpace = Option<(PathBuf, Instant, Option<(u64, u64)>)>;
@@ -1135,6 +1316,9 @@ pub enum Action {
 /// None = separator line. `&` in a label marks its hotkey letter,
 /// MC-style: highlighted in the dropdown, pressing it runs the entry.
 pub type MenuEntry = Option<(&'static str, &'static str, Action)>;
+
+/// One menu bar: titles and their entries, whatever the entries do.
+pub type MenuBar<'a, A> = &'a [(&'a str, &'a [Option<(&'static str, &'static str, A)>])];
 
 /// MC's menu bar: the two panel menus bracket the global ones. Left and
 /// Right act on their own panel whichever one has the focus, which is
@@ -2496,7 +2680,7 @@ impl App {
             if st.prompt.is_none() && y >= 1 && (y as usize) <= st.rows {
                 let (line, col) = if st.wrap {
                     // walk visual rows down from the top to this row
-                    let cols = st.cols.max(1);
+                    let cols = st.wrap_width();
                     let (mut line, mut seg) = (st.top, st.top_seg);
                     for _ in 0..(y as usize - 1) {
                         seg += 1;
@@ -4156,10 +4340,11 @@ impl App {
 
     fn open_internal_editor(&mut self, path: &Path, title: String) -> bool {
         match rcmd_edit::Editor::open(path) {
-            Ok(ed) => {
+            Ok(mut ed) => {
                 let len = std::fs::metadata(path)
                     .map(|m| m.len() as usize)
                     .unwrap_or(0);
+                ed.prefs = self.config.edit_prefs();
                 self.editor = Some(EditorState {
                     hl: rcmd_edit::Highlighter::new(path, len),
                     ed,
@@ -4172,6 +4357,8 @@ impl App {
                     cols: 1,
                     prompt: None,
                     note: None,
+                    wrap_column: self.config.edit_wrap_column as usize,
+                    menu: None,
                 });
                 true
             }
@@ -4326,6 +4513,10 @@ impl App {
     }
 
     fn on_editor_key(&mut self, key: KeyEvent) {
+        if self.editor.as_ref().is_some_and(|st| st.menu.is_some()) {
+            self.editor_menu_key(key);
+            return;
+        }
         if self.editor.as_ref().is_some_and(|st| st.prompt.is_some()) {
             self.on_editor_prompt_key(key);
             self.ensure_editor_visible();
@@ -4404,7 +4595,7 @@ impl App {
                 edited = false;
             }
             KeyCode::Enter => st.ed.newline(),
-            KeyCode::Tab => st.ed.insert("\t"),
+            KeyCode::Tab => st.ed.insert_tab(),
             KeyCode::Backspace => st.ed.backspace(),
             KeyCode::Delete => st.ed.delete_forward(),
             KeyCode::Esc => {
@@ -4435,6 +4626,15 @@ impl App {
             }
             EA::Quit => {
                 self.editor_quit();
+                return;
+            }
+            EA::Menu => {
+                if let Some(st) = self.editor.as_mut() {
+                    st.menu = Some(MenuState {
+                        menu: 0,
+                        item: first_edit_item(EDIT_MENUS[0].1),
+                    });
+                }
                 return;
             }
             EA::SearchNext => {
@@ -4469,7 +4669,7 @@ impl App {
             .min(st.ed.cursor.line);
         let mut edited = true;
         match action {
-            EA::Save | EA::Quit | EA::SearchNext => unreachable!("handled above"),
+            EA::Save | EA::Quit | EA::SearchNext | EA::Menu => unreachable!("handled above"),
             EA::Mark => {
                 st.ed.toggle_mark();
                 edited = false;
@@ -4735,6 +4935,148 @@ impl App {
                 }
                 _ => st.prompt = Some(EditPrompt::ConfirmQuit { button }),
             },
+            EditPrompt::Options(mut d) => {
+                let rows = EDIT_OPTION_ROWS.len();
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => {
+                        if d.cursor != rows || d.ok {
+                            self.apply_edit_options(&d);
+                        }
+                    }
+                    KeyCode::Char(' ') if d.cursor == rows => {
+                        if d.ok {
+                            self.apply_edit_options(&d);
+                        } else {
+                            st.prompt = Some(EditPrompt::Options(d));
+                        }
+                    }
+                    KeyCode::Up | KeyCode::BackTab => {
+                        d.step(-1);
+                        st.prompt = Some(EditPrompt::Options(d));
+                    }
+                    KeyCode::Down | KeyCode::Tab => {
+                        d.step(1);
+                        st.prompt = Some(EditPrompt::Options(d));
+                    }
+                    KeyCode::Left | KeyCode::Right
+                        if d.nudge(if key.code == KeyCode::Left { -1 } else { 1 }) =>
+                    {
+                        st.prompt = Some(EditPrompt::Options(d));
+                    }
+                    KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right => {
+                        if d.cursor == rows {
+                            d.ok = !d.ok;
+                        } else {
+                            d.toggle();
+                        }
+                        st.prompt = Some(EditPrompt::Options(d));
+                    }
+                    _ => st.prompt = Some(EditPrompt::Options(d)),
+                }
+            }
+        }
+    }
+
+    /// OK on the editor options: the settings take effect in the open
+    /// editor at once and are written through to the state file, the
+    /// way the panel's options form does it.
+    fn apply_edit_options(&mut self, d: &EditOptions) {
+        let cfg = &mut self.config;
+        cfg.edit_tab_size = d.tab_size;
+        cfg.edit_fill_tabs = d.fill_tabs;
+        cfg.edit_auto_indent = d.auto_indent;
+        cfg.edit_backspace_tabs = d.backspace_tabs;
+        cfg.edit_wrap_column = d.wrap_column;
+        ui::set_tab_size(d.tab_size as usize);
+        let prefs = self.config.edit_prefs();
+        if let Some(st) = self.editor.as_mut() {
+            st.ed.prefs = prefs;
+            st.wrap_column = d.wrap_column as usize;
+            st.note = Some(" options saved ".into());
+        }
+        let (tab, fill, indent) = (d.tab_size, d.fill_tabs, d.auto_indent);
+        let (bstab, wrap) = (d.backspace_tabs, d.wrap_column);
+        if let Err(err) = state::update(move |s| {
+            s.edit_tab_size = Some(tab);
+            s.edit_fill_tabs = Some(fill);
+            s.edit_auto_indent = Some(indent);
+            s.edit_backspace_tabs = Some(bstab);
+            s.edit_wrap_column = Some(wrap);
+        }) && let Some(st) = self.editor.as_mut()
+        {
+            st.note = Some(format!(" could not save state: {err} "));
+        }
+    }
+
+    /// F9 in the editor: mc's menu bar over the text.
+    fn editor_menu_key(&mut self, key: KeyEvent) {
+        let Some(st) = self.editor.as_mut() else {
+            return;
+        };
+        let Some(ms) = st.menu.as_mut() else { return };
+        let mut run = None;
+        match key.code {
+            KeyCode::Esc | KeyCode::F(9) => st.menu = None,
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                let len = EDIT_MENUS.len();
+                ms.menu = if key.code == KeyCode::Left {
+                    (ms.menu + len - 1) % len
+                } else {
+                    (ms.menu + 1) % len
+                };
+                ms.item = first_edit_item(EDIT_MENUS[ms.menu].1);
+            }
+            KeyCode::Up => ms.item = edit_menu_step(EDIT_MENUS[ms.menu].1, ms.item, -1),
+            KeyCode::Down => ms.item = edit_menu_step(EDIT_MENUS[ms.menu].1, ms.item, 1),
+            KeyCode::Enter => {
+                if let Some((_, _, action)) = EDIT_MENUS[ms.menu].1[ms.item] {
+                    st.menu = None;
+                    run = Some(action);
+                }
+            }
+            KeyCode::Char(c) => {
+                // the open menu's entry letters first, then the titles
+                let c = c.to_ascii_lowercase();
+                let entry = EDIT_MENUS[ms.menu]
+                    .1
+                    .iter()
+                    .flatten()
+                    .find(|(label, ..)| menu_hotkey(label) == Some(c));
+                if let Some(&(_, _, action)) = entry {
+                    st.menu = None;
+                    run = Some(action);
+                } else if let Some(menu) = EDIT_MENUS
+                    .iter()
+                    .position(|(title, _)| menu_hotkey(title) == Some(c))
+                {
+                    ms.menu = menu;
+                    ms.item = first_edit_item(EDIT_MENUS[menu].1);
+                }
+            }
+            _ => {}
+        }
+        match run {
+            Some(EditMenuAction::Key(action)) => self.editor_action(action),
+            Some(EditMenuAction::Options) => self.open_edit_options(),
+            None => {}
+        }
+    }
+
+    /// The editor options form, filled from what is in force now.
+    fn open_edit_options(&mut self) {
+        let cfg = &self.config;
+        let dialog = EditOptions {
+            tab_size: cfg.edit_tab_size.clamp(1, 16),
+            fill_tabs: cfg.edit_fill_tabs,
+            auto_indent: cfg.edit_auto_indent,
+            backspace_tabs: cfg.edit_backspace_tabs,
+            wrap_column: cfg.edit_wrap_column,
+            cursor: 0,
+            ok: true,
+        };
+        if let Some(st) = self.editor.as_mut() {
+            st.prompt = Some(EditPrompt::Options(dialog));
         }
     }
 
@@ -4744,7 +5086,7 @@ impl App {
             return;
         };
         let rows = st.rows.max(1);
-        let cols = st.cols.max(1);
+        let cols = st.wrap_width();
         if st.wrap {
             st.left = 0;
             let segs_of = |ed: &rcmd_edit::Editor, line: usize| ui::ed_line_segs(ed, line, cols);
@@ -6848,9 +7190,11 @@ impl App {
         if path.exists() {
             self.open_internal_editor(&path, title);
         } else {
+            let mut ed = rcmd_edit::Editor::create(&path);
+            ed.prefs = self.config.edit_prefs();
             self.editor = Some(EditorState {
                 hl: rcmd_edit::Highlighter::new(&path, 0),
-                ed: rcmd_edit::Editor::create(&path),
+                ed,
                 title,
                 top: 0,
                 top_seg: 0,
@@ -6860,6 +7204,8 @@ impl App {
                 cols: 1,
                 prompt: None,
                 note: None,
+                wrap_column: self.config.edit_wrap_column as usize,
+                menu: None,
             });
         }
     }
@@ -7499,23 +7845,35 @@ fn free_space(_path: &Path) -> Option<(u64, u64)> {
 }
 
 /// Inverse of [`ui::screen_col`]: the character index whose cell covers
-/// screen column `target` (8-wide tab stops), for mouse clicks.
+/// screen column `target`, for mouse clicks.
 fn col_at_screen(text: &str, target: usize) -> usize {
-    let mut screen = 0;
-    for (i, ch) in text.chars().enumerate() {
-        let width = if ch == '\t' { 8 - screen % 8 } else { 1 };
-        if screen + width > target {
-            return i;
-        }
-        screen += width;
-    }
-    text.chars().count()
+    rcmd_edit::col_at_screen(text, target, ui::tab_size())
 }
 
 fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+fn first_edit_item(entries: &[EditMenuEntry]) -> usize {
+    entries.iter().position(Option::is_some).unwrap_or(0)
+}
+
+fn edit_menu_step(entries: &[EditMenuEntry], current: usize, delta: isize) -> usize {
+    let len = entries.len() as isize;
+    let mut i = current as isize;
+    loop {
+        i += delta;
+        if i < 0 {
+            i = len - 1;
+        } else if i >= len {
+            i = 0;
+        }
+        if entries[i as usize].is_some() || i == current as isize {
+            return i as usize;
+        }
+    }
 }
 
 fn first_menu_item(entries: &[MenuEntry]) -> usize {

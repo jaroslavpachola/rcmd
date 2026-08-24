@@ -1,5 +1,34 @@
 # Changelog
 
+## 3.37.0 - 2026-08-24
+
+- **The editor has a menu bar** (4.0 S4): **F9** opens File, Edit,
+  Search and Options over the title row, with mc's hands - the title
+  letters pick a menu, the entry letters run an entry, the arrows walk
+  and Esc closes. Every entry names the key that already does it,
+  because the menu is how you find the key rather than a second way of
+  working.
+- **Editor options** (Options > General), which is where the settings
+  mc keeps in its own dialog now live: **tab size**, **fill tabs with
+  spaces**, **return does autoindent**, **backspace through tabs** and
+  the **wrap column**. Left/Right nudge the numbers, Space ticks the
+  switches, OK applies them to the open editor and writes them through
+  to the state file. They stay out of the panel's grouped options
+  dialog on purpose: they belong to the editor, they are set while
+  editing, and that form is already a screenful.
+- **Tab size is now a setting rather than the number 8** in four
+  different renderers. What a tab is worth is decided in one place -
+  `rcmd_edit::screen_col` - and the line drawing, the cursor and the
+  mouse all ask it rather than each knowing.
+- **Fill tabs with spaces** inserts spaces up to the next stop, not a
+  fixed run of them: the point of the option is that the file has no
+  tabs in it, not that Tab always moves the same distance.
+- **Backspace through tabs** takes the whole stop inside an indent made
+  of spaces, which is what makes a space indent behave like the tab it
+  stands in for. Outside one it is a single character, as it was.
+- **The wrap column** pins the soft wrap where you say instead of at
+  the window's edge; `window` - the default - is mc's dynamic wrapping.
+
 ## 3.36.0 - 2026-08-24
 
 - **Hex editing** (4.0 S4, and the last of the viewer's list): in hex

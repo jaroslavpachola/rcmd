@@ -538,7 +538,12 @@ const HELP_TEXT: &[&str] = &[
     "  Ctrl+A select all   Ctrl+arrows word hop   Tab inserts a tab",
     "  F7 search (regex, smartcase), Shift+F7 next match",
     "  F4 replace: pattern, replacement, then Replace/Skip/All/Quit",
-    "  Enter auto-indents. Syntax colors appear for known file types.",
+    "  F9 opens the editor's own menu bar: File, Edit, Search, Options",
+    "  Options > General: tab size, fill tabs with spaces, autoindent,",
+    "     backspace through tabs, and the column soft-wrap folds at.",
+    "     They apply at once and are remembered across sessions.",
+    "  Enter auto-indents (unless that is switched off). Syntax colors",
+    "  appear for known file types.",
     "  On sftp panels F4 edits a local copy, uploaded back on quit.",
     "  editor = \"external\" in the config restores $VISUAL/$EDITOR.",
     "",
@@ -1890,14 +1895,20 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
 /// Screen column of character `col` in `text`, with 8-wide tab stops -
 /// must match how [`draw_editor`] expands lines.
 pub fn screen_col(text: &str, col: usize) -> usize {
-    let mut scol = 0usize;
-    for c in text.chars().take(col) {
-        scol += match c {
-            '\t' => 8 - scol % 8,
-            _ => 1,
-        };
-    }
-    scol
+    rcmd_edit::screen_col(text, col, tab_size())
+}
+
+/// How wide a tab is in the editor, from the editor options. A global
+/// like the theme, for the same reason: the line renderers are free
+/// functions and every one of them has to agree.
+static TAB_SIZE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(8);
+
+pub fn set_tab_size(size: usize) {
+    TAB_SIZE.store(size.clamp(1, 16), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn tab_size() -> usize {
+    TAB_SIZE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Wrapped-segment count of an editor line at `cols` wide (always ≥ 1;
@@ -1956,7 +1967,7 @@ fn editor_line(
             run_style = style;
         }
         let width = match c {
-            '\t' => 8 - scol % 8,
+            '\t' => tab_size() - scol % tab_size(),
             _ => 1,
         };
         for k in 0..width {
@@ -2020,7 +2031,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
     if st.wrap {
         // soft-wrap: walk (line, segment) pairs from the top row; each
         // segment reuses the clipping renderer with its own left edge
-        let cols = st.cols.max(1);
+        let cols = st.wrap_width();
         let empty: Vec<(usize, usize, [u8; 3])> = Vec::new();
         let mut line_idx = st.top;
         let mut seg = st.top_seg;
@@ -2161,6 +2172,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
                 row(3),
             );
         }
+        Some(EditPrompt::Options(d)) => draw_edit_options(frame, d),
         Some(EditPrompt::ConfirmQuit { button }) => {
             let style = Style::new().fg(th().error_fg).bg(th().error_bg);
             let sel = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
@@ -2186,6 +2198,60 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
             );
         }
     }
+
+    // the menu bar goes over the title row, as it does in mc: it is
+    // only there while it is open
+    if let Some(ms) = &st.menu {
+        draw_menu_of(frame, ms, crate::app::EDIT_MENUS);
+    }
+}
+
+/// mc's editor options, as a form: two numbers nudged with Left/Right
+/// and three switches ticked with Space.
+fn draw_edit_options(frame: &mut Frame, d: &crate::app::EditOptions) {
+    use crate::app::{EDIT_OPTION_ROWS, EditOpt};
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let rows = EDIT_OPTION_ROWS.len() as u16;
+    let inner = popup(
+        frame,
+        centered(48, rows + 4, frame.area()),
+        " Editor options ",
+        base,
+    );
+    let check = |on: bool| if on { "[x]" } else { "[ ]" };
+    for (i, (opt, label)) in EDIT_OPTION_ROWS.iter().enumerate() {
+        let row = Rect {
+            x: inner.x + 1,
+            y: inner.y + i as u16,
+            width: inner.width.saturating_sub(2),
+            height: 1,
+        };
+        let width = row.width as usize;
+        let text = match opt {
+            EditOpt::TabSize | EditOpt::WrapColumn => {
+                format!(" {label:<26}{}  (Left/Right)", d.value(*opt))
+            }
+            other => format!(" {} {label}", check(d.get(*other))),
+        };
+        let style = if d.cursor == i { sel } else { base };
+        frame.render_widget(Line::from(format!("{text:<width$}")).style(style), row);
+    }
+    let buttons = Rect {
+        x: inner.x,
+        y: inner.y + rows + 1,
+        width: inner.width,
+        height: 1,
+    };
+    let selected = if d.cursor == EDIT_OPTION_ROWS.len() {
+        usize::from(!d.ok)
+    } else {
+        usize::MAX
+    };
+    frame.render_widget(
+        buttons_line(&["OK", "Cancel"], selected, base, sel),
+        buttons,
+    );
 }
 
 fn draw_viewer(frame: &mut Frame, app: &mut App) {
@@ -2704,14 +2770,24 @@ fn hot_spans(label: &str, style: Style, spans: &mut Vec<Span<'static>>) {
 }
 
 pub fn menu_layout(menu: usize, area: Rect) -> (Vec<(u16, u16)>, Rect) {
+    menu_layout_of(MENUS, menu, area)
+}
+
+/// The same geometry for any menu bar - the panel's and the editor's
+/// differ only in what their entries do.
+fn menu_layout_of<A>(
+    menus: crate::app::MenuBar<A>,
+    menu: usize,
+    area: Rect,
+) -> (Vec<(u16, u16)>, Rect) {
     let mut titles = Vec::new();
     let mut x = 0u16;
-    for (title, _) in MENUS {
+    for (title, _) in menus {
         let width = (label_len(title) + 4) as u16;
         titles.push((area.x + x, width));
         x += width;
     }
-    let entries = MENUS[menu].1;
+    let entries = menus[menu].1;
     let label_w = entries
         .iter()
         .flatten()
@@ -2735,15 +2811,22 @@ pub fn menu_layout(menu: usize, area: Rect) -> (Vec<(u16, u16)>, Rect) {
 }
 
 fn draw_menu(frame: &mut Frame, ms: &MenuState) {
+    draw_menu_of(frame, ms, MENUS);
+}
+
+/// Draw an open menu bar and its dropdown. Generic over what the
+/// entries do: the panel's menus run panel actions, the editor's run
+/// editor ones, and neither of those is any of drawing's business.
+fn draw_menu_of<A>(frame: &mut Frame, ms: &MenuState, menus: crate::app::MenuBar<A>) {
     let area = frame.area();
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
-    let (titles, dropdown) = menu_layout(ms.menu, area);
+    let (titles, dropdown) = menu_layout_of(menus, ms.menu, area);
 
     let bar = Rect { height: 1, ..area };
     frame.render_widget(Clear, bar);
     let mut spans = Vec::new();
-    for (i, (title, _)) in MENUS.iter().enumerate() {
+    for (i, (title, _)) in menus.iter().enumerate() {
         let style = if i == ms.menu { sel } else { base };
         spans.push(Span::styled("  ", style));
         hot_spans(title, style, &mut spans);
@@ -2756,7 +2839,7 @@ fn draw_menu(frame: &mut Frame, ms: &MenuState) {
     ));
     frame.render_widget(Line::from(spans), bar);
 
-    let entries = MENUS[ms.menu].1;
+    let entries = menus[ms.menu].1;
     let label_w = entries
         .iter()
         .flatten()

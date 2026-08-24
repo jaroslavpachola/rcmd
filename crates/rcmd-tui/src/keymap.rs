@@ -378,6 +378,8 @@ pub enum EditorAction {
     Paste,
     SelectAll,
     ToggleWrap,
+    /// F9: the editor's own menu bar.
+    Menu,
 }
 
 pub type ViewerMap = HashMap<(KeyCode, KeyModifiers), ViewerAction>;
@@ -424,6 +426,7 @@ const EDITOR_DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+v", "paste"),
     ("ctrl+a", "select-all"),
     ("alt+w", "wrap"),
+    ("f9", "menu"),
 ];
 
 pub fn parse_viewer_action(name: &str) -> Option<ViewerAction> {
@@ -466,6 +469,7 @@ pub fn parse_editor_action(name: &str) -> Option<EditorAction> {
         "paste" => EditorAction::Paste,
         "select-all" => EditorAction::SelectAll,
         "wrap" => EditorAction::ToggleWrap,
+        "menu" => EditorAction::Menu,
         _ => return None,
     })
 }

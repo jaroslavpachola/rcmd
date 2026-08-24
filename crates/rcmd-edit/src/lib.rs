@@ -37,6 +37,64 @@ impl Highlighter {
     }
 }
 
+/// The editing preferences mc keeps in its editor options dialog. They
+/// change what a key does rather than what the buffer holds, so they
+/// live beside the buffer rather than in the frontend that draws it.
+#[derive(Debug, Clone, Copy)]
+pub struct Prefs {
+    /// Columns between tab stops - what a tab is worth on screen, and
+    /// how far one Tab key gets you when it is filled with spaces.
+    pub tab_size: usize,
+    /// Tab inserts spaces up to the next stop instead of a tab.
+    pub fill_tabs: bool,
+    /// Enter copies the current line's leading whitespace.
+    pub auto_indent: bool,
+    /// Inside leading whitespace, Backspace takes the whole tab stop
+    /// rather than one space of it.
+    pub backspace_tabs: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        // mc's defaults: eight-wide tabs, real tabs, autoindent on,
+        // backspace one column at a time
+        Prefs {
+            tab_size: 8,
+            fill_tabs: false,
+            auto_indent: true,
+            backspace_tabs: false,
+        }
+    }
+}
+
+/// Screen column of character `col` of `text`, with tabs running to
+/// `tab`-wide stops. The one place that decides what a tab is worth.
+pub fn screen_col(text: &str, col: usize, tab: usize) -> usize {
+    let tab = tab.max(1);
+    let mut scol = 0usize;
+    for c in text.chars().take(col) {
+        scol += match c {
+            '\t' => tab - scol % tab,
+            _ => 1,
+        };
+    }
+    scol
+}
+
+/// The inverse: which character's cell covers screen column `target`.
+pub fn col_at_screen(text: &str, target: usize, tab: usize) -> usize {
+    let tab = tab.max(1);
+    let mut scol = 0usize;
+    for (i, c) in text.chars().enumerate() {
+        let width = if c == '\t' { tab - scol % tab } else { 1 };
+        if scol + width > target {
+            return i;
+        }
+        scol += width;
+    }
+    text.chars().count()
+}
+
 /// Cursor / selection position: line and column in characters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Pos {
@@ -92,6 +150,7 @@ pub struct Editor {
     saved_id: u64,
     clipboard: String,
     pub search: String,
+    pub prefs: Prefs,
 }
 
 impl Editor {
@@ -133,6 +192,7 @@ impl Editor {
             saved_id: 0,
             clipboard: String::new(),
             search: String::new(),
+            prefs: Prefs::default(),
         }
     }
 
@@ -502,9 +562,10 @@ impl Editor {
         }
     }
 
-    /// Enter: newline plus the current line's leading whitespace.
+    /// Enter: newline plus the current line's leading whitespace,
+    /// unless autoindent is switched off.
     pub fn newline(&mut self) {
-        let indent: String = if self.sel_range().is_some() {
+        let indent: String = if self.sel_range().is_some() || !self.prefs.auto_indent {
             String::new()
         } else {
             self.line(self.cursor.line)
@@ -516,15 +577,48 @@ impl Editor {
         self.insert(&format!("\n{indent}"));
     }
 
+    /// Tab: a tab character, or spaces up to the next stop where tabs
+    /// are filled with spaces - the point of the option being that the
+    /// file has no tabs in it, not that Tab moves a fixed distance.
+    pub fn insert_tab(&mut self) {
+        if !self.prefs.fill_tabs {
+            self.insert("\t");
+            return;
+        }
+        let tab = self.prefs.tab_size.max(1);
+        let at = screen_col(&self.line(self.cursor.line), self.cursor.col, tab);
+        self.insert(&" ".repeat(tab - at % tab));
+    }
+
     pub fn backspace(&mut self) {
         if let Some((a, b)) = self.sel_range() {
             self.splice(a, b - a, "", Kind::Other);
             return;
         }
         let at = self.char_idx(self.cursor);
-        if at > 0 {
-            self.splice(at - 1, 1, "", Kind::Backspace);
+        if at == 0 {
+            return;
         }
+        // "backspace through tabs": inside an indent made of spaces one
+        // press takes the whole stop, which is what makes space indents
+        // behave like the tabs they stand in for
+        if self.prefs.backspace_tabs && self.cursor.col > 0 {
+            let line = self.line(self.cursor.line);
+            let before = line.chars().take(self.cursor.col).count();
+            if line.chars().take(self.cursor.col).all(|c| c == ' ') {
+                let tab = self.prefs.tab_size.max(1);
+                let back = match before % tab {
+                    0 => tab,
+                    rest => rest,
+                }
+                .min(before);
+                if back > 1 {
+                    self.splice(at - back, back, "", Kind::Backspace);
+                    return;
+                }
+            }
+        }
+        self.splice(at - 1, 1, "", Kind::Backspace);
     }
 
     pub fn delete_forward(&mut self) {
@@ -828,6 +922,67 @@ mod tests {
         assert!(e.redo());
         assert_eq!(e.text(), "hello");
         assert_eq!(e.cursor, Pos { line: 0, col: 5 });
+    }
+
+    #[test]
+    fn prefs_change_what_tab_backspace_and_enter_do() {
+        // fill tabs: Tab is spaces up to the next stop, not a fixed run
+        let mut e = ed("ab");
+        e.prefs = Prefs {
+            tab_size: 4,
+            fill_tabs: true,
+            backspace_tabs: true,
+            ..Prefs::default()
+        };
+        e.goto(Pos { line: 0, col: 2 }, false);
+        e.insert_tab();
+        assert_eq!(e.text(), "ab  ", "two columns short of the stop");
+        e.insert_tab();
+        assert_eq!(e.text(), "ab      ");
+
+        // backspace through tabs: one press takes the whole stop, but
+        // only inside an indent - "ab  " has letters before it
+        let mut e = ed("        x");
+        e.prefs = Prefs {
+            tab_size: 4,
+            backspace_tabs: true,
+            ..Prefs::default()
+        };
+        e.goto(Pos { line: 0, col: 8 }, false);
+        e.backspace();
+        assert_eq!(e.text(), "    x");
+        e.backspace();
+        assert_eq!(e.text(), "x");
+        // off, it is one column at a time again
+        let mut e = ed("    x");
+        e.prefs = Prefs {
+            tab_size: 4,
+            ..Prefs::default()
+        };
+        e.goto(Pos { line: 0, col: 4 }, false);
+        e.backspace();
+        assert_eq!(e.text(), "   x");
+
+        // autoindent off: Enter starts at column zero
+        let mut e = ed("    indented");
+        e.prefs = Prefs {
+            auto_indent: false,
+            ..Prefs::default()
+        };
+        e.goto(Pos { line: 0, col: 12 }, false);
+        e.newline();
+        assert_eq!(e.text(), "    indented\n");
+    }
+
+    #[test]
+    fn screen_columns_follow_the_tab_size() {
+        assert_eq!(screen_col("\tx", 1, 8), 8);
+        assert_eq!(screen_col("\tx", 1, 4), 4);
+        assert_eq!(screen_col("ab\tx", 3, 4), 4);
+        // and back again: which character covers a screen column
+        assert_eq!(col_at_screen("ab\tx", 3, 4), 2);
+        assert_eq!(col_at_screen("ab\tx", 4, 4), 3);
+        assert_eq!(col_at_screen("ab", 9, 4), 2);
     }
 
     #[test]

@@ -67,6 +67,16 @@ pub struct State {
     pub confirm_hotlist_delete: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confirm_execute: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_tab_size: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_fill_tabs: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_auto_indent: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_backspace_tabs: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_wrap_column: Option<u16>,
     /// `None` = never edited in rcmd, so `config.toml`'s list stands.
     /// Once `a`/`d` touches it, this owns the list outright.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -155,7 +165,12 @@ pub fn apply(state: &State, config: &mut Config) {
         show_mini_status,
         show_status,
         show_cmdline,
-        show_keybar
+        show_keybar,
+        edit_tab_size,
+        edit_fill_tabs,
+        edit_auto_indent,
+        edit_backspace_tabs,
+        edit_wrap_column
     );
     // `lynx` is Option in the config too: unset means "follow the preset".
     if state.lynx.is_some() {
