@@ -99,6 +99,11 @@ pub struct Config {
     /// Column the editor's soft wrap (Alt+W) folds at; 0 = the window
     /// width, which is mc's "dynamic" wrap.
     pub edit_wrap_column: u16,
+    /// Find file shows its matches in mc's results window (Chdir,
+    /// Again, Panelize, View, Edit). false = the pre-4.0 behaviour,
+    /// where they stream straight into the panel as a panelized
+    /// listing - which is one keystroke shorter and loses the list.
+    pub find_window: bool,
     /// Draw the line-number gutter (Alt+N toggles it).
     pub edit_line_numbers: bool,
     /// Keep the previous contents as `file~` on every save.
@@ -285,6 +290,7 @@ impl Default for Config {
             edit_auto_indent: true,
             edit_backspace_tabs: false,
             edit_wrap_column: 0,
+            find_window: true,
             edit_line_numbers: false,
             edit_backups: false,
             edit_clipboard: true,

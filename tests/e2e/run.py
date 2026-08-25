@@ -1219,7 +1219,12 @@ def test_hexedit():
 
 
 def test_find():
+    """The pre-4.0 shape, now behind find_window = false: matches
+    stream straight into the panel as a panelized listing."""
     root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write("find_window = false\n")
     os.makedirs(os.path.join(play, "sub"))
     open(os.path.join(play, "needle-top.txt"), "w").write("x\n")
     open(os.path.join(play, "sub", "needle-deep.txt"), "w").write("x\n")
@@ -3678,6 +3683,9 @@ def test_finddialog():
     whole words, by regular expression, in every codepage, and hidden
     files skipped."""
     root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write("find_window = false\n")
     os.makedirs(os.path.join(play, "deep"))
     os.makedirs(os.path.join(play, ".hidden"))
     open(os.path.join(play, "a1.txt"), "w").write("the magic word\n")
@@ -3744,6 +3752,67 @@ def test_finddialog():
     scr = s.screen()
     check("finddialog: searched where it was told",
           "1 match(es)" in scr and scr.count("b1.txt") == 1, scr)
+
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_findwindow():
+    """PLAN4 S6: mc's find results window - the matches in a list of
+    their own, with Chdir, Again, Panelize, View and Edit."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "deep", "deeper"))
+    open(os.path.join(play, "top.txt"), "w").write("top\n")
+    open(os.path.join(play, "deep", "middle.txt"), "w").write("middle\n")
+    open(os.path.join(play, "deep", "deeper", "bottom.txt"), "w").write("bottom\n")
+    s = Session(play, home)
+
+    def find(keys, wait=STEP * 3):
+        s.send(b"\x1b[20~")                  # F9
+        s.send(b"\x1b[C" * 2)                # -> Command
+        s.send(DOWN * 5)                     # -> Find file...
+        s.send(b"\r", wait=STEP)
+        s.send(keys)
+        s.send(b"\r", wait=wait)
+
+    find(b"\x15*.txt")
+    scr = s.screen()
+    check("findwindow: the window lists the matches",
+          "deep/deeper/bottom.txt" in scr and "top.txt" in scr, scr)
+    check("findwindow: with the buttons under them",
+          "Chdir" in scr and "Panelize" in scr and "Again" in scr, scr)
+    check("findwindow: and what it found", "3 match(es)" in scr, scr)
+    check("findwindow: the panel is untouched underneath",
+          "find:" not in scr.splitlines()[0], scr)
+
+    # Enter on a row is Chdir: the panel goes there, cursor on the file
+    s.send(DOWN, wait=STEP)
+    s.send(b"\r", wait=STEP * 2)
+    scr = s.screen()
+    check("findwindow: chdir went to the match", "deep" in scr.splitlines()[0], scr)
+    check("findwindow: and the window closed", "Chdir" not in scr, scr)
+
+    # Panelize turns the list into the panel listing (Alt+C back to
+    # the top first: Chdir left us wherever the match was)
+    s.send(b"\x1bc", wait=STEP)
+    s.send(play.encode() + b"\r", wait=STEP * 2)
+    find(b"\x15*.txt")
+    s.send(b"p", wait=STEP * 2)              # Panelize
+    scr = s.screen()
+    check("findwindow: panelize made a listing",
+          "find: *.txt" in scr and "deep/middle.txt" in scr, scr)
+
+    # Again reopens the dialog with what was asked before
+    find(b"\x15*.txt")
+    s.send(b"a", wait=STEP * 2)
+    scr = s.screen()
+    check("findwindow: again asks again", "Find file" in scr and "*.txt" in scr, scr)
+    s.send(b"\x1b\x1b", wait=STEP)
+
+    # q closes it and leaves the panel alone
+    find(b"\x15*.txt")
+    s.send(b"q", wait=STEP * 2)
+    check("findwindow: q closed it", "Chdir" not in s.screen())
 
     s.quit()
     shutil.rmtree(root)
@@ -3879,6 +3948,7 @@ def main():
         test_panelcharset,
         test_selectdialog,
         test_finddialog,
+        test_findwindow,
         test_subshell,
         test_sftp,
         test_fish,

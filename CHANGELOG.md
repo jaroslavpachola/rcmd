@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.44.0 - 2026-08-25
+
+- **The find results window** (4.0 S6): matches now land in a list of
+  their own as they are found, with mc's six buttons - **Chdir**
+  (Enter on a row) takes the panel to the file and puts the cursor on
+  it, **Again** reopens the dialog on the same question, **Panelize**
+  turns the list into the panel listing, **View** and **Edit** open
+  the match, **Quit** closes. F3 and F4 work on the row directly.
+- **The panel is left alone until you say so.** Streaming into it,
+  which is what rcmd did before, spends the listing you were looking at
+  on a search you might be about to redo - and there is no way back to
+  the list once you have moved. The old shape is `find_window = false`
+  and behaves exactly as it did.
+- Closing the window stops the walk, and a walk still running keeps
+  filling the list while you read it.
+
 ## 3.43.0 - 2026-08-25
 
 - **The find dialog grew mc's answers** (4.0 S6): a **start

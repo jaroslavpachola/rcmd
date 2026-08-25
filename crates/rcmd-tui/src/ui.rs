@@ -292,7 +292,9 @@ const HELP_TEXT: &[&str] = &[
     "                  to look for inside - with whole words, case, a",
     "                  regular expression, every codepage, skip hidden,",
     "                  follow symlinks and skip gitignored beside them.",
-    "                  Results stream into the panel; Esc cancels.",
+    "                  Results land in a window of their own - Chdir,",
+    "                  Again, Panelize, View, Edit - or stream into the",
+    "                  panel with find_window = false. Esc cancels.",
     "  Ctrl+X d        compare directories: marks files missing on the",
     "                  other side or differing in size/mtime (F5 syncs)",
     "  F9>Cmd>Panelize command output becomes the panel listing",
@@ -758,6 +760,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Find(d) => draw_find(frame, d),
             Dialog::Options(d) => draw_options(frame, d),
             Dialog::Pattern(d) => draw_pattern(frame, d),
+            Dialog::FindResults(d) => draw_find_results(frame, d),
             Dialog::Charset(row) => {
                 draw_pick_list(frame, " Character set ", &crate::app::CHARSET_ROWS, *row, 0)
             }
@@ -3288,6 +3291,80 @@ fn draw_pattern(frame: &mut Frame, d: &crate::app::PatternDialog) {
         Rect {
             x: inner.x,
             y: inner.y + 6,
+            width: inner.width,
+            height: 1,
+        },
+    );
+}
+
+/// How many matches the results window shows at once. A function of
+/// the terminal rather than a note drawing leaves behind, so the keys
+/// page by exactly what is on screen without having to be told.
+pub fn find_list_rows(area: Rect) -> usize {
+    let height = area.height.saturating_sub(4).max(8);
+    // the list, then a blank line, the count and the buttons
+    height.saturating_sub(2 + 3).max(1) as usize
+}
+
+/// MC's find results window: the matches as they arrive, and the six
+/// things to do with the one under the cursor.
+fn draw_find_results(frame: &mut Frame, d: &crate::app::FindResults) {
+    use crate::app::FIND_BUTTONS;
+    let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let area = frame.area();
+    let width = area.width.saturating_sub(8).max(30);
+    let height = area.height.saturating_sub(4).max(8);
+    debug_assert_eq!(
+        find_list_rows(area),
+        height.saturating_sub(2 + 3).max(1) as usize
+    );
+    let inner = popup(
+        frame,
+        centered(width, height, area),
+        &format!(" {} ", d.label),
+        style,
+    );
+    let list_rows = find_list_rows(area);
+    for i in 0..list_rows {
+        let Some(at) = d.top.checked_add(i).filter(|at| *at < d.rows.len()) else {
+            break;
+        };
+        let row = Rect {
+            x: inner.x + 1,
+            y: inner.y + i as u16,
+            width: inner.width.saturating_sub(2),
+            height: 1,
+        };
+        let text = d.label_of(at);
+        frame.render_widget(
+            Line::from(format!(
+                " {:<w$}",
+                tail(&text, row.width as usize),
+                w = (row.width as usize).saturating_sub(1)
+            ))
+            .style(if at == d.selected { sel } else { style }),
+            row,
+        );
+    }
+    let count = match d.done {
+        Some((matches, scanned)) => format!("{matches} match(es), {scanned} entries scanned"),
+        None => format!("searching… {} found", d.rows.len()),
+    };
+    frame.render_widget(
+        Line::from(count).centered().style(style),
+        Rect {
+            x: inner.x,
+            y: inner.y + inner.height.saturating_sub(2),
+            width: inner.width,
+            height: 1,
+        },
+    );
+    frame.render_widget(
+        buttons_line(FIND_BUTTONS, d.button, style, sel),
+        Rect {
+            x: inner.x,
+            y: inner.y + inner.height.saturating_sub(1),
             width: inner.width,
             height: 1,
         },

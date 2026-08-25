@@ -449,6 +449,15 @@ impl Panel {
         crate::charset::encode_name(text, self.charset)
     }
 
+    /// Put the cursor on a named entry, if it is in this listing.
+    /// Silent when it is not: the file may have been deleted between
+    /// being listed and being asked for.
+    pub fn select_name(&mut self, name: &std::ffi::OsStr) {
+        if let Some(pos) = self.entries.iter().position(|e| e.name == name) {
+            self.cursor = pos;
+        }
+    }
+
     pub fn selected(&self) -> Option<&Entry> {
         self.entries.get(self.cursor)
     }

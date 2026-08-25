@@ -189,11 +189,61 @@ impl FindDialog {
     }
 }
 
-/// A running find, streaming matches into `panel`'s panelized listing.
+/// A running find, streaming matches into the results window - or into
+/// `panel`'s panelized listing, where the setting says so.
 pub struct FindState {
     pub handle: FindHandle,
     pub panel: usize,
     pub count: usize,
+    /// Matches go to [`Dialog::FindResults`] rather than to the panel.
+    pub window: bool,
+}
+
+/// MC's find results window: the matches as they arrive, and the six
+/// things to do with the one under the cursor.
+pub struct FindResults {
+    /// What was searched for, for the title.
+    pub label: String,
+    pub root: PathBuf,
+    /// Absolute paths, in the order they were found.
+    pub rows: Vec<PathBuf>,
+    pub selected: usize,
+    pub top: usize,
+    /// Some(matches, scanned) once the walk has finished.
+    pub done: Option<(u64, u64)>,
+    pub button: usize,
+    /// The dialog that started it, so "Again" can ask it again.
+    pub query: Box<FindDialog>,
+}
+
+/// The buttons along the bottom, in mc's order.
+pub const FIND_BUTTONS: &[&str] = &["Chdir", "Again", "Panelize", "View", "Edit", "Quit"];
+
+impl FindResults {
+    /// The path as the window shows it: relative to where the search
+    /// started, which is what makes a long list readable.
+    pub fn label_of(&self, at: usize) -> String {
+        let path = &self.rows[at];
+        path.strip_prefix(&self.root)
+            .unwrap_or(path)
+            .display()
+            .to_string()
+    }
+
+    /// Move the cursor and keep it on screen. `shown` is how many rows
+    /// the window has room for, which only the drawing knows.
+    fn step(&mut self, delta: isize, shown: usize) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let last = self.rows.len() as isize - 1;
+        self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
+        let shown = shown.max(1);
+        self.top = self
+            .top
+            .min(self.selected)
+            .max((self.selected + 1).saturating_sub(shown));
+    }
 }
 
 /// A running Ctrl+Space directory-size scan.
@@ -474,6 +524,8 @@ pub enum Dialog {
     Charset(usize),
     /// Select / unselect group, and the panel filter.
     Pattern(Box<PatternDialog>),
+    /// MC's find results window.
+    FindResults(Box<FindResults>),
     /// M-h: the command-line history; the payload is the selected row.
     History(usize),
     /// F9 > Command > Directory tree. Enter here changes the *current*
@@ -2277,14 +2329,34 @@ impl App {
         let Some(find) = self.find.as_mut() else {
             return;
         };
+        let window = find.window;
         let mut done = None;
+        let mut found: Vec<Box<rcmd_core::entry::Entry>> = Vec::new();
         while let Ok(event) = find.handle.events.try_recv() {
             match event {
                 FindEvent::Match(entry) => {
-                    self.panels[find.panel].entries.push(*entry);
                     find.count += 1;
+                    found.push(entry);
                 }
                 FindEvent::Done { matches, scanned } => done = Some((matches, scanned)),
+            }
+        }
+        let panel = find.panel;
+        if window {
+            // the window owns the list; closing it cancels the walk
+            let Some(Dialog::FindResults(results)) = self.dialog.as_mut() else {
+                if let Some(find) = self.find.take() {
+                    find.handle.cancel();
+                }
+                return;
+            };
+            for entry in found {
+                results.rows.push(results.root.join(&entry.name));
+            }
+            results.done = done;
+        } else {
+            for entry in found {
+                self.panels[panel].entries.push(*entry);
             }
         }
         match done {
@@ -6070,6 +6142,62 @@ impl App {
                     _ => self.dialog = Some(Dialog::Vfs(d)),
                 }
             }
+            Dialog::FindResults(mut d) => {
+                let shown = ui::find_list_rows(self.areas.screen);
+                let page = shown.saturating_sub(1).max(1) as isize;
+                match key.code {
+                    KeyCode::Esc | KeyCode::F(10) | KeyCode::Char('q') => self.close_find(),
+                    KeyCode::Up => {
+                        d.step(-1, shown);
+                        self.dialog = Some(Dialog::FindResults(d));
+                    }
+                    KeyCode::Down => {
+                        d.step(1, shown);
+                        self.dialog = Some(Dialog::FindResults(d));
+                    }
+                    KeyCode::PageUp => {
+                        d.step(-page, shown);
+                        self.dialog = Some(Dialog::FindResults(d));
+                    }
+                    KeyCode::PageDown => {
+                        d.step(page, shown);
+                        self.dialog = Some(Dialog::FindResults(d));
+                    }
+                    KeyCode::Home => {
+                        d.step(isize::MIN / 2, shown);
+                        self.dialog = Some(Dialog::FindResults(d));
+                    }
+                    KeyCode::End => {
+                        d.step(isize::MAX / 2, shown);
+                        self.dialog = Some(Dialog::FindResults(d));
+                    }
+                    KeyCode::Left | KeyCode::BackTab => {
+                        d.button = (d.button + FIND_BUTTONS.len() - 1) % FIND_BUTTONS.len();
+                        self.dialog = Some(Dialog::FindResults(d));
+                    }
+                    KeyCode::Right | KeyCode::Tab => {
+                        d.button = (d.button + 1) % FIND_BUTTONS.len();
+                        self.dialog = Some(Dialog::FindResults(d));
+                    }
+                    // Enter on the list is Chdir, which is what mc's
+                    // default button does and what the row invites
+                    KeyCode::Enter => self.find_button(*d, None),
+                    KeyCode::F(3) => self.find_button(*d, Some(3)),
+                    KeyCode::F(4) => self.find_button(*d, Some(4)),
+                    KeyCode::Char(c) => {
+                        let c = c.to_ascii_lowercase();
+                        match FIND_BUTTONS.iter().position(|b| {
+                            b.chars()
+                                .next()
+                                .is_some_and(|f| f.to_ascii_lowercase() == c)
+                        }) {
+                            Some(at) => self.find_button(*d, Some(at)),
+                            None => self.dialog = Some(Dialog::FindResults(d)),
+                        }
+                    }
+                    _ => self.dialog = Some(Dialog::FindResults(d)),
+                }
+            }
             Dialog::Pattern(mut d) => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => {
@@ -6592,6 +6720,78 @@ impl App {
         }
     }
 
+    /// Stop a running find and put its window away.
+    fn close_find(&mut self) {
+        if let Some(find) = self.find.take() {
+            find.handle.cancel();
+        }
+        self.dialog = None;
+    }
+
+    /// One of the six things the results window can do with the match
+    /// under the cursor. `None` = the focused button.
+    fn find_button(&mut self, d: FindResults, button: Option<usize>) {
+        let button = button.unwrap_or(d.button);
+        let target = d.rows.get(d.selected).cloned();
+        match (FIND_BUTTONS[button], target) {
+            ("Quit", _) => self.close_find(),
+            ("Again", _) => {
+                self.close_find();
+                self.dialog = Some(Dialog::Find(d.query));
+            }
+            ("Panelize", _) => {
+                // the list becomes the panel, which is where marking
+                // and F5/F6/F8 live
+                let root = d.root.clone();
+                let entries: Vec<_> = d
+                    .rows
+                    .iter()
+                    .filter_map(|path| {
+                        let mut entry = rcmd_core::entry::stat(path).ok()?;
+                        if let Ok(rel) = path.strip_prefix(&root) {
+                            entry.name = rel.as_os_str().to_os_string();
+                        }
+                        Some(entry)
+                    })
+                    .collect();
+                let (label, side) = (d.label.clone(), self.active);
+                self.close_find();
+                let _ = self.panels[side].request_dir(root, LoadKind::Enter);
+                self.panels[side].panelize(entries, label);
+            }
+            (_, None) => self.dialog = Some(Dialog::FindResults(Box::new(d))),
+            ("Chdir", Some(path)) => {
+                let side = self.active;
+                self.close_find();
+                if let Some(dir) = path.parent() {
+                    let _ = self.panels[side].request_dir(dir.to_path_buf(), LoadKind::Enter);
+                    if let Some(name) = path.file_name() {
+                        self.panels[side].select_name(name);
+                    }
+                }
+            }
+            ("View", Some(path)) | ("Edit", Some(path)) => {
+                let side = self.active;
+                let edit = FIND_BUTTONS[button] == "Edit";
+                self.close_find();
+                // the panel goes where the file is first, so quitting
+                // the viewer leaves you standing on what you read
+                if let Some(dir) = path.parent() {
+                    let _ = self.panels[side].request_dir(dir.to_path_buf(), LoadKind::Enter);
+                    if let Some(name) = path.file_name() {
+                        self.panels[side].select_name(name);
+                    }
+                }
+                if edit {
+                    self.open_editor();
+                } else {
+                    self.open_viewer(false);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Recent directories for the hotlist dialog: both panels'
     /// histories merged (active panel first), deduped, pinned entries
     /// and the place we're standing excluded, capped.
@@ -6785,6 +6985,7 @@ impl App {
         } else {
             None
         };
+        let root_for_window = root.clone();
         // a pattern that will not compile stops here, with the dialog
         // still open on it: the message is about what was typed
         let handle = match find::spawn_find(root, query, skip) {
@@ -6796,11 +6997,26 @@ impl App {
             }
         };
         let panel_idx = self.active;
-        self.panels[panel_idx].panelize(Vec::new(), label);
+        let window = self.config.find_window;
+        if window {
+            self.dialog = Some(Dialog::FindResults(Box::new(FindResults {
+                label: label.clone(),
+                root: root_for_window,
+                rows: Vec::new(),
+                selected: 0,
+                top: 0,
+                done: None,
+                button: 0,
+                query: Box::new(dialog),
+            })));
+        } else {
+            self.panels[panel_idx].panelize(Vec::new(), label);
+        }
         self.find = Some(FindState {
             handle,
             panel: panel_idx,
             count: 0,
+            window,
         });
     }
 

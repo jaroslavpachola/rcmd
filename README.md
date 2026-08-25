@@ -286,9 +286,14 @@ answers beside them: **whole words**, **case sensitive**, **regular
 expression** (matched line by line), **all charsets** (the same word as
 another machine spelled it - KOI8-R, CP1251, Shift_JIS and the rest),
 **skip hidden**, **follow symlinks**, and rcmd's own **skip
-gitignored**. Matches stream live into the active panel as a
-*panelized* listing (paths relative to the search root), where marking
-and F5/F6/F8 work as usual. *Panelize command…*
+gitignored**. Matches arrive in a **results window** of their own as
+they are found, with mc's six buttons: **Chdir** (Enter on a row) takes
+the panel to the file and puts the cursor on it, **Again** reopens the
+dialog on the same question, **Panelize** turns the list into the panel
+listing, **View** and **Edit** open the match, and **Quit** closes.
+`find_window = false` restores the pre-4.0 shape, where matches stream
+straight into the panel as a *panelized* listing (paths relative to the
+search root), where marking and F5/F6/F8 work as usual. *Panelize command…*
 (F9 → Left/Right) turns any command's stdout lines into such a listing
 (`git ls-files -m`, `rg -l TODO`, …). *Compare directories* (Ctrl+X d)
 marks files that are missing on the other side or differ in size/mtime
@@ -589,6 +594,8 @@ edit_fill_tabs = false     # Tab inserts spaces up to the next stop
 edit_auto_indent = true    # Enter copies the line's leading whitespace
 edit_backspace_tabs = false  # in an indent, Backspace takes a whole stop
 edit_wrap_column = 0       # column the soft wrap folds at; 0 = the window
+find_window = true         # find file: matches in a window of their own
+                           # (false = straight into the panel listing)
 edit_line_numbers = false  # the line-number gutter (Alt+N toggles it)
 edit_backups = false       # keep the previous contents as file~ on save
 edit_clipboard = true      # share the desktop clipboard (wl-copy/xclip/...)
