@@ -911,12 +911,12 @@ def test_viewsearch():
     dialog()
     s.send(b"\x15lin", wait=STEP * 2)
     s.send(b"\t\t\t ", wait=STEP * 2)  # -> whole words, tick
-    check("viewsearch: whole words ticked", "[x] Whole words" in s.screen())
+    check("viewsearch: whole words ticked", wait_for(s, "[x] Whole words"))
     s.send(b"\r", wait=STEP * 2)
     check("viewsearch: whole words found nothing", wait_for(s, "not found"))
     dialog()
     s.send(b"\t\t\t ", wait=STEP * 2)  # untick it again
-    check("viewsearch: whole words unticked", "[ ] Whole words" in s.screen())
+    check("viewsearch: whole words unticked", wait_for(s, "[ ] Whole words"))
     # Enter, not Esc: Esc throws the dialog's answers away, and the
     # searches below want this one kept
     s.send(b"\r", wait=STEP * 2)
@@ -3323,6 +3323,70 @@ def test_editmenu():
     shutil.rmtree(root)
 
 
+def test_editkeys():
+    """PLAN4 S4: goto line, bookmarks, the line-number gutter, the ~
+    backup and mc's Ctrl+U undo."""
+    root, play, home = sandbox()
+    path = os.path.join(play, "long.txt")
+    open(path, "w").write("".join("line %02d\n" % n for n in range(40)))
+    s = Session(play, home)
+    s.send(b"\x13long\r", wait=STEP)
+    s.send(F4, wait=STEP * 2)
+    check("editkeys: the editor opens", "line 00" in s.screen())
+
+    # Alt+L goes to a line
+    s.send(b"\x1bl", wait=STEP)
+    check("editkeys: the goto prompt", "Go to line" in s.screen(), s.screen())
+    s.send(b"\x1530\r", wait=STEP * 2)     # C-u clears the field, then 30
+    scr = s.screen()
+    check("editkeys: went there", "30:1" in scr and "line 29" in scr, scr)
+
+    # Alt+N draws the line numbers, Alt+K bookmarks this line
+    s.send(b"\x1bn", wait=STEP)
+    check("editkeys: the gutter", " 30 " in s.screen() or " 30*" in s.screen(), s.screen())
+    s.send(b"\x1bk", wait=STEP)
+    check("editkeys: bookmark set", wait_for(s, "bookmark on line 30"))
+    check("editkeys: and marked in the gutter", "30*" in s.screen(), s.screen())
+
+    # away and back again
+    s.send(b"\x1bl", wait=STEP)
+    s.send(b"\x151\r", wait=STEP * 2)
+    check("editkeys: back at the top", "1:1" in s.screen())
+    s.send(b"\x1bj", wait=STEP * 2)         # next bookmark
+    check("editkeys: the bookmark brought us back", "30:1" in s.screen(), s.screen())
+    s.send(b"\x1bj", wait=STEP)
+    check("editkeys: and there is no other", wait_for(s, "no bookmark that way"))
+
+    # a line inserted above moves the bookmark with the text
+    s.send(b"\x1bl", wait=STEP)
+    s.send(b"\x151\r", wait=STEP * 2)
+    s.send(b"\r", wait=STEP)                # split line 1 in two
+    s.send(b"\x1bj", wait=STEP * 2)
+    check("editkeys: the bookmark followed the text", "31:1" in s.screen(), s.screen())
+
+    # Ctrl+U is mc's undo
+    s.send(b"\x15", wait=STEP)
+    check("editkeys: C-u undid the split", "[+]" not in s.screen(), s.screen())
+
+    # backups: tick the option, then save
+    s.send(b"\x1b[20~", wait=STEP)          # F9
+    s.send(b"og", wait=STEP)                 # Options > General
+    s.send(b"\x1b[B" * 6, wait=STEP)        # -> Keep a file~ backup
+    s.send(b" \r", wait=STEP * 2)
+    check("editkeys: options saved", wait_for(s, "options saved"))
+    s.send(b"x", wait=STEP)                  # a change worth saving
+    s.send(F2, wait=STEP * 2)
+    backup = path + "~"
+    check("editkeys: the backup holds what was there",
+          os.path.exists(backup) and open(backup).read().startswith("line 00"),
+          os.listdir(play))
+    check("editkeys: and the file has the change", "x" in open(path).read().split("\n")[0])
+
+    s.send(F10, wait=STEP * 2)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_subshell():
     """R1 per-shell scenarios: forced subshell=true in every suite mode."""
     shells = ["/bin/sh"]
@@ -3447,6 +3511,7 @@ def main():
         test_git,
         test_editor,
         test_editmenu,
+        test_editkeys,
         test_subshell,
         test_sftp,
         test_fish,

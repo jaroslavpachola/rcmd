@@ -52,6 +52,9 @@ pub struct Prefs {
     /// Inside leading whitespace, Backspace takes the whole tab stop
     /// rather than one space of it.
     pub backspace_tabs: bool,
+    /// Keep the previous contents as `file~` on every save - mc's
+    /// "Do backups", with mc's `~` suffix.
+    pub backup: bool,
 }
 
 impl Default for Prefs {
@@ -63,6 +66,7 @@ impl Default for Prefs {
             fill_tabs: false,
             auto_indent: true,
             backspace_tabs: false,
+            backup: false,
         }
     }
 }
@@ -203,6 +207,13 @@ impl Editor {
         let dir = target.parent().unwrap_or_else(|| Path::new("."));
         let name = target.file_name().unwrap_or_default().to_string_lossy();
         let tmp = dir.join(format!(".{name}.rcmd-{}", std::process::id()));
+        // the backup is of what is on disk now, so it is taken before
+        // anything is written - and a missing target has nothing to
+        // back up, which is not a failure to save
+        if self.prefs.backup && target.exists() {
+            let backup = dir.join(format!("{name}~"));
+            std::fs::copy(&target, &backup)?;
+        }
         let result = (|| -> io::Result<()> {
             let mut out = io::BufWriter::new(std::fs::File::create(&tmp)?);
             for chunk in self.rope.chunks() {
@@ -672,6 +683,17 @@ impl Editor {
         self.insert(&text);
     }
 
+    /// What copy or cut last took, for a frontend that mirrors it into
+    /// the desktop's clipboard.
+    pub fn clipboard(&self) -> &str {
+        &self.clipboard
+    }
+
+    /// ...and the other way: what the desktop has, so paste inserts it.
+    pub fn set_clipboard(&mut self, text: String) {
+        self.clipboard = text;
+    }
+
     pub fn has_clipboard(&self) -> bool {
         !self.clipboard.is_empty()
     }
@@ -922,6 +944,26 @@ mod tests {
         assert!(e.redo());
         assert_eq!(e.text(), "hello");
         assert_eq!(e.cursor, Pos { line: 0, col: 5 });
+    }
+
+    #[test]
+    fn backups_keep_what_was_there_before_the_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.txt");
+        std::fs::write(&path, "before\n").unwrap();
+        let mut e = Editor::open(&path).unwrap();
+        e.prefs.backup = true;
+        e.goto(Pos { line: 0, col: 6 }, false);
+        e.insert("!");
+        e.save().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "before!\n");
+        let backup = dir.path().join("f.txt~");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "before\n");
+        // the next save moves the backup on rather than keeping the
+        // original for ever: one step back, as mc has it
+        e.insert("?");
+        e.save().unwrap();
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "before!\n");
     }
 
     #[test]

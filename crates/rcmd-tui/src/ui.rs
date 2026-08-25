@@ -539,9 +539,15 @@ const HELP_TEXT: &[&str] = &[
     "  F7 search (regex, smartcase), Shift+F7 next match",
     "  F4 replace: pattern, replacement, then Replace/Skip/All/Quit",
     "  F9 opens the editor's own menu bar: File, Edit, Search, Options",
+    "  Alt+L goto line   Alt+K bookmark this line   Alt+J/Alt+I next /",
+    "     previous bookmark   Alt+O drop them all   Alt+N line numbers",
+    "  Ctrl+U undoes too, as it does in mc",
+    "  Copy and cut reach the desktop clipboard and paste reads it,",
+    "     through wl-copy / xclip / xsel / pbcopy where one is there",
     "  Options > General: tab size, fill tabs with spaces, autoindent,",
-    "     backspace through tabs, and the column soft-wrap folds at.",
-    "     They apply at once and are remembered across sessions.",
+    "     backspace through tabs, the column soft-wrap folds at, line",
+    "     numbers, file~ backups and whether the desktop clipboard is",
+    "     shared. They apply at once and are remembered across sessions.",
     "  Enter auto-indents (unless that is switched off). Syntax colors",
     "  appear for known file types.",
     "  On sftp panels F4 edits a local copy, uploaded back on quit.",
@@ -1918,6 +1924,37 @@ pub fn ed_line_segs(ed: &rcmd_edit::Editor, line: usize, cols: usize) -> usize {
     screen_col(&ed.line(line), ed.line_len(line)) / cols.max(1) + 1
 }
 
+/// One row of the editor's line-number gutter. `None` on a wrapped
+/// continuation row, which belongs to the line above and so is not
+/// numbered again.
+/// The bottom bar of a full-screen view: what the keys do, and the
+/// note pushed to the right. The note is what the program just said, so
+/// it gets the room it needs and the key list is what gets cut - the
+/// other way round the message vanishes exactly when it matters.
+fn bottom_bar(help: &str, note: &str, width: usize) -> Line<'static> {
+    let note_w = note.chars().count();
+    let help: String = help.chars().take(width.saturating_sub(note_w)).collect();
+    let pad = width.saturating_sub(help.chars().count() + note_w);
+    Line::from(format!("{help}{:pad$}{note}", ""))
+}
+
+fn gutter_line(line: Option<usize>, marked: bool, width: usize) -> Line<'static> {
+    let style = Style::new().fg(th().header_fg).bg(th().panel_bg);
+    let mark = Style::new().fg(th().mark_fg).bg(th().panel_bg);
+    let num = match line {
+        Some(idx) => (idx + 1).to_string(),
+        None => String::new(),
+    };
+    let pad = width.saturating_sub(2);
+    Line::from(vec![
+        Span::styled(format!("{num:>pad$}"), style),
+        // the bookmark sits next to its number rather than in the text,
+        // where it would move the line sideways
+        Span::styled(if marked { "*" } else { " " }, mark),
+        Span::styled(" ", style),
+    ])
+}
+
 /// One editor line as styled spans: syntax colors, selection overlay,
 /// tab expansion and horizontal clipping in a single pass.
 #[allow(clippy::too_many_arguments)]
@@ -1988,6 +2025,11 @@ fn editor_line(
     Line::from(out)
 }
 
+/// The editor's key bar. A const rather than a literal in the middle
+/// of the drawing code: it is one line too long to sit there without
+/// being wrapped, and a wrapped string literal keeps its indentation.
+const EDITOR_HELP: &str = " F2 Save  F3 Mark  F4 Replace  F5/F6 CopyMove  F7 Search  F8 DelLine  F9 Menu  M-l Goto  F10 Quit ";
+
 fn draw_editor(frame: &mut Frame, app: &mut App) {
     let Some(st) = app.editor.as_mut() else {
         return;
@@ -1998,6 +2040,17 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
         Constraint::Length(1),
     ])
     .areas(frame.area());
+    // mc's line state column: the numbers, and a mark for a bookmarked
+    // line so the bookmarks are visible rather than only jumpable
+    let gutter_w = if st.line_numbers {
+        st.ed.line_count().to_string().chars().count().max(3) + 2
+    } else {
+        0
+    };
+    let [gutter, content] =
+        Layout::horizontal([Constraint::Length(gutter_w as u16), Constraint::Min(1)])
+            .areas(content);
+    st.gutter = gutter.width as usize;
     st.rows = content.height as usize;
     st.cols = content.width as usize;
 
@@ -2045,6 +2098,20 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
                 ..content
             };
             let text = st.ed.line(line_idx);
+            if gutter.width > 0 {
+                frame.render_widget(
+                    gutter_line(
+                        (seg == 0).then_some(line_idx),
+                        seg == 0 && st.bookmarks.binary_search(&line_idx).is_ok(),
+                        gutter.width as usize,
+                    ),
+                    Rect {
+                        y: content.y + row as u16,
+                        height: 1,
+                        ..gutter
+                    },
+                );
+            }
             let spans = all_spans.get(line_idx - st.top).unwrap_or(&empty);
             let line = editor_line(
                 &text,
@@ -2083,6 +2150,20 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
                 ..content
             };
             let text = st.ed.line(idx);
+            if gutter.width > 0 {
+                frame.render_widget(
+                    gutter_line(
+                        Some(idx),
+                        st.bookmarks.binary_search(&idx).is_ok(),
+                        gutter.width as usize,
+                    ),
+                    Rect {
+                        y: content.y + row as u16,
+                        height: 1,
+                        ..gutter
+                    },
+                );
+            }
             let line = editor_line(
                 &text,
                 spans,
@@ -2109,15 +2190,10 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
         }
     }
 
-    let help =
-        " F2 Save  F3 Mark  F4 Replace  F5/F6 CopyMove  F7 Search  F8 DelLine  M-w Wrap  F10 Quit ";
+    let help = EDITOR_HELP;
     let note = st.note.clone().unwrap_or_default();
     frame.render_widget(
-        Line::from(format!(
-            "{help}{note:>w$}",
-            w = (bottom.width as usize).saturating_sub(help.chars().count())
-        ))
-        .style(bar),
+        bottom_bar(help, &note, bottom.width as usize).style(bar),
         bottom,
     );
 
@@ -2171,6 +2247,11 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
                 buttons_line(&["Replace", "Skip", "All", "Quit"], *button, style, sel),
                 row(3),
             );
+        }
+        Some(EditPrompt::Goto { value, cursor }) => {
+            let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+            let inner = popup(frame, centered(40, 5, frame.area()), " Go to line ", style);
+            draw_field(frame, inner, value, *cursor);
         }
         Some(EditPrompt::Options(d)) => draw_edit_options(frame, d),
         Some(EditPrompt::ConfirmQuit { button }) => {
@@ -2437,12 +2518,8 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
     };
     let note = v.note.clone().unwrap_or_default();
     frame.render_widget(
-        Line::from(format!(
-            "{help}{:>w$}",
-            note,
-            w = (bottom.width as usize).saturating_sub(help.chars().count())
-        ))
-        .style(Style::new().fg(th().select_fg).bg(th().select_bg)),
+        bottom_bar(&help, &note, bottom.width as usize)
+            .style(Style::new().fg(th().select_fg).bg(th().select_bg)),
         bottom,
     );
 

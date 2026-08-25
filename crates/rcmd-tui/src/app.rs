@@ -818,6 +818,13 @@ pub struct EditorState {
     pub wrap_column: usize,
     /// The editor's own menu bar (F9) when it is open.
     pub menu: Option<MenuState>,
+    /// Bookmarked lines (M-k), in order.
+    pub bookmarks: Vec<usize>,
+    /// Draw the line-number gutter (M-n).
+    pub line_numbers: bool,
+    /// Width the gutter took in the last draw, so a mouse click knows
+    /// where the text starts.
+    pub gutter: usize,
 }
 
 impl EditorState {
@@ -860,6 +867,11 @@ pub enum EditPrompt {
     },
     /// mc's editor options, as a form of the editor's own.
     Options(EditOptions),
+    /// M-l: which line to go to.
+    Goto {
+        value: String,
+        cursor: usize,
+    },
 }
 
 /// The editor's settings form. mc keeps these in a dialog of their own
@@ -873,6 +885,9 @@ pub struct EditOptions {
     pub backspace_tabs: bool,
     /// 0 = the window width (mc's dynamic wrap).
     pub wrap_column: u16,
+    pub line_numbers: bool,
+    pub backups: bool,
+    pub clipboard: bool,
     /// Focused row: an index into [`EDIT_OPTION_ROWS`], or its length
     /// for the OK/Cancel row.
     pub cursor: usize,
@@ -888,6 +903,9 @@ pub enum EditOpt {
     AutoIndent,
     BackspaceTabs,
     WrapColumn,
+    LineNumbers,
+    Backups,
+    Clipboard,
 }
 
 pub const EDIT_OPTION_ROWS: &[(EditOpt, &str)] = &[
@@ -896,6 +914,9 @@ pub const EDIT_OPTION_ROWS: &[(EditOpt, &str)] = &[
     (EditOpt::AutoIndent, "Return does autoindent"),
     (EditOpt::BackspaceTabs, "Backspace through tabs"),
     (EditOpt::WrapColumn, "Wrap column"),
+    (EditOpt::LineNumbers, "Show line numbers"),
+    (EditOpt::Backups, "Keep a file~ backup on save"),
+    (EditOpt::Clipboard, "Share the system clipboard"),
 ];
 
 impl EditOptions {
@@ -904,6 +925,9 @@ impl EditOptions {
             EditOpt::FillTabs => self.fill_tabs,
             EditOpt::AutoIndent => self.auto_indent,
             EditOpt::BackspaceTabs => self.backspace_tabs,
+            EditOpt::LineNumbers => self.line_numbers,
+            EditOpt::Backups => self.backups,
+            EditOpt::Clipboard => self.clipboard,
             _ => false,
         }
     }
@@ -927,6 +951,9 @@ impl EditOptions {
             Some(EditOpt::FillTabs) => self.fill_tabs = !self.fill_tabs,
             Some(EditOpt::AutoIndent) => self.auto_indent = !self.auto_indent,
             Some(EditOpt::BackspaceTabs) => self.backspace_tabs = !self.backspace_tabs,
+            Some(EditOpt::LineNumbers) => self.line_numbers = !self.line_numbers,
+            Some(EditOpt::Backups) => self.backups = !self.backups,
+            Some(EditOpt::Clipboard) => self.clipboard = !self.clipboard,
             _ => {}
         }
     }
@@ -1017,11 +1044,38 @@ const EDIT_SEARCH_MENU: &[EditMenuEntry] = &[
     Some(("&Search", "F7", EditMenuAction::Key(EA::Search))),
     Some(("Search &next", "S-F7", EditMenuAction::Key(EA::SearchNext))),
     Some(("&Replace", "F4", EditMenuAction::Key(EA::Replace))),
+    None,
+    Some(("&Go to line", "M-l", EditMenuAction::Key(EA::Goto))),
+    Some((
+        "&Toggle bookmark",
+        "M-k",
+        EditMenuAction::Key(EA::BookmarkToggle),
+    )),
+    Some((
+        "Next book&mark",
+        "M-j",
+        EditMenuAction::Key(EA::BookmarkNext),
+    )),
+    Some((
+        "Pre&vious bookmark",
+        "M-i",
+        EditMenuAction::Key(EA::BookmarkPrev),
+    )),
+    Some((
+        "&Clear bookmarks",
+        "M-o",
+        EditMenuAction::Key(EA::BookmarkClear),
+    )),
 ];
 
 const EDIT_OPTIONS_MENU: &[EditMenuEntry] = &[
     Some(("&General...", "", EditMenuAction::Options)),
     Some(("Soft &wrap", "M-w", EditMenuAction::Key(EA::ToggleWrap))),
+    Some((
+        "Line &numbers",
+        "M-n",
+        EditMenuAction::Key(EA::ToggleLineNumbers),
+    )),
 ];
 
 /// One panel side's cached free-space measurement.
@@ -2677,6 +2731,8 @@ impl App {
             return;
         }
         if let Some(st) = self.editor.as_mut() {
+            // the gutter is not text: a click in it lands on column 0
+            let x = (x as usize).saturating_sub(st.gutter) as u16;
             if st.prompt.is_none() && y >= 1 && (y as usize) <= st.rows {
                 let (line, col) = if st.wrap {
                     // walk visual rows down from the top to this row
@@ -4359,6 +4415,9 @@ impl App {
                     note: None,
                     wrap_column: self.config.edit_wrap_column as usize,
                     menu: None,
+                    bookmarks: Vec::new(),
+                    line_numbers: self.config.edit_line_numbers,
+                    gutter: 0,
                 });
                 true
             }
@@ -4512,7 +4571,31 @@ impl App {
         self.ensure_editor_visible();
     }
 
+    /// A key in the editor, with the bookmarks kept pointing at the
+    /// lines they were put on: text inserted or removed above one moves
+    /// it, and nothing else does.
     fn on_editor_key(&mut self, key: KeyEvent) {
+        let before = self
+            .editor
+            .as_ref()
+            .map(|st| (st.ed.line_count(), st.ed.cursor.line));
+        self.on_editor_key_inner(key);
+        if let (Some((lines, at)), Some(st)) = (before, self.editor.as_mut())
+            && st.ed.line_count() != lines
+        {
+            let now = st.ed.line_count();
+            let delta = now as isize - lines as isize;
+            let edit_at = at.min(st.ed.cursor.line);
+            for mark in st.bookmarks.iter_mut() {
+                if *mark > edit_at {
+                    *mark = mark.saturating_add_signed(delta).min(now.saturating_sub(1));
+                }
+            }
+            st.bookmarks.dedup();
+        }
+    }
+
+    fn on_editor_key_inner(&mut self, key: KeyEvent) {
         if self.editor.as_ref().is_some_and(|st| st.menu.is_some()) {
             self.editor_menu_key(key);
             return;
@@ -4628,6 +4711,16 @@ impl App {
                 self.editor_quit();
                 return;
             }
+            EA::Goto => {
+                if let Some(st) = self.editor.as_mut() {
+                    let at = (st.ed.cursor.line + 1).to_string();
+                    st.prompt = Some(EditPrompt::Goto {
+                        cursor: at.chars().count(),
+                        value: at,
+                    });
+                }
+                return;
+            }
             EA::Menu => {
                 if let Some(st) = self.editor.as_mut() {
                     st.menu = Some(MenuState {
@@ -4657,6 +4750,7 @@ impl App {
             }
             _ => {}
         }
+        let share_clipboard = self.config.edit_clipboard;
         let Some(st) = self.editor.as_mut() else {
             return;
         };
@@ -4669,7 +4763,9 @@ impl App {
             .min(st.ed.cursor.line);
         let mut edited = true;
         match action {
-            EA::Save | EA::Quit | EA::SearchNext | EA::Menu => unreachable!("handled above"),
+            EA::Save | EA::Quit | EA::SearchNext | EA::Menu | EA::Goto => {
+                unreachable!("handled above")
+            }
             EA::Mark => {
                 st.ed.toggle_mark();
                 edited = false;
@@ -4690,8 +4786,19 @@ impl App {
                 });
                 return;
             }
-            EA::BlockCopy => st.ed.block_copy(),
-            EA::BlockMove => st.ed.block_move(),
+            EA::BlockCopy | EA::BlockMove => {
+                // the block ops fill the same clipboard copy and cut
+                // do, so they reach the desktop's the same way - or
+                // paste would prefer whatever the desktop last held
+                if action == EA::BlockCopy {
+                    st.ed.block_copy();
+                } else {
+                    st.ed.block_move();
+                }
+                if share_clipboard {
+                    clipboard_set(st.ed.clipboard());
+                }
+            }
             EA::DeleteLine => st.ed.delete_selection_or_line(),
             EA::Undo => {
                 if !st.ed.undo() {
@@ -4705,10 +4812,29 @@ impl App {
             }
             EA::Copy => {
                 st.ed.copy();
+                if share_clipboard {
+                    clipboard_set(st.ed.clipboard());
+                }
                 edited = false;
             }
-            EA::Cut => st.ed.cut(),
-            EA::Paste => st.ed.paste(),
+            EA::Cut => {
+                st.ed.cut();
+                if share_clipboard {
+                    clipboard_set(st.ed.clipboard());
+                }
+            }
+            EA::Paste => {
+                // what the desktop holds wins, so a copy from anywhere
+                // else pastes here; with no tool installed, or nothing
+                // in it, the editor's own clipboard stands
+                if share_clipboard
+                    && let Some(text) = clipboard_get()
+                    && !text.is_empty()
+                {
+                    st.ed.set_clipboard(text);
+                }
+                st.ed.paste();
+            }
             EA::SelectAll => {
                 st.ed.select_all();
                 edited = false;
@@ -4717,6 +4843,48 @@ impl App {
                 st.wrap = !st.wrap;
                 st.top_seg = 0;
                 st.left = 0;
+                edited = false;
+            }
+            EA::ToggleLineNumbers => {
+                st.line_numbers = !st.line_numbers;
+                edited = false;
+            }
+            EA::BookmarkToggle => {
+                let line = st.ed.cursor.line;
+                match st.bookmarks.binary_search(&line) {
+                    Ok(at) => {
+                        st.bookmarks.remove(at);
+                        st.note = Some(format!(" bookmark off line {} ", line + 1));
+                    }
+                    Err(at) => {
+                        st.bookmarks.insert(at, line);
+                        st.note = Some(format!(" bookmark on line {} ", line + 1));
+                    }
+                }
+                edited = false;
+            }
+            EA::BookmarkNext | EA::BookmarkPrev => {
+                let line = st.ed.cursor.line;
+                let target = if action == EA::BookmarkNext {
+                    st.bookmarks.iter().find(|&&b| b > line).copied()
+                } else {
+                    st.bookmarks.iter().rev().find(|&&b| b < line).copied()
+                };
+                match target {
+                    Some(line) => st.ed.goto(rcmd_edit::Pos { line, col: 0 }, false),
+                    None if st.bookmarks.is_empty() => {
+                        st.note = Some(" no bookmarks - M-k sets one ".into());
+                    }
+                    // one is the whole list, or the ends of it: say so
+                    // rather than wrapping around silently
+                    None => st.note = Some(" no bookmark that way ".into()),
+                }
+                edited = false;
+            }
+            EA::BookmarkClear => {
+                let had = st.bookmarks.len();
+                st.bookmarks.clear();
+                st.note = Some(format!(" {had} bookmark(s) cleared "));
                 edited = false;
             }
         }
@@ -4935,6 +5103,23 @@ impl App {
                 }
                 _ => st.prompt = Some(EditPrompt::ConfirmQuit { button }),
             },
+            EditPrompt::Goto {
+                mut value,
+                mut cursor,
+            } => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => match value.trim().parse::<usize>() {
+                    Ok(line) if line >= 1 => {
+                        let line = (line - 1).min(st.ed.line_count().saturating_sub(1));
+                        st.ed.goto(rcmd_edit::Pos { line, col: 0 }, false);
+                    }
+                    _ => st.note = Some(format!(" {} is not a line ", value.trim())),
+                },
+                code => {
+                    edit_line(&mut value, &mut cursor, code, key.modifiers);
+                    st.prompt = Some(EditPrompt::Goto { value, cursor });
+                }
+            },
             EditPrompt::Options(mut d) => {
                 let rows = EDIT_OPTION_ROWS.len();
                 match key.code {
@@ -4988,21 +5173,29 @@ impl App {
         cfg.edit_auto_indent = d.auto_indent;
         cfg.edit_backspace_tabs = d.backspace_tabs;
         cfg.edit_wrap_column = d.wrap_column;
+        cfg.edit_line_numbers = d.line_numbers;
+        cfg.edit_backups = d.backups;
+        cfg.edit_clipboard = d.clipboard;
         ui::set_tab_size(d.tab_size as usize);
         let prefs = self.config.edit_prefs();
         if let Some(st) = self.editor.as_mut() {
             st.ed.prefs = prefs;
             st.wrap_column = d.wrap_column as usize;
+            st.line_numbers = d.line_numbers;
             st.note = Some(" options saved ".into());
         }
         let (tab, fill, indent) = (d.tab_size, d.fill_tabs, d.auto_indent);
         let (bstab, wrap) = (d.backspace_tabs, d.wrap_column);
+        let (numbers, backups, clip) = (d.line_numbers, d.backups, d.clipboard);
         if let Err(err) = state::update(move |s| {
             s.edit_tab_size = Some(tab);
             s.edit_fill_tabs = Some(fill);
             s.edit_auto_indent = Some(indent);
             s.edit_backspace_tabs = Some(bstab);
             s.edit_wrap_column = Some(wrap);
+            s.edit_line_numbers = Some(numbers);
+            s.edit_backups = Some(backups);
+            s.edit_clipboard = Some(clip);
         }) && let Some(st) = self.editor.as_mut()
         {
             st.note = Some(format!(" could not save state: {err} "));
@@ -5072,6 +5265,9 @@ impl App {
             auto_indent: cfg.edit_auto_indent,
             backspace_tabs: cfg.edit_backspace_tabs,
             wrap_column: cfg.edit_wrap_column,
+            line_numbers: cfg.edit_line_numbers,
+            backups: cfg.edit_backups,
+            clipboard: cfg.edit_clipboard,
             cursor: 0,
             ok: true,
         };
@@ -7206,6 +7402,9 @@ impl App {
                 note: None,
                 wrap_column: self.config.edit_wrap_column as usize,
                 menu: None,
+                bookmarks: Vec::new(),
+                line_numbers: self.config.edit_line_numbers,
+                gutter: 0,
             });
         }
     }
@@ -7854,6 +8053,71 @@ fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// Whether there is a desktop to have a clipboard at all. Over ssh
+/// there is not, and the X tools would each be a process spawned to
+/// fail - so the question is asked before they are.
+fn desktop_clipboard() -> bool {
+    cfg!(target_os = "macos")
+        || std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var_os("DISPLAY").is_some()
+}
+
+/// Hand text to the desktop clipboard through whichever tool is
+/// installed. False = none was, so the editor's own clipboard is all
+/// there is - which is not an error worth a message, only a smaller
+/// world.
+fn clipboard_set(text: &str) -> bool {
+    if !desktop_clipboard() {
+        return false;
+    }
+    const TOOLS: &[(&str, &[&str])] = &[
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+        ("xsel", &["--clipboard", "--input"]),
+        ("pbcopy", &[]),
+    ];
+    for (tool, args) in TOOLS {
+        let child = std::process::Command::new(tool)
+            .args(*args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let Ok(mut child) = child else { continue };
+        if let Some(stdin) = child.stdin.as_mut() {
+            use std::io::Write as _;
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        drop(child.stdin.take());
+        let _ = child.wait();
+        return true;
+    }
+    false
+}
+
+/// ...and back. None = no tool, or it had nothing to say.
+fn clipboard_get() -> Option<String> {
+    desktop_clipboard().then_some(())?;
+    const TOOLS: &[(&str, &[&str])] = &[
+        ("wl-paste", &["--no-newline"]),
+        ("xclip", &["-selection", "clipboard", "-o"]),
+        ("xsel", &["--clipboard", "--output"]),
+        ("pbpaste", &[]),
+    ];
+    for (tool, args) in TOOLS {
+        let out = std::process::Command::new(tool)
+            .args(*args)
+            .stderr(std::process::Stdio::null())
+            .output();
+        let Ok(out) = out else { continue };
+        if !out.status.success() {
+            continue;
+        }
+        return Some(String::from_utf8_lossy(&out.stdout).into_owned());
+    }
+    None
 }
 
 fn first_edit_item(entries: &[EditMenuEntry]) -> usize {

@@ -451,8 +451,30 @@ soft wrap folds at - `window` means the window's width, which is mc's
 dynamic wrapping. Left/Right nudge the numbers, Space ticks the
 switches, and OK applies them to the open editor and remembers them for
 the next session. They are `edit_tab_size`, `edit_fill_tabs`,
-`edit_auto_indent`, `edit_backspace_tabs` and `edit_wrap_column` in the
-config file.
+`edit_auto_indent`, `edit_backspace_tabs`, `edit_wrap_column`,
+`edit_line_numbers`, `edit_backups` and `edit_clipboard` in the config
+file.
+
+**Getting around, and bookmarks**: `Alt+L` goes to a line by number,
+`Alt+K` bookmarks the line the cursor is on, `Alt+J` and `Alt+I` walk
+to the next and previous bookmark, and `Alt+O` drops them all. A
+bookmark follows its text: inserting or deleting lines above one moves
+it with what it marked, rather than leaving it pointing at whatever
+slid into that line number. `Alt+N` draws mc's line-number gutter, with
+a `*` beside a bookmarked line so the bookmarks can be seen and not
+only jumped to. `Ctrl+U` undoes, as it does in mc, beside rcmd's
+`Ctrl+Z`.
+
+**The desktop clipboard**: Ctrl+C and Ctrl+X also put the text on the
+system clipboard and Ctrl+V reads it, through `wl-copy`, `xclip`,
+`xsel` or `pbcopy` - whichever is installed. With none of them there,
+or with nothing in the clipboard, the editor's own clipboard stands, so
+copy and paste inside rcmd work either way. `edit_clipboard = false`
+keeps it to the editor.
+
+**Backups**: with `edit_backups` on, every save first copies what is on
+disk to `file~` - mc's "Do backups", one step back rather than a
+history.
 
 **Remote filesystems (SFTP)**: `cd sftp://[user@]host[:port][/path]`
 (or F9 → Left/Right → SFTP link) connects a panel to a server - user
@@ -524,6 +546,9 @@ edit_fill_tabs = false     # Tab inserts spaces up to the next stop
 edit_auto_indent = true    # Enter copies the line's leading whitespace
 edit_backspace_tabs = false  # in an indent, Backspace takes a whole stop
 edit_wrap_column = 0       # column the soft wrap folds at; 0 = the window
+edit_line_numbers = false  # the line-number gutter (Alt+N toggles it)
+edit_backups = false       # keep the previous contents as file~ on save
+edit_clipboard = true      # share the desktop clipboard (wl-copy/xclip/...)
 show_hidden = true
 sort_key = "name"   # name | ext | size | mtime
 sort_reverse = false
@@ -544,6 +569,8 @@ listing_format = "half type name | size | mtime"
 "ctrl+q" = "quit"            # save quit mark replace search search-next
                              # block-copy block-move delete-line undo
                              # redo copy cut paste select-all wrap menu
+                             # goto bookmark bookmark-next bookmark-prev
+                             # bookmark-clear line-numbers
 # key syntax:  [ctrl+][alt+][shift+]<key>  (f1..f20, letters, +, -, etc.)
 # actions: help view edit copy move mkdir delete delete-perm select-group
 #   unselect-group invert-selection quit shell reload swap-panels

@@ -99,6 +99,14 @@ pub struct Config {
     /// Column the editor's soft wrap (Alt+W) folds at; 0 = the window
     /// width, which is mc's "dynamic" wrap.
     pub edit_wrap_column: u16,
+    /// Draw the line-number gutter (Alt+N toggles it).
+    pub edit_line_numbers: bool,
+    /// Keep the previous contents as `file~` on every save.
+    pub edit_backups: bool,
+    /// Copy and cut also reach the desktop clipboard, and paste reads
+    /// it - through wl-copy / xclip / xsel / pbcopy, whichever is
+    /// there. Off = the editor's own clipboard only.
+    pub edit_clipboard: bool,
     /// Custom bindings on top of the presets. Bare entries under
     /// `[keys]` bind in the panel, and `[keys.panel|viewer|editor]`
     /// sub-tables bind in that context:
@@ -277,6 +285,9 @@ impl Default for Config {
             edit_auto_indent: true,
             edit_backspace_tabs: false,
             edit_wrap_column: 0,
+            edit_line_numbers: false,
+            edit_backups: false,
+            edit_clipboard: true,
             keys: BTreeMap::new(),
             hotlist: Vec::new(),
             open: Vec::new(),
@@ -295,6 +306,7 @@ impl Config {
             fill_tabs: self.edit_fill_tabs,
             auto_indent: self.edit_auto_indent,
             backspace_tabs: self.edit_backspace_tabs,
+            backup: self.edit_backups,
         }
     }
 }

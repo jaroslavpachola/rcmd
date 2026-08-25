@@ -380,6 +380,15 @@ pub enum EditorAction {
     ToggleWrap,
     /// F9: the editor's own menu bar.
     Menu,
+    /// M-l: go to a line by number.
+    Goto,
+    /// M-k / M-j / M-i / M-o: mc's editor bookmarks.
+    BookmarkToggle,
+    BookmarkNext,
+    BookmarkPrev,
+    BookmarkClear,
+    /// M-n: the line-number gutter.
+    ToggleLineNumbers,
 }
 
 pub type ViewerMap = HashMap<(KeyCode, KeyModifiers), ViewerAction>;
@@ -427,6 +436,13 @@ const EDITOR_DEFAULTS: &[(&str, &str)] = &[
     ("ctrl+a", "select-all"),
     ("alt+w", "wrap"),
     ("f9", "menu"),
+    ("ctrl+u", "undo"), // mc's undo key, beside rcmd's ctrl+z
+    ("alt+l", "goto"),
+    ("alt+k", "bookmark"),
+    ("alt+j", "bookmark-next"),
+    ("alt+i", "bookmark-prev"),
+    ("alt+o", "bookmark-clear"),
+    ("alt+n", "line-numbers"),
 ];
 
 pub fn parse_viewer_action(name: &str) -> Option<ViewerAction> {
@@ -470,6 +486,12 @@ pub fn parse_editor_action(name: &str) -> Option<EditorAction> {
         "select-all" => EditorAction::SelectAll,
         "wrap" => EditorAction::ToggleWrap,
         "menu" => EditorAction::Menu,
+        "goto" => EditorAction::Goto,
+        "bookmark" => EditorAction::BookmarkToggle,
+        "bookmark-next" => EditorAction::BookmarkNext,
+        "bookmark-prev" => EditorAction::BookmarkPrev,
+        "bookmark-clear" => EditorAction::BookmarkClear,
+        "line-numbers" => EditorAction::ToggleLineNumbers,
         _ => return None,
     })
 }

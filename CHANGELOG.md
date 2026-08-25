@@ -1,5 +1,39 @@
 # Changelog
 
+## 3.38.0 - 2026-08-24
+
+- **Getting around the editor** (4.0 S4, completing its editor list):
+  `Alt+L` goes to a line by number, `Alt+K` bookmarks the line the
+  cursor is on, `Alt+J` and `Alt+I` walk to the next and previous
+  bookmark and `Alt+O` drops them all - mc's keys.
+- **A bookmark follows its text.** Inserting or deleting lines above
+  one moves it with what it marked; a bookmark that stayed on its line
+  *number* would end up pointing at whatever slid into that place,
+  which is not what was bookmarked.
+- **`Alt+N` draws mc's line-number gutter**, with a `*` beside a
+  bookmarked line - the bookmarks are worth seeing and not only
+  jumping to. A click in the gutter lands on the start of its line
+  rather than eight characters into it.
+- **The desktop clipboard**: Ctrl+C and Ctrl+X - and the F5/F6 block
+  ops, which fill the same clipboard - also put the text on the system
+  clipboard, and Ctrl+V reads it, through `wl-copy`, `xclip`, `xsel` or
+  `pbcopy`, whichever is installed. With none of them there, or with no
+  desktop to have a clipboard at all (over ssh the tools are not even
+  tried), the editor's own clipboard stands, so copy and paste inside
+  rcmd work either way and nothing has to be configured for them to.
+- **`file~` backups** on save, off by default: the previous contents
+  are copied aside before anything is written, which is mc's "Do
+  backups" - one step back rather than a history.
+- **`Ctrl+U` undoes**, as it does in mc, beside rcmd's `Ctrl+Z`.
+- The bottom bar of the editor and the viewer now gives the **note**
+  the room it needs and cuts the key list instead. It was the other way
+  round, so a longer key list quietly clipped the message the program
+  had just printed - exactly when there was something to say.
+- The editor options form gained the three switches these need - line
+  numbers, backups and the shared clipboard - and the menu bar gained
+  the entries, so every one of them can be found without knowing it was
+  there.
+
 ## 3.37.0 - 2026-08-24
 
 - **The editor has a menu bar** (4.0 S4): **F9** opens File, Edit,

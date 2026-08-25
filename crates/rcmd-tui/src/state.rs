@@ -77,6 +77,12 @@ pub struct State {
     pub edit_backspace_tabs: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edit_wrap_column: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_line_numbers: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_backups: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit_clipboard: Option<bool>,
     /// `None` = never edited in rcmd, so `config.toml`'s list stands.
     /// Once `a`/`d` touches it, this owns the list outright.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -170,7 +176,10 @@ pub fn apply(state: &State, config: &mut Config) {
         edit_fill_tabs,
         edit_auto_indent,
         edit_backspace_tabs,
-        edit_wrap_column
+        edit_wrap_column,
+        edit_line_numbers,
+        edit_backups,
+        edit_clipboard
     );
     // `lynx` is Option in the config too: unset means "follow the preset".
     if state.lynx.is_some() {
