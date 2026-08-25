@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.58.0 - 2026-08-26
+
+- **mc's underlined hotkeys on dialog buttons** (4.0 S8, and the last of
+  it): every button row draws its hotkey underlined - the letter after a
+  `&` in the label, or the first one - and **Alt and that letter presses
+  it from anywhere in the dialog**, which is what makes it useful when a
+  text field has the focus. Alt+O and Alt+C are OK and Cancel
+  everywhere; F5's Background is Alt+B; the chmod buttons are marked by
+  hand, `Set` and `Set marked` having the same first letter.
+- Like `[keys.dialog]`, it is a translation rather than a table in every
+  dialog: the focus moves onto the button and the dialog is handed the
+  Enter it already knew what to do with.
+- **The mouse works on a list dialog**: a click puts the cursor on the
+  row it landed on and a double-click is the Enter that would have
+  followed - the hotlist, the user menu, the jobs list, the command
+  history, the codepage and skin pickers, the compare-mode list. A
+  click on a heading row does nothing, and a click outside the dialog
+  does nothing either: losing what you had typed to a stray click is
+  worse than reaching for the keyboard.
+- Dialogs with fields and checkboxes in them stay keyboard-only, which
+  is where mc's own mouse support effectively lands too.
+
 ## 3.57.0 - 2026-08-25
 
 - **User syntax files** (4.0 S8): `.sublime-syntax` definitions in

@@ -4362,6 +4362,57 @@ def cursor_is(s, name):
     return False
 
 
+def test_dialogmanners():
+    """PLAN4 S8: mc's underlined button hotkeys (Alt+letter presses one
+    from anywhere in the dialog) and the mouse on a list dialog."""
+    root, play, home = sandbox()
+    for name in ("one.txt", "two.txt"):
+        open(os.path.join(play, name), "w").write(name + "\n")
+    s = Session(play, home)
+
+    # the button row is drawn with its hotkey underlined
+    s.send(b"\x13one\r", wait=STEP)              # cursor -> one.txt
+    s.send(F5, wait=STEP)                        # copy dialog
+    scr = s.screen()
+    check("manners: the copy dialog has its buttons",
+          "OK" in scr and "Background" in scr and "Cancel" in scr, scr)
+    check("manners: the hotkey is underlined",
+          re.search(rb"\x1b\[[0-9;]*4[;m]", s.buf) is not None)
+    # Alt+C presses Cancel from the destination field, without typing a c
+    s.send(b"\x1bc", wait=STEP)
+    # "Copy" is in the key bar whatever happens; the Background button
+    # is only ever on the dialog
+    check("manners: alt+letter pressed Cancel",
+          "Background" not in s.screen(), s.screen())
+
+    # ...and Alt+O accepts. Copy one.txt into a directory made for it.
+    os.makedirs(os.path.join(play, "copied"))
+    s.send(b"\x12", wait=STEP)                   # Ctrl+R so it is listed
+    s.send(b"\x13one\r", wait=STEP)
+    s.send(F5, wait=STEP)
+    s.send(b"copied/", wait=STEP)                # appended to the offered path
+    s.send(b"\x1bo", wait=STEP * 3)              # Alt+O = OK
+    check("manners: alt+letter pressed OK",
+          os.path.isfile(os.path.join(play, "copied", "one.txt")), s.screen())
+
+    # a click in a list dialog puts the cursor on the row it landed on,
+    # and a double-click is the Enter that would have followed
+    s.send(b"\x1c", wait=STEP)                   # Ctrl+\ hotlist
+    s.send(b"a", wait=STEP)
+    s.send(b"\r", wait=STEP)                     # add this directory
+    scr = s.screen().split("\n")
+    row = next(i for i, line in enumerate(scr) if "play" in line and "Recent" not in line
+               and i > 5)
+    col = scr[row].index("play") + 1
+    s.send(click(col, row + 1), wait=STEP)
+    check("manners: a click selects a hotlist row", "Directory hotlist" in s.screen())
+    s.send(click(col, row + 1), wait=STEP)       # the second half of a double-click
+    check("manners: a double-click is Enter",
+          "Directory hotlist" not in s.screen(), s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_usersyntax():
     """PLAN4 S8: the editor reads user syntax files - .sublime-syntax
     definitions in ~/.config/rcmd/syntax, which is what syntect speaks."""
@@ -5001,6 +5052,7 @@ def main():
         test_panelize,
         test_diff,
         test_cli,
+        test_dialogmanners,
         test_usersyntax,
         test_dialogkeys,
         test_learnkeys,

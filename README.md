@@ -183,6 +183,7 @@ exactly where it was.
 | Alt+. | Toggle hidden files |
 | Ctrl+S, Alt+S | Quick search: matches anywhere in the name, `*`/`?` glob, smartcase; Ctrl+S or ↓/↑ walks the matches |
 | Ctrl+F | Filter shown files by glob (`*` or empty clears) |
+| Alt+letter | In a dialog: press the button whose underlined letter it is |
 | Ctrl+\ | Directory hotlist: Enter goes (or walks into a group), `a` adds this directory, `g` makes a group, `e` renames, `m` moves an entry into another group, `d` drops, Alt+↑/↓ reorders |
 | Alt+F7 | Find file (glob + optional content); results panelized |
 | Alt+← / Alt+→ | Directory history back / forward (per panel) |

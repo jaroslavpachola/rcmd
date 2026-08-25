@@ -526,7 +526,7 @@ pub const CHMOD_OCTAL_ROW: usize = CHMOD_BITS.len();
 pub const CHMOD_RECURSE_ROW: usize = CHMOD_BITS.len() + 1;
 pub const CHMOD_ROWS: usize = CHMOD_BITS.len() + 2;
 /// What the buttons do to each selected entry's own mode.
-pub const CHMOD_BUTTONS: &[&str] = &["Set", "Set marked", "Clear marked", "Cancel"];
+pub const CHMOD_BUTTONS: &[&str] = &["&Set", "Set &marked", "&Clear marked", "Ca&ncel"];
 
 impl ChmodDialog {
     /// Re-render the octal field from the boxes.
@@ -565,6 +565,11 @@ pub struct ChownDialog {
 }
 
 pub const CHOWN_BUTTONS: &[&str] = &["Set", "Cancel"];
+/// F5/F6's buttons. Background is mc's, and it earns the `&` because
+/// the two others start with letters it does not.
+pub const TRANSFER_BUTTONS: &[&str] = &["OK", "&Background", "Cancel"];
+pub const YES_NO: &[&str] = &["Yes", "No"];
+pub const OK_CANCEL: &[&str] = &["OK", "Cancel"];
 /// Focus stops in the chown window: two lists, the box, the buttons.
 pub const CHOWN_STOPS: usize = 4;
 pub const CHOWN_RECURSE_COL: usize = 2;
@@ -747,6 +752,110 @@ impl UserMenuDialog {
             }
         }
         here
+    }
+}
+
+/// mc marks a dialog button's hotkey with `&` in front of a letter; a
+/// label with no marker uses its first. Returns the letter (lowercased)
+/// and where it sits in the label as drawn.
+pub fn button_hotkey(label: &str) -> (String, Option<(usize, char)>) {
+    match label.split_once('&') {
+        Some((before, after)) => {
+            let mut chars = after.chars();
+            match chars.next() {
+                Some(c) => (
+                    format!("{before}{after}"),
+                    Some((before.chars().count(), c.to_ascii_lowercase())),
+                ),
+                None => (before.to_string(), None),
+            }
+        }
+        None => {
+            let first = label.chars().next().map(|c| (0, c.to_ascii_lowercase()));
+            (label.to_string(), first)
+        }
+    }
+}
+
+/// Which button a letter presses, if any.
+pub fn button_for(labels: &[&str], c: char) -> Option<usize> {
+    let c = c.to_ascii_lowercase();
+    labels
+        .iter()
+        .position(|label| button_hotkey(label).1.is_some_and(|(_, hot)| hot == c))
+}
+
+/// A button label as it reads without its marker - what the code that
+/// asks "which button is this?" compares against.
+pub fn button_text(label: &str) -> String {
+    button_hotkey(label).0
+}
+
+/// mc's underlined hotkeys: Alt and the letter a button is marked with
+/// presses it, wherever the focus happens to be - which is what makes
+/// them useful in a dialog with a text field in it. This moves the
+/// focus onto that button; the caller then hands the dialog an Enter,
+/// which every one of them already knows what to do with.
+fn focus_button(dialog: &mut Dialog, c: char) -> bool {
+    let pick = |labels: &[&str], at: &mut usize| match button_for(labels, c) {
+        Some(found) => {
+            *at = found;
+            true
+        }
+        None => false,
+    };
+    let pick2 = |labels: &[&str], ok: &mut bool| match button_for(labels, c) {
+        Some(found) => {
+            *ok = found == 0;
+            true
+        }
+        None => false,
+    };
+    match dialog {
+        Dialog::Confirm(d) => pick2(YES_NO, &mut d.yes),
+        Dialog::RenamePreview(d) => pick2(YES_NO, &mut d.yes),
+        Dialog::Chmod(d) => pick(CHMOD_BUTTONS, &mut d.button),
+        Dialog::Chown(d) => pick(CHOWN_BUTTONS, &mut d.button),
+        Dialog::FindResults(d) => pick(FIND_BUTTONS, &mut d.button),
+        // these three only act on their button row, so the focus has to
+        // go there as well as onto the button
+        Dialog::Transfer(d) => {
+            let landed = pick(TRANSFER_BUTTONS, &mut d.button);
+            if landed {
+                d.row = TRANSFER_ROWS;
+            }
+            landed
+        }
+        Dialog::Options(d) => {
+            let landed = pick2(OK_CANCEL, &mut d.ok);
+            if landed {
+                d.cursor = OPTION_ROWS.len();
+            }
+            landed
+        }
+        Dialog::Pattern(d) => {
+            let landed = pick2(OK_CANCEL, &mut d.ok);
+            if landed {
+                d.row = PATTERN_ROWS;
+            }
+            landed
+        }
+        Dialog::Find(d) => {
+            let landed = pick2(OK_CANCEL, &mut d.ok);
+            if landed {
+                d.row = FIND_ROWS;
+            }
+            landed
+        }
+        Dialog::Link(d) => {
+            let last = d.rows();
+            let landed = pick2(OK_CANCEL, &mut d.ok);
+            if landed {
+                d.row = last;
+            }
+            landed
+        }
+        _ => false,
     }
 }
 
@@ -1692,6 +1801,18 @@ const EDIT_OPTIONS_MENU: &[EditMenuEntry] = &[
 /// One panel side's cached free-space measurement.
 pub type DiskSpace = Option<(PathBuf, Instant, Option<(u64, u64)>)>;
 
+/// Where the open dialog drew its rows, and which index the topmost
+/// drawn row answers to. Filled in on every draw and spent by the
+/// mouse - a list dialog is the one shape where a click has an obvious
+/// meaning, so those are the ones that take one.
+#[derive(Clone)]
+pub struct DialogRows {
+    pub area: Rect,
+    /// Which selectable row each drawn line answers to, top-down.
+    /// `None` is a line that is not one - a heading, say.
+    pub rows: Vec<Option<usize>>,
+}
+
 /// Where the main-screen regions landed in the last draw; filled by
 /// [`ui::draw`], read by the mouse hit-testing.
 #[derive(Default, Clone, Copy)]
@@ -2463,6 +2584,8 @@ pub struct App {
     /// C-l: clear the terminal before the next draw.
     repaint: bool,
     pub areas: Areas,
+    /// Set by the drawing code; see [`DialogRows`].
+    pub dialog_rows: Option<DialogRows>,
     /// Last left-button press, for double-click detection.
     last_click: Option<(Instant, u16, u16)>,
     /// A lone Esc waiting for its follow-up key (MC's ESC-as-Meta
@@ -2614,6 +2737,7 @@ impl App {
             prefix_cx: false,
             repaint: false,
             areas: Areas::default(),
+            dialog_rows: None,
             last_click: None,
             esc_at: None,
             git_info: [None, None],
@@ -3668,11 +3792,17 @@ impl App {
     }
 
     fn on_click(&mut self, x: u16, y: u16, double: bool) {
-        // Dialogs and prompts stay keyboard-only; the menu is the exception.
+        // A list dialog takes a click on one of its rows: that is the
+        // one shape where a click means something obvious. The dialogs
+        // with fields and checkboxes in them stay keyboard-only.
+        if self.dialog.is_some() {
+            self.click_dialog_row(x, y, double);
+            return;
+        }
+        // Other prompts stay keyboard-only; the menu is the exception.
         if self.fg_job().is_some()
             || self.connect.is_some()
             || self.find.is_some()
-            || self.dialog.is_some()
             || self.help.is_some()
             || self.viewer().is_some()
         {
@@ -6895,8 +7025,92 @@ impl App {
         }
     }
 
+    /// A click on a list dialog's row: it selects, and a double-click
+    /// is the Enter that would have followed. A click anywhere else in
+    /// the dialog does nothing - closing on a stray click outside would
+    /// lose whatever was typed.
+    fn click_dialog_row(&mut self, x: u16, y: u16, double: bool) {
+        let Some(rows) = self.dialog_rows.clone() else {
+            return;
+        };
+        let area = rows.area;
+        let inside =
+            x >= area.x && x < area.x + area.width && y >= area.y && y < area.y + area.height;
+        if !inside {
+            return;
+        }
+        let Some(Some(at)) = rows.rows.get((y - area.y) as usize).copied() else {
+            return;
+        };
+        if !self.select_dialog_row(at) {
+            return;
+        }
+        self.dirty = true;
+        if double {
+            self.on_dialog_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        }
+    }
+
+    /// Put a list dialog's cursor on `at`, if it has one and the row
+    /// exists. False = this dialog is not one of them.
+    fn select_dialog_row(&mut self, at: usize) -> bool {
+        let count = |n: usize| (at < n).then_some(at);
+        // the hotlist's row count depends on the whole app (the recent
+        // directories are part of the list), so it is worked out before
+        // the dialog is borrowed
+        let hotlist_len = match self.dialog.as_ref() {
+            Some(Dialog::Hotlist(d)) => Some(self.hotlist_rows(d).len()),
+            _ => None,
+        };
+        match self.dialog.as_mut() {
+            Some(Dialog::Hotlist(d)) => {
+                if let Some(at) = count(hotlist_len.unwrap_or(0)) {
+                    d.row = at;
+                }
+                true
+            }
+            Some(Dialog::UserMenu(d)) => {
+                if let Some(at) = count(d.entries().len()) {
+                    d.row = at;
+                }
+                true
+            }
+            Some(Dialog::Jobs(row)) => {
+                if let Some(at) = count(self.jobs.len()) {
+                    *row = at;
+                }
+                true
+            }
+            Some(Dialog::History(row)) => {
+                if let Some(at) = count(self.cmdline.history().len()) {
+                    *row = at;
+                }
+                true
+            }
+            Some(Dialog::Charset(row)) => {
+                if let Some(at) = count(CHARSET_ROWS.len()) {
+                    *row = at;
+                }
+                true
+            }
+            Some(Dialog::Skin(row)) => {
+                if let Some(at) = count(crate::theme::list().len()) {
+                    *row = at;
+                }
+                true
+            }
+            Some(Dialog::Compare(row)) => {
+                if let Some(at) = count(COMPARE_MODES.len()) {
+                    *row = at;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn on_dialog_key(&mut self, key: KeyEvent) {
-        let Some(dialog) = self.dialog.take() else {
+        let Some(mut dialog) = self.dialog.take() else {
             return;
         };
         // `[keys.dialog]` is a translation: a rebound key arrives as
@@ -6910,6 +7124,14 @@ impl App {
             None => key,
         };
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        // ...and mc's underlined hotkeys are a translation too: the
+        // focus moves onto the button and the dialog is handed an Enter
+        let key = match key.code {
+            KeyCode::Char(c) if alt && focus_button(&mut dialog, c) => {
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            }
+            _ => key,
+        };
         match dialog {
             Dialog::Input(mut d) => match key.code {
                 KeyCode::Esc => {}
@@ -8708,10 +8930,10 @@ impl App {
     /// leave every other bit of each file alone, which is the whole
     /// point of chmod'ing a group of files at once.
     fn submit_chmod(&mut self, d: ChmodDialog) {
-        let Some(action) = CHMOD_BUTTONS.get(d.button) else {
+        let Some(action) = CHMOD_BUTTONS.get(d.button).map(|label| button_text(label)) else {
             return;
         };
-        if *action == "Cancel" {
+        if action == "Cancel" {
             return;
         }
         let mode = d.mode;
@@ -8723,7 +8945,7 @@ impl App {
             .collect();
         let apply = |path: &Path| -> u32 {
             let was = current.get(path).copied().unwrap_or(0);
-            match *action {
+            match action.as_str() {
                 "Set marked" => was | mode,
                 "Clear marked" => was & !mode,
                 _ => mode,

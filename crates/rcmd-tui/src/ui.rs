@@ -962,6 +962,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let Some(menu) = &app.menu {
         draw_menu(frame, menu);
     }
+    // where the open dialog's rows landed, for the mouse; the list
+    // dialogs fill it in, everything else leaves it empty
+    let mut dialog_rows = None;
     if let Some(dialog) = &app.dialog {
         match dialog {
             Dialog::Input(d) => draw_input(frame, d),
@@ -971,8 +974,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Chmod(d) => draw_chmod(frame, d),
             Dialog::Chown(d) => draw_chown(frame, d),
             Dialog::Link(d) => draw_link(frame, d),
-            Dialog::Hotlist(d) => draw_hotlist(frame, app, d),
-            Dialog::UserMenu(d) => draw_user_menu(frame, d),
+            Dialog::Hotlist(d) => dialog_rows = draw_hotlist(frame, app, d),
+            Dialog::UserMenu(d) => dialog_rows = draw_user_menu(frame, d),
             Dialog::Find(d) => draw_find(frame, d),
             Dialog::Options(d) => draw_options(frame, d),
             Dialog::Pattern(d) => draw_pattern(frame, d),
@@ -983,23 +986,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     .iter()
                     .map(|(label, _)| *label)
                     .collect();
-                draw_pick_list(frame, " Compare directories ", &rows, *row, 0)
+                dialog_rows = draw_pick_list(frame, " Compare directories ", &rows, *row, 0)
             }
             Dialog::Charset(row) => {
-                draw_pick_list(frame, " Character set ", &crate::app::CHARSET_ROWS, *row, 0)
+                dialog_rows =
+                    draw_pick_list(frame, " Character set ", &crate::app::CHARSET_ROWS, *row, 0)
             }
             Dialog::Learn(d) => draw_learn(frame, d),
             Dialog::Skin(row) => {
                 let names = crate::theme::list();
                 let rows: Vec<&str> = names.iter().map(String::as_str).collect();
-                draw_pick_list(frame, " Appearance ", &rows, *row, 0)
+                dialog_rows = draw_pick_list(frame, " Appearance ", &rows, *row, 0)
             }
             Dialog::RenamePreview(d) => draw_rename_preview(frame, d),
-            Dialog::Jobs(selected) => draw_jobs(frame, &app.jobs, *selected),
+            Dialog::Jobs(selected) => dialog_rows = draw_jobs(frame, &app.jobs, *selected),
             Dialog::Vfs(d) => draw_vfs(frame, d),
-            Dialog::History(selected) => draw_history(frame, app.cmdline.history(), *selected),
+            Dialog::History(selected) => {
+                dialog_rows = draw_history(frame, app.cmdline.history(), *selected)
+            }
         }
     }
+    app.dialog_rows = dialog_rows;
     if let Some(job) = app.fg_job() {
         draw_job(frame, job);
         if let Some(ask) = &job.ask {
@@ -2412,7 +2419,13 @@ fn draw_learn(frame: &mut Frame, d: &crate::app::LearnDialog) {
     );
 }
 
-fn draw_pick_list(frame: &mut Frame, title: &str, rows: &[&str], row: usize, top: usize) {
+fn draw_pick_list(
+    frame: &mut Frame,
+    title: &str,
+    rows: &[&str],
+    row: usize,
+    top: usize,
+) -> Option<crate::app::DialogRows> {
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
     let shown = rows
@@ -2450,6 +2463,13 @@ fn draw_pick_list(frame: &mut Frame, title: &str, rows: &[&str], row: usize, top
             line,
         );
     }
+    Some(crate::app::DialogRows {
+        area: Rect {
+            height: shown as u16,
+            ..inner
+        },
+        rows: (0..shown).map(|i| Some(top + i)).collect(),
+    })
 }
 
 /// One row of the editor's line-number gutter. `None` on a wrapped
@@ -3536,13 +3556,31 @@ pub fn tail(text: &str, max: usize) -> String {
     }
 }
 
+/// A row of dialog buttons, with mc's **underlined hotkey**: the letter
+/// after a `&` in the label, or the first one when the label has no
+/// marker. Alt and that letter presses the button from anywhere in the
+/// dialog, which is what makes it useful when a text field has the
+/// focus.
 fn buttons_line(labels: &[&str], selected: usize, base: Style, sel: Style) -> Line<'static> {
     let mut spans = Vec::new();
     for (i, label) in labels.iter().enumerate() {
-        spans.push(Span::styled(
-            format!("[ {label} ]"),
-            if i == selected { sel } else { base },
-        ));
+        let style = if i == selected { sel } else { base };
+        let (text, hotkey) = crate::app::button_hotkey(label);
+        match hotkey {
+            Some((at, _)) => {
+                let mut chars = text.chars();
+                let before: String = chars.by_ref().take(at).collect();
+                let letter: String = chars.by_ref().take(1).collect();
+                let after: String = chars.collect();
+                spans.push(Span::styled(format!("[ {before}"), style));
+                spans.push(Span::styled(
+                    letter,
+                    style.add_modifier(Modifier::UNDERLINED),
+                ));
+                spans.push(Span::styled(format!("{after} ]"), style));
+            }
+            None => spans.push(Span::styled(format!("[ {text} ]"), style)),
+        }
         spans.push(Span::styled(" ", base));
     }
     Line::from(spans).centered()
@@ -3896,7 +3934,10 @@ fn draw_find(frame: &mut Frame, d: &FindDialog) {
 
 /// The F2 user menu: `[[commands]]` from the config, first nine with
 /// digit hotkeys.
-fn draw_user_menu(frame: &mut Frame, d: &crate::app::UserMenuDialog) {
+fn draw_user_menu(
+    frame: &mut Frame,
+    d: &crate::app::UserMenuDialog,
+) -> Option<crate::app::DialogRows> {
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
     let commands = d.entries();
@@ -3954,6 +3995,15 @@ fn draw_user_menu(frame: &mut Frame, d: &crate::app::UserMenuDialog) {
             row,
         );
     }
+    Some(crate::app::DialogRows {
+        area: Rect {
+            height: (commands.len() as u16).min(inner.height),
+            ..inner
+        },
+        rows: (0..commands.len().min(inner.height as usize))
+            .map(Some)
+            .collect(),
+    })
 }
 
 /// The names on the way into a submenu, for its title.
@@ -4320,14 +4370,14 @@ fn draw_transfer(frame: &mut Frame, d: &crate::app::TransferDialog) {
             row_at(row as u16),
         );
     }
-    let buttons = ["OK", "Background", "Cancel"];
+    let buttons = crate::app::TRANSFER_BUTTONS;
     let selected = if d.row == TRANSFER_ROWS {
         d.button
     } else {
         usize::MAX
     };
     frame.render_widget(
-        buttons_line(&buttons, selected, base, sel),
+        buttons_line(buttons, selected, base, sel),
         row_at(TRANSFER_ROWS as u16 + 1),
     );
     // the cursor sits in whichever of the two text rows has the focus
@@ -4362,7 +4412,11 @@ fn draw_tree_dialog(frame: &mut Frame, tree: &Tree) {
     draw_tree_rows(frame, inner, tree, base, selected);
 }
 
-fn draw_hotlist(frame: &mut Frame, app: &App, d: &crate::app::HotlistDialog) {
+fn draw_hotlist(
+    frame: &mut Frame,
+    app: &App,
+    d: &crate::app::HotlistDialog,
+) -> Option<crate::app::DialogRows> {
     use crate::app::HotRow;
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
@@ -4429,7 +4483,7 @@ fn draw_hotlist(frame: &mut Frame, app: &App, d: &crate::app::HotlistDialog) {
             Line::from(" empty - press 'a' to add the current directory ").centered(),
             inner,
         );
-        return;
+        return None;
     }
     // keep the selected row in view when the list outgrows the dialog
     let sel_row = lines
@@ -4457,6 +4511,19 @@ fn draw_hotlist(frame: &mut Frame, app: &App, d: &crate::app::HotlistDialog) {
             row,
         );
     }
+    let shown = lines.len().saturating_sub(first).min(inner.height as usize);
+    Some(crate::app::DialogRows {
+        area: Rect {
+            height: shown as u16,
+            ..inner
+        },
+        // the "Recent:" heading is a line the cursor cannot land on,
+        // which is exactly what the None in here means
+        rows: lines[first..first + shown]
+            .iter()
+            .map(|(_, at)| *at)
+            .collect(),
+    })
 }
 
 /// Bulk-rename preview: every rename and delete the edited buffer asks
@@ -4519,7 +4586,10 @@ fn draw_rename_preview(frame: &mut Frame, d: &crate::app::RenamePreview) {
         ..inner
     };
     let selected = usize::from(!d.yes);
-    frame.render_widget(buttons_line(&["Yes", "No"], selected, base, sel), buttons);
+    frame.render_widget(
+        buttons_line(crate::app::YES_NO, selected, base, sel),
+        buttons,
+    );
 }
 
 fn draw_confirm(frame: &mut Frame, d: &ConfirmDialog) {
@@ -4543,7 +4613,10 @@ fn draw_confirm(frame: &mut Frame, d: &ConfirmDialog) {
         ..inner
     };
     let selected = usize::from(!d.yes);
-    frame.render_widget(buttons_line(&["Yes", "No"], selected, style, sel), buttons);
+    frame.render_widget(
+        buttons_line(crate::app::YES_NO, selected, style, sel),
+        buttons,
+    );
 }
 
 /// Host-key confirmation / password prompt during an SFTP connect.
@@ -4573,7 +4646,10 @@ fn draw_connect_ask(frame: &mut Frame, ask: &ConnectAsk) {
                 row(3),
             );
             let selected = usize::from(!*yes);
-            frame.render_widget(buttons_line(&["Yes", "No"], selected, style, sel), row(5));
+            frame.render_widget(
+                buttons_line(crate::app::YES_NO, selected, style, sel),
+                row(5),
+            );
         }
         ConnectAsk::Password {
             prompt,
@@ -4613,7 +4689,11 @@ fn draw_connect_ask(frame: &mut Frame, ask: &ConnectAsk) {
 /// pulls one to the foreground, c cancels it.
 /// M-h: the command line's history, newest first. Enter puts the
 /// selected line back on the command line for editing.
-fn draw_history(frame: &mut Frame, history: &[String], selected: usize) {
+fn draw_history(
+    frame: &mut Frame,
+    history: &[String],
+    selected: usize,
+) -> Option<crate::app::DialogRows> {
     let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
     let rows = history.len().min(16) as u16;
@@ -4653,6 +4733,14 @@ fn draw_history(frame: &mut Frame, history: &[String], selected: usize) {
             line,
         );
     }
+    let shown = history.len().saturating_sub(first).min(visible);
+    Some(crate::app::DialogRows {
+        area: Rect {
+            height: shown as u16,
+            ..inner
+        },
+        rows: (0..shown).map(|r| Some(first + r)).collect(),
+    })
 }
 
 /// The active VFS list: what the panels are sitting on that is not the
@@ -4701,7 +4789,7 @@ fn draw_vfs(frame: &mut Frame, dialog: &VfsDialog) {
     }
 }
 
-fn draw_jobs(frame: &mut Frame, jobs: &[Job], selected: usize) {
+fn draw_jobs(frame: &mut Frame, jobs: &[Job], selected: usize) -> Option<crate::app::DialogRows> {
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
     let rows = jobs.len().max(1) as u16;
@@ -4715,7 +4803,7 @@ fn draw_jobs(frame: &mut Frame, jobs: &[Job], selected: usize) {
     frame.render_widget(block, area);
     if jobs.is_empty() {
         frame.render_widget(Line::from(" nothing running ").centered(), inner);
-        return;
+        return None;
     }
     let selected = selected.min(jobs.len() - 1);
     for (i, job) in jobs.iter().enumerate() {
@@ -4746,6 +4834,14 @@ fn draw_jobs(frame: &mut Frame, jobs: &[Job], selected: usize) {
             row,
         );
     }
+    let shown = jobs.len().min(inner.height as usize);
+    Some(crate::app::DialogRows {
+        area: Rect {
+            height: shown as u16,
+            ..inner
+        },
+        rows: (0..shown).map(Some).collect(),
+    })
 }
 
 /// "2:05", or "1:02:05" once it runs past an hour. Anything longer than

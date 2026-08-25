@@ -143,12 +143,12 @@ mc's, and every row of it actually decodes.
   spelled out (libc has them for Linux only), `pipe` instead of
   `pipe2`, and `proc_pidinfo` where Linux reads `/proc/<pid>/cwd`.
 
-### S8 - the leftovers (added 2026-08-25)
+### S8 - the leftovers - DONE (2026-08-26)
 
-S0-S7 are done, but a sweep of [MC-DIFF.md](MC-DIFF.md) afterwards found
-**Adopt** rows that no phase had claimed - each one small enough to fall
-between two milestones, which is exactly how they did. The policy is
-still MC-DIFF's, so they are parity work rather than a shrug:
+S0-S7 were done, but a sweep of [MC-DIFF.md](MC-DIFF.md) afterwards
+found **Adopt** rows that no phase had claimed - each one small enough
+to fall between two milestones, which is exactly how they did. The
+policy is still MC-DIFF's, so they were parity work rather than a shrug:
 
 - **Quick search** (§2): still prefix-only, still swallowing a
   character that matches nothing. mc's is a substring/wildcard search
@@ -170,13 +170,25 @@ still MC-DIFF's, so they are parity work rather than a shrug:
   underlined-hotkey scheme in place of today's ad-hoc single letters.
 - **Editor odds** (§8): the mc clipboard file, and user syntax files.
 
-The rest of §9's tail is in: `lha`/`arj`/`cab` browse through their own
-tools alongside `rar` and `7z`.
+All of them landed. Two carry a divergence worth writing down:
 
-**Then 4.0 is what it set out to be** - a drop-in where an mc user's
+- A `.mc.menu` in a directory **adds** to your `[[commands]]` rather
+  than replacing them, where mc's local menu shadows the user's own. A
+  project's menu is an addition to yours.
+- The **mouse in dialogs** reaches the list-shaped ones (hotlist, user
+  menu, jobs, history, the pickers): a click selects, a double-click is
+  Enter. Dialogs with fields and checkboxes stay keyboard-only, and
+  **Learn keys** answers "what does rcmd see?" rather than rewriting a
+  keymap, because rcmd cannot reprogram a terminal and should not
+  pretend to.
+
+The rest of §9's tail was already in: `lha`/`arj`/`cab` browse through
+their own tools alongside `rar` and `7z`.
+
+**So 4.0 is what it set out to be** - a drop-in where an mc user's
 hands, config files and expectations all land somewhere, with the
-deliberate divergences written down in MC-DIFF rather than quietly
-closed.
+deliberate divergences written down rather than quietly closed. Every
+**Adopt** row in MC-DIFF is closed.
 
 ## Sequencing
 
