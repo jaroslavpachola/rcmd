@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.46.0 - 2026-08-25
+
+- **Compare directories asks how** (4.0 S6): Ctrl+X d now offers mc's
+  three answers - **Quick** (size and date, which is what rcmd always
+  did), **Size only**, and **Thorough**.
+- **Thorough reads the files.** Two files with the same size and the
+  same date can still be different files, and nothing but their bytes
+  will say so. It runs on a worker thread, marks each pair as it finds
+  it rather than at the end, and Esc stops it part way - a directory of
+  large files marks the first difference long before the last pair is
+  read.
+- **Size only** is for a tree whose timestamps were never going to
+  survive the trip: an unzip, an rsync without `-t`, a copy through a
+  filesystem that rounds them.
+- Thorough works through whatever the panel is on, so a local
+  directory can be compared against an SFTP or FTP one byte for byte.
+  Archives are still refused, as they were.
+
 ## 3.45.0 - 2026-08-25
 
 - **An idle rcmd stops repainting.** The event loop wakes on a timer to

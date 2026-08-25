@@ -1377,15 +1377,32 @@ def test_compare():
     open(os.path.join(left, "only-left.txt"), "w").write("l\n")
     open(os.path.join(left, "differs.txt"), "w").write("short\n")
     open(os.path.join(right, "differs.txt"), "w").write("much longer content\n")
+    # same size and date, different bytes: only a thorough compare can
+    # tell these two apart
+    for d, text in ((left, "aaaa\n"), (right, "bbbb\n")):
+        open(os.path.join(d, "sneaky.txt"), "w").write(text)
+        os.utime(os.path.join(d, "sneaky.txt"), (1_700_000_000, 1_700_000_000))
     s = Session(play, home, args=(left, right))
-    s.keys(
-        b"\x18",                     # Ctrl+X
-        b"d",         # compare
-        wait=STEP * 2,
-    )
+
+    s.keys(b"\x18", b"d", wait=STEP * 2)      # Ctrl+X d
     scr = s.screen()
-    check("compare: difference count", "2 difference(s) marked" in scr)
+    check("compare: the modes are offered",
+          "Quick" in scr and "Size only" in scr and "Thorough" in scr, scr)
+    s.send(b"\r", wait=STEP * 2)              # Quick, the default
+    scr = s.screen()
+    check("compare: difference count", "2 difference(s) marked" in scr, scr)
     check("compare: marked summary shown", "file(s)" in scr)
+
+    # size only forgives the date but still sees the size
+    s.keys(b"\x18", b"d", wait=STEP)
+    s.send(b"s", wait=STEP * 2)
+    check("compare: size only agrees here", wait_for(s, "2 difference(s) marked"))
+
+    # thorough reads them, and finds the pair the listing could not
+    s.keys(b"\x18", b"d", wait=STEP)
+    s.send(b"t", wait=STEP * 2)
+    check("compare: thorough found the sneaky pair",
+          wait_for(s, "3 difference(s) marked"), s.screen())
     s.quit()
     shutil.rmtree(root)
 

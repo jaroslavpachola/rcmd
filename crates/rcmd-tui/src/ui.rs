@@ -295,8 +295,12 @@ const HELP_TEXT: &[&str] = &[
     "                  Results land in a window of their own - Chdir,",
     "                  Again, Panelize, View, Edit - or stream into the",
     "                  panel with find_window = false. Esc cancels.",
-    "  Ctrl+X d        compare directories: marks files missing on the",
-    "                  other side or differing in size/mtime (F5 syncs)",
+    "  Ctrl+X d        compare directories, mc's three ways: Quick (size",
+    "                  and date), Size only, or Thorough - which reads",
+    "                  the files and is the only one that can tell two",
+    "                  files with the same size and date apart. Marks",
+    "                  what differs on both sides (F5 syncs); Esc stops",
+    "                  a thorough run part way.",
     "  F9>Cmd>Panelize command output becomes the panel listing",
     "  (Ctrl+R restores a normal listing after find/panelize)",
     "  Ctrl+Space      directory size (background scan, fills Size column)",
@@ -761,6 +765,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Options(d) => draw_options(frame, d),
             Dialog::Pattern(d) => draw_pattern(frame, d),
             Dialog::FindResults(d) => draw_find_results(frame, d),
+            Dialog::Compare(row) => {
+                let rows: Vec<&str> = crate::app::COMPARE_MODES
+                    .iter()
+                    .map(|(label, _)| *label)
+                    .collect();
+                draw_pick_list(frame, " Compare directories ", &rows, *row, 0)
+            }
             Dialog::Charset(row) => {
                 draw_pick_list(frame, " Character set ", &crate::app::CHARSET_ROWS, *row, 0)
             }

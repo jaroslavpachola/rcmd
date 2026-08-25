@@ -295,9 +295,14 @@ listing, **View** and **Edit** open the match, and **Quit** closes.
 straight into the panel as a *panelized* listing (paths relative to the
 search root), where marking and F5/F6/F8 work as usual. *Panelize command…*
 (F9 → Left/Right) turns any command's stdout lines into such a listing
-(`git ls-files -m`, `rg -l TODO`, …). *Compare directories* (Ctrl+X d)
-marks files that are missing on the other side or differ in size/mtime
-in both panels - then a plain F5 copies the marked differences across.
+(`git ls-files -m`, `rg -l TODO`, …). *Compare directories* (Ctrl+X d) asks
+mc's question first - **Quick** (size and date), **Size only**, or
+**Thorough** - and marks what differs on both sides, so a plain F5
+copies the differences across. Thorough reads the files, which is the
+only way to tell two files with the same size and date apart; it runs
+in the background, marks each pair as it finds it, and Esc stops it.
+Size only is for a tree whose timestamps were never going to survive
+the trip.
 
 **Mouse**: click focuses a panel and moves the cursor, double-click
 enters, the wheel scrolls whatever it hovers (panels, viewer, editor,

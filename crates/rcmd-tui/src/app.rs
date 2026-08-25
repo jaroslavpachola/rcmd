@@ -221,6 +221,16 @@ pub struct FindResults {
     pub query: Box<FindDialog>,
 }
 
+/// mc's three ways of comparing two directories, in its order.
+pub const COMPARE_MODES: &[(&str, rcmd_core::compare::Mode)] = &[
+    ("Quick (size and date)", rcmd_core::compare::Mode::Quick),
+    ("Size only", rcmd_core::compare::Mode::SizeOnly),
+    (
+        "Thorough (read the files)",
+        rcmd_core::compare::Mode::Thorough,
+    ),
+];
+
 /// The buttons along the bottom, in mc's order.
 pub const FIND_BUTTONS: &[&str] = &["Chdir", "Again", "Panelize", "View", "Edit", "Quit"];
 
@@ -249,6 +259,15 @@ impl FindResults {
             .min(self.selected)
             .max((self.selected + 1).saturating_sub(shown));
     }
+}
+
+/// A running thorough compare: the pairs the listings could not tell
+/// apart, being read on a worker thread.
+struct CompareState {
+    handle: rcmd_core::compare::CompareHandle,
+    /// How many pairs it was given, for the progress line.
+    total: usize,
+    done: usize,
 }
 
 /// A running Ctrl+Space directory-size scan.
@@ -527,6 +546,8 @@ pub enum Dialog {
     Jobs(usize),
     /// M-e: the panel's codepage, with the row it is on.
     Charset(usize),
+    /// C-x d: how to compare the two listings, with the row it is on.
+    Compare(usize),
     /// Select / unselect group, and the panel filter.
     Pattern(Box<PatternDialog>),
     /// MC's find results window.
@@ -1998,6 +2019,7 @@ pub struct App {
     connections: Vec<(String, Weak<dyn RemoteFs>)>,
     remote_edit: Option<RemoteEdit>,
     du: Option<DuJob>,
+    compare: Option<CompareState>,
     watch: Option<WatchState>,
     /// Something on screen has changed since the last frame. The loop
     /// wakes on a timer to poll jobs, watches and the like; drawing on
@@ -2131,6 +2153,7 @@ impl App {
             connections: Vec::new(),
             remote_edit: None,
             du: None,
+            compare: None,
             watch,
             dirty: true,
             prefix_cx: false,
@@ -2159,6 +2182,7 @@ impl App {
             self.drain_find();
             self.drain_connect();
             self.drain_du();
+            self.drain_compare();
             self.poll_loads();
             self.update_watches();
             self.tick_watch();
@@ -2186,6 +2210,7 @@ impl App {
             // "busy" is anything that moves on its own: a job's
             // progress, a listing still arriving, a followed file
             let busy = !self.jobs.is_empty()
+                || self.compare.is_some()
                 || self.find.is_some()
                 || self.connect.is_some()
                 || self.du.is_some()
@@ -4060,7 +4085,7 @@ impl App {
             Action::Enter => self.fallible(|p| p.enter()),
             Action::FindFile => self.open_find(),
             Action::Panelize => self.open_panelize(),
-            Action::CompareDirs => self.compare_dirs(),
+            Action::CompareDirs => self.open_compare(),
             Action::DirSize => self.dir_size(),
             Action::ScreenList => self.open_screen_list(),
             Action::Charset => {
@@ -6298,6 +6323,31 @@ impl App {
                 }
                 _ => self.dialog = Some(Dialog::Pattern(d)),
             },
+            Dialog::Compare(row) => {
+                let last = COMPARE_MODES.len() - 1;
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Up => self.dialog = Some(Dialog::Compare(row.saturating_sub(1))),
+                    KeyCode::Down | KeyCode::Tab => {
+                        self.dialog = Some(Dialog::Compare((row + 1).min(last)))
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => self.compare_dirs(COMPARE_MODES[row].1),
+                    // q, s, t: the first letter of each answer
+                    KeyCode::Char(c) => {
+                        let c = c.to_ascii_lowercase();
+                        match COMPARE_MODES.iter().position(|(label, _)| {
+                            label
+                                .chars()
+                                .next()
+                                .is_some_and(|f| f.to_ascii_lowercase() == c)
+                        }) {
+                            Some(at) => self.compare_dirs(COMPARE_MODES[at].1),
+                            None => self.dialog = Some(Dialog::Compare(row)),
+                        }
+                    }
+                    _ => self.dialog = Some(Dialog::Compare(row)),
+                }
+            }
             Dialog::Charset(row) => match charset_pick_key(row, key) {
                 PickKey::Move(to) => self.dialog = Some(Dialog::Charset(to)),
                 PickKey::Close => {}
@@ -7157,56 +7207,87 @@ impl App {
 
     /// Quick compare of both panel listings: marks files that are missing
     /// on the other side or differ in size/mtime.
-    fn compare_dirs(&mut self) {
-        use std::collections::HashMap;
-        use std::ffi::OsString;
-        use std::time::SystemTime;
-
-        // works on local and remote listings alike; only archives are out
+    /// C-x d: ask how, then compare. mc asks every time, and the
+    /// answer matters - "the same size and date" and "the same bytes"
+    /// are different questions.
+    fn open_compare(&mut self) {
         if self.panels[0].archive.is_some() || self.panels[1].archive.is_some() {
             self.status = Some(" cannot compare inside an archive ".into());
             return;
         }
-        let files = |panel: &Panel| -> HashMap<OsString, (u64, Option<SystemTime>)> {
-            panel
-                .entries
-                .iter()
-                .filter(|e| !e.is_dir() && !e.is_parent())
-                .map(|e| (e.name.clone(), (e.size, e.mtime)))
-                .collect()
-        };
-        let close = |a: Option<SystemTime>, b: Option<SystemTime>| match (a, b) {
-            (Some(a), Some(b)) => {
-                a.duration_since(b).unwrap_or_else(|e| e.duration()) <= Duration::from_secs(2)
-            }
-            _ => true, // unknown mtimes never count as a difference
-        };
-        let left = files(&self.panels[0]);
-        let right = files(&self.panels[1]);
+        self.dialog = Some(Dialog::Compare(0));
+    }
+
+    fn compare_dirs(&mut self, mode: rcmd_core::compare::Mode) {
+        use rcmd_core::compare;
+        if let Some(running) = self.compare.take() {
+            running.handle.cancel();
+        }
+        let diff =
+            compare::compare_listings(&self.panels[0].entries, &self.panels[1].entries, mode);
         self.panels[0].marked.clear();
         self.panels[1].marked.clear();
-        let mut differ = 0usize;
-        for (name, (size, mtime)) in &left {
-            match right.get(name) {
-                None => {
-                    self.panels[0].marked.insert(name.clone());
-                    differ += 1;
+        for name in &diff.left {
+            self.panels[0].marked.insert(name.clone());
+        }
+        for name in &diff.right {
+            self.panels[1].marked.insert(name.clone());
+        }
+        let known = diff.count();
+        if diff.undecided.is_empty() {
+            self.status = Some(format!(" {known} difference(s) marked "));
+            return;
+        }
+        // the pairs the listing could not settle are read on a worker
+        // thread, and mark themselves as they are found to differ
+        let total = diff.undecided.len();
+        let handle = compare::spawn_content_compare(
+            (self.panels[0].fs.clone(), self.panels[0].cwd.clone()),
+            (self.panels[1].fs.clone(), self.panels[1].cwd.clone()),
+            diff.undecided,
+        );
+        self.status = Some(format!(" comparing {total} pair(s)… Esc cancels "));
+        self.compare = Some(CompareState {
+            handle,
+            total,
+            done: 0,
+        });
+    }
+
+    /// Matches from a thorough compare, as they arrive.
+    fn drain_compare(&mut self) {
+        let Some(state) = self.compare.as_mut() else {
+            return;
+        };
+        let mut finished = false;
+        let mut differing = Vec::new();
+        while let Ok(event) = state.handle.events.try_recv() {
+            match event {
+                rcmd_core::compare::CompareEvent::Differs(name) => {
+                    state.done += 1;
+                    differing.push(name);
                 }
-                Some((rsize, rmtime)) if size != rsize || !close(*mtime, *rmtime) => {
-                    self.panels[0].marked.insert(name.clone());
-                    self.panels[1].marked.insert(name.clone());
-                    differ += 1;
-                }
-                Some(_) => {}
+                rcmd_core::compare::CompareEvent::Done => finished = true,
             }
         }
-        for name in right.keys() {
-            if !left.contains_key(name) {
-                self.panels[1].marked.insert(name.clone());
-                differ += 1;
-            }
+        for name in differing {
+            self.panels[0].marked.insert(name.clone());
+            self.panels[1].marked.insert(name);
+            self.dirty = true;
         }
-        self.status = Some(format!(" {differ} difference(s) marked "));
+        let (total, done) = self
+            .compare
+            .as_ref()
+            .map(|c| (c.total, c.done))
+            .unwrap_or((0, 0));
+        if finished {
+            self.compare = None;
+            let marked = self.panels[0].marked.len().max(self.panels[1].marked.len());
+            self.status = Some(format!(" {marked} difference(s) marked ({total} read) "));
+            self.dirty = true;
+        } else {
+            self.status = Some(format!(" comparing… {done} differ so far - Esc cancels "));
+        }
     }
 
     fn submit_input(&mut self, dialog: InputDialog) {
@@ -7827,6 +7908,15 @@ impl App {
     }
 
     fn on_panel_key(&mut self, key: KeyEvent) {
+        // a thorough compare reads files: Esc stops it, as it stops a
+        // find, rather than waiting for the last pair
+        if key.code == KeyCode::Esc
+            && let Some(running) = self.compare.take()
+        {
+            running.handle.cancel();
+            self.status = Some(" compare cancelled ".into());
+            return;
+        }
         let mods = key.modifiers;
         let alt = mods.contains(KeyModifiers::ALT);
         let ctrl = mods.contains(KeyModifiers::CONTROL);
