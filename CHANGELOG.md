@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.58.1 - 2026-08-26
+
+- **F9 > Command > Edit config file**, the last of MC-DIFF §11's
+  missing menu entries. mc has three - extension file, menu file,
+  highlighting file - and rcmd has one file, so it has one entry. It
+  writes a first `config.toml` if there is none, and says on the
+  editor's own status line that the changes apply on the next start,
+  which is what mc says about its menu file too.
+- `appearance`, `learn-keys` and `edit-config` are bindable by name in
+  `[keys.panel]` like every other panel action.
+
 ## 3.58.0 - 2026-08-26
 
 - **mc's underlined hotkeys on dialog buttons** (4.0 S8, and the last of

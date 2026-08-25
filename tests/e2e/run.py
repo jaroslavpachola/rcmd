@@ -4536,6 +4536,18 @@ def test_learnkeys():
 
     s.send(b"\x1b", wait=STEP)
     check("learnkeys: Esc closes it", "Learn keys" not in s.screen(), s.screen())
+
+    # F9 > Command > Edit config file - mc's "edit extension/menu file",
+    # of which rcmd has one, and it writes a first one if there is none
+    s.keys(b"\x1b[20~", b"\x1b[C" * 2, wait=STEP)
+    s.send(b"g", wait=STEP * 2)
+    check("learnkeys: the config opens in the editor",
+          wait_for(s, "config.toml"), s.screen())
+    check("learnkeys: ...and says when it takes effect",
+          wait_for(s, "next start"), s.screen())
+    s.send(b"\x1b[21~", wait=STEP * 2)               # F10 out of the editor
+    check("learnkeys: the config file was created",
+          os.path.isfile(os.path.join(home, ".config", "rcmd", "config.toml")))
     s.quit()
     shutil.rmtree(root)
 

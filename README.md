@@ -725,7 +725,7 @@ listing_format = "half type name | size | mtime"
 #   history-forward quick-view info-view user-menu listing-brief
 #   listing-full listing-long listing-tree listing-user listing-cycle
 #   other-same-dir other-open-dir sftp-link find-file panelize
-#   compare-dirs dir-size dir-tree
+#   compare-dirs dir-size dir-tree appearance learn-keys edit-config
 
 [[highlight]]          # MC's filehighlight, as rules: first match wins
 match = "*.tar.gz"     # a glob on the name...

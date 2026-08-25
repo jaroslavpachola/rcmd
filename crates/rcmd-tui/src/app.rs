@@ -2076,6 +2076,9 @@ pub enum Action {
     Appearance,
     /// F9 > Options > Learn keys: what the terminal really sends.
     LearnKeys,
+    /// F9 > Command > Edit config file: mc's "edit extension/menu
+    /// file", of which rcmd has one.
+    EditConfig,
     Sort(SortKey),
     SortReverse,
     /// S-F4: open the editor on a file that need not exist yet.
@@ -2168,6 +2171,11 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Jobs...", "C-x j", Action::Jobs)),
             Some(("Acti&ve VFS list...", "C-x a", Action::VfsList)),
             Some(("Command histor&y...", "M-h", Action::HistoryList)),
+            // mc has three of these - extension file, menu file,
+            // highlighting file. rcmd has one file, so it has one entry.
+            // The `g`: `f` is spent on Find file, and a second entry
+            // with the same letter is one nobody can reach.
+            Some(("Edit confi&g file", "", Action::EditConfig)),
             // not "&list": Compare fi&les already spends the l, and a
             // second entry with the same letter is one nobody can reach
             Some(("Screen l&ist...", "M-`", Action::ScreenList)),
@@ -4785,6 +4793,28 @@ impl App {
                     .charset
                     .map(rcmd_core::charset::label_of);
                 self.dialog = Some(Dialog::Charset(charset_row(now)));
+            }
+            Action::EditConfig => {
+                let Some(path) = config::config_path() else {
+                    self.status = Some(" no config directory to put one in ".into());
+                    return;
+                };
+                if let Some(dir) = path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                // the file need not exist yet: this is how the first
+                // one gets written
+                if !path.exists() {
+                    let _ = std::fs::write(&path, "# rcmd configuration - see the README\n");
+                }
+                let title = path.display().to_string();
+                if self.open_internal_editor(&path, title)
+                    && let Some(st) = self.editor_mut()
+                {
+                    // on the editor's own status line, not the panel's:
+                    // the panels are not what you are looking at now
+                    st.note = Some(" changes apply on the next start ".into());
+                }
             }
             Action::LearnKeys => {
                 self.dialog = Some(Dialog::Learn(Box::new(LearnDialog {
