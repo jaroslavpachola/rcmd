@@ -34,8 +34,16 @@ FAILURES = []
 # (seconds, test name) per test, reported at the end
 TIMINGS = []
 
-# generous waits: CI runners are slow
+# generous waits: CI runners are slow. They are upper bounds, not the
+# cost of every keypress - see Session.drain.
 STEP = float(os.environ.get("RCMD_E2E_STEP", "0.5"))
+# How long the pty must stay quiet before a wait is over. Measured on
+# the suite, the gap between two chunks of one answer clusters around
+# 70 ms, while an idle rcmd repaints every 500 ms - so a quarter second
+# sits clear of both: long enough not to mistake a pause inside an
+# answer for the end of it, short enough to return well before the next
+# idle repaint.
+SETTLE = float(os.environ.get("RCMD_E2E_SETTLE", "0.25"))
 
 # RCMD_E2E_SUBSHELL=1 runs the whole suite with the persistent subshell
 # on (commands run inside it, no "Press Enter" pause); default is off.
@@ -76,16 +84,32 @@ class Session:
         os.kill(self.pid, signal.SIGWINCH)
         self.drain(STEP * 2)
 
-    def drain(self, timeout):
+    def drain(self, timeout, settle=None):
+        """Read the pty until it has been quiet for `settle` seconds,
+        or until `timeout` runs out - whichever comes first. `timeout`
+        is still the upper bound, so nothing waits longer than it used
+        to; a redraw that has already landed just stops costing the
+        rest of it.
+
+        The quiet only counts once something has arrived: a key whose
+        answer takes a moment (a debounced reload, the Esc timeout, a
+        command that has to run first) must not be read as "nothing is
+        coming". `settle=0` waits the whole timeout, which is what the
+        checks that are waiting for the clock rather than for the
+        screen need.
+        """
+        settle = SETTLE if settle is None else settle
         end = time.time() + timeout
+        quiet_since = None
         while time.time() < end:
-            r, _, _ = select.select([self.fd], [], [], 0.05)
+            r, _, _ = select.select([self.fd], [], [], 0.02)
             if r:
                 try:
                     chunk = os.read(self.fd, 65536)
                 except OSError:
                     return
                 self.buf += chunk
+                quiet_since = time.time()
                 for m in QUERY.finditer(chunk):  # act like a real terminal
                     if m.group(1) == b"6":
                         os.write(self.fd, b"\x1b[1;1R")
@@ -93,10 +117,12 @@ class Session:
                         os.write(self.fd, b"\x1b[0n")
                     else:
                         os.write(self.fd, b"\x1b[?6c")
+            elif settle and quiet_since and time.time() - quiet_since >= settle:
+                return
 
-    def send(self, keys, wait=None):
+    def send(self, keys, wait=None, settle=None):
         os.write(self.fd, keys)
-        self.drain(wait if wait is not None else STEP)
+        self.drain(wait if wait is not None else STEP, settle)
 
     def quit(self):
         self.send(b"\x1b[21~", wait=STEP * 2)  # F10
