@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/rcmd-core", "crates/rcmd-edit", "crates/rcmd-tui"]
 
 [workspace.package]
-version = "3.39.0"
+version = "3.40.0"
 edition = "2024"
 license = "MIT"
 
@@ -30,6 +30,10 @@ bzip2 = { version = "0.4", features = ["static"] }
 # decode-only and pure Rust: a read-only VFS never compresses, and the
 # musl static build stays free of another C library
 ruzstd = "0.9"
+# Every legacy codepage mc offers, pure Rust and decode+encode both
+# ways - the alternative is twenty single-byte tables by hand and no
+# CJK at all
+encoding_rs = "0.8"
 notify = "8"
 ssh2 = "0.9"
 git2 = { version = "0.20", default-features = false }

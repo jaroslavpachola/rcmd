@@ -529,6 +529,9 @@ const HELP_TEXT: &[&str] = &[
     "  Shift+F3        raw view (skip any [[view]] filter)",
     "  F3/F10/Esc/q    close the viewer",
     "  Alt+`           the screen list (see the editor section)",
+    "  Alt+E           which codepage the file is in: the bytes do not",
+    "                  say, so this is where you tell it. The search",
+    "                  follows, since it reads what you can see.",
     "",
     "# Editor (F4, built-in)",
     "  F2 save (atomic, keeps permissions and CRLF)   F10/Esc quit",
@@ -548,6 +551,9 @@ const HELP_TEXT: &[&str] = &[
     "  Ctrl+U undoes too, as it does in mc",
     "  Copy and cut reach the desktop clipboard and paste reads it,",
     "     through wl-copy / xclip / xsel / pbcopy where one is there",
+    "  Alt+E or Options > Codepage: read the file in another codepage",
+    "     and write it back in that one. It re-reads, so it asks you to",
+    "     save first rather than dropping an edit.",
     "  Options > Syntax: highlight as any syntax syntect knows, for a",
     "     file whose name does not say what it is",
     "  Options > General: tab size, fill tabs with spaces, autoindent,",
@@ -1972,6 +1978,48 @@ pub fn ed_line_segs(ed: &rcmd_edit::Editor, line: usize, cols: usize) -> usize {
     screen_col(&ed.line(line), ed.line_len(line)) / cols.max(1) + 1
 }
 
+/// A pick list in a popup: the rows that fit around the selected one,
+/// which is what both the syntax and the codepage pickers are.
+fn draw_pick_list(frame: &mut Frame, title: &str, rows: &[&str], row: usize, top: usize) {
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let shown = rows
+        .len()
+        .min(frame.area().height.saturating_sub(4) as usize)
+        .max(1);
+    let width = rows
+        .iter()
+        .map(|r| r.chars().count())
+        .max()
+        .unwrap_or(20)
+        .clamp(20, frame.area().width.saturating_sub(4) as usize);
+    let inner = popup(
+        frame,
+        centered(width as u16 + 4, shown as u16 + 2, frame.area()),
+        title,
+        base,
+    );
+    // keep the selected row inside the window whatever `top` says
+    let top = top.min(row).max((row + 1).saturating_sub(shown));
+    for i in 0..shown {
+        let Some(text) = rows.get(top + i) else { break };
+        let line = Rect {
+            y: inner.y + i as u16,
+            height: 1,
+            ..inner
+        };
+        let style = if top + i == row { sel } else { base };
+        frame.render_widget(
+            Line::from(format!(
+                " {text:<w$}",
+                w = (inner.width as usize).saturating_sub(1)
+            ))
+            .style(style),
+            line,
+        );
+    }
+}
+
 /// One row of the editor's line-number gutter. `None` on a wrapped
 /// continuation row, which belongs to the line above and so is not
 /// numbered again.
@@ -2107,8 +2155,12 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
     let sel_style = Style::new().fg(th().select_fg).bg(th().select_bg);
 
     let modified = if st.ed.modified() { " [+]" } else { "" };
+    let charset = match st.ed.charset {
+        None => String::new(),
+        Some(enc) => format!("  [{}]", rcmd_core::charset::label_of(enc)),
+    };
     let pos = format!(
-        " {}:{}  {} lines ",
+        "{charset} {}:{}  {} lines ",
         st.ed.cursor.line + 1,
         st.ed.cursor.col + 1,
         st.ed.line_count(),
@@ -2302,34 +2354,10 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
             draw_field(frame, inner, value, *cursor);
         }
         Some(EditPrompt::Syntax { row, top }) => {
-            use crate::app::{SYNTAX_ROWS, syntax_rows};
-            let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
-            let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
-            let rows = syntax_rows();
-            let shown = SYNTAX_ROWS.min(rows.len());
-            let inner = popup(
-                frame,
-                centered(44, shown as u16 + 2, frame.area()),
-                " Syntax ",
-                base,
-            );
-            for i in 0..shown {
-                let Some(name) = rows.get(top + i) else { break };
-                let line = Rect {
-                    y: inner.y + i as u16,
-                    height: 1,
-                    ..inner
-                };
-                let style = if top + i == *row { sel } else { base };
-                frame.render_widget(
-                    Line::from(format!(
-                        " {name:<w$}",
-                        w = (inner.width as usize).saturating_sub(1)
-                    ))
-                    .style(style),
-                    line,
-                );
-            }
+            draw_pick_list(frame, " Syntax ", &crate::app::syntax_rows(), *row, *top);
+        }
+        Some(EditPrompt::Charset(row)) => {
+            draw_pick_list(frame, " Codepage ", &crate::app::CHARSET_ROWS, *row, 0);
         }
         Some(EditPrompt::Options(d)) => draw_edit_options(frame, d),
         Some(EditPrompt::ConfirmQuit { button }) => {
@@ -2442,6 +2470,10 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
     };
     let follow = if v.follow { " [follow]" } else { "" };
     let nroff = if v.nroff { " [format]" } else { "" };
+    let charset = match v.file.charset {
+        None => String::new(),
+        Some(enc) => format!(" [{}]", rcmd_core::charset::label_of(enc)),
+    };
     let editing = if v.hex && v.hex_edit {
         format!(
             " [edit @{:08X}{}]",
@@ -2456,7 +2488,7 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
     };
     let filtered = if v.filtered { " [parsed]" } else { "" };
     let title = format!(
-        " {}  {} bytes  {percent}%  [{mode}]{editing}{nroff}{filtered}{follow}",
+        " {}  {} bytes  {percent}%  [{mode}]{editing}{nroff}{charset}{filtered}{follow}",
         v.path.display(),
         v.file.size,
     );
@@ -2609,6 +2641,9 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
         let area = centered(52, 5, frame.area());
         let inner = popup(frame, area, " Goto: line, 0x1f / 31b, or 50% ", style);
         draw_field(frame, inner, value, *cursor);
+    }
+    if let Some(row) = v.charset_pick {
+        draw_pick_list(frame, " Codepage ", &crate::app::CHARSET_ROWS, row, 0);
     }
     if let Some(button) = v.confirm_quit {
         let style = Style::new().fg(th().error_fg).bg(th().error_bg);

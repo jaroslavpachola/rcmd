@@ -478,6 +478,17 @@ keeps it to the editor.
 disk to `file~` - mc's "Do backups", one step back rather than a
 history.
 
+**Codepages** (`Alt+E`): a file is bytes, and nothing in it says what
+they mean - so `Alt+E` in the viewer or the editor picks the codepage
+to read it in: UTF-8, the Latin and Cyrillic and Greek and Baltic
+single-byte sets, KOI8-R/U, CP866, and Shift_JIS, EUC-JP, GBK, Big5 and
+EUC-KR. The viewer re-reads at once (and the search follows, because it
+reads what you can see); the editor re-reads and **writes back in the
+same codepage**, so editing a KOI8-R file leaves a KOI8-R file. Since
+changing it means re-reading, the editor asks you to save first rather
+than dropping an edit. The title bar names the codepage whenever it is
+not UTF-8.
+
 **Screens** (``Alt+` ``): several editors and viewers can be open at
 once. ``Alt+` `` lists them - the panels are the first row, then every
 open screen with what it is on and whether it has unsaved changes - and

@@ -157,6 +157,9 @@ struct EditGroup {
 pub struct Editor {
     rope: Rope,
     pub path: PathBuf,
+    /// The codepage the file was read in and will be written back in;
+    /// None = UTF-8, which is what everything is unless it is old.
+    pub charset: Option<&'static encoding_rs::Encoding>,
     crlf: bool,
     pub cursor: Pos,
     desired_col: usize,
@@ -176,6 +179,15 @@ pub struct Editor {
 
 impl Editor {
     pub fn open(path: &Path) -> io::Result<Editor> {
+        Editor::open_in(path, None)
+    }
+
+    /// ...in a given codepage, which is what mc's "Select codepage"
+    /// asks for: the bytes on disk do not say what they mean.
+    pub fn open_in(
+        path: &Path,
+        charset: Option<&'static encoding_rs::Encoding>,
+    ) -> io::Result<Editor> {
         let bytes = std::fs::read(path)?;
         if bytes[..bytes.len().min(8192)].contains(&0) {
             return Err(io::Error::new(
@@ -183,14 +195,19 @@ impl Editor {
                 "binary file - use the F3 viewer",
             ));
         }
-        let text = String::from_utf8_lossy(&bytes);
+        let text = match charset {
+            None => String::from_utf8_lossy(&bytes).into_owned(),
+            Some(enc) => enc.decode(&bytes).0.into_owned(),
+        };
         let crlf = text.contains("\r\n");
         let rope = if crlf {
             Rope::from_str(&text.replace("\r\n", "\n"))
         } else {
             Rope::from_str(&text)
         };
-        Ok(Editor::with_rope(rope, path.to_path_buf(), crlf))
+        let mut ed = Editor::with_rope(rope, path.to_path_buf(), crlf);
+        ed.charset = charset;
+        Ok(ed)
     }
 
     /// New empty buffer for a file that does not exist yet.
@@ -202,6 +219,7 @@ impl Editor {
         Editor {
             rope,
             path,
+            charset: None,
             crlf,
             cursor: Pos { line: 0, col: 0 },
             desired_col: 0,
@@ -233,17 +251,26 @@ impl Editor {
         }
         let result = (|| -> io::Result<()> {
             let mut out = io::BufWriter::new(std::fs::File::create(&tmp)?);
+            // a chunk boundary can fall inside a character sequence
+            // the codepage encodes as a unit, so the encoder is handed
+            // whole chunks and never half of one
+            let write = |out: &mut dyn io::Write, text: &str| -> io::Result<()> {
+                match self.charset {
+                    None => out.write_all(text.as_bytes()),
+                    Some(enc) => out.write_all(&enc.encode(text).0),
+                }
+            };
             for chunk in self.rope.chunks() {
                 if self.crlf {
                     let mut rest = chunk;
                     while let Some(i) = rest.find('\n') {
-                        out.write_all(&rest.as_bytes()[..i])?;
+                        write(&mut out, &rest[..i])?;
                         out.write_all(b"\r\n")?;
                         rest = &rest[i + 1..];
                     }
-                    out.write_all(rest.as_bytes())?;
+                    write(&mut out, rest)?;
                 } else {
-                    out.write_all(chunk.as_bytes())?;
+                    write(&mut out, chunk)?;
                 }
             }
             out.flush()?;
@@ -961,6 +988,29 @@ mod tests {
         assert!(e.redo());
         assert_eq!(e.text(), "hello");
         assert_eq!(e.cursor, Pos { line: 0, col: 5 });
+    }
+
+    #[test]
+    fn a_codepage_survives_the_round_trip() {
+        let koi = encoding_rs::Encoding::for_label(b"koi8-r").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("koi.txt");
+        // "Привет" in KOI8-R: six bytes, and not valid UTF-8
+        std::fs::write(&path, koi.encode("Привет\n").0.as_ref()).unwrap();
+        // read as UTF-8 it is replacement characters; read as KOI8-R it
+        // is the word, which is the whole point of asking
+        let plain = Editor::open(&path).unwrap();
+        assert!(plain.line(0).contains('\u{FFFD}'));
+        let mut e = Editor::open_in(&path, Some(koi)).unwrap();
+        assert_eq!(e.line(0), "Привет");
+
+        // and it is written back in the codepage it was read in
+        e.goto(Pos { line: 0, col: 6 }, false);
+        e.insert("!");
+        e.save().unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.len(), 8, "six letters, a bang and a newline");
+        assert_eq!(koi.decode(&bytes).0, "Привет!\n");
     }
 
     #[test]

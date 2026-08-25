@@ -1,5 +1,6 @@
 pub mod ar;
 pub mod archive;
+pub mod charset;
 pub mod complete;
 pub mod cpio;
 pub mod entry;

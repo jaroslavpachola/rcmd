@@ -1,5 +1,29 @@
 # Changelog
 
+## 3.40.0 - 2026-08-25
+
+- **Codepages in the viewer and the editor** (4.0 S5): `Alt+E` picks
+  what the bytes mean - UTF-8, the Latin, Cyrillic, Greek and Baltic
+  single-byte sets, KOI8-R/U, CP866, and Shift_JIS, EUC-JP, GBK, Big5
+  and EUC-KR. A file is bytes and nothing in it says which of those it
+  is, which is why mc asks and rcmd now does too.
+- **The viewer re-reads at once, and the search follows**: with a
+  codepage chosen, searching looks through the text on the screen
+  rather than the bytes underneath it, which is the only reading that
+  can match what you type.
+- **The editor writes back in the codepage it read**, so editing a
+  KOI8-R file leaves a KOI8-R file rather than quietly converting it to
+  UTF-8. Changing the codepage re-reads, so it asks you to save first
+  instead of dropping an edit - mc re-reads too.
+- The title bar names the codepage whenever it is not UTF-8, since a
+  file read in the wrong one looks like a file that is simply broken.
+- The list is `encoding_rs`, pure Rust and both ways, so the static
+  musl build is unaffected. It is the set every browser implements,
+  which is a couple of DOS codepages short of mc's - a list of what can
+  actually be decoded beats a longer one where some rows do nothing.
+- Panel codepages and non-UTF-8 filenames are the rest of S5 and come
+  next; this is the half that only touches file *contents*.
+
 ## 3.39.0 - 2026-08-25
 
 - **Several editors and viewers open at once** (4.0 S4, and the last of

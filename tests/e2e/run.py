@@ -3467,6 +3467,58 @@ def test_screens():
     shutil.rmtree(root)
 
 
+def test_charset():
+    """PLAN4 S5: M-e reads a file in the codepage it was written in -
+    in the viewer, and in the editor where it is written back too."""
+    root, play, home = sandbox()
+    path = os.path.join(play, "koi.txt")
+    # "Привет" in KOI8-R: six bytes, and not valid UTF-8
+    open(path, "wb").write("Привет\n".encode("koi8-r"))
+    s = Session(play, home)
+    s.send(b"\x13koi\r", wait=STEP)
+
+    # the viewer: nonsense until the codepage is named
+    s.send(F3, wait=STEP * 2)
+    check("charset: unreadable as UTF-8", "Привет" not in s.screen())
+    s.send(b"\x1be", wait=STEP)             # M-e
+    scr = s.screen()
+    check("charset: the codepage list", "Codepage" in scr and "KOI8-R" in scr, scr)
+    s.send(b"k", wait=STEP)                 # jump to the first "K..."
+    s.send(b"\r", wait=STEP * 2)
+    scr = s.screen()
+    check("charset: the viewer reads it", "Привет" in scr, scr)
+    check("charset: and the title says so", "[KOI8-R (Russian)]" in scr, scr)
+    s.send(b"q", wait=STEP)
+
+    # the editor: same key, and saving writes the codepage back
+    s.send(F4, wait=STEP * 2)
+    check("charset: the editor is lossy too", "Привет" not in s.screen())
+    s.send(b"\x1be", wait=STEP)
+    s.send(b"k\r", wait=STEP * 2)
+    check("charset: the editor reads it", "Привет" in s.screen(), s.screen())
+    s.send(END, wait=STEP)                  # re-reading put us at the top
+    s.send(b"!", wait=STEP)                 # a change worth saving
+    s.send(F2, wait=STEP * 2)
+    s.send(F10, wait=STEP * 2)
+    raw = open(path, "rb").read()
+    check("charset: written back in KOI8-R",
+          raw == "Привет!\n".encode("koi8-r"), raw)
+
+    # changing the codepage re-reads, so it refuses to drop an edit
+    s.send(F4, wait=STEP * 2)
+    s.send(b"zz", wait=STEP)
+    s.send(b"\x1be", wait=STEP)
+    s.send(b"\r", wait=STEP * 2)            # UTF-8, on an unsaved buffer
+    check("charset: refuses to lose the edit", wait_for(s, "save first"))
+    s.send(b"\x1b\x1b", wait=STEP)
+    s.send(F10, wait=STEP * 2)
+    s.send(b"d", wait=STEP * 2)             # discard
+    check("charset: nothing was written", open(path, "rb").read() == raw)
+
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_subshell():
     """R1 per-shell scenarios: forced subshell=true in every suite mode."""
     shells = ["/bin/sh"]
@@ -3593,6 +3645,7 @@ def main():
         test_editmenu,
         test_editkeys,
         test_screens,
+        test_charset,
         test_subshell,
         test_sftp,
         test_fish,

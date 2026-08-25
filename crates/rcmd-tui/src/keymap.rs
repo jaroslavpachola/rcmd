@@ -348,6 +348,8 @@ pub enum ViewerAction {
     ToggleNroff,
     /// F6: the `[[view]]` filter in or out under the same file.
     ToggleRaw,
+    /// M-e: which codepage the file is in.
+    Charset,
     /// C-f / C-b: the next / previous file of the panel.
     NextFile,
     PrevFile,
@@ -389,6 +391,8 @@ pub enum EditorAction {
     BookmarkClear,
     /// M-n: the line-number gutter.
     ToggleLineNumbers,
+    /// M-e: which codepage the file is in.
+    Charset,
 }
 
 pub type ViewerMap = HashMap<(KeyCode, KeyModifiers), ViewerAction>;
@@ -412,6 +416,7 @@ const VIEWER_DEFAULTS: &[(&str, &str)] = &[
     ("alt+r", "ruler"),
     ("f8", "nroff"),
     ("f6", "raw"),
+    ("alt+e", "charset"),
     ("ctrl+f", "next-file"),
     ("ctrl+b", "prev-file"),
 ];
@@ -443,6 +448,7 @@ const EDITOR_DEFAULTS: &[(&str, &str)] = &[
     ("alt+i", "bookmark-prev"),
     ("alt+o", "bookmark-clear"),
     ("alt+n", "line-numbers"),
+    ("alt+e", "charset"),
 ];
 
 pub fn parse_viewer_action(name: &str) -> Option<ViewerAction> {
@@ -459,6 +465,7 @@ pub fn parse_viewer_action(name: &str) -> Option<ViewerAction> {
         "ruler" => ViewerAction::ToggleRuler,
         "nroff" => ViewerAction::ToggleNroff,
         "raw" => ViewerAction::ToggleRaw,
+        "charset" => ViewerAction::Charset,
         "next-file" => ViewerAction::NextFile,
         "prev-file" => ViewerAction::PrevFile,
         "hex-edit" => ViewerAction::HexEdit,
@@ -492,6 +499,7 @@ pub fn parse_editor_action(name: &str) -> Option<EditorAction> {
         "bookmark-prev" => EditorAction::BookmarkPrev,
         "bookmark-clear" => EditorAction::BookmarkClear,
         "line-numbers" => EditorAction::ToggleLineNumbers,
+        "charset" => EditorAction::Charset,
         _ => return None,
     })
 }

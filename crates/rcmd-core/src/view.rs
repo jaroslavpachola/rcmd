@@ -258,6 +258,9 @@ pub fn patch_bytes(path: &Path, edits: &[(u64, u8)]) -> io::Result<()> {
 
 pub struct FileView {
     file: File,
+    /// Which codepage the bytes are in; None = UTF-8 (lossy), which is
+    /// what everything is unless it is old.
+    pub charset: Option<&'static encoding_rs::Encoding>,
     pub size: u64,
     /// Start offsets of every line discovered so far; `offsets[0] == 0`.
     offsets: Vec<u64>,
@@ -274,6 +277,7 @@ impl FileView {
         let size = file.metadata()?.len();
         Ok(FileView {
             file,
+            charset: None,
             size,
             offsets: vec![0],
             indexed_to: 0,
@@ -383,7 +387,7 @@ impl FileView {
                 buf.pop();
             }
         }
-        Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+        Ok(Some(crate::charset::decode(&buf, self.charset)))
     }
 
     /// Case-insensitive substring search, scanning forward from `start`.

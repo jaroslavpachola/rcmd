@@ -890,6 +890,75 @@ pub enum EditPrompt {
         row: usize,
         top: usize,
     },
+    /// M-e: which codepage the file is in. Re-reads it, so it is only
+    /// offered while there is nothing unsaved to lose.
+    Charset(usize),
+}
+
+/// The codepage picker's rows, which are the charset labels.
+pub static CHARSET_ROWS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+    rcmd_core::charset::CHARSETS
+        .iter()
+        .map(|(label, _)| *label)
+        .collect()
+});
+
+/// Which row a codepage sits on; row 0 (UTF-8) for "none".
+pub fn charset_row(label: Option<&str>) -> usize {
+    match label {
+        None => 0,
+        Some(label) => CHARSET_ROWS
+            .iter()
+            .position(|row| *row == label)
+            .unwrap_or(0),
+    }
+}
+
+/// ...and back: row 0 is UTF-8, which is no recoding at all.
+pub fn charset_at(row: usize) -> Option<&'static rcmd_core::charset::Encoding> {
+    match row {
+        0 => None,
+        at => CHARSET_ROWS
+            .get(at)
+            .and_then(|label| rcmd_core::charset::by_label(label)),
+    }
+}
+
+/// What a key does in a pick list. One reading of the keys, so the
+/// codepage picker answers to the same hands wherever it is opened.
+pub enum PickKey {
+    Move(usize),
+    Chose(usize),
+    Close,
+    Ignored,
+}
+
+pub fn charset_pick_key(row: usize, key: KeyEvent) -> PickKey {
+    let last = CHARSET_ROWS.len() - 1;
+    match key.code {
+        KeyCode::Esc => PickKey::Close,
+        KeyCode::Enter => PickKey::Chose(row),
+        KeyCode::Up => PickKey::Move(row.saturating_sub(1)),
+        KeyCode::Down => PickKey::Move((row + 1).min(last)),
+        KeyCode::PageUp => PickKey::Move(row.saturating_sub(10)),
+        KeyCode::PageDown => PickKey::Move((row + 10).min(last)),
+        KeyCode::Home => PickKey::Move(0),
+        KeyCode::End => PickKey::Move(last),
+        // a letter jumps to the first codepage starting with it
+        KeyCode::Char(c) => {
+            let c = c.to_ascii_lowercase();
+            match CHARSET_ROWS.iter().position(|label| {
+                label
+                    .chars()
+                    .next()
+                    .is_some_and(|f| f.to_ascii_lowercase() == c)
+            }) {
+                Some(at) => PickKey::Move(at),
+                None => PickKey::Ignored,
+            }
+        }
+        _ => PickKey::Ignored,
+    }
 }
 
 /// How many rows of the syntax picker are on screen at once.
@@ -1110,6 +1179,7 @@ const EDIT_OPTIONS_MENU: &[EditMenuEntry] = &[
         EditMenuAction::Key(EA::ToggleLineNumbers),
     )),
     Some(("S&yntax...", "", EditMenuAction::Syntax)),
+    Some(("Cod&epage...", "M-e", EditMenuAction::Key(EA::Charset))),
 ];
 
 /// One panel side's cached free-space measurement.
@@ -1209,6 +1279,8 @@ pub struct Viewer {
     pub pending_mark: Option<bool>,
     /// A column ruler under the title.
     pub ruler: bool,
+    /// The codepage picker (M-e) when it is open, with its row.
+    pub charset_pick: Option<usize>,
     /// nroff mode (F8): overstrikes read as bold and underline rather
     /// than shown as the control characters they are.
     pub nroff: bool,
@@ -3228,6 +3300,25 @@ impl App {
             return;
         };
         v.note = None;
+        // the codepage picker
+        if let Some(row) = v.charset_pick {
+            match charset_pick_key(row, key) {
+                PickKey::Move(to) => v.charset_pick = Some(to),
+                PickKey::Close => v.charset_pick = None,
+                PickKey::Chose(to) => {
+                    v.charset_pick = None;
+                    v.file.charset = charset_at(to);
+                    // the text under every line changed
+                    if let Some(hl) = v.hl.as_mut() {
+                        hl.invalidate_from(0);
+                    }
+                    v.found = None;
+                    v.note = Some(format!(" {} ", CHARSET_ROWS[to]));
+                }
+                PickKey::Ignored => {}
+            }
+            return;
+        }
         // leaving with bytes unwritten: Save / Discard / Cancel
         if let Some(mut button) = v.confirm_quit {
             match key.code {
@@ -3427,6 +3518,10 @@ impl App {
                 v.note = Some(" go to mark: press a digit ".into());
             }
             VA::ToggleRuler => v.ruler = !v.ruler,
+            VA::Charset => {
+                let now = v.file.charset.map(rcmd_core::charset::label_of);
+                v.charset_pick = Some(charset_row(now));
+            }
             VA::ToggleNroff => {
                 v.nroff = !v.nroff;
                 v.note = Some(if v.nroff {
@@ -4278,6 +4373,7 @@ impl App {
                     bookmarks: [None; 10],
                     pending_mark: None,
                     ruler: keep.ruler,
+                    charset_pick: None,
                     nroff: keep.nroff,
                     found: None,
                     prompt: None,
@@ -5062,6 +5158,12 @@ impl App {
                 st.left = 0;
                 edited = false;
             }
+            EA::Charset => {
+                st.prompt = Some(EditPrompt::Charset(charset_row(
+                    st.ed.charset.map(rcmd_core::charset::label_of),
+                )));
+                return;
+            }
             EA::ToggleLineNumbers => {
                 st.line_numbers = !st.line_numbers;
                 edited = false;
@@ -5337,6 +5439,41 @@ impl App {
                     st.prompt = Some(EditPrompt::Goto { value, cursor });
                 }
             },
+            EditPrompt::Charset(row) => {
+                match charset_pick_key(row, key) {
+                    PickKey::Move(to) => st.prompt = Some(EditPrompt::Charset(to)),
+                    PickKey::Close => {}
+                    PickKey::Chose(to) => {
+                        // re-reading is the only way to change what the
+                        // bytes mean, so anything unsaved would go with
+                        // it - mc re-reads too, and says so first
+                        if st.ed.modified() {
+                            st.note = Some(
+                                " save first: changing the codepage re-reads the file ".into(),
+                            );
+                            return;
+                        }
+                        let (path, charset) = (st.ed.path.clone(), charset_at(to));
+                        match rcmd_edit::Editor::open_in(&path, charset) {
+                            Ok(mut ed) => {
+                                ed.prefs = self.config.edit_prefs();
+                                if let Some(st) = self.editor_mut() {
+                                    st.ed = ed;
+                                    st.top = 0;
+                                    st.top_seg = 0;
+                                    st.left = 0;
+                                    if let Some(hl) = st.hl.as_mut() {
+                                        hl.invalidate_from(0);
+                                    }
+                                    st.note = Some(format!(" {} ", CHARSET_ROWS[to]));
+                                }
+                            }
+                            Err(err) => st.note = Some(format!(" {err} ")),
+                        }
+                    }
+                    PickKey::Ignored => st.prompt = Some(EditPrompt::Charset(row)),
+                }
+            }
             EditPrompt::Syntax { mut row, mut top } => {
                 let rows = syntax_rows();
                 let page = SYNTAX_ROWS;

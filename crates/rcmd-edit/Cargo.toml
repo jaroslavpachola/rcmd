@@ -11,6 +11,7 @@ syntax = ["dep:syntect"]
 
 [dependencies]
 ropey.workspace = true
+encoding_rs.workspace = true
 regex.workspace = true
 syntect = { workspace = true, optional = true }
 
