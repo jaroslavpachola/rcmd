@@ -6,6 +6,7 @@ mod keymap;
 mod mcimport;
 mod state;
 mod subshell;
+mod theme;
 mod ui;
 
 use std::path::{Path, PathBuf};

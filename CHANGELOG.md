@@ -1,5 +1,31 @@
 # Changelog
 
+## 3.50.0 - 2026-08-25
+
+- **Skins** (4.0 S7): a theme can be a file now. rcmd's own format is
+  TOML naming the fields it sets over an optional `base`, so a skin can
+  be three lines rather than a full palette, and it is looked up by
+  name in `~/.config/rcmd/themes/`.
+- **mc's skins work as they are**: the lookup continues into
+  `~/.local/share/mc/skins` and `/usr/share/mc/skins`, and an `.ini`
+  found there is read as mc writes it - `[core]`, `[dialog]`,
+  `[error]`, `[help]`, `[filehighlight]` and `[buttonbar]` mapped onto
+  the same fields. `-S julia256` is all it takes. A skin is read for
+  its colours; what rcmd draws for itself is not taken from it.
+- Colours now include the 256-colour cube everywhere they are named -
+  `colorN`, `rgbRGB` and `grayN` alongside mc's names and `#rrggbb`.
+- **F9 > Options > Appearance** lists every theme found and switches on
+  Enter, persisting the choice. It replaces the two-way theme radio in
+  the options form, which could only ever hold `mc` and `dark` and
+  would have overwritten a skin every time the form was accepted.
+- A letter in a pick list now walks the rows starting with it from
+  wherever the cursor is, rather than always jumping back to the first:
+  a skin list has a dozen `modar...` in it, and a key that always lands
+  on the same one has stopped working.
+- A theme file that cannot be read, names a colour that is not one, or
+  sets a field that does not exist is a warning on the status line and
+  the mc palette - never a refusal to start.
+
 ## 3.49.0 - 2026-08-25
 
 - **The other personalities** (4.0 S7): `rcmd -e FILE` and `rcmd -v FILE`

@@ -2910,7 +2910,7 @@ def test_options():
     )
     scr = s.screen()
     check("options: form opens with sections",
-          "Confirmation" in scr and "Appearance" in scr and "Panel" in scr)
+          "Confirmation" in scr and "Shell and editor" in scr and "Panel" in scr)
     check("options: confirmation toggles present",
           "Ask before deleting" in scr and "Ask before quitting" in scr)
 
@@ -4340,6 +4340,64 @@ def test_cli():
     shutil.rmtree(root)
 
 
+def test_skins():
+    """PLAN4 S7: skins - a theme that is a file, rcmd's own TOML or an
+    mc skin read where mc keeps it, and the Appearance list."""
+    root, play, home = sandbox()
+    themes = os.path.join(home, ".config", "rcmd", "themes")
+    os.makedirs(themes)
+    open(os.path.join(themes, "midnight.toml"), "w").write(
+        'base = "dark"\ndir_fg = "brightmagenta"\nheader_fg = "#ffcc00"\n')
+    open(os.path.join(themes, "typo.toml"), "w").write(
+        'dir_fg = "chartreuse"\nno_such_field = "red"\n')
+    skins = os.path.join(home, ".local", "share", "mc", "skins")
+    os.makedirs(skins)
+    open(os.path.join(skins, "sand.ini"), "w").write(
+        "[skin]\ndescription=Sand\n\n[Lines]\nhoriz=-\n\n"
+        "[core]\n_default_=black;brown\nselected=white;blue\nmarked=yellow;\n\n"
+        "[filehighlight]\ndirectory=color33;\nexecutable=rgb050;\n\n"
+        "[buttonbar]\nbutton=black;cyan\nhotkey=white;cyan\n")
+
+    s = Session(play, home, args=("-S", "midnight", play))
+    scr = s.screen()
+    check("skins: a TOML theme loads", "Modify time" in scr and "theme" not in scr, scr)
+    s.quit()
+
+    s = Session(play, home, args=("-S", "sand", play))
+    scr = s.screen()
+    check("skins: an mc skin loads where mc keeps it",
+          "Modify time" in scr and "theme" not in scr, scr)
+    s.quit()
+
+    s = Session(play, home, args=("-S", "typo", play))
+    scr = s.screen()
+    check("skins: a colour typo is a warning, not a refusal",
+          "Modify time" in scr and "chartreuse" in scr and "no_such_field" in scr, scr)
+    s.quit()
+
+    s = Session(play, home, args=("-S", "nosuch", play))
+    check("skins: an unknown name says so", "unknown theme 'nosuch'" in s.screen())
+    s.quit()
+
+    # F9 > Options > Appearance lists what is installed and picks one.
+    # What that list holds depends on the machine (mc's own skins are
+    # read where they lie), so the checks stay on the three built in.
+    s = Session(play, home)
+    s.keys(b"\x1b[20~", b"o", b"a", wait=STEP)
+    scr = s.screen()
+    check("skins: the Appearance list opens",
+          "Appearance" in scr and "mc" in scr and "dark" in scr and "bw" in scr, scr)
+    s.send(HOME_K, wait=STEP)                # -> mc, the first row
+    s.send(DOWN, wait=STEP)                  # -> dark
+    s.send(b"\r", wait=STEP)
+    check("skins: picking one says so", "theme: dark" in s.screen(), s.screen())
+    s.quit()
+    statepath = os.path.join(home, ".local", "state", "rcmd", "state.toml")
+    check("skins: the choice outlives the session",
+          'theme = "dark"' in open(statepath).read(), open(statepath).read())
+    shutil.rmtree(root)
+
+
 def test_wrapper():
     """PLAN4 S7: the shipped wrappers - the shell follows rcmd's last
     directory out, which is the one thing rcmd cannot do for itself."""
@@ -4514,6 +4572,7 @@ def main():
         test_panelize,
         test_diff,
         test_cli,
+        test_skins,
         test_wrapper,
         test_subshell,
         test_sftp,

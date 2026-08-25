@@ -257,6 +257,29 @@ pub fn parse_color(name: &str) -> Option<Color> {
         }
         None => name,
     };
+    // mc's skins also name the 256-colour cube: colorN, rgbRGB (three
+    // digits 0-5) and grayN
+    if let Some(n) = name.strip_prefix("color")
+        && let Ok(n) = n.parse::<u8>()
+    {
+        return Some(Color::Indexed(n));
+    }
+    if let Some(digits) = name.strip_prefix("rgb")
+        && digits.len() == 3
+        && let Some(cube) = digits
+            .chars()
+            .map(|c| c.to_digit(6))
+            .collect::<Option<Vec<_>>>()
+    {
+        let index = 16 + 36 * cube[0] + 6 * cube[1] + cube[2];
+        return Some(Color::Indexed(index as u8));
+    }
+    if let Some(n) = name.strip_prefix("gray")
+        && let Ok(n) = n.parse::<u8>()
+        && n < 24
+    {
+        return Some(Color::Indexed(232 + n));
+    }
     Some(match name {
         "default" => Color::Reset,
         "black" => Color::Black,
@@ -288,14 +311,9 @@ static SPEC: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
 /// why a `-C` spec is kept and laid over the new theme as well: it was
 /// asked for on the command line, and a theme switch is not a retraction.
 pub fn init_theme(name: &str) -> Option<String> {
-    let (mut theme, warning) = match name {
-        "mc" => (mc_theme(), None),
-        "dark" => (dark_theme(), None),
-        "bw" => (bw_theme(), None),
-        other => (
-            mc_theme(),
-            Some(format!("unknown theme '{other}', using mc")),
-        ),
+    let (mut theme, warning) = match builtin(name) {
+        Some(theme) => (theme, None),
+        None => load_theme_file(name),
     };
     let spec = SPEC.read().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(spec) = spec {
@@ -303,6 +321,78 @@ pub fn init_theme(name: &str) -> Option<String> {
     }
     *THEME.write().unwrap_or_else(|e| e.into_inner()) = Some(theme);
     warning
+}
+
+fn builtin(name: &str) -> Option<Theme> {
+    Some(match name {
+        "mc" => mc_theme(),
+        "dark" => dark_theme(),
+        "bw" => bw_theme(),
+        _ => return None,
+    })
+}
+
+/// A theme that is not built in is a file - rcmd's own TOML or an mc
+/// skin, whichever [`crate::theme`] finds under the name. A theme that
+/// cannot be read is a warning and the mc palette, never a refusal to
+/// start: nobody should lose their file manager to a colour typo.
+fn load_theme_file(name: &str) -> (Theme, Option<String>) {
+    let Some(path) = crate::theme::find(name) else {
+        return (
+            mc_theme(),
+            Some(format!("unknown theme '{name}', using mc")),
+        );
+    };
+    let loaded = match crate::theme::load(&path) {
+        Ok(loaded) => loaded,
+        Err(err) => return (mc_theme(), Some(format!("theme {name}: {err}"))),
+    };
+    let mut warnings = loaded.warnings;
+    let mut theme = builtin(&loaded.base).unwrap_or_else(|| {
+        warnings.push(format!("unknown base '{}'", loaded.base));
+        mc_theme()
+    });
+    for (field, value) in &loaded.fields {
+        match parse_color(value) {
+            None => warnings.push(format!("unknown colour '{value}'")),
+            Some(color) if !set_field(&mut theme, field, color) => {
+                warnings.push(format!("no field '{field}'"))
+            }
+            Some(_) => {}
+        }
+    }
+    let warning = (!warnings.is_empty()).then(|| format!("theme {name}: {}", warnings.join(", ")));
+    (theme, warning)
+}
+
+/// Set one field by its rcmd name; false = there is no such field.
+/// The names are the struct's own, which is what a theme file writes.
+fn set_field(theme: &mut Theme, name: &str, color: Color) -> bool {
+    match name {
+        "panel_bg" => theme.panel_bg = color,
+        "panel_fg" => theme.panel_fg = color,
+        "dir_fg" => theme.dir_fg = color,
+        "exec_fg" => theme.exec_fg = color,
+        "broken_fg" => theme.broken_fg = color,
+        "header_fg" => theme.header_fg = color,
+        "mark_fg" => theme.mark_fg = color,
+        "select_bg" => theme.select_bg = color,
+        "select_fg" => theme.select_fg = color,
+        "dialog_bg" => theme.dialog_bg = color,
+        "dialog_fg" => theme.dialog_fg = color,
+        "error_bg" => theme.error_bg = color,
+        "error_fg" => theme.error_fg = color,
+        "help_bg" => theme.help_bg = color,
+        "help_fg" => theme.help_fg = color,
+        "help_header_fg" => theme.help_header_fg = color,
+        "prompt_fg" => theme.prompt_fg = color,
+        "key_fg" => theme.key_fg = color,
+        "key_bg" => theme.key_bg = color,
+        "label_fg" => theme.label_fg = color,
+        "label_bg" => theme.label_bg = color,
+        _ => return false,
+    }
+    true
 }
 
 /// mc's `-C keyword=fg,bg:...`: colours named one at a time on the
@@ -899,6 +989,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             }
             Dialog::Charset(row) => {
                 draw_pick_list(frame, " Character set ", &crate::app::CHARSET_ROWS, *row, 0)
+            }
+            Dialog::Skin(row) => {
+                let names = crate::theme::list();
+                let rows: Vec<&str> = names.iter().map(String::as_str).collect();
+                draw_pick_list(frame, " Appearance ", &rows, *row, 0)
             }
             Dialog::RenamePreview(d) => draw_rename_preview(frame, d),
             Dialog::Jobs(selected) => draw_jobs(frame, &app.jobs, *selected),

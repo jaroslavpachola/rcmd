@@ -606,11 +606,13 @@ Panel options**, applied live: *Layout* (split direction and size, the
 per-panel mini status, and which of the menu bar / status line /
 command line / key bar are drawn), *Panel* (hidden files, lynx-like motion,
 mouse, auto-reload, git), *Confirmation* (ask before deleting /
-overwriting / quitting), *Shell and editor* (persistent subshell,
-internal or external editor) and *Appearance* (theme):
+overwriting / quitting) and *Shell and editor* (persistent subshell,
+internal or external editor). The theme has a list of its own under
+**F9 → Options → Appearance**, because a skin is one of however many
+files are installed rather than a two-way switch:
 
 ```toml
-theme = "mc"        # or "dark" (truecolor), "bw" (none at all)
+theme = "mc"        # "dark", "bw", or the name of a theme file
 keymap = "mc"       # or "modern" (= lynx-like motion on by default)
 lynx = false        # Left/Right = parent/enter; in the options form
 watch = true        # auto-reload panels on external changes
@@ -700,6 +702,37 @@ run = "git ls-files -m"
 name = "git status"
 run = "git status | less"
 ```
+
+### Skins
+
+A theme that is not one of the three built in (`mc`, `dark`, `bw`) is a
+file, looked up by name in `~/.config/rcmd/themes/` and then in mc's
+skin directories - `~/.local/share/mc/skins`, `/usr/local/share/mc/skins`,
+`/usr/share/mc/skins`. rcmd's own format is TOML naming the fields it
+sets, over an optional base, so a skin can be three lines:
+
+```toml
+base = "dark"            # mc | dark | bw - the palette to patch (default mc)
+dir_fg = "brightblue"
+panel_bg = "#1e222a"
+header_fg = "color214"
+```
+
+The fields are `panel_fg` `panel_bg` `dir_fg` `exec_fg` `broken_fg`
+`header_fg` `mark_fg` `select_fg` `select_bg` `dialog_fg` `dialog_bg`
+`error_fg` `error_bg` `help_fg` `help_bg` `help_header_fg` `prompt_fg`
+`key_fg` `key_bg` `label_fg` `label_bg`. A colour is one of mc's names
+(`black`, `brightgreen`, `brown`, `lightgray`, ...), `#rrggbb`,
+`colorN` (0-255), `rgbRGB` (three digits 0-5), `grayN` (0-23), or
+`default` for the terminal's own.
+
+**mc's skins work as they are**: `-S julia256` reads
+`/usr/share/mc/skins/julia256.ini` and maps its `[core]`, `[dialog]`,
+`[error]`, `[help]`, `[filehighlight]` and `[buttonbar]` sections onto
+those fields. What rcmd draws for itself - the frames, the menus - is
+not taken from the skin, so a skin is read for its colours and nothing
+else. **F9 → Options → Appearance** lists everything found and switches
+on Enter, and the choice outlives the session.
 
 ## Development
 

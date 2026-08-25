@@ -560,6 +560,8 @@ pub enum Dialog {
     Jobs(usize),
     /// M-e: the panel's codepage, with the row it is on.
     Charset(usize),
+    /// F9 > Options > Appearance: the theme list, with the row it is on.
+    Skin(usize),
     /// C-x d: how to compare the two listings, with the row it is on.
     Compare(usize),
     /// External panelize: the saved commands and the one being typed.
@@ -742,7 +744,6 @@ pub enum Opt {
     ConfirmExecute,
     Subshell,
     ExternalEditor,
-    DarkTheme,
     /// Not a setting: how many there are. Adding one above grows the
     /// values array with it, which is the point - [`OPT_COUNT`] used to
     /// be a hand-kept number, and getting it wrong indexed past the end
@@ -792,8 +793,9 @@ pub const OPTION_ROWS: &[OptRow] = &[
     OptRow::Head("Shell and editor"),
     OptRow::Check(Opt::Subshell, "Persistent subshell"),
     OptRow::Radio(Opt::ExternalEditor, "Editor", "internal", "external"),
-    OptRow::Head("Appearance"),
-    OptRow::Radio(Opt::DarkTheme, "Theme", "mc", "dark"),
+    // Appearance is a list of its own (F9 > Options > Appearance): a
+    // skin is one of however many files are installed, which is not a
+    // thing a two-way radio can hold.
 ];
 
 impl OptRow {
@@ -1181,7 +1183,13 @@ pub enum PickKey {
 }
 
 pub fn charset_pick_key(row: usize, key: KeyEvent) -> PickKey {
-    let last = CHARSET_ROWS.len() - 1;
+    pick_key(&CHARSET_ROWS, row, key)
+}
+
+/// One key in a pick-one list. Shared by the codepage picker and the
+/// skin list, so both answer to the same hands.
+pub fn pick_key(rows: &[impl AsRef<str>], row: usize, key: KeyEvent) -> PickKey {
+    let last = rows.len().saturating_sub(1);
     match key.code {
         KeyCode::Esc => PickKey::Close,
         KeyCode::Enter => PickKey::Chose(row),
@@ -1191,14 +1199,25 @@ pub fn charset_pick_key(row: usize, key: KeyEvent) -> PickKey {
         KeyCode::PageDown => PickKey::Move((row + 10).min(last)),
         KeyCode::Home => PickKey::Move(0),
         KeyCode::End => PickKey::Move(last),
-        // a letter jumps to the first codepage starting with it
+        // a letter walks the rows starting with it, from the one the
+        // cursor is on - a list of skins has a dozen `mod...` in it,
+        // and always landing on the first is a key that stops working
         KeyCode::Char(c) => {
             let c = c.to_ascii_lowercase();
-            match CHARSET_ROWS.iter().position(|label| {
+            let starts = |label: &str| {
                 label
                     .chars()
                     .next()
                     .is_some_and(|f| f.to_ascii_lowercase() == c)
+            };
+            let after = rows
+                .iter()
+                .skip(row + 1)
+                .position(|label| starts(label.as_ref()));
+            match after.map(|at| at + row + 1).or_else(|| {
+                rows.iter()
+                    .take(row + 1)
+                    .position(|label| starts(label.as_ref()))
             }) {
                 Some(at) => PickKey::Move(at),
                 None => PickKey::Ignored,
@@ -1691,6 +1710,8 @@ pub enum Action {
     SwapPanels,
     ToggleHidden,
     Options,
+    /// F9 > Options > Appearance: the skin list.
+    Appearance,
     Sort(SortKey),
     SortReverse,
     /// S-F4: open the editor on a file that need not exist yet.
@@ -1790,7 +1811,10 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
     ),
     (
         "&Options",
-        &[Some(("&Panel options...", "", Action::Options))],
+        &[
+            Some(("&Panel options...", "", Action::Options)),
+            Some(("&Appearance...", "", Action::Appearance)),
+        ],
     ),
     ("&Right", PANEL_MENU),
 ];
@@ -4326,6 +4350,13 @@ impl App {
                     .map(rcmd_core::charset::label_of);
                 self.dialog = Some(Dialog::Charset(charset_row(now)));
             }
+            Action::Appearance => {
+                let now = crate::theme::list()
+                    .iter()
+                    .position(|name| *name == self.config.theme)
+                    .unwrap_or(0);
+                self.dialog = Some(Dialog::Skin(now));
+            }
             Action::View => self.open_viewer(false),
             Action::ViewRaw => self.open_viewer(true),
             Action::Edit => self.open_editor(),
@@ -4460,7 +4491,6 @@ impl App {
                 values[Opt::ConfirmExecute as usize] = cfg.confirm_execute;
                 values[Opt::Subshell as usize] = cfg.subshell;
                 values[Opt::ExternalEditor as usize] = cfg.editor == "external";
-                values[Opt::DarkTheme as usize] = cfg.theme == "dark";
                 values[Opt::HorizontalSplit as usize] = cfg.horizontal_split();
                 values[Opt::MenuBar as usize] = cfg.show_menubar;
                 values[Opt::StatusLine as usize] = cfg.show_status;
@@ -6665,6 +6695,29 @@ impl App {
                     _ => self.dialog = Some(Dialog::Compare(row)),
                 }
             }
+            Dialog::Skin(row) => {
+                let names = crate::theme::list();
+                match pick_key(&names, row, key) {
+                    PickKey::Move(to) => self.dialog = Some(Dialog::Skin(to)),
+                    PickKey::Close => {}
+                    PickKey::Ignored => self.dialog = Some(Dialog::Skin(row)),
+                    PickKey::Chose(to) => {
+                        let Some(name) = names.get(to) else { return };
+                        self.config.theme = name.clone();
+                        let warning = ui::init_theme(name);
+                        self.repaint = true;
+                        let saved = name.clone();
+                        if let Err(err) = state::update(|s| s.theme = Some(saved)) {
+                            self.status = Some(format!(" could not save state: {err} "));
+                        } else {
+                            self.status = Some(match warning {
+                                Some(warning) => format!(" {warning} "),
+                                None => format!(" theme: {name} "),
+                            });
+                        }
+                    }
+                }
+            }
             Dialog::Charset(row) => match charset_pick_key(row, key) {
                 PickKey::Move(to) => self.dialog = Some(Dialog::Charset(to)),
                 PickKey::Close => {}
@@ -7328,11 +7381,6 @@ impl App {
             "internal"
         }
         .to_string();
-        let theme = if d.get(Opt::DarkTheme) { "dark" } else { "mc" };
-        if self.config.theme != theme {
-            self.config.theme = theme.to_string();
-            ui::init_theme(theme);
-        }
         // Write through immediately - waiting for exit would let any
         // other running instance clobber these on its own exit. Goes to
         // the state file: the user's config.toml is read-only for us.
@@ -10139,5 +10187,18 @@ mod tests {
         cl.hist_next();
         assert_eq!(cl.value, "draft"); // back to the stashed draft
         assert_eq!(cl.hist_pos, None);
+    }
+
+    #[test]
+    fn a_letter_walks_the_rows_that_start_with_it() {
+        let rows = ["mc", "dark", "mc46", "midnight", "sand"];
+        let m = KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE);
+        // from the first `m`, the next one - not the first one again
+        assert!(matches!(pick_key(&rows, 0, m), PickKey::Move(2)));
+        assert!(matches!(pick_key(&rows, 2, m), PickKey::Move(3)));
+        // ...and round the end back to the top
+        assert!(matches!(pick_key(&rows, 3, m), PickKey::Move(0)));
+        let z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE);
+        assert!(matches!(pick_key(&rows, 1, z), PickKey::Ignored));
     }
 }
