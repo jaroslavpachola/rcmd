@@ -50,7 +50,102 @@ pub const ESC_TIMEOUT_MS: u64 = 250;
 /// Command lines kept across sessions (in the state file).
 const HISTORY_CAP: usize = 100;
 
+/// The material mc's macros are made of: the cursor file, the marked
+/// files and the directory, for this panel and the other one, plus
+/// whatever is in the clipboard file. All shell-quoted already - a
+/// filename is not a word.
+pub struct Macros {
+    pub here: (String, String, String),
+    pub there: (String, String, String),
+    pub clip: String,
+}
+
+/// Expand a command template against `m`. Returns what it got to and
+/// which side's marks the template spent (`%u` / `%U`), in this-panel /
+/// other-panel order.
+pub fn expand_template(template: &str, m: &Macros) -> (Expanded, [bool; 2]) {
+    let (file, tagged, dir) = &m.here;
+    let (other_file, other_tagged, other_dir) = &m.there;
+    // mc's "selected": the marked files if there are any, and the one
+    // under the cursor if there are not
+    let selected = |tagged: &String, file: &String| match tagged.is_empty() {
+        true => file.clone(),
+        false => tagged.clone(),
+    };
+    let mut untag = [false, false];
+    let mut out = String::new();
+    let mut rest = template.char_indices();
+    while let Some((_, c)) = rest.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        match rest.next() {
+            Some((_, 'f')) => out.push_str(file),
+            Some((_, 'F')) => out.push_str(other_file),
+            Some((_, 'd')) => out.push_str(dir),
+            Some((_, 'D')) => out.push_str(other_dir),
+            Some((_, 't')) => out.push_str(tagged),
+            Some((_, 'T')) => out.push_str(other_tagged),
+            Some((_, 'u')) => {
+                out.push_str(tagged);
+                untag[0] = true;
+            }
+            Some((_, 'U')) => {
+                out.push_str(other_tagged);
+                untag[1] = true;
+            }
+            Some((_, 's')) => out.push_str(&selected(tagged, file)),
+            Some((_, 'S')) => out.push_str(&selected(other_tagged, other_file)),
+            Some((_, 'q')) => out.push_str(&m.clip),
+            Some((_, '%')) => out.push('%'),
+            // %{question} asks, and the answer goes in unquoted - it is
+            // how mc passes options, not filenames
+            Some((at, '{')) => {
+                let tail = &template[at + 1..];
+                if let Some(end) = tail.find('}') {
+                    return (
+                        Expanded::Ask {
+                            question: tail[..end].to_string(),
+                            before: out,
+                            rest: tail[end + 1..].to_string(),
+                        },
+                        untag,
+                    );
+                }
+                out.push_str("%{");
+            }
+            Some((_, other)) => {
+                out.push('%');
+                out.push(other);
+            }
+            None => out.push('%'),
+        }
+    }
+    (Expanded::Done(out), untag)
+}
+
+/// What expanding a command template produced: the finished line, or a
+/// stop at a `%{question}` whose answer the rest of the line waits on.
+pub enum Expanded {
+    Done(String),
+    Ask {
+        question: String,
+        /// Everything before the question, already expanded.
+        before: String,
+        /// Everything after it, still a template.
+        rest: String,
+    },
+}
+
 pub enum InputAction {
+    /// A `%{question}` from a command template: the answer joins
+    /// `before` to what expanding `rest` produces.
+    MacroPrompt {
+        before: String,
+        rest: String,
+        quiet: bool,
+    },
     CopyTo {
         sources: Vec<PathBuf>,
     },
@@ -64,6 +159,13 @@ pub enum InputAction {
     EditNew,
     /// M-c: the value is a cd target (path or sftp:// URL).
     QuickCd,
+    /// The hotlist asking for a label: for a new entry (`path` set), a
+    /// new group (`path` empty and `index` None) or a rename (`index`).
+    HotlistLabel {
+        group: Vec<usize>,
+        index: Option<usize>,
+        path: String,
+    },
     /// C-x o: the value is `user[:group]` for these paths.
     Chown {
         paths: Vec<PathBuf>,
@@ -532,24 +634,55 @@ pub struct ConfirmDialog {
 }
 
 /// What a [`ConfirmDialog`] does when answered Yes.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ConfirmKind {
     Delete,
     Quit,
     /// Dropping a hotlist entry. There is one dialog slot, so the
     /// confirm replaces the hotlist and puts it back either way.
     HotlistDelete {
+        group: Vec<usize>,
         index: usize,
     },
     /// Enter about to run an `[[open]]` command.
     Execute,
 }
 
+/// One drawn row of the hotlist: the way back up, a group to walk into,
+/// a place to go, or one of rcmd's own recent directories.
+pub enum HotRow {
+    Up,
+    Group(usize),
+    Entry(usize),
+    Recent(String),
+}
+
+/// The directory hotlist, which is a tree: `group` is the way down to
+/// the one being looked at, `row` the selected row inside it.
+pub struct HotlistDialog {
+    pub group: Vec<usize>,
+    pub row: usize,
+    /// An entry picked up with `m`, waiting for a group to be put in.
+    /// mc calls this cut-and-insert; it is the only way to move an
+    /// entry that is already somewhere else.
+    pub moving: Option<HotEntry>,
+}
+
+impl HotlistDialog {
+    pub fn at(group: Vec<usize>, row: usize) -> Box<Self> {
+        Box::new(HotlistDialog {
+            group,
+            row,
+            moving: None,
+        })
+    }
+}
+
 pub enum Dialog {
     Input(InputDialog),
     Confirm(ConfirmDialog),
-    /// Directory hotlist; the payload is the selected row.
-    Hotlist(usize),
+    /// Directory hotlist; the payload says where in the tree it is.
+    Hotlist(Box<HotlistDialog>),
     Find(Box<FindDialog>),
     /// F2 user menu ([[commands]]); the payload is the selected row.
     UserMenu(usize),
@@ -2003,6 +2136,15 @@ impl Screen {
     }
 }
 
+/// mc's quick search: what has been typed, and whether anything in the
+/// listing answers to it. A character that matches nothing used to be
+/// swallowed - the search stayed where it was and said nothing, which
+/// reads as a dropped keystroke. It is kept now, and the field says so.
+pub struct QuickSearch {
+    pub text: String,
+    pub miss: bool,
+}
+
 pub struct MenuState {
     pub menu: usize,
     pub item: usize,
@@ -2188,7 +2330,7 @@ pub struct App {
     pub help: Option<HelpState>,
     pub cmdline: CmdLine,
     /// Quick-search prefix while Ctrl+S type-ahead is active.
-    pub quick_search: Option<String>,
+    pub quick_search: Option<QuickSearch>,
     pub find: Option<FindState>,
     pub connect: Option<ConnectState>,
     /// Live remote connections by URL prefix; weak so that leaving a
@@ -3754,7 +3896,10 @@ impl App {
                     }
                 }
             }
-            let search = self.trees[self.active].as_ref().map(|t| t.search.clone());
+            let search = self.trees[self.active].as_ref().map(|t| QuickSearch {
+                text: t.search.clone(),
+                miss: false,
+            });
             self.quick_search = if close { None } else { search };
             // Esc and Enter only end the search; anything else was meant
             // for the panel underneath
@@ -3763,28 +3908,33 @@ impl App {
             }
             return;
         }
+        let text = |app: &Self| {
+            app.quick_search
+                .as_ref()
+                .map(|q| q.text.clone())
+                .unwrap_or_default()
+        };
         match key.code {
             KeyCode::Esc | KeyCode::Enter => self.quick_search = None,
-            KeyCode::Char('s') if ctrl => {
-                let prefix = self.quick_search.clone().unwrap_or_default();
-                let panel = self.panel();
-                if let Some(pos) = panel.find_prefix(&prefix, panel.cursor + 1) {
-                    panel.cursor = pos;
-                }
-            }
+            // C-s / M-s again, and the arrows, walk the matches -
+            // typing narrows, these two move
+            KeyCode::Char('s') if ctrl || alt => self.search_step(&text(self), true),
+            KeyCode::Down => self.search_step(&text(self), true),
+            KeyCode::Up => self.search_step(&text(self), false),
             KeyCode::Char(c) if !ctrl && !alt => {
-                let mut prefix = self.quick_search.clone().unwrap_or_default();
-                prefix.push(c);
-                let panel = self.panel();
-                // reject characters that match nothing, like MC
-                if let Some(pos) = panel.find_prefix(&prefix, panel.cursor) {
-                    panel.cursor = pos;
-                    self.quick_search = Some(prefix);
-                }
+                let mut text = text(self);
+                text.push(c);
+                self.search_to(text, true);
             }
             KeyCode::Backspace => {
-                if let Some(prefix) = self.quick_search.as_mut() {
-                    prefix.pop();
+                let mut text = text(self);
+                text.pop();
+                match text.is_empty() {
+                    // backspacing away the last character leaves the
+                    // field open and empty, as mc does - the search is
+                    // over when Esc says so
+                    true => self.quick_search = Some(QuickSearch { text, miss: false }),
+                    false => self.search_to(text, true),
                 }
             }
             _ => {
@@ -3792,6 +3942,38 @@ impl App {
                 self.on_panel_key(key);
             }
         }
+    }
+
+    /// Search for `text` from where the cursor is: the cursor moves if
+    /// something matches, and the field remembers either way.
+    fn search_to(&mut self, text: String, forward: bool) {
+        let panel = self.panel();
+        let found = panel.find_match(&text, panel.cursor, forward);
+        if let Some(pos) = found {
+            panel.cursor = pos;
+        }
+        self.quick_search = Some(QuickSearch {
+            miss: found.is_none(),
+            text,
+        });
+    }
+
+    /// ...and the next one after that, which is what C-s does once the
+    /// text is typed.
+    fn search_step(&mut self, text: &str, forward: bool) {
+        let panel = self.panel();
+        let from = match forward {
+            true => panel.cursor + 1,
+            false => panel.cursor.saturating_sub(1),
+        };
+        let found = panel.find_match(text, from, forward);
+        if let Some(pos) = found {
+            panel.cursor = pos;
+        }
+        self.quick_search = Some(QuickSearch {
+            text: text.to_string(),
+            miss: found.is_none(),
+        });
     }
 
     fn on_help_key(&mut self, key: KeyEvent) {
@@ -4333,8 +4515,15 @@ impl App {
                 })
             }
             Action::Mark => self.panel().toggle_mark(),
-            Action::QuickSearch => self.quick_search = Some(String::new()),
-            Action::Hotlist => self.dialog = Some(Dialog::Hotlist(0)),
+            Action::QuickSearch => {
+                self.quick_search = Some(QuickSearch {
+                    text: String::new(),
+                    miss: false,
+                })
+            }
+            Action::Hotlist => {
+                self.dialog = Some(Dialog::Hotlist(HotlistDialog::at(Vec::new(), 0)))
+            }
             Action::Filter => self.open_filter(),
             Action::UpDir => self.fallible(|p| p.go_up()),
             Action::Enter => self.fallible(|p| p.enter()),
@@ -4752,43 +4941,117 @@ impl App {
 
     /// `%f` cursor file, `%d` this directory, `%D` the other panel's,
     /// `%t` marked files, `%%` a literal percent - all shell-quoted.
-    fn expand_macros(&self, template: &str) -> String {
-        let panel = &self.panels[self.active];
+    /// One panel's worth of macro material: the cursor file, the marked
+    /// files, and the directory - all shell-quoted, because a filename
+    /// is not a word.
+    fn macro_side(&self, side: usize) -> (String, String, String) {
+        let panel = &self.panels[side];
         let file = panel
             .selected()
             .filter(|e| !e.is_parent())
-            .map(|e| shell_quote(&e.name.to_string_lossy()))
+            .map(|e| shell_quote(&panel.name_of(e)))
             .unwrap_or_default();
         let tagged = panel
             .entries
             .iter()
             .filter(|e| panel.is_marked(e))
-            .map(|e| shell_quote(&e.name.to_string_lossy()))
+            .map(|e| shell_quote(&panel.name_of(e)))
             .collect::<Vec<_>>()
             .join(" ");
-        let mut out = String::new();
-        let mut chars = template.chars();
-        while let Some(c) = chars.next() {
-            if c != '%' {
-                out.push(c);
-                continue;
-            }
-            match chars.next() {
-                Some('f') => out.push_str(&file),
-                Some('d') => out.push_str(&shell_quote(&panel.local_cwd().to_string_lossy())),
-                Some('D') => out.push_str(&shell_quote(
-                    &self.panels[self.active ^ 1].local_cwd().to_string_lossy(),
-                )),
-                Some('t') => out.push_str(&tagged),
-                Some('%') => out.push('%'),
-                Some(other) => {
-                    out.push('%');
-                    out.push(other);
-                }
-                None => out.push('%'),
+        let dir = shell_quote(&panel.local_cwd().to_string_lossy());
+        (file, tagged, dir)
+    }
+
+    /// Expand mc's macros. Stops at the first `%{question}` and hands
+    /// back what it has, because that one has to be asked before the
+    /// rest can be spent - see [`Expanded`].
+    ///
+    /// `%u` and `%U` spend the marks: mc drops them once the command
+    /// has them, which is why this takes `&mut self`.
+    fn expand_macros_asking(&mut self, template: &str) -> Expanded {
+        let material = Macros {
+            here: self.macro_side(self.active),
+            there: self.macro_side(self.active ^ 1),
+            clip: clip_file_read().unwrap_or_default(),
+        };
+        let (expanded, untag) = expand_template(template, &material);
+        // untag is in this-panel/other-panel terms; the panels are not
+        let mut sides = [false, false];
+        sides[self.active] = untag[0];
+        sides[self.active ^ 1] = untag[1];
+        self.spend_marks(sides);
+        expanded
+    }
+
+    /// `%u` / `%U`: the marks go once the command has them, which is
+    /// mc's rule and the difference between those and `%t` / `%T`.
+    fn spend_marks(&mut self, untag: [bool; 2]) {
+        for (panel, want) in self.panels.iter_mut().zip(untag) {
+            if want {
+                panel.marked.clear();
             }
         }
-        out
+    }
+
+    /// Expansion where there is nobody to ask - a `%{...}` in a view
+    /// filter has no dialog to open, the viewer being mid-open.
+    fn expand_macros(&mut self, template: &str) -> String {
+        match self.expand_macros_asking(template) {
+            Expanded::Done(cmd) => cmd,
+            Expanded::Ask { before, rest, .. } => {
+                format!("{before}{}", self.expand_macros(&rest))
+            }
+        }
+    }
+
+    /// Run a command template: expanded if it can be, asked about first
+    /// if it carries a `%{question}`.
+    fn run_macro_command(&mut self, template: &str, quiet: bool) {
+        match self.expand_macros_asking(template) {
+            Expanded::Done(cmd) => {
+                self.pending_exec = Some(match quiet {
+                    true => Exec::Quiet(cmd),
+                    false => Exec::Command(cmd),
+                })
+            }
+            Expanded::Ask {
+                question,
+                before,
+                rest,
+            } => self.ask_macro(question, before, rest, quiet),
+        }
+    }
+
+    fn ask_macro(&mut self, question: String, before: String, rest: String, quiet: bool) {
+        self.dialog = Some(Dialog::Input(InputDialog {
+            title: format!(" {} ", question.trim()),
+            value: String::new(),
+            cursor: 0,
+            action: InputAction::MacroPrompt {
+                before,
+                rest,
+                quiet,
+            },
+        }));
+    }
+
+    /// The answer to one `%{...}`, and on with the rest of the template.
+    fn finish_macro(&mut self, answer: &str, before: String, rest: String, quiet: bool) {
+        let before = format!("{before}{answer}");
+        match self.expand_macros_asking(&rest) {
+            Expanded::Done(tail) => {
+                let cmd = format!("{before}{tail}");
+                self.pending_exec = Some(match quiet {
+                    true => Exec::Quiet(cmd),
+                    false => Exec::Command(cmd),
+                })
+            }
+            Expanded::Ask {
+                question,
+                before: mid,
+                rest,
+            } => self.ask_macro(question, format!("{before}{mid}"), rest, quiet),
+        }
     }
 
     fn run_user_command(&mut self, i: usize) {
@@ -4796,8 +5059,7 @@ impl App {
             return;
         };
         let run = cmd.run.clone();
-        let expanded = self.expand_macros(&run);
-        self.pending_exec = Some(Exec::Command(expanded));
+        self.run_macro_command(&run, false);
     }
 
     /// Alt+i / Alt+o: point the other panel at the active panel's
@@ -6773,87 +7035,150 @@ impl App {
                 }
                 _ => self.dialog = Some(Dialog::Confirm(d)),
             },
-            Dialog::Hotlist(mut selected) => {
-                let len = self.config.hotlist.len();
-                let recent = self.hotlist_recent();
-                let total = len + recent.len();
+            Dialog::Hotlist(mut d) => {
+                let rows = self.hotlist_rows(&d);
+                let alt = key.modifiers.contains(KeyModifiers::ALT);
+                let last = rows.len().saturating_sub(1);
                 match key.code {
                     KeyCode::Esc => {}
-                    KeyCode::Enter => {
-                        if let Some(entry) = self.config.hotlist.get(selected).cloned() {
-                            if is_remote_url(&entry.path) {
-                                self.connect_remote(&entry.path);
-                            } else {
-                                let target = self.resolve(&entry.path);
-                                let panel = &mut self.panels[self.active];
-                                let moved = if panel.is_remote() {
-                                    panel.to_local(target)
-                                } else {
-                                    panel.cd(target)
-                                };
-                                if let Err(err) = moved {
-                                    self.status = Some(format!(" hotlist: {err} "));
-                                }
-                            }
-                        } else if let Some(loc) = recent.get(selected - len) {
-                            // recent entries are display paths / sftp URLs
-                            self.navigate(&loc.clone());
-                        }
+                    KeyCode::Up if alt => {
+                        self.hotlist_reorder(&mut d, &rows, false);
+                        self.dialog = Some(Dialog::Hotlist(d));
                     }
+                    KeyCode::Down if alt => {
+                        self.hotlist_reorder(&mut d, &rows, true);
+                        self.dialog = Some(Dialog::Hotlist(d));
+                    }
+                    KeyCode::Up => {
+                        d.row = d.row.saturating_sub(1);
+                        self.dialog = Some(Dialog::Hotlist(d));
+                    }
+                    KeyCode::Down => {
+                        d.row = (d.row + 1).min(last);
+                        self.dialog = Some(Dialog::Hotlist(d));
+                    }
+                    KeyCode::Home => {
+                        d.row = 0;
+                        self.dialog = Some(Dialog::Hotlist(d));
+                    }
+                    KeyCode::End => {
+                        d.row = last;
+                        self.dialog = Some(Dialog::Hotlist(d));
+                    }
+                    KeyCode::Enter => match rows.get(d.row) {
+                        Some(HotRow::Up) => {
+                            let was = d.group.pop();
+                            d.row = was.unwrap_or(0);
+                            self.dialog = Some(Dialog::Hotlist(d));
+                        }
+                        Some(HotRow::Group(at)) => {
+                            d.group.push(*at);
+                            d.row = 0;
+                            self.dialog = Some(Dialog::Hotlist(d));
+                        }
+                        Some(HotRow::Entry(at)) => {
+                            let path = self
+                                .hot_group(&d.group)
+                                .get(*at)
+                                .map(|e| e.path.clone())
+                                .unwrap_or_default();
+                            self.hotlist_go(&path);
+                        }
+                        Some(HotRow::Recent(loc)) => {
+                            let loc = loc.clone();
+                            self.navigate(&loc);
+                        }
+                        None => {}
+                    },
+                    // add the panel's directory, asking what to call it
                     KeyCode::Char('a') => {
                         let panel = &self.panels[self.active];
-                        let path = if panel.is_remote() {
-                            panel.display_path()
-                        } else {
-                            panel.local_cwd().display().to_string()
+                        let path = match panel.is_remote() {
+                            true => panel.display_path(),
+                            false => panel.local_cwd().display().to_string(),
                         };
-                        if !self.config.hotlist.iter().any(|h| h.path == path) {
-                            let label = Path::new(&path)
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| path.clone());
-                            self.config.hotlist.push(HotEntry { label, path });
-                            self.save_hotlist();
-                        }
-                        self.dialog = Some(Dialog::Hotlist(selected));
+                        let label = Path::new(&path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.clone());
+                        self.ask_hotlist_label(" Add to hotlist ", label, d.group, None, path);
                     }
-                    KeyCode::Char('d') => {
-                        match self.config.hotlist.get(selected) {
-                            // only the pinned half can be dropped; the
-                            // recent half is a log, not a list
-                            Some(entry) if self.config.confirm_hotlist_delete => {
-                                let label = entry.label.clone();
+                    // ...a group to put things in...
+                    KeyCode::Char('g') => {
+                        self.ask_hotlist_label(
+                            " New group ",
+                            String::new(),
+                            d.group,
+                            None,
+                            String::new(),
+                        );
+                    }
+                    // ...and a new name for whatever is under the cursor
+                    KeyCode::Char('e') => match rows.get(d.row) {
+                        Some(HotRow::Entry(at) | HotRow::Group(at)) => {
+                            let at = *at;
+                            let entry = self.hot_group(&d.group)[at].clone();
+                            self.ask_hotlist_label(
+                                " Rename ",
+                                entry.label,
+                                d.group,
+                                Some(at),
+                                entry.path,
+                            );
+                        }
+                        _ => self.dialog = Some(Dialog::Hotlist(d)),
+                    },
+                    // pick an entry up, walk to a group, put it down
+                    KeyCode::Char('m') => {
+                        match d.moving.take() {
+                            Some(entry) => self.hot_group_mut(&d.group).push(entry),
+                            None => {
+                                if let Some(HotRow::Entry(at) | HotRow::Group(at)) = rows.get(d.row)
+                                {
+                                    d.moving = Some(self.hot_group_mut(&d.group).remove(*at));
+                                }
+                            }
+                        }
+                        self.save_hotlist();
+                        let last = self.hotlist_rows(&d).len().saturating_sub(1);
+                        d.row = d.row.min(last);
+                        self.dialog = Some(Dialog::Hotlist(d));
+                    }
+                    KeyCode::Char('d') => match rows.get(d.row) {
+                        Some(HotRow::Entry(at) | HotRow::Group(at)) => {
+                            let at = *at;
+                            let entry = self.hot_group(&d.group)[at].clone();
+                            if self.config.confirm_hotlist_delete {
+                                let what = match entry.is_group() {
+                                    true => "group",
+                                    false => "entry",
+                                };
                                 self.dialog = Some(Dialog::Confirm(ConfirmDialog {
                                     title: " Hotlist ".into(),
-                                    message: format!("Drop \"{label}\" from the hotlist?"),
+                                    message: format!(
+                                        "Drop the {what} \"{}\" from the hotlist?",
+                                        entry.label
+                                    ),
                                     yes: true,
                                     paths: Vec::new(),
                                     permanent: false,
-                                    kind: ConfirmKind::HotlistDelete { index: selected },
+                                    kind: ConfirmKind::HotlistDelete {
+                                        group: d.group.clone(),
+                                        index: at,
+                                    },
                                     command: None,
                                 }));
+                            } else {
+                                self.hotlist_drop(&d.group, at);
+                                let last = self.hotlist_rows(&d).len().saturating_sub(1);
+                                d.row = d.row.min(last);
+                                self.dialog = Some(Dialog::Hotlist(d));
                             }
-                            Some(_) => {
-                                self.config.hotlist.remove(selected);
-                                self.save_hotlist();
-                                let total = self.config.hotlist.len() + recent.len();
-                                self.dialog =
-                                    Some(Dialog::Hotlist(selected.min(total.saturating_sub(1))));
-                            }
-                            None => self.dialog = Some(Dialog::Hotlist(selected)),
                         }
-                    }
-                    KeyCode::Up => {
-                        selected = selected.saturating_sub(1);
-                        self.dialog = Some(Dialog::Hotlist(selected));
-                    }
-                    KeyCode::Down => {
-                        if selected + 1 < total {
-                            selected += 1;
-                        }
-                        self.dialog = Some(Dialog::Hotlist(selected));
-                    }
-                    _ => self.dialog = Some(Dialog::Hotlist(selected)),
+                        // the recent half is a log, not a list
+                        _ => self.dialog = Some(Dialog::Hotlist(d)),
+                    },
+                    _ => self.dialog = Some(Dialog::Hotlist(d)),
                 }
             }
             Dialog::Link(mut d) => {
@@ -7290,7 +7615,7 @@ impl App {
         for loc in locations {
             if loc == here
                 || out.iter().any(|x| x == loc)
-                || self.config.hotlist.iter().any(|h| h.path == loc)
+                || HotEntry::holds(&self.config.hotlist, loc)
             {
                 continue;
             }
@@ -7304,6 +7629,158 @@ impl App {
 
     /// Hotlist edits write through to the state file like the options
     /// form - never to the user's config.
+    /// The group the dialog is looking at.
+    pub fn hot_group(&self, group: &[usize]) -> &Vec<HotEntry> {
+        let mut here = &self.config.hotlist;
+        for &at in group {
+            match here.get(at) {
+                Some(entry) => here = &entry.entries,
+                None => break,
+            }
+        }
+        here
+    }
+
+    /// The group names on the way down, for the dialog's title.
+    pub fn hotlist_group_path(&self, d: &HotlistDialog) -> String {
+        let mut names = Vec::new();
+        let mut here = &self.config.hotlist;
+        for &at in &d.group {
+            match here.get(at) {
+                Some(entry) => {
+                    names.push(entry.label.as_str());
+                    here = &entry.entries;
+                }
+                None => break,
+            }
+        }
+        names.join(" / ")
+    }
+
+    fn hot_group_mut(&mut self, group: &[usize]) -> &mut Vec<HotEntry> {
+        let mut here = &mut self.config.hotlist;
+        for &at in group {
+            match here.get(at).is_some() {
+                true => here = &mut here[at].entries,
+                false => break,
+            }
+        }
+        here
+    }
+
+    /// What the dialog draws, and what each row answers to. The recent
+    /// directories are rcmd's own and stay at the top level - they are
+    /// a log of where you have been, not a list you arrange.
+    pub fn hotlist_rows(&self, d: &HotlistDialog) -> Vec<HotRow> {
+        let mut rows = Vec::new();
+        if !d.group.is_empty() {
+            rows.push(HotRow::Up);
+        }
+        for (at, entry) in self.hot_group(&d.group).iter().enumerate() {
+            rows.push(match entry.is_group() {
+                true => HotRow::Group(at),
+                false => HotRow::Entry(at),
+            });
+        }
+        if d.group.is_empty() {
+            rows.extend(self.hotlist_recent().into_iter().map(HotRow::Recent));
+        }
+        rows
+    }
+
+    /// Alt+Up / Alt+Down: move the entry under the cursor within its
+    /// group, the cursor going with it.
+    fn hotlist_reorder(&mut self, d: &mut HotlistDialog, rows: &[HotRow], down: bool) {
+        let Some(HotRow::Entry(at) | HotRow::Group(at)) = rows.get(d.row) else {
+            return;
+        };
+        let at = *at;
+        let entries = self.hot_group_mut(&d.group);
+        let to = match down {
+            true if at + 1 < entries.len() => at + 1,
+            false if at > 0 => at - 1,
+            _ => return,
+        };
+        entries.swap(at, to);
+        d.row = match down {
+            true => d.row + 1,
+            false => d.row - 1,
+        };
+        self.save_hotlist();
+    }
+
+    fn hotlist_drop(&mut self, group: &[usize], at: usize) {
+        let entries = self.hot_group_mut(group);
+        if at < entries.len() {
+            entries.remove(at);
+        }
+        self.save_hotlist();
+    }
+
+    /// Enter on a hotlist entry: go there, wherever there is.
+    fn hotlist_go(&mut self, path: &str) {
+        if path.is_empty() {
+            return;
+        }
+        if is_remote_url(path) {
+            self.connect_remote(path);
+            return;
+        }
+        let target = self.resolve(path);
+        let panel = &mut self.panels[self.active];
+        let moved = match panel.is_remote() {
+            true => panel.to_local(target),
+            false => panel.cd(target),
+        };
+        if let Err(err) = moved {
+            self.status = Some(format!(" hotlist: {err} "));
+        }
+    }
+
+    /// Ask for a label - to add, to name a group, or to rename.
+    fn ask_hotlist_label(
+        &mut self,
+        title: &str,
+        value: String,
+        group: Vec<usize>,
+        index: Option<usize>,
+        path: String,
+    ) {
+        self.dialog = Some(Dialog::Input(InputDialog {
+            title: title.to_string(),
+            cursor: value.chars().count(),
+            value,
+            action: InputAction::HotlistLabel { group, index, path },
+        }));
+    }
+
+    /// ...and what the answer does. Either way the hotlist comes back
+    /// up, which is where mc leaves you too.
+    fn finish_hotlist_label(
+        &mut self,
+        label: &str,
+        group: Vec<usize>,
+        index: Option<usize>,
+        path: String,
+    ) {
+        let label = label.trim().to_string();
+        if !label.is_empty() {
+            let entries = self.hot_group_mut(&group);
+            match index {
+                Some(at) if at < entries.len() => entries[at].label = label,
+                // a new entry, or a new group when there is no path
+                _ => entries.push(HotEntry {
+                    label,
+                    path,
+                    entries: Vec::new(),
+                }),
+            }
+            self.save_hotlist();
+        }
+        let row = self.hot_group(&group).len().saturating_sub(1) + usize::from(!group.is_empty());
+        self.dialog = Some(Dialog::Hotlist(HotlistDialog::at(group, row)));
+    }
+
     fn save_hotlist(&mut self) {
         let hotlist = self.config.hotlist.clone();
         if let Err(err) = state::update(move |s| s.hotlist = Some(hotlist)) {
@@ -7842,6 +8319,14 @@ impl App {
                     self.do_cd(value.trim());
                 }
             }
+            InputAction::HotlistLabel { group, index, path } => {
+                self.finish_hotlist_label(&value, group, index, path)
+            }
+            InputAction::MacroPrompt {
+                before,
+                rest,
+                quiet,
+            } => self.finish_macro(&value, before, rest, quiet),
             InputAction::Chown { paths } => {
                 let remote = self.panels[self.active].is_remote();
                 match parse_owner_spec(value.trim(), remote) {
@@ -8747,7 +9232,7 @@ impl App {
         } else {
             // MC expands its macros on the command line too; unknown
             // percent sequences (printf "%s") are left alone
-            self.pending_exec = Some(Exec::Command(self.expand_macros(&cmd)));
+            self.run_macro_command(&cmd, false);
         }
     }
 
@@ -9337,13 +9822,11 @@ impl App {
         match d.kind {
             ConfirmKind::Delete => self.start_delete(d.paths, d.permanent),
             ConfirmKind::Quit => self.quit_now(),
-            ConfirmKind::HotlistDelete { index } => {
-                if index < self.config.hotlist.len() {
-                    self.config.hotlist.remove(index);
-                    self.save_hotlist();
-                }
-                let total = self.config.hotlist.len() + self.hotlist_recent().len();
-                self.dialog = Some(Dialog::Hotlist(index.min(total.saturating_sub(1))));
+            ConfirmKind::HotlistDelete { group, index } => {
+                self.hotlist_drop(&group, index);
+                let d = HotlistDialog::at(group, index);
+                let last = self.hotlist_rows(&d).len().saturating_sub(1);
+                self.dialog = Some(Dialog::Hotlist(HotlistDialog::at(d.group, index.min(last))));
             }
             ConfirmKind::Execute => {
                 if let Some(cmd) = d.command {
@@ -9356,8 +9839,8 @@ impl App {
     /// No (or Esc) on a confirm dialog. Only the hotlist needs anything
     /// done: its own dialog was displaced to ask the question.
     fn confirm_no(&mut self, d: &ConfirmDialog) {
-        if let ConfirmKind::HotlistDelete { index } = d.kind {
-            self.dialog = Some(Dialog::Hotlist(index));
+        if let ConfirmKind::HotlistDelete { group, index } = &d.kind {
+            self.dialog = Some(Dialog::Hotlist(HotlistDialog::at(group.clone(), *index)));
         }
     }
 
@@ -9709,11 +10192,36 @@ fn desktop_clipboard() -> bool {
         || std::env::var_os("DISPLAY").is_some()
 }
 
+/// mc's clipboard file - what `%q` spends and where mcedit leaves what
+/// it copied. rcmd writes the same file, so a block yanked in either
+/// editor is the same block to the other one.
+fn clip_file() -> PathBuf {
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".cache"));
+    cache.join("mc/mcedit/mcedit.clip")
+}
+
+fn clip_file_write(text: &str) {
+    let path = clip_file();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, text);
+}
+
+fn clip_file_read() -> Option<String> {
+    std::fs::read_to_string(clip_file()).ok()
+}
+
 /// Hand text to the desktop clipboard through whichever tool is
 /// installed. False = none was, so the editor's own clipboard is all
 /// there is - which is not an error worth a message, only a smaller
 /// world.
 fn clipboard_set(text: &str) -> bool {
+    // the file first: it works over ssh, where no clipboard tool does,
+    // and it is what `%q` in a user command reads
+    clip_file_write(text);
     if !desktop_clipboard() {
         return false;
     }
@@ -9742,9 +10250,12 @@ fn clipboard_set(text: &str) -> bool {
     false
 }
 
-/// ...and back. None = no tool, or it had nothing to say.
+/// ...and back. None = no tool and no file, or neither had anything to
+/// say.
 fn clipboard_get() -> Option<String> {
-    desktop_clipboard().then_some(())?;
+    if !desktop_clipboard() {
+        return clip_file_read().filter(|text| !text.is_empty());
+    }
     const TOOLS: &[(&str, &[&str])] = &[
         ("wl-paste", &["--no-newline"]),
         ("xclip", &["-selection", "clipboard", "-o"]),
@@ -9762,7 +10273,7 @@ fn clipboard_get() -> Option<String> {
         }
         return Some(String::from_utf8_lossy(&out.stdout).into_owned());
     }
-    None
+    clip_file_read().filter(|text| !text.is_empty())
 }
 
 fn first_edit_item(entries: &[EditMenuEntry]) -> usize {
@@ -10187,6 +10698,68 @@ mod tests {
         cl.hist_next();
         assert_eq!(cl.value, "draft"); // back to the stashed draft
         assert_eq!(cl.hist_pos, None);
+    }
+
+    fn macros() -> Macros {
+        Macros {
+            here: ("a.txt".into(), "a.txt b.txt".into(), "/here".into()),
+            there: ("z.md".into(), String::new(), "/there".into()),
+            clip: "yanked".into(),
+        }
+    }
+
+    fn expanded(template: &str) -> String {
+        match expand_template(template, &macros()).0 {
+            Expanded::Done(out) => out,
+            Expanded::Ask { before, .. } => panic!("asked, got {before}"),
+        }
+    }
+
+    #[test]
+    fn mcs_macros_all_expand() {
+        assert_eq!(expanded("e %f in %d"), "e a.txt in /here");
+        assert_eq!(expanded("%F %D"), "z.md /there");
+        assert_eq!(expanded("%t | %T"), "a.txt b.txt | ");
+        // %s is the marked files, or the cursor file when none are
+        assert_eq!(expanded("%s"), "a.txt b.txt");
+        assert_eq!(expanded("%S"), "z.md");
+        assert_eq!(expanded("%q"), "yanked");
+        // a literal percent, and anything rcmd does not know, survive
+        assert_eq!(expanded("100%% of %z"), "100% of %z");
+        assert_eq!(expanded("trailing %"), "trailing %");
+    }
+
+    #[test]
+    fn u_and_capital_u_spend_the_marks() {
+        let (_, untag) = expand_template("rm %u", &macros());
+        assert_eq!(untag, [true, false]);
+        let (_, untag) = expand_template("rm %U", &macros());
+        assert_eq!(untag, [false, true]);
+        // %t and %T leave them alone - that is the whole difference
+        let (_, untag) = expand_template("rm %t %T", &macros());
+        assert_eq!(untag, [false, false]);
+    }
+
+    #[test]
+    fn a_question_stops_the_expansion_where_it_stands() {
+        let (out, _) = expand_template("tar %{Options} %f", &macros());
+        match out {
+            Expanded::Ask {
+                question,
+                before,
+                rest,
+            } => {
+                assert_eq!(question, "Options");
+                assert_eq!(before, "tar ");
+                // what follows is still a template - the answer cannot
+                // be allowed to bring its own macros, so the two halves
+                // stay apart until the very end
+                assert_eq!(rest, " %f");
+            }
+            Expanded::Done(out) => panic!("did not ask, got {out}"),
+        }
+        // an unclosed one is not a question, just text
+        assert_eq!(expanded("echo %{oops"), "echo %{oops");
     }
 
     #[test]

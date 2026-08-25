@@ -1,5 +1,58 @@
 # Changelog
 
+## 3.54.0 - 2026-08-25
+
+The first three of 4.0 S8 - the MC-DIFF rows that no phase had claimed.
+
+- **Quick search is mc's now**: it matches **anywhere in the
+  name** rather than only at the front, a `*` or a `?` in what you type
+  switches it to glob matching (with mc's trailing `*`, so typing keeps
+  narrowing), and case is folded unless the search carries a capital of
+  its own - the same smartcase rule the editor's replace uses.
+- It has **a field of its own** on the active panel's bottom frame,
+  instead of a line of status text that the next message would push
+  aside.
+- **A character that matches nothing is kept.** It used to be swallowed:
+  the cursor stayed, nothing was said, and a keystroke reads as dropped.
+  Now it stays where it was typed and the field turns red, so what is on
+  screen is what the search is - and Backspace takes it back.
+- Ctrl+S and Alt+S walk the matches once the text is typed, and so do
+  ↓ and ↑ while the field is open.
+
+- **mc's whole macro set**, where rcmd had five of them:
+  `%F %D %T` for the other panel, `%s` / `%S` for "the marked files, or
+  the cursor file if none are marked", and `%u` / `%U` which hand the
+  marks over **and spend them** - that last being the whole difference
+  between those and `%t` / `%T`.
+- **`%{Some question}` asks first.** The command stops where the
+  question stands, a dialog collects the answer, and the rest of the
+  template is expanded afterwards - so a filename carrying a `%` in it
+  cannot smuggle a macro in through the answer. The answer goes in
+  unquoted, which is how mc passes options rather than paths.
+- **`%q` is the clipboard file** - `~/.cache/mc/mcedit/mcedit.clip`,
+  the one mcedit shares. rcmd's editor writes it on every copy and cut
+  now, and reads it when no desktop clipboard tool answers, which is
+  what makes copy-and-paste work over ssh at all.
+- The larger set applies on the command line as well, as it does in mc:
+  `%s` there is the marked files, so a literal one needs `%%s`.
+
+- **The hotlist is mc's tree now**. An entry with `entries` is
+  a **group** you walk into with Enter and back out of with `..`, and
+  the dialog's title says where in it you are. `[[hotlist]]` in the
+  config nests to match, and so does the copy in the state file.
+- **`a` asks what to call it** instead of making a label up from the
+  directory name - the name is still offered, so Enter accepts it and
+  nothing is slower than it was.
+- `g` makes a group, `e` renames whatever is under the cursor, and
+  Alt+↑ / Alt+↓ move it within its group.
+- `m` **picks an entry up and puts it down** in another group - walk to
+  the group and press it again. It is mc's cut-and-insert, and the only
+  way to move an entry that is already somewhere else; the dialog says
+  what is in hand while it is.
+- The recent directories - rcmd's own half of the dialog - stay at the
+  top level. They are a log of where you have been, not a list you
+  arrange.
+
 ## 3.51.0 - 2026-08-25
 
 - **macOS builds are back** (4.0 S7, and the last of the plan), in CI

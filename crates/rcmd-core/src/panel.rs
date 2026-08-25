@@ -729,6 +729,45 @@ impl Panel {
 
     /// Quick search: first entry whose name starts with `prefix`
     /// (case-insensitive), scanning from `from` and wrapping around.
+    /// mc's quick search: the row whose name matches `text`, looked for
+    /// from `from` and wrapping once. Two rules, chosen by what was
+    /// typed - a **glob** when the text has a `*` or a `?` in it (with
+    /// mc's trailing `*`, so typing narrows as you go), a **substring**
+    /// when it does not. Case is folded unless the text says otherwise
+    /// by carrying a capital, which is the same smartcase rule the
+    /// editor's replace uses.
+    pub fn find_match(&self, text: &str, from: usize, forward: bool) -> Option<usize> {
+        if self.entries.is_empty() || text.is_empty() {
+            return None;
+        }
+        let fold = !text.chars().any(char::is_uppercase);
+        let wild = text.contains(['*', '?']);
+        let needle = if fold {
+            text.to_lowercase()
+        } else {
+            text.into()
+        };
+        let pattern = wild.then(|| format!("{needle}*"));
+        let n = self.entries.len();
+        let step = |i: usize| match forward {
+            true => (from + i) % n,
+            // backwards, still wrapping: from, from-1, … 0, n-1, …
+            false => (from + n - (i % n)) % n,
+        };
+        (0..n).map(step).find(|&i| {
+            let entry = &self.entries[i];
+            if entry.is_parent() {
+                return false;
+            }
+            let name = crate::charset::decode_name(&entry.name, self.charset);
+            let name = if fold { name.to_lowercase() } else { name };
+            match &pattern {
+                Some(pattern) => crate::glob::glob_match(pattern, &name),
+                None => name.contains(&needle),
+            }
+        })
+    }
+
     pub fn find_prefix(&self, prefix: &str, from: usize) -> Option<usize> {
         if self.entries.is_empty() {
             return None;
@@ -1067,6 +1106,44 @@ mod tests {
         // "." matches ".hidden" but never the ".." pseudo-entry
         let hidden = panel.find_prefix(".", 0).unwrap();
         assert_eq!(panel.entries[hidden].name, ".hidden");
+    }
+
+    #[test]
+    fn quick_search_matches_anywhere_in_the_name() {
+        let tree = make_tree();
+        let panel = Panel::new(tree.path().to_path_buf()).unwrap();
+        // entries: .., Docs, src, .hidden, cargo.lock, README.md
+        let at = |text: &str, from: usize| {
+            panel
+                .find_match(text, from, true)
+                .map(|i| panel.entries[i].name.to_string_lossy().into_owned())
+        };
+        // a substring, not just a prefix - this is the whole point
+        assert_eq!(at("lock", 0).as_deref(), Some("cargo.lock"));
+        assert_eq!(at("read", 0).as_deref(), Some("README.md"));
+        // case folded, unless the text carries a capital of its own
+        assert_eq!(at("docs", 0).as_deref(), Some("Docs"));
+        assert_eq!(at("DOCS", 0), None);
+        // a wildcard switches to glob matching, with mc's trailing *
+        assert_eq!(at("*.lock", 0).as_deref(), Some("cargo.lock"));
+        assert_eq!(at("s?c", 0).as_deref(), Some("src"));
+        assert_eq!(at("nope", 0), None);
+        // ".." is never a match, however well it fits
+        assert_eq!(at("..", 0), None);
+    }
+
+    #[test]
+    fn quick_search_wraps_both_ways() {
+        let tree = make_tree();
+        let panel = Panel::new(tree.path().to_path_buf()).unwrap();
+        let dot = panel.find_match("hidden", 0, true).unwrap();
+        // forwards from just past it wraps around to it again
+        assert_eq!(panel.find_match("hidden", dot + 1, true), Some(dot));
+        // and backwards finds it from the other side
+        assert_eq!(
+            panel.find_match("hidden", dot.saturating_sub(1), false),
+            Some(dot)
+        );
     }
 
     #[test]

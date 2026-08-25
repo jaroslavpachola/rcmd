@@ -18,7 +18,6 @@ use crate::app::{
 };
 use rcmd_core::view::SearchKind;
 
-use crate::config::HotEntry;
 use crate::git::GitStatus;
 
 /// All colors in one place; selected from config (`theme = "mc" |
@@ -946,6 +945,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             );
         }
     }
+    draw_quick_search(frame, active_area, app);
     if menubar.height > 0 {
         draw_menubar(frame, menubar, app.menu.as_ref().map(|m| m.menu));
     }
@@ -971,9 +971,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Chmod(d) => draw_chmod(frame, d),
             Dialog::Chown(d) => draw_chown(frame, d),
             Dialog::Link(d) => draw_link(frame, d),
-            Dialog::Hotlist(selected) => {
-                draw_hotlist(frame, &app.config.hotlist, &app.hotlist_recent(), *selected)
-            }
+            Dialog::Hotlist(d) => draw_hotlist(frame, app, d),
             Dialog::UserMenu(selected) => draw_user_menu(frame, &app.config.commands, *selected),
             Dialog::Find(d) => draw_find(frame, d),
             Dialog::Options(d) => draw_options(frame, d),
@@ -2054,6 +2052,34 @@ fn format_size(size: u64) -> String {
     format!("{}G", mb / 1024)
 }
 
+/// mc's quick search field: a box of its own on the active panel's
+/// bottom frame, rather than a line of status text that the next
+/// message would push aside. Red text is a search that matches nothing:
+/// the characters stay where they were typed, so what is on screen is
+/// what the search is.
+fn draw_quick_search(frame: &mut Frame, panel: Rect, app: &App) {
+    let Some(search) = &app.quick_search else {
+        return;
+    };
+    if panel.width < 12 || panel.height < 2 {
+        return;
+    }
+    let label = format!(" Search: {} ", search.text);
+    let width = (label.chars().count() as u16).min(panel.width.saturating_sub(4));
+    let area = Rect {
+        x: panel.x + 2,
+        y: panel.y + panel.height - 1,
+        width,
+        height: 1,
+    };
+    let style = match search.miss {
+        true => Style::new().fg(th().error_fg).bg(th().error_bg),
+        false => Style::new().fg(th().select_fg).bg(th().select_bg),
+    };
+    frame.render_widget(Clear, area);
+    frame.render_widget(Line::from(label).style(style), area);
+}
+
 fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     let line = if let Some(msg) = &app.status {
         Line::from(msg.as_str()).style(Style::new().fg(th().error_fg).bg(th().error_bg))
@@ -2068,9 +2094,6 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
             app.jobs.len()
         ))
         .style(Style::new().fg(th().select_fg).bg(th().select_bg))
-    } else if let Some(prefix) = &app.quick_search {
-        Line::from(format!("Search: {prefix}"))
-            .style(Style::new().fg(th().select_fg).bg(th().select_bg))
     } else if app.panels[app.active].list_mode == ListMode::Tree {
         // the listing is hidden, so its cursor entry would be a lie -
         // the tree's own selection is what the user is looking at
@@ -4242,41 +4265,64 @@ fn draw_tree_dialog(frame: &mut Frame, tree: &Tree) {
     draw_tree_rows(frame, inner, tree, base, selected);
 }
 
-fn draw_hotlist(frame: &mut Frame, entries: &[HotEntry], recent: &[String], selected: usize) {
+fn draw_hotlist(frame: &mut Frame, app: &App, d: &crate::app::HotlistDialog) {
+    use crate::app::HotRow;
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
-    let title = Style::new().fg(th().header_fg).bg(th().dialog_bg);
+    let head = Style::new().fg(th().header_fg).bg(th().dialog_bg);
 
-    // display rows: pinned entries, then a header + the recent list;
-    // `Some(i)` carries the selectable index a row answers to
-    let label_w = entries
+    let group = app.hot_group(&d.group);
+    let label_w = group
         .iter()
         .map(|e| e.label.chars().count())
         .max()
         .unwrap_or(0)
         .min(16);
-    let mut lines: Vec<(String, Option<usize>)> = entries
-        .iter()
-        .enumerate()
-        .map(|(i, e)| {
-            let path = abbrev_home(std::path::Path::new(&e.path));
-            (format!(" {:<label_w$}  {}", e.label, path), Some(i))
-        })
-        .collect();
-    if !recent.is_empty() {
-        lines.push((" Recent:".into(), None));
-        lines.extend(recent.iter().enumerate().map(|(i, loc)| {
-            let path = abbrev_home(std::path::Path::new(loc));
-            (format!("   {path}"), Some(entries.len() + i))
-        }));
+    // one drawn line per row, plus the "Recent:" heading, which is a
+    // label rather than something the cursor can land on
+    let mut lines: Vec<(String, Option<usize>)> = Vec::new();
+    let mut recent_seen = false;
+    for (at, row) in app.hotlist_rows(d).into_iter().enumerate() {
+        match row {
+            HotRow::Up => lines.push((" ..".into(), Some(at))),
+            HotRow::Group(i) => {
+                let label = group.get(i).map(|e| e.label.as_str()).unwrap_or_default();
+                lines.push((format!(" {label:<label_w$}  /..."), Some(at)))
+            }
+            HotRow::Entry(i) => {
+                let entry = match group.get(i) {
+                    Some(entry) => entry,
+                    None => continue,
+                };
+                let path = abbrev_home(std::path::Path::new(&entry.path));
+                lines.push((format!(" {:<label_w$}  {path}", entry.label), Some(at)))
+            }
+            HotRow::Recent(loc) => {
+                if !recent_seen {
+                    recent_seen = true;
+                    lines.push((" Recent:".into(), None));
+                }
+                let path = abbrev_home(std::path::Path::new(&loc));
+                lines.push((format!("   {path}"), Some(at)))
+            }
+        }
     }
 
     let rows = lines.len().max(1) as u16;
     let area = centered(56, (rows + 2).min(20), frame.area());
     frame.render_widget(Clear, area);
+    // the title says where in the tree this is, and what is in hand
+    let where_ = match d.group.is_empty() {
+        true => " Directory hotlist ".to_string(),
+        false => format!(" Hotlist: {} ", app.hotlist_group_path(d)),
+    };
+    let hint = match &d.moving {
+        Some(entry) => format!(" moving \"{}\" - m puts it here ", entry.label),
+        None => " Enter go · a add · g group · e rename · m move · d drop ".into(),
+    };
     let block = Block::bordered()
-        .title(" Directory hotlist ")
-        .title_bottom(Line::from(" Enter cd · a add · d delete ").centered())
+        .title(where_)
+        .title_bottom(Line::from(hint).centered())
         .style(base);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -4291,7 +4337,7 @@ fn draw_hotlist(frame: &mut Frame, entries: &[HotEntry], recent: &[String], sele
     // keep the selected row in view when the list outgrows the dialog
     let sel_row = lines
         .iter()
-        .position(|(_, s)| *s == Some(selected))
+        .position(|(_, s)| *s == Some(d.row))
         .unwrap_or(0);
     let first = sel_row.saturating_sub(inner.height.saturating_sub(1) as usize);
     for (i, (text, sel_idx)) in lines.iter().enumerate().skip(first) {
@@ -4305,9 +4351,9 @@ fn draw_hotlist(frame: &mut Frame, entries: &[HotEntry], recent: &[String], sele
         };
         let text = tail(text, inner.width as usize);
         let style = match sel_idx {
-            Some(s) if *s == selected => sel,
+            Some(s) if *s == d.row => sel,
             Some(_) => base,
-            None => title,
+            None => head,
         };
         frame.render_widget(
             Line::from(format!("{text:<w$}", w = inner.width as usize)).style(style),

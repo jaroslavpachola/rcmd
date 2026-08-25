@@ -181,9 +181,9 @@ exactly where it was.
 | Alt+T | Cycle listing format: brief (names in columns) / full / long (active long panel = full-width one-panel view) |
 | Ctrl+U | Swap panels |
 | Alt+. | Toggle hidden files |
-| Ctrl+S, Alt+S | Quick search (type-ahead; Ctrl+S again = next match) |
+| Ctrl+S, Alt+S | Quick search: matches anywhere in the name, `*`/`?` glob, smartcase; Ctrl+S or ↓/↑ walks the matches |
 | Ctrl+F | Filter shown files by glob (`*` or empty clears) |
-| Ctrl+\ | Directory hotlist (Enter cd, `a` add current, `d` delete) |
+| Ctrl+\ | Directory hotlist: Enter goes (or walks into a group), `a` adds this directory, `g` makes a group, `e` renames, `m` moves an entry into another group, `d` drops, Alt+↑/↓ reorders |
 | Alt+F7 | Find file (glob + optional content); results panelized |
 | Alt+← / Alt+→ | Directory history back / forward (per panel) |
 | Alt+↑ | Directory hotlist |
@@ -203,9 +203,9 @@ exactly where it was.
 Typing goes to the **command line** at the bottom; Enter runs it in the
 active panel's directory (`cd` changes the panel instead, and `cd -`
 goes back to where the panel came from; a relative `cd` that misses
-locally also tries `$CDPATH`). MC's macros expand there too - `%f` the
-cursor file, `%d` this directory, `%D` the other panel's, `%t` the
-marked files. Alt+Enter
+locally also tries `$CDPATH`). MC's macros expand there too (the same
+set the user menu gets, below - so `%%s` is how you type a literal
+`%s`). Alt+Enter
 inserts the selected filename, Ctrl+P/Ctrl+N walk history, Ctrl+A/E are
 readline-style and Esc clears the line (Ctrl+U swaps panels, like MC).
 The `+`/`-`/`*`/`\` selection keys apply only while the command line is
@@ -389,10 +389,22 @@ run = "git status | less"
 key = "ctrl+g"
 ```
 
-Both expand macros before running in the active panel's directory:
-`%f` the cursor file, `%d` this directory, `%D` the other panel's
-directory, `%t` all marked files, `%%` a literal percent - everything
-shell-quoted.
+Both expand **mc's macros** before running in the active panel's
+directory, everything shell-quoted:
+
+| Macro | This panel | Other panel |
+|---|---|---|
+| cursor file | `%f` | `%F` |
+| directory | `%d` | `%D` |
+| marked files | `%t` | `%T` |
+| marked files, and drop the marks | `%u` | `%U` |
+| marked files, or the cursor file if none | `%s` | `%S` |
+
+`%q` is the clipboard file (`~/.cache/mc/mcedit/mcedit.clip`, shared
+with mcedit - rcmd's editor writes it too), `%%` a literal percent, and
+`%{Some question}` **asks** before the command runs, putting the answer
+in unquoted, which is how options get passed. Anything else is left
+alone, so `printf '%%s'` needs its percent doubled like everywhere else.
 
 **File properties**: the info panel (Ctrl+X i) turns the other panel
 into a live stat display of the file under the cursor - type, size,
@@ -694,9 +706,15 @@ type = "exe"           # ...or what the entry is: dir linkdir exe link
 color = "magenta"      #    broken file
 bold = true            # optional; left out, the kind's own weight stands
 
-[[hotlist]]
+[[hotlist]]                 # Ctrl+\ - a tree, as in mc
 label = "projects"
 path = "/home/you/git"
+
+[[hotlist]]                 # an entry with `entries` is a group to
+label = "Work"              # walk into rather than a place to go
+entries = [
+  { label = "api", path = "/srv/api" },
+]
 
 [[open]]                    # Enter on a matching file runs this
 match = "*.pdf"

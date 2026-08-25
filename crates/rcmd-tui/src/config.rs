@@ -141,10 +141,31 @@ pub struct Config {
     pub highlight: Vec<HighlightRule>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One row of the directory hotlist. mc's hotlist is a tree, so this is
+/// one too: an entry with a `path` is a place to go, an entry with
+/// `entries` is a group to walk into. An entry with neither is an empty
+/// group - which is what a group is before anything is put in it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HotEntry {
     pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub path: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<HotEntry>,
+}
+
+impl HotEntry {
+    pub fn is_group(&self) -> bool {
+        self.path.is_empty()
+    }
+
+    /// Whether `path` is anywhere in this subtree - what "already in
+    /// the hotlist" means once the hotlist has depth.
+    pub fn holds(entries: &[HotEntry], path: &str) -> bool {
+        entries
+            .iter()
+            .any(|e| e.path == path || HotEntry::holds(&e.entries, path))
+    }
 }
 
 /// `[[panelize]]` - a named command whose output becomes a listing.

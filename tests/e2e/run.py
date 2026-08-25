@@ -2171,9 +2171,10 @@ def test_tree():
           scr.split("\n")[0][:60])
 
     # Ctrl+S searches the figure - in a tree view mc keeps plain
-    # characters for the command line until the search is switched on
+    # characters for the command line until the search is switched on.
+    # The field sits on the panel's own frame now, not on the status row.
     s.keys(b"\x13", b"g")
-    check("tree: Ctrl+S searches the figure", "Search: g" in status_line(s), status_line(s))
+    check("tree: Ctrl+S searches the figure", "Search: g" in s.screen(), s.screen())
     s.keys(
         b"\r",                  # end the search
         b"\r",                  # Enter on the match
@@ -2635,9 +2636,11 @@ def test_confirmations():
     open(os.path.join(play, "thing.run"), "w").write("x\n")
     s = Session(play, home)
 
-    # the hotlist: 'a' adds this directory, 'd' now asks before dropping
+    # the hotlist: 'a' adds this directory (asking what to call it),
+    # 'd' now asks before dropping
     s.send(b"\x1c", wait=STEP)              # Ctrl+\ hotlist
-    s.send(b"a")
+    s.send(b"a", wait=STEP)
+    s.send(b"\r", wait=STEP)                # accept the offered label
     check("confirm: hotlist entry added", "play" in s.screen(), s.screen()[:400])
     s.send(b"d")
     scr = s.screen()
@@ -3086,6 +3089,7 @@ def test_configstate():
         s.screen()[-400:],
     )
     s.send(b"a", wait=STEP)                # add the current directory
+    s.send(b"\r", wait=STEP)               # accept the offered label
     s.send(b"\r", wait=STEP)               # Enter on a row closes the dialog
     s.quit()
 
@@ -4340,6 +4344,218 @@ def test_cli():
     shutil.rmtree(root)
 
 
+def cursor_is(s, name):
+    """The status row names the cursor entry - permissions, size, name -
+    which is the only place on screen that says where the cursor is
+    (the listing shows every name whatever is selected)."""
+    for line in s.screen().split("\n"):
+        line = line.strip()
+        if line[:1] in "-dl" and line[1:3] in ("rw", "r-", "wx") and line.endswith(name):
+            return True
+    return False
+
+
+def test_hotlist():
+    """PLAN4 S8: mc's hotlist - groups to walk into, a label prompt, a
+    rename, a reorder and a move between groups."""
+    root, play, home = sandbox()
+    for name in ("one", "two"):
+        os.makedirs(os.path.join(play, name))
+    s = Session(play, home)
+
+    def hotlist():
+        s.send(b"\x1c", wait=STEP)           # Ctrl+\
+
+    # add two directories, each with a label of its own
+    for name in ("one", "two"):
+        s.keys(HOME_K, wait=STEP)
+        for _ in range(1 + ["one", "two"].index(name)):
+            s.send(DOWN)
+        s.send(b"\r", wait=STEP)             # enter it
+        hotlist()
+        s.send(b"a", wait=STEP)
+        check(f"hotlist: the label prompt offers a name ({name})",
+              name in s.screen(), s.screen())
+        s.send(BACKSPACE * 20 + b"dir-" + name.encode() + b"\r", wait=STEP)
+        s.send(b"\x1b", wait=STEP)           # close the hotlist
+        s.send(b"\x1b[A", wait=STEP)         # up a directory... via Alt+Up? no:
+        s.keys(HOME_K, b"\r", wait=STEP)     # ".." back to play
+
+    hotlist()
+    scr = s.screen()
+    check("hotlist: both labels are there",
+          "dir-one" in scr and "dir-two" in scr, scr)
+
+    # a group, and a move into it
+    s.send(b"g", wait=STEP)
+    check("hotlist: the group prompt asks for a name", "New group" in s.screen(), s.screen())
+    s.send(b"Places\r", wait=STEP)
+    check("hotlist: the group is listed", "Places" in s.screen(), s.screen())
+
+    s.send(HOME_K, wait=STEP)                # -> dir-one
+    s.send(b"m", wait=STEP)                  # pick it up
+    check("hotlist: picking one up says so",
+          'moving "dir-one"' in s.screen(), s.screen())
+    # the rows are now dir-two, then the group, then rcmd's own recent
+    # directories - so one Down, not End
+    s.send(DOWN, wait=STEP)
+    s.send(b"\r", wait=STEP)                 # walk into the group
+    check("hotlist: the title says where we are", "Places" in s.screen(), s.screen())
+    s.send(b"m", wait=STEP)                  # put it down here
+    check("hotlist: it landed in the group", "dir-one" in s.screen(), s.screen())
+
+    # rename it, then go back up
+    s.send(HOME_K, wait=STEP)
+    s.send(DOWN, wait=STEP)                  # past ".." to the entry
+    s.send(b"e", wait=STEP)
+    check("hotlist: rename offers the old name", "dir-one" in s.screen(), s.screen())
+    s.send(BACKSPACE * 20 + b"renamed\r", wait=STEP)
+    check("hotlist: renamed", "renamed" in s.screen(), s.screen())
+    s.send(HOME_K, wait=STEP)
+    s.send(b"\r", wait=STEP)                 # ".." goes back up
+    check("hotlist: back at the top", "dir-two" in s.screen(), s.screen())
+    s.send(b"\x1b", wait=STEP)
+    s.quit()
+
+    # and all of it survived into the state file, groups and all
+    st = open(os.path.join(home, ".local", "state", "rcmd", "state.toml")).read()
+    check("hotlist: the tree is in the state file",
+          "Places" in st and "renamed" in st and "dir-two" in st, st)
+    shutil.rmtree(root)
+
+
+def test_macros():
+    """PLAN4 S8: mc's full macro set - %s/%S, %u/%U spending the marks,
+    %q from the clipboard file, and %{question} asking first."""
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write(
+        '[[commands]]\n'
+        'name = "record selected"\n'
+        'run = "echo %s > sel.out"\n'
+        '\n'
+        '[[commands]]\n'
+        'name = "spend the marks"\n'
+        'run = "echo %u > used.out"\n'
+        '\n'
+        '[[commands]]\n'
+        'name = "paste the clipboard"\n'
+        'run = "echo %q > clip.out"\n'
+        '\n'
+        '[[commands]]\n'
+        'name = "ask first"\n'
+        'run = "echo %{Say what} > asked.out"\n'
+    )
+    clip = os.path.join(home, ".cache", "mc", "mcedit")
+    os.makedirs(clip)
+    open(os.path.join(clip, "mcedit.clip"), "w").write("from-the-clip")
+    for name in ("a.txt", "b.txt"):
+        open(os.path.join(play, name), "w").write(name + "\n")
+
+    def run_menu(row):
+        """F2, walk to a row, run it, and wait out the pause."""
+        s.send(b"\x1b[12~", wait=STEP)
+        for _ in range(row):
+            s.send(DOWN)
+        s.send(b"\r", wait=STEP * 3)
+        if not SUBSHELL:
+            s.send(b"\r", wait=STEP * 2)
+
+    s = Session(play, home)
+    # mark both files, then %s hands over the marked ones
+    s.keys(HOME_K + DOWN + INSERT + INSERT, wait=STEP)
+    run_menu(0)
+    sel = os.path.join(play, "sel.out")
+    check("macros: %s is the marked files",
+          os.path.isfile(sel) and open(sel).read().split() == ["a.txt", "b.txt"],
+          os.path.isfile(sel) and open(sel).read())
+
+    # %u hands them over and spends them...
+    run_menu(1)
+    used = os.path.join(play, "used.out")
+    check("macros: %u hands the marks over",
+          os.path.isfile(used) and open(used).read().split() == ["a.txt", "b.txt"],
+          os.path.isfile(used) and open(used).read())
+    # ...so %s now finds none and falls back to the cursor file
+    s.keys(HOME_K + DOWN, wait=STEP)          # cursor -> a.txt
+    run_menu(0)
+    check("macros: the marks were spent, so %s is the cursor file",
+          open(sel).read().strip() == "a.txt", open(sel).read())
+
+    # %q is the clipboard file mcedit shares
+    run_menu(2)
+    clipout = os.path.join(play, "clip.out")
+    check("macros: %q reads the clipboard file",
+          os.path.isfile(clipout) and open(clipout).read().strip() == "from-the-clip",
+          os.path.isfile(clipout) and open(clipout).read())
+
+    # %{question} asks before anything runs
+    s.send(b"\x1b[12~", wait=STEP)
+    for _ in range(3):
+        s.send(DOWN)
+    s.send(b"\r", wait=STEP)
+    check("macros: %{...} asks", "Say what" in s.screen(), s.screen())
+    s.send(b"answered\r", wait=STEP * 3)
+    if not SUBSHELL:
+        s.send(b"\r", wait=STEP * 2)
+    asked = os.path.join(play, "asked.out")
+    check("macros: the answer went into the command",
+          os.path.isfile(asked) and open(asked).read().strip() == "answered",
+          os.path.isfile(asked) and open(asked).read())
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_quicksearch():
+    """PLAN4 S8: mc's quick search - a field of its own, matching
+    anywhere in the name, with wildcards, and keeping what was typed
+    when nothing matches."""
+    root, play, home = sandbox()
+    for name in ("alpha.txt", "beta.log", "gamma.txt", "note-beta.md"):
+        open(os.path.join(play, name), "w").write(name + "\n")
+    s = Session(play, home)
+
+    s.send(b"\x13", wait=STEP)                  # Ctrl+S opens the field
+    check("quicksearch: the field opens", "Search:" in s.screen(), s.screen())
+
+    # a substring, not a prefix: "beta" reaches beta.log...
+    s.send(b"beta", wait=STEP)
+    check("quicksearch: matched by substring", cursor_is(s, "beta.log"), s.screen())
+    check("quicksearch: the field shows what was typed",
+          "Search: beta" in s.screen(), s.screen())
+    # ...and Ctrl+S again walks on to the next one
+    s.send(b"\x13", wait=STEP)
+    check("quicksearch: steps to the next match",
+          cursor_is(s, "note-beta.md"), s.screen())
+
+    # a character that matches nothing is kept, and says so
+    s.send(b"zz", wait=STEP)
+    check("quicksearch: a miss keeps the characters",
+          "Search: betazz" in s.screen(), s.screen())
+    s.send(BACKSPACE + BACKSPACE, wait=STEP)
+    check("quicksearch: backspace takes them back",
+          "Search: beta" in s.screen(), s.screen())
+    s.send(b"\x1b", wait=STEP)                  # Esc closes
+
+    # a wildcard switches to glob matching
+    s.send(b"\x13", wait=STEP)
+    s.send(b"*.log", wait=STEP)
+    check("quicksearch: a wildcard globs", cursor_is(s, "beta.log"), s.screen())
+    s.send(b"\r", wait=STEP)
+    check("quicksearch: Enter closes the field", "Search:" not in s.screen(), s.screen())
+
+    # case folds, unless the search says otherwise
+    s.send(b"\x13", wait=STEP)
+    s.send(b"GAMMA", wait=STEP)
+    check("quicksearch: a capital means it", "Search: GAMMA" in s.screen(), s.screen())
+    check("quicksearch: ...and does not match the lowercase name",
+          not cursor_is(s, "gamma.txt"), s.screen())
+    s.send(b"\x1b", wait=STEP)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_skins():
     """PLAN4 S7: skins - a theme that is a file, rcmd's own TOML or an
     mc skin read where mc keeps it, and the Appearance list."""
@@ -4572,6 +4788,9 @@ def main():
         test_panelize,
         test_diff,
         test_cli,
+        test_hotlist,
+        test_macros,
+        test_quicksearch,
         test_skins,
         test_wrapper,
         test_subshell,
