@@ -4120,6 +4120,63 @@ def test_findwindow():
     shutil.rmtree(root)
 
 
+def test_panelize():
+    """PLAN4 S6: external panelize - saved commands, and the output
+    streaming into the panel as it arrives."""
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write(
+        '[[panelize]]\n'
+        'name = "text files"\n'
+        'run = "ls *.txt"\n'
+    )
+    for name in ("one.txt", "two.txt", "other.log"):
+        open(os.path.join(play, name), "w").write(name + "\n")
+    s = Session(play, home)
+
+    # F9 > Left > Panelize command...
+    def panelize():
+        # F9 opens on the Left menu, whose "Panelize command..." is p
+        # ("l" would be Long listing - the panel menu spends it there)
+        s.send(b"\x1b[20~", wait=STEP)
+        s.send(b"p", wait=STEP)
+
+    panelize()
+    scr = s.screen()
+    check("panelize: the saved list is there",
+          "Saved:" in scr and "text files" in scr and "ls *.txt" in scr, scr)
+
+    # Enter runs the highlighted preset
+    s.send(b"\r", wait=STEP * 2)
+    check("panelize: the preset ran", wait_for(s, "panelized 2 item(s)"))
+    scr = s.screen()
+    check("panelize: the listing is its output",
+          "one.txt" in scr and "cmd: ls *.txt" in scr, scr)
+    check("panelize: and nothing else", scr.count("other.log") == 1, scr)
+    s.send(b"\x12", wait=STEP)               # Ctrl+R restores the listing
+
+    # a typed command, saved under a name of its own
+    panelize()
+    s.send(b"\t", wait=STEP)                 # -> the command field
+    s.send(b"\x15echo other.log", wait=STEP)
+    s.send(b"\x13", wait=STEP)               # Ctrl+S: save as...
+    check("panelize: it asks for a name", "Save as" in s.screen(), s.screen())
+    s.send(b"logs\r", wait=STEP)
+    check("panelize: the new preset is listed", "logs" in s.screen(), s.screen())
+    s.send(b"\r", wait=STEP * 2)
+    check("panelize: the typed command ran", wait_for(s, "panelized 1 item(s)"))
+
+    # ...and it outlived the dialog, in the state file
+    state = os.path.join(home, ".local", "state", "rcmd", "state.toml")
+    wait_file(state, "logs")
+    check("panelize: saved to state", "echo other.log" in open(state).read(),
+          open(state).read())
+
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_subshell():
     """R1 per-shell scenarios: forced subshell=true in every suite mode."""
     shells = ["/bin/sh"]
@@ -4260,6 +4317,7 @@ def main():
         test_selectdialog,
         test_finddialog,
         test_findwindow,
+        test_panelize,
         test_subshell,
         test_sftp,
         test_fish,

@@ -133,6 +133,8 @@ pub struct Config {
     pub view: Vec<OpenRule>,
     /// User commands: the F2 menu, in file order.
     pub commands: Vec<UserCommand>,
+    /// Saved panelize commands, in file order.
+    pub panelize: Vec<PanelizePreset>,
     /// Per-name / per-type colour rules, in file order - the first
     /// matching one wins. MC's filehighlight, as TOML.
     pub highlight: Vec<HighlightRule>,
@@ -142,6 +144,16 @@ pub struct Config {
 pub struct HotEntry {
     pub label: String,
     pub path: String,
+}
+
+/// `[[panelize]]` - a named command whose output becomes a listing.
+/// MC keeps these in its own dialog and its own file; rcmd keeps them
+/// beside every other list you can name, and the ones you save while
+/// running go to the state file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PanelizePreset {
+    pub name: String,
+    pub run: String,
 }
 
 /// `[[open]]` - `match = "*.pdf"`, `run = "zathura %f &"`.
@@ -299,6 +311,7 @@ impl Default for Config {
             open: Vec::new(),
             view: Vec::new(),
             commands: Vec::new(),
+            panelize: Vec::new(),
             highlight: Vec::new(),
         }
     }

@@ -87,6 +87,10 @@ pub struct State {
     /// Once `a`/`d` touches it, this owns the list outright.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hotlist: Option<Vec<HotEntry>>,
+    /// Panelize presets. `None` = never touched here, so the config
+    /// file's list stands; once one is saved or dropped, this owns it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub panelize: Option<Vec<crate::config::PanelizePreset>>,
     /// Command lines from previous sessions, oldest first (M-h lists
     /// them, C-p/M-p walk them).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -187,6 +191,9 @@ pub fn apply(state: &State, config: &mut Config) {
     }
     if let Some(hotlist) = state.hotlist.clone() {
         config.hotlist = hotlist;
+    }
+    if let Some(panelize) = state.panelize.clone() {
+        config.panelize = panelize;
     }
 }
 

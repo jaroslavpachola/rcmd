@@ -57,7 +57,6 @@ pub enum InputAction {
         sources: Vec<PathBuf>,
     },
     Mkdir,
-    Panelize,
     /// F9 → Command → Remote link: the value is an sftp:// or ftp:// URL.
     SftpConnect,
     /// S-F4: the value is the file to edit (created on first save).
@@ -259,6 +258,20 @@ impl FindResults {
             .min(self.selected)
             .max((self.selected + 1).saturating_sub(shown));
     }
+}
+
+/// A panelize command running on its own thread, its output becoming
+/// panel entries as the lines arrive.
+struct PanelizeJob {
+    rx: std::sync::mpsc::Receiver<PanelizeEvent>,
+    panel: usize,
+    count: usize,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+}
+
+enum PanelizeEvent {
+    Line(String),
+    Done(Option<String>),
 }
 
 /// A running thorough compare: the pairs the listings could not tell
@@ -548,6 +561,8 @@ pub enum Dialog {
     Charset(usize),
     /// C-x d: how to compare the two listings, with the row it is on.
     Compare(usize),
+    /// External panelize: the saved commands and the one being typed.
+    Panelize(Box<PanelizeDialog>),
     /// Select / unselect group, and the panel filter.
     Pattern(Box<PatternDialog>),
     /// MC's find results window.
@@ -614,6 +629,19 @@ pub enum EditFollowUp {
     Remote(RemoteEdit),
     /// A bulk-rename buffer, to diff into renames.
     Bulk(BulkRename),
+}
+
+/// MC's external panelize: the saved commands, and the one being
+/// typed. Running one streams its output into the panel as it arrives.
+pub struct PanelizeDialog {
+    pub value: String,
+    pub cursor: usize,
+    /// Which saved preset the cursor is on.
+    pub row: usize,
+    /// The list has the focus rather than the command field.
+    pub on_list: bool,
+    /// Ctrl+S: the field is asking for a name to save the command as.
+    pub naming: Option<String>,
 }
 
 /// MC's select / unselect / filter dialog: a pattern and the three
@@ -2020,6 +2048,7 @@ pub struct App {
     remote_edit: Option<RemoteEdit>,
     du: Option<DuJob>,
     compare: Option<CompareState>,
+    panelize: Option<PanelizeJob>,
     watch: Option<WatchState>,
     /// Something on screen has changed since the last frame. The loop
     /// wakes on a timer to poll jobs, watches and the like; drawing on
@@ -2154,6 +2183,7 @@ impl App {
             remote_edit: None,
             du: None,
             compare: None,
+            panelize: None,
             watch,
             dirty: true,
             prefix_cx: false,
@@ -2183,6 +2213,7 @@ impl App {
             self.drain_connect();
             self.drain_du();
             self.drain_compare();
+            self.drain_panelize();
             self.poll_loads();
             self.update_watches();
             self.tick_watch();
@@ -2211,6 +2242,7 @@ impl App {
             // progress, a listing still arriving, a followed file
             let busy = !self.jobs.is_empty()
                 || self.compare.is_some()
+                || self.panelize.is_some()
                 || self.find.is_some()
                 || self.connect.is_some()
                 || self.du.is_some()
@@ -6323,6 +6355,91 @@ impl App {
                 }
                 _ => self.dialog = Some(Dialog::Pattern(d)),
             },
+            Dialog::Panelize(mut d) => {
+                let presets = self.config.panelize.clone();
+                // saving asks for a name in the same field: there is
+                // one dialog slot, and a name is one line of typing
+                if let Some(mut name) = d.naming.take() {
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.dialog = Some(Dialog::Panelize(d));
+                        }
+                        KeyCode::Enter => {
+                            let name = name.trim().to_string();
+                            if !name.is_empty() {
+                                self.save_panelize(
+                                    Some(crate::config::PanelizePreset {
+                                        name,
+                                        run: d.value.clone(),
+                                    }),
+                                    None,
+                                );
+                            }
+                            d.row = self.config.panelize.len().saturating_sub(1);
+                            self.dialog = Some(Dialog::Panelize(d));
+                        }
+                        code => {
+                            let mut cursor = name.chars().count();
+                            edit_line(&mut name, &mut cursor, code, key.modifiers);
+                            d.naming = Some(name);
+                            self.dialog = Some(Dialog::Panelize(d));
+                        }
+                    }
+                    return;
+                }
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => {
+                        let command = match (d.on_list, presets.get(d.row)) {
+                            (true, Some(preset)) => preset.run.clone(),
+                            _ => d.value.trim().to_string(),
+                        };
+                        if command.is_empty() {
+                            self.dialog = Some(Dialog::Panelize(d));
+                        } else {
+                            self.run_panelize(&command);
+                        }
+                    }
+                    KeyCode::Tab | KeyCode::BackTab if !presets.is_empty() => {
+                        d.on_list = !d.on_list;
+                        self.dialog = Some(Dialog::Panelize(d));
+                    }
+                    KeyCode::Up | KeyCode::Down if d.on_list => {
+                        let last = presets.len().saturating_sub(1);
+                        d.row = match key.code {
+                            KeyCode::Up => d.row.saturating_sub(1),
+                            _ => (d.row + 1).min(last),
+                        };
+                        // the highlighted command is what Enter runs,
+                        // so it shows in the field as well
+                        if let Some(preset) = presets.get(d.row) {
+                            d.value = preset.run.clone();
+                            d.cursor = d.value.chars().count();
+                        }
+                        self.dialog = Some(Dialog::Panelize(d));
+                    }
+                    // C-s saves what is typed, F8 drops what is picked
+                    KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if !d.value.trim().is_empty() {
+                            d.naming = Some(String::new());
+                        }
+                        self.dialog = Some(Dialog::Panelize(d));
+                    }
+                    KeyCode::F(8) | KeyCode::Delete if d.on_list && !presets.is_empty() => {
+                        self.save_panelize(None, Some(d.row));
+                        d.row = d.row.min(self.config.panelize.len().saturating_sub(1));
+                        d.on_list = !self.config.panelize.is_empty();
+                        self.dialog = Some(Dialog::Panelize(d));
+                    }
+                    code => {
+                        if !d.on_list {
+                            let (value, cursor) = (&mut d.value, &mut d.cursor);
+                            edit_line(value, cursor, code, key.modifiers);
+                        }
+                        self.dialog = Some(Dialog::Panelize(d));
+                    }
+                }
+            }
             Dialog::Compare(row) => {
                 let last = COMPARE_MODES.len() - 1;
                 match key.code {
@@ -7197,12 +7314,45 @@ impl App {
         if !self.require_local() {
             return;
         }
-        self.dialog = Some(Dialog::Input(InputDialog {
-            title: " Panelize (command output as listing) ".into(),
+        self.dialog = Some(Dialog::Panelize(Box::new(PanelizeDialog {
             value: String::new(),
             cursor: 0,
-            action: InputAction::Panelize,
-        }));
+            row: 0,
+            // the saved list has the focus when there is one to pick
+            // from, which is the point of saving them
+            on_list: !self.config.panelize.is_empty(),
+            naming: None,
+        })));
+    }
+
+    /// Save the typed command under a name, or drop the highlighted
+    /// preset. Both write through to the state file at once, the way
+    /// the hotlist does.
+    fn save_panelize(
+        &mut self,
+        preset: Option<crate::config::PanelizePreset>,
+        drop_row: Option<usize>,
+    ) {
+        if let Some(preset) = preset {
+            match self
+                .config
+                .panelize
+                .iter()
+                .position(|p| p.name == preset.name)
+            {
+                Some(at) => self.config.panelize[at] = preset,
+                None => self.config.panelize.push(preset),
+            }
+        }
+        if let Some(row) = drop_row
+            && row < self.config.panelize.len()
+        {
+            self.config.panelize.remove(row);
+        }
+        let list = self.config.panelize.clone();
+        if let Err(err) = state::update(move |s| s.panelize = Some(list)) {
+            self.status = Some(format!(" could not save state: {err} "));
+        }
     }
 
     /// Quick compare of both panel listings: marks files that are missing
@@ -7330,7 +7480,6 @@ impl App {
                 }
             }
 
-            InputAction::Panelize => self.run_panelize(&value),
             InputAction::SftpConnect => self.connect_remote(&value),
             InputAction::EditNew => {
                 let name = value.trim();
@@ -7601,38 +7750,116 @@ impl App {
 
     /// Run a command, its stdout lines become the panel listing.
     /// Synchronous: meant for fast listers (git ls-files, rg -l, …).
+    /// Run the command with its output streaming into the panel. A
+    /// listing that takes a while to produce - a find, a git command
+    /// over a big tree - fills in as it goes rather than after.
     fn run_panelize(&mut self, command: &str) {
+        use std::io::{BufRead, BufReader};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        if let Some(running) = self.panelize.take() {
+            running.cancel.store(true, Ordering::Relaxed);
+        }
         let cwd = self.panels[self.active].local_cwd();
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let output = std::process::Command::new(&shell)
+        let child = std::process::Command::new(&shell)
             .arg("-c")
             .arg(command)
             .current_dir(&cwd)
-            .output();
-        match output {
-            Ok(out) => {
-                let mut entries = Vec::new();
-                for line in String::from_utf8_lossy(&out.stdout).lines() {
-                    let line = line.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    if let Ok(mut entry) = entry::stat(&cwd.join(line)) {
-                        entry.name = std::ffi::OsString::from(line);
-                        entries.push(entry);
-                    }
-                }
-                if entries.is_empty() && !out.status.success() {
-                    let err = String::from_utf8_lossy(&out.stderr);
-                    let first = err.lines().next().unwrap_or("command failed");
-                    self.status = Some(format!(" panelize: {first} "));
-                    return;
-                }
-                let count = entries.len();
-                self.panels[self.active].panelize(entries, format!("cmd: {command}"));
-                self.status = Some(format!(" panelized {count} item(s) "));
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        let mut child = match child {
+            Ok(child) => child,
+            Err(err) => {
+                self.status = Some(format!(" panelize: {err} "));
+                return;
             }
-            Err(err) => self.status = Some(format!(" panelize: {err} ")),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        std::thread::spawn(move || {
+            let stdout = child.stdout.take();
+            if let Some(stdout) = stdout {
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    if flag.load(Ordering::Relaxed) {
+                        let _ = child.kill();
+                        break;
+                    }
+                    if !line.trim().is_empty() && tx.send(PanelizeEvent::Line(line)).is_err() {
+                        let _ = child.kill();
+                        return;
+                    }
+                }
+            }
+            // the error is worth having only when nothing came out
+            let status = child.wait();
+            let complaint = match status {
+                Ok(status) if !status.success() => {
+                    let mut text = String::new();
+                    if let Some(mut err) = child.stderr.take() {
+                        use std::io::Read as _;
+                        let _ = err.read_to_string(&mut text);
+                    }
+                    Some(
+                        text.lines()
+                            .next()
+                            .unwrap_or("command failed")
+                            .trim()
+                            .to_string(),
+                    )
+                }
+                _ => None,
+            };
+            let _ = tx.send(PanelizeEvent::Done(complaint));
+        });
+        let panel = self.active;
+        self.panels[panel].panelize(Vec::new(), format!("cmd: {command}"));
+        self.panelize = Some(PanelizeJob {
+            rx,
+            panel,
+            count: 0,
+            cancel,
+        });
+    }
+
+    /// Lines from a running panelize, as they arrive.
+    fn drain_panelize(&mut self) {
+        let Some(job) = self.panelize.as_mut() else {
+            return;
+        };
+        let mut done = None;
+        let mut lines = Vec::new();
+        while let Ok(event) = job.rx.try_recv() {
+            match event {
+                PanelizeEvent::Line(line) => lines.push(line),
+                PanelizeEvent::Done(complaint) => done = Some(complaint),
+            }
+        }
+        let panel = job.panel;
+        let cwd = self.panels[panel].local_cwd();
+        for line in lines {
+            let line = line.trim().to_string();
+            if let Ok(mut entry) = entry::stat(&cwd.join(&line)) {
+                entry.name = std::ffi::OsString::from(line);
+                self.panels[panel].entries.push(entry);
+                if let Some(job) = self.panelize.as_mut() {
+                    job.count += 1;
+                }
+                self.dirty = true;
+            }
+        }
+        let count = self.panelize.as_ref().map(|j| j.count).unwrap_or(0);
+        match done {
+            Some(complaint) => {
+                self.panelize = None;
+                self.dirty = true;
+                self.status = Some(match complaint {
+                    Some(err) if count == 0 => format!(" panelize: {err} "),
+                    _ => format!(" panelized {count} item(s) "),
+                });
+            }
+            None => self.status = Some(format!(" panelizing… {count} so far - Esc cancels ")),
         }
     }
 
@@ -7910,12 +8137,19 @@ impl App {
     fn on_panel_key(&mut self, key: KeyEvent) {
         // a thorough compare reads files: Esc stops it, as it stops a
         // find, rather than waiting for the last pair
-        if key.code == KeyCode::Esc
-            && let Some(running) = self.compare.take()
-        {
-            running.handle.cancel();
-            self.status = Some(" compare cancelled ".into());
-            return;
+        if key.code == KeyCode::Esc {
+            if let Some(running) = self.compare.take() {
+                running.handle.cancel();
+                self.status = Some(" compare cancelled ".into());
+                return;
+            }
+            if let Some(running) = self.panelize.take() {
+                running
+                    .cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                self.status = Some(" panelize cancelled ".into());
+                return;
+            }
         }
         let mods = key.modifiers;
         let alt = mods.contains(KeyModifiers::ALT);

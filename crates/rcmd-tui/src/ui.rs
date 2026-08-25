@@ -301,7 +301,10 @@ const HELP_TEXT: &[&str] = &[
     "                  files with the same size and date apart. Marks",
     "                  what differs on both sides (F5 syncs); Esc stops",
     "                  a thorough run part way.",
-    "  F9>Cmd>Panelize command output becomes the panel listing",
+    "  F9>Left/Right>Panelize: a command's output becomes the listing.",
+    "     Saved commands sit above the field - Tab moves between them,",
+    "     Ctrl+S saves what you typed under a name, F8 drops one. The",
+    "     output streams in as it arrives; Esc stops a slow one.",
     "  (Ctrl+R restores a normal listing after find/panelize)",
     "  Ctrl+Space      directory size (background scan, fills Size column)",
     "  Ctrl+R          reload both panels",
@@ -765,6 +768,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Options(d) => draw_options(frame, d),
             Dialog::Pattern(d) => draw_pattern(frame, d),
             Dialog::FindResults(d) => draw_find_results(frame, d),
+            Dialog::Panelize(d) => draw_panelize(frame, d, &app.config.panelize),
             Dialog::Compare(row) => {
                 let rows: Vec<&str> = crate::app::COMPARE_MODES
                     .iter()
@@ -3256,6 +3260,71 @@ fn draw_options(frame: &mut Frame, d: &OptionsDialog) {
     frame.render_widget(
         buttons_line(&["OK", "Cancel"], selected, base, sel),
         buttons,
+    );
+}
+
+/// MC's external panelize: the saved commands above, the one being
+/// typed below.
+fn draw_panelize(
+    frame: &mut Frame,
+    d: &crate::app::PanelizeDialog,
+    presets: &[crate::config::PanelizePreset],
+) {
+    let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let list_rows = presets.len().clamp(1, 8);
+    let inner = popup(
+        frame,
+        centered(66, list_rows as u16 + 7, frame.area()),
+        " Panelize (a command's output as the listing) ",
+        style,
+    );
+    let row = |offset: usize| Rect {
+        x: inner.x + 1,
+        y: inner.y + offset as u16,
+        width: inner.width.saturating_sub(2),
+        height: 1,
+    };
+    frame.render_widget(Line::from("Saved:").style(style), row(0));
+    if presets.is_empty() {
+        frame.render_widget(
+            Line::from("  (none yet - Ctrl+S saves what you type)").style(style),
+            row(1),
+        );
+    }
+    for (i, preset) in presets.iter().take(list_rows).enumerate() {
+        let focused = d.on_list && d.row == i;
+        frame.render_widget(
+            Line::from(format!(
+                " {:<20.20} {}",
+                preset.name,
+                tail(&preset.run, inner.width as usize / 2)
+            ))
+            .style(if focused { sel } else { style }),
+            row(i + 1),
+        );
+    }
+    let below = list_rows + 2;
+    match &d.naming {
+        Some(name) => {
+            frame.render_widget(Line::from("Save as:").style(style), row(below));
+            field_row(frame, row(below + 1), name, Some(name.chars().count()));
+        }
+        None => {
+            frame.render_widget(Line::from("Command:").style(style), row(below));
+            field_row(
+                frame,
+                row(below + 1),
+                &d.value,
+                (!d.on_list).then_some(d.cursor),
+            );
+        }
+    }
+    frame.render_widget(
+        Line::from("Tab list/field   Ctrl+S save   F8 drop   Enter run   Esc cancel")
+            .centered()
+            .style(style),
+        row(below + 3),
     );
 }
 

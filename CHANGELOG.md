@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.47.0 - 2026-08-25
+
+- **Panelize keeps a list** (4.0 S6): the commands worth running twice
+  now sit above the field, as `[[panelize]]` entries in the config or
+  saved while running with Ctrl+S. Tab moves between the list and the
+  field, F8 drops one, and Enter runs whichever is in front of you.
+  Saved ones go to the state file, so they outlive the session that
+  made them.
+- **The output streams into the panel** rather than arriving all at
+  once when the command exits. A `git ls-files` over a large tree, or
+  an `rg -l` that takes a few seconds, fills the listing while it runs,
+  says how many it has so far, and stops on Esc.
+- The command's failure is only reported when nothing came of it: a
+  command that printed a hundred paths and then exited non-zero has
+  still panelized a hundred paths.
+
 ## 3.46.0 - 2026-08-25
 
 - **Compare directories asks how** (4.0 S6): Ctrl+X d now offers mc's

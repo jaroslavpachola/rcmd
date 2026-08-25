@@ -295,7 +295,12 @@ listing, **View** and **Edit** open the match, and **Quit** closes.
 straight into the panel as a *panelized* listing (paths relative to the
 search root), where marking and F5/F6/F8 work as usual. *Panelize command…*
 (F9 → Left/Right) turns any command's stdout lines into such a listing
-(`git ls-files -m`, `rg -l TODO`, …). *Compare directories* (Ctrl+X d) asks
+(`git ls-files -m`, `rg -l TODO`, …). Its output **streams in as it
+arrives**, so a slow command fills the panel while it runs and Esc
+stops it. Commands worth keeping sit above the field as a saved list:
+Tab moves between the list and the field, Ctrl+S saves what you typed
+under a name, F8 drops one. They live in `[[panelize]]` entries in the
+config, and the ones you save while running go to the state file. *Compare directories* (Ctrl+X d) asks
 mc's question first - **Quick** (size and date), **Size only**, or
 **Thorough** - and marks what differs on both sides, so a plain F5
 copies the differences across. Thorough reads the files, which is the
@@ -652,6 +657,10 @@ path = "/home/you/git"
 [[open]]                    # Enter on a matching file runs this
 match = "*.pdf"
 run = "zathura %f >/dev/null 2>&1 &"
+
+[[panelize]]                # saved panelize commands (Ctrl+S adds one)
+name = "modified"
+run = "git ls-files -m"
 
 [[commands]]                # F2 user menu; key = "..." binds directly
 name = "git status"
