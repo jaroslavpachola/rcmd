@@ -19,10 +19,27 @@ pub use highlight::Highlighter;
 #[cfg(not(feature = "syntax"))]
 pub struct Highlighter;
 
+/// Without the feature there are no syntaxes to pick from.
+#[cfg(not(feature = "syntax"))]
+pub fn syntax_names() -> Vec<&'static str> {
+    Vec::new()
+}
+
+#[cfg(feature = "syntax")]
+pub use highlight::syntax_names;
+
 #[cfg(not(feature = "syntax"))]
 impl Highlighter {
     pub fn new(_path: &Path, _len_bytes: usize) -> Option<Highlighter> {
         None
+    }
+
+    pub fn by_name(_name: &str) -> Option<Highlighter> {
+        None
+    }
+
+    pub fn syntax_name(&self) -> &'static str {
+        ""
     }
 
     pub fn invalidate_from(&mut self, _line: usize) {}

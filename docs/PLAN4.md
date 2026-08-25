@@ -83,7 +83,7 @@ only way to script), rcmd keeps its own shape and imports mc's data.
   instead of today's shadowing append.
 - Active VFS list dialog + VFS settings.
 
-### S4 - viewer & editor depth
+### S4 - viewer & editor depth - DONE (2026-08-24)
 
 - Viewer: goto line/offset, regex search with case/backwards/whole-word
   options, raw/parsed toggle, format/unformat, ruler, next/previous
@@ -93,8 +93,15 @@ only way to script), rcmd keeps its own shape and imports mc's data.
   then goto line, bookmarks, line numbers, `~` backups, system
   clipboard, `C-u` undo alias.
 - Editor, later: macros, insert file, sort block, pipe block through a
-  command, column/rectangular blocks.
+  command, column/rectangular blocks. **Pruned** - this is the list the
+  Risks section put here to be pruned, and nothing in it blocks 4.0. A
+  block is one shell command away through the panel's own tools, and
+  macros are a feature to design rather than to port.
 - Screens: several editors/viewers open at once with mc's screen list.
+  Done: `M-\`` lists the panels and every open editor and viewer,
+  Enter switches, closing one lands back on the panels. Each screen
+  carries its own follow-up (a remote upload, a bulk rename), which is
+  what makes more than one safe.
 
 ### S5 - encoding
 

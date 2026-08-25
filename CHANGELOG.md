@@ -1,5 +1,30 @@
 # Changelog
 
+## 3.39.0 - 2026-08-25
+
+- **Several editors and viewers open at once** (4.0 S4, and the last of
+  it): ``Alt+` `` lists them - the panels first, then every open screen
+  with what it is on and whether it has unsaved changes - and Enter
+  switches. It is mc's screen list, reachable from wherever you are,
+  and it is in F9 > Command and the editor's own File menu too.
+- Closing a screen lands back on the panels, which is where mc puts you
+  as well. Quitting rcmd while an editor still holds unsaved changes
+  says how many and asks, whether or not the ordinary exit question is
+  switched on - the changes are in a screen you cannot see, so the
+  question is the only place they can be mentioned.
+- **Each screen carries its own follow-up.** Uploading the scratch copy
+  of a remote file and turning a bulk-rename buffer into renames used
+  to be App-wide slots; with two editors open, closing one would have
+  run the other's. They belong to the editor that was opened for them.
+- **Options > Syntax** in the editor picks the highlighting by hand -
+  every syntax syntect knows, or plain text - for a file whose name
+  does not say what it is. A letter jumps to the first syntax starting
+  with it, which is the only way to walk two hundred of them.
+- With this, **S4 is complete**: the viewer and editor depth the plan
+  asked for. The editor's "later" list - macros, insert file, sort
+  block, pipe block, column blocks - is pruned, as the plan's Risks
+  section put it there to be.
+
 ## 3.38.0 - 2026-08-24
 
 - **Getting around the editor** (4.0 S4, completing its editor list):

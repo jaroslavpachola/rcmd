@@ -453,7 +453,9 @@ switches, and OK applies them to the open editor and remembers them for
 the next session. They are `edit_tab_size`, `edit_fill_tabs`,
 `edit_auto_indent`, `edit_backspace_tabs`, `edit_wrap_column`,
 `edit_line_numbers`, `edit_backups` and `edit_clipboard` in the config
-file.
+file. **Options > Syntax** picks the highlighting by hand - every
+syntax syntect knows, or plain text - for a file whose name does not
+say what it is.
 
 **Getting around, and bookmarks**: `Alt+L` goes to a line by number,
 `Alt+K` bookmarks the line the cursor is on, `Alt+J` and `Alt+I` walk
@@ -475,6 +477,14 @@ keeps it to the editor.
 **Backups**: with `edit_backups` on, every save first copies what is on
 disk to `file~` - mc's "Do backups", one step back rather than a
 history.
+
+**Screens** (``Alt+` ``): several editors and viewers can be open at
+once. ``Alt+` `` lists them - the panels are the first row, then every
+open screen with what it is on and whether it has unsaved changes - and
+Enter switches. Closing a screen (F10 in the editor, q in the viewer)
+lands back on the panels, which is where mc puts you too. Quitting rcmd
+with an editor still holding unsaved changes says how many and asks,
+whether or not the ordinary exit question is switched on.
 
 **Remote filesystems (SFTP)**: `cd sftp://[user@]host[:port][/path]`
 (or F9 → Left/Right → SFTP link) connects a panel to a server - user

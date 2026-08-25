@@ -28,6 +28,18 @@ fn theme() -> &'static Theme {
     &themes.themes["base16-eighties.dark"]
 }
 
+/// Every syntax syntect knows, by name and in order, for a picker.
+pub fn syntax_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = syntax_set()
+        .syntaxes()
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
 pub struct Highlighter {
     syntax: &'static SyntaxReference,
     /// `states[k]` = parser/highlight state *before* line `k * CHECKPOINT`.
@@ -38,6 +50,24 @@ pub struct Highlighter {
 }
 
 impl Highlighter {
+    /// One for a named syntax, whatever the file happens to be called -
+    /// which is the point of being asked rather than guessing from the
+    /// extension.
+    pub fn by_name(name: &str) -> Option<Highlighter> {
+        let syntax = syntax_set().find_syntax_by_name(name)?;
+        Some(Highlighter {
+            syntax,
+            states: Vec::new(),
+            dirty_from: 0,
+            broken: false,
+        })
+    }
+
+    /// What it is highlighting as.
+    pub fn syntax_name(&self) -> &'static str {
+        &self.syntax.name
+    }
+
     /// None when the file is too big, has no known syntax, or is plain
     /// text - callers then render plain, which is also the fast path.
     pub fn new(path: &Path, len_bytes: usize) -> Option<Highlighter> {

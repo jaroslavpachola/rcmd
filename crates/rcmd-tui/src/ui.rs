@@ -528,6 +528,7 @@ const HELP_TEXT: &[&str] = &[
     "                  same viewer, keeping wrap, hex and the search",
     "  Shift+F3        raw view (skip any [[view]] filter)",
     "  F3/F10/Esc/q    close the viewer",
+    "  Alt+`           the screen list (see the editor section)",
     "",
     "# Editor (F4, built-in)",
     "  F2 save (atomic, keeps permissions and CRLF)   F10/Esc quit",
@@ -538,12 +539,17 @@ const HELP_TEXT: &[&str] = &[
     "  Ctrl+A select all   Ctrl+arrows word hop   Tab inserts a tab",
     "  F7 search (regex, smartcase), Shift+F7 next match",
     "  F4 replace: pattern, replacement, then Replace/Skip/All/Quit",
+    "  Alt+`          the screen list: several editors and viewers can",
+    "                  be open at once, and this is how you move",
+    "                  between them (the panels are its first row)",
     "  F9 opens the editor's own menu bar: File, Edit, Search, Options",
     "  Alt+L goto line   Alt+K bookmark this line   Alt+J/Alt+I next /",
     "     previous bookmark   Alt+O drop them all   Alt+N line numbers",
     "  Ctrl+U undoes too, as it does in mc",
     "  Copy and cut reach the desktop clipboard and paste reads it,",
     "     through wl-copy / xclip / xsel / pbcopy where one is there",
+    "  Options > Syntax: highlight as any syntax syntect knows, for a",
+    "     file whose name does not say what it is",
     "  Options > General: tab size, fill tabs with spaces, autoindent,",
     "     backspace through tabs, the column soft-wrap folds at, line",
     "     numbers, file~ backups and whether the desktop clipboard is",
@@ -581,12 +587,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_help(frame, app);
         return;
     }
-    if app.editor.is_some() {
+    if app.editor().is_some() {
         draw_editor(frame, app);
+        draw_screen_list(frame, app);
         return;
     }
-    if app.viewer.is_some() {
+    if app.viewer().is_some() {
         draw_viewer(frame, app);
+        draw_screen_list(frame, app);
         return;
     }
     // MC's Layout dialog: every bar is optional, so the vertical stack
@@ -744,6 +752,46 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && let Some(ask) = &connect.ask
     {
         draw_connect_ask(frame, ask);
+    }
+    draw_screen_list(frame, app);
+}
+
+/// mc's screen list (M-`): the panels, then every open editor and
+/// viewer. It is drawn over whatever is current, because it is reached
+/// from there.
+fn draw_screen_list(frame: &mut Frame, app: &App) {
+    let Some(row) = app.screen_list else { return };
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let mut rows = vec![" Panels".to_string()];
+    rows.extend(app.screens.iter().map(|s| format!(" {}", s.title())));
+    let width = rows
+        .iter()
+        .map(|r| r.chars().count())
+        .max()
+        .unwrap_or(20)
+        .clamp(24, frame.area().width.saturating_sub(4) as usize);
+    let area = centered(width as u16 + 2, rows.len() as u16 + 2, frame.area());
+    let inner = popup(frame, area, " Screens ", base);
+    for (i, text) in rows.iter().enumerate() {
+        if i as u16 >= inner.height {
+            break;
+        }
+        let line = Rect {
+            y: inner.y + i as u16,
+            height: 1,
+            ..inner
+        };
+        let style = if i == row { sel } else { base };
+        frame.render_widget(
+            Line::from(format!(
+                "{:<w$}",
+                tail(text, inner.width as usize),
+                w = inner.width as usize
+            ))
+            .style(style),
+            line,
+        );
     }
 }
 
@@ -2031,7 +2079,7 @@ fn editor_line(
 const EDITOR_HELP: &str = " F2 Save  F3 Mark  F4 Replace  F5/F6 CopyMove  F7 Search  F8 DelLine  F9 Menu  M-l Goto  F10 Quit ";
 
 fn draw_editor(frame: &mut Frame, app: &mut App) {
-    let Some(st) = app.editor.as_mut() else {
+    let Some(st) = app.editor_mut() else {
         return;
     };
     let [title_area, content, bottom] = Layout::vertical([
@@ -2253,6 +2301,36 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
             let inner = popup(frame, centered(40, 5, frame.area()), " Go to line ", style);
             draw_field(frame, inner, value, *cursor);
         }
+        Some(EditPrompt::Syntax { row, top }) => {
+            use crate::app::{SYNTAX_ROWS, syntax_rows};
+            let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+            let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+            let rows = syntax_rows();
+            let shown = SYNTAX_ROWS.min(rows.len());
+            let inner = popup(
+                frame,
+                centered(44, shown as u16 + 2, frame.area()),
+                " Syntax ",
+                base,
+            );
+            for i in 0..shown {
+                let Some(name) = rows.get(top + i) else { break };
+                let line = Rect {
+                    y: inner.y + i as u16,
+                    height: 1,
+                    ..inner
+                };
+                let style = if top + i == *row { sel } else { base };
+                frame.render_widget(
+                    Line::from(format!(
+                        " {name:<w$}",
+                        w = (inner.width as usize).saturating_sub(1)
+                    ))
+                    .style(style),
+                    line,
+                );
+            }
+        }
         Some(EditPrompt::Options(d)) => draw_edit_options(frame, d),
         Some(EditPrompt::ConfirmQuit { button }) => {
             let style = Style::new().fg(th().error_fg).bg(th().error_bg);
@@ -2336,7 +2414,7 @@ fn draw_edit_options(frame: &mut Frame, d: &crate::app::EditOptions) {
 }
 
 fn draw_viewer(frame: &mut Frame, app: &mut App) {
-    let Some(v) = app.viewer.as_mut() else { return };
+    let Some(v) = app.viewer_mut() else { return };
     let ruler_rows = if v.ruler { 1 } else { 0 };
     let [title_area, ruler_area, content, bottom] = Layout::vertical([
         Constraint::Length(1),

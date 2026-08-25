@@ -93,7 +93,7 @@ pub enum ConnectAsk {
 
 /// A remote file being edited via a local scratch copy (F4 on an SFTP
 /// panel): uploaded back if the editor changed it.
-struct RemoteEdit {
+pub struct RemoteEdit {
     fs: Arc<dyn FsProvider>,
     remote_path: PathBuf,
     temp: PathBuf,
@@ -441,10 +441,20 @@ pub struct RenamePreview {
 
 /// An in-flight bulk rename editor session: the numbered temp buffer
 /// and the original names its indices map back to.
-struct BulkRename {
+pub struct BulkRename {
     dir: PathBuf,
     names: Vec<std::ffi::OsString>,
     temp: PathBuf,
+}
+
+/// What closing an editor has to do afterwards. It belongs to the
+/// editor rather than to the App: with more than one open at a time,
+/// an App-wide slot would run the wrong one's follow-up.
+pub enum EditFollowUp {
+    /// A scratch copy of a remote file, to upload if it changed.
+    Remote(RemoteEdit),
+    /// A bulk-rename buffer, to diff into renames.
+    Bulk(BulkRename),
 }
 
 /// F9 > Options > Panel options - MC-style checkbox form over the
@@ -818,6 +828,8 @@ pub struct EditorState {
     pub wrap_column: usize,
     /// The editor's own menu bar (F9) when it is open.
     pub menu: Option<MenuState>,
+    /// What closing this editor has to do afterwards, if anything.
+    pub follow_up: Option<EditFollowUp>,
     /// Bookmarked lines (M-k), in order.
     pub bookmarks: Vec<usize>,
     /// Draw the line-number gutter (M-n).
@@ -872,6 +884,22 @@ pub enum EditPrompt {
         value: String,
         cursor: usize,
     },
+    /// Options > Syntax: which syntax to highlight as, whatever the
+    /// file is called. Row 0 is plain text.
+    Syntax {
+        row: usize,
+        top: usize,
+    },
+}
+
+/// How many rows of the syntax picker are on screen at once.
+pub const SYNTAX_ROWS: usize = 15;
+
+/// The syntax picker's rows: plain text, then everything syntect knows.
+pub fn syntax_rows() -> Vec<&'static str> {
+    let mut rows = vec!["Plain text (no highlighting)"];
+    rows.extend(rcmd_edit::syntax_names());
+    rows
 }
 
 /// The editor's settings form. mc keeps these in a dialog of their own
@@ -1004,6 +1032,10 @@ impl EditOptions {
 pub enum EditMenuAction {
     Key(keymap::EditorAction),
     Options,
+    /// The syntax picker.
+    Syntax,
+    /// The screen list, which is the App's rather than the editor's.
+    ScreenList,
 }
 
 pub type EditMenuEntry = Option<(&'static str, &'static str, EditMenuAction)>;
@@ -1022,6 +1054,7 @@ use keymap::EditorAction as EA;
 const EDIT_FILE_MENU: &[EditMenuEntry] = &[
     Some(("&Save", "F2", EditMenuAction::Key(EA::Save))),
     None,
+    Some(("Screen &list...", "M-`", EditMenuAction::ScreenList)),
     Some(("&Quit", "F10", EditMenuAction::Key(EA::Quit))),
 ];
 
@@ -1076,6 +1109,7 @@ const EDIT_OPTIONS_MENU: &[EditMenuEntry] = &[
         "M-n",
         EditMenuAction::Key(EA::ToggleLineNumbers),
     )),
+    Some(("S&yntax...", "", EditMenuAction::Syntax)),
 ];
 
 /// One panel side's cached free-space measurement.
@@ -1363,6 +1397,8 @@ pub enum Action {
     HistoryList,
     /// Shift+F3: the internal viewer without any [[view]] filter.
     ViewRaw,
+    /// M-`: the list of open editors and viewers.
+    ScreenList,
     /// C-l: redraw the screen from scratch.
     Repaint,
 }
@@ -1422,6 +1458,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Jobs...", "C-x j", Action::Jobs)),
             Some(("Acti&ve VFS list...", "C-x a", Action::VfsList)),
             Some(("Command histor&y...", "M-h", Action::HistoryList)),
+            Some(("Screen &list...", "M-`", Action::ScreenList)),
         ],
     ),
     (
@@ -1532,6 +1569,28 @@ fn full_keymap(config: &config::Config) -> (Keymap, Vec<String>) {
     (keymap, warnings)
 }
 
+/// One open full-screen view. mc calls these screens and switches
+/// between them with M-`; rcmd keeps the same word and the same list.
+pub enum Screen {
+    Editor(Box<EditorState>),
+    Viewer(Box<Viewer>),
+}
+
+impl Screen {
+    /// The row the screen list shows for it: what kind it is, and what
+    /// it is on.
+    pub fn title(&self) -> String {
+        match self {
+            Screen::Editor(st) => format!(
+                "Edit  {}{}",
+                st.title,
+                if st.ed.modified() { " [+]" } else { "" }
+            ),
+            Screen::Viewer(v) => format!("View  {}", v.path.display()),
+        }
+    }
+}
+
 pub struct MenuState {
     pub menu: usize,
     pub item: usize,
@@ -1634,8 +1693,14 @@ pub struct App {
     pub dialog: Option<Dialog>,
     /// Running jobs; at most one is foreground (its dialog is modal).
     pub jobs: Vec<Job>,
-    pub viewer: Option<Viewer>,
-    pub editor: Option<EditorState>,
+    /// The full-screen things open besides the panels - mc's screens,
+    /// listed behind M-`. The panels are what is underneath them all
+    /// rather than one of them, which is why this can be empty.
+    pub screens: Vec<Screen>,
+    /// Which screen is on top; None = the panels.
+    pub current: Option<usize>,
+    /// The screen list (M-`) when it is open, with the row it is on.
+    pub screen_list: Option<usize>,
     pub quick_view: Option<QuickView>,
     /// Ctrl+X i: which panel shows the info pane, if any (mutually
     /// exclusive with `quick_view`).
@@ -1661,7 +1726,6 @@ pub struct App {
     /// remote directory on both panels closes the connection.
     connections: Vec<(String, Weak<dyn RemoteFs>)>,
     remote_edit: Option<RemoteEdit>,
-    bulk_rename: Option<BulkRename>,
     du: Option<DuJob>,
     watch: Option<WatchState>,
     /// Ctrl+X was pressed; the next key completes the chord.
@@ -1773,8 +1837,9 @@ impl App {
             panel_rows: 1,
             dialog: None,
             jobs: Vec::new(),
-            viewer: None,
-            editor: None,
+            screens: Vec::new(),
+            current: None,
+            screen_list: None,
             quick_view: None,
             info: None,
             listing_format,
@@ -1788,7 +1853,6 @@ impl App {
             connect: None,
             connections: Vec::new(),
             remote_edit: None,
-            bulk_rename: None,
             du: None,
             watch,
             prefix_cx: false,
@@ -1849,7 +1913,7 @@ impl App {
                 || watch_pending
                 || self.esc_at.is_some()
                 || self.subshell.as_ref().is_some_and(|s| !s.ready())
-                || self.viewer.as_ref().is_some_and(|v| v.follow)
+                || self.viewer().is_some_and(|v| v.follow)
             {
                 Duration::from_millis(50)
             } else {
@@ -2225,10 +2289,16 @@ impl App {
 
     /// After F4 on a remote file: upload the scratch copy back if the
     /// editor modified it, then clean up.
+    /// The external editor's copy, once the child has exited.
     fn finish_remote_edit(&mut self) {
         let Some(edit) = self.remote_edit.take() else {
             return;
         };
+        self.upload_remote_edit(edit);
+    }
+
+    /// Send a scratch copy back where it came from, if it changed.
+    fn upload_remote_edit(&mut self, edit: RemoteEdit) {
         let mtime_now = std::fs::metadata(&edit.temp)
             .and_then(|m| m.modified())
             .ok();
@@ -2674,6 +2744,29 @@ impl App {
 
     fn dispatch_key(&mut self, key: KeyEvent) {
         self.status = None;
+        if self.screen_list.is_some() {
+            self.on_screen_list_key(key);
+            return;
+        }
+        // M-` reaches the list from wherever you are - that is the
+        // point of it - but not out from under a modal question
+        if key.code == KeyCode::Char('`')
+            && key.modifiers.contains(KeyModifiers::ALT)
+            && self.fg_job().is_none()
+            && self.connect.is_none()
+            && self.find.is_none()
+            && self.dialog.is_none()
+            && self.help.is_none()
+            && !self
+                .editor()
+                .is_some_and(|st| st.prompt.is_some() || st.menu.is_some())
+            && !self
+                .viewer()
+                .is_some_and(|v| v.prompt.is_some() || v.goto.is_some() || v.confirm_quit.is_some())
+        {
+            self.open_screen_list();
+            return;
+        }
         if self.fg_job().is_some() {
             self.on_job_key(key);
         } else if self.connect.is_some() {
@@ -2684,9 +2777,9 @@ impl App {
             self.on_dialog_key(key);
         } else if self.help.is_some() {
             self.on_help_key(key);
-        } else if self.editor.is_some() {
+        } else if self.editor().is_some() {
             self.on_editor_key(key);
-        } else if self.viewer.is_some() {
+        } else if self.viewer().is_some() {
             self.on_viewer_key(key);
         } else if self.menu.is_some() {
             self.on_menu_key(key);
@@ -2726,11 +2819,11 @@ impl App {
             || self.find.is_some()
             || self.dialog.is_some()
             || self.help.is_some()
-            || self.viewer.is_some()
+            || self.viewer().is_some()
         {
             return;
         }
-        if let Some(st) = self.editor.as_mut() {
+        if let Some(st) = self.editor_mut() {
             // the gutter is not text: a click in it lands on column 0
             let x = (x as usize).saturating_sub(st.gutter) as u16;
             if st.prompt.is_none() && y >= 1 && (y as usize) <= st.rows {
@@ -2977,14 +3070,14 @@ impl App {
             help.top = help.top.saturating_add_signed(delta).min(max_top);
             return;
         }
-        if let Some(st) = self.editor.as_mut() {
+        if let Some(st) = self.editor_mut() {
             if st.prompt.is_none() {
                 st.ed.move_vert(delta, false);
                 self.ensure_editor_visible();
             }
             return;
         }
-        if let Some(v) = self.viewer.as_mut() {
+        if let Some(v) = self.viewer_mut() {
             let rows = v.rows.max(1);
             viewer_scroll(v, delta, rows);
             return;
@@ -3126,7 +3219,12 @@ impl App {
     }
 
     fn on_viewer_key(&mut self, key: KeyEvent) {
-        let Some(v) = self.viewer.as_mut() else {
+        // looked up before the borrow below, which is the whole App
+        let bound = self
+            .viewer_keys
+            .get(&(key.code, key.modifiers.difference(KeyModifiers::SHIFT)))
+            .copied();
+        let Some(v) = self.viewer_mut() else {
             return;
         };
         v.note = None;
@@ -3242,10 +3340,6 @@ impl App {
         let page = rows.saturating_sub(1).max(1) as isize;
         // action keys first (rebindable via [keys.viewer]), then the
         // structural movement keys
-        let bound = self
-            .viewer_keys
-            .get(&(key.code, key.modifiers.difference(KeyModifiers::SHIFT)))
-            .copied();
         if let Some(action) = bound {
             self.viewer_action(action, rows);
             return;
@@ -3274,7 +3368,7 @@ impl App {
         use keymap::ViewerAction as VA;
         // the actions that replace what the viewer is showing need the
         // whole App, so they run before the borrow below
-        let hex = self.viewer.as_ref().is_some_and(|v| v.hex);
+        let hex = self.viewer().is_some_and(|v| v.hex);
         match action {
             VA::Quit => return self.viewer_quit(),
             // mc's button bar spends F2 and F6 twice: in hex mode they
@@ -3288,7 +3382,7 @@ impl App {
             VA::PrevFile => return self.viewer_step_file(-1),
             _ => {}
         }
-        let Some(v) = self.viewer.as_mut() else {
+        let Some(v) = self.viewer_mut() else {
             return;
         };
         match action {
@@ -3353,9 +3447,94 @@ impl App {
         }
     }
 
+    /// The editor on top, if the screen on top is one.
+    pub fn editor(&self) -> Option<&EditorState> {
+        match self.screens.get(self.current?) {
+            Some(Screen::Editor(st)) => Some(st),
+            _ => None,
+        }
+    }
+
+    pub fn editor_mut(&mut self) -> Option<&mut EditorState> {
+        match self.screens.get_mut(self.current?) {
+            Some(Screen::Editor(st)) => Some(st),
+            _ => None,
+        }
+    }
+
+    /// The viewer on top, if the screen on top is one.
+    pub fn viewer(&self) -> Option<&Viewer> {
+        match self.screens.get(self.current?) {
+            Some(Screen::Viewer(v)) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn viewer_mut(&mut self) -> Option<&mut Viewer> {
+        match self.screens.get_mut(self.current?) {
+            Some(Screen::Viewer(v)) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Leave, taking the scratch files any open viewer was reading
+    /// with us - they were made for this session.
+    fn quit_now(&mut self) {
+        for screen in self.screens.drain(..) {
+            if let Screen::Viewer(v) = screen {
+                for temp in v.temps {
+                    let _ = std::fs::remove_file(temp);
+                }
+            }
+        }
+        self.current = None;
+        self.quit = true;
+    }
+
+    /// M-`: mc's screen list. Row 0 is the panels, which are what is
+    /// underneath every screen rather than one of them.
+    fn open_screen_list(&mut self) {
+        self.screen_list = Some(self.current.map(|at| at + 1).unwrap_or(0));
+    }
+
+    fn on_screen_list_key(&mut self, key: KeyEvent) {
+        let Some(mut row) = self.screen_list else {
+            return;
+        };
+        let rows = self.screens.len() + 1;
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('`') => self.screen_list = None,
+            KeyCode::Up | KeyCode::BackTab => {
+                self.screen_list = Some((row + rows - 1) % rows);
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                row = (row + 1) % rows;
+                self.screen_list = Some(row);
+            }
+            KeyCode::Enter => {
+                self.screen_list = None;
+                self.current = row.checked_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    /// Put a new screen on top and switch to it.
+    fn open_screen(&mut self, screen: Screen) {
+        self.screens.push(screen);
+        self.current = Some(self.screens.len() - 1);
+    }
+
+    /// Take the screen on top out of the list; the panels come back up,
+    /// which is where mc lands after closing one too.
+    fn take_current_screen(&mut self) -> Option<Screen> {
+        let at = self.current.take()?;
+        (at < self.screens.len()).then(|| self.screens.remove(at))
+    }
+
     /// Follow mode: re-index on growth and stick to the bottom.
     fn follow_tick(&mut self) {
-        if let Some(v) = self.viewer.as_mut()
+        if let Some(v) = self.viewer_mut()
             && v.follow
         {
             let before = v.file.size;
@@ -3523,6 +3702,7 @@ impl App {
             Action::Panelize => self.open_panelize(),
             Action::CompareDirs => self.compare_dirs(),
             Action::DirSize => self.dir_size(),
+            Action::ScreenList => self.open_screen_list(),
             Action::View => self.open_viewer(false),
             Action::ViewRaw => self.open_viewer(true),
             Action::Edit => self.open_editor(),
@@ -3535,18 +3715,31 @@ impl App {
             Action::UnselectGroup => self.open_select(false),
             Action::InvertSelection => self.panel().invert_marks(),
             Action::Quit => {
-                if self.config.confirm_exit {
+                // an editor left open on another screen still has the
+                // changes in it: that is worth asking about even for
+                // someone who turned the ordinary quit question off
+                let unsaved = self
+                    .screens
+                    .iter()
+                    .filter(|s| matches!(s, Screen::Editor(st) if st.ed.modified()))
+                    .count();
+                let message = match unsaved {
+                    0 => "Quit rcmd?".to_string(),
+                    1 => "1 editor has unsaved changes. Quit rcmd?".to_string(),
+                    n => format!("{n} editors have unsaved changes. Quit rcmd?"),
+                };
+                if self.config.confirm_exit || unsaved > 0 {
                     self.dialog = Some(Dialog::Confirm(ConfirmDialog {
                         title: " Quit ".into(),
-                        message: "Quit rcmd?".into(),
-                        yes: true,
+                        message,
+                        yes: unsaved == 0,
                         paths: Vec::new(),
                         permanent: false,
                         kind: ConfirmKind::Quit,
                         command: None,
                     }));
                 } else {
-                    self.quit = true;
+                    self.quit_now();
                 }
             }
             Action::Shell => self.pending_exec = Some(Exec::Shell),
@@ -4056,7 +4249,7 @@ impl App {
         };
         match FileView::open(&open_path) {
             Ok(file) => {
-                self.viewer = Some(Viewer {
+                self.open_screen(Screen::Viewer(Box::new(Viewer {
                     // filter output carries the command's syntax, not
                     // the file's, so it is shown plain
                     hl: (!is_filtered)
@@ -4095,7 +4288,7 @@ impl App {
                     opened_raw: raw,
                     note: None,
                     temps,
-                })
+                })))
             }
             Err(err) => {
                 for temp in temps {
@@ -4170,7 +4363,7 @@ impl App {
 
     /// F6: swap the `[[view]]` filter in and out under the same file.
     fn viewer_toggle_raw(&mut self) {
-        let Some(v) = self.viewer.as_ref() else {
+        let Some(v) = self.viewer() else {
             return;
         };
         let (source, filter, filtered) = (v.source.clone(), v.filter.clone(), v.filtered);
@@ -4192,7 +4385,7 @@ impl App {
                 None => Err("no [[view]] filter for this file".to_string()),
             }
         };
-        let Some(v) = self.viewer.as_mut() else {
+        let Some(v) = self.viewer_mut() else {
             return;
         };
         match swapped {
@@ -4233,7 +4426,7 @@ impl App {
     /// C-f / C-b: the next or previous file of the panel, in the same
     /// viewer with the same wrap, hex, ruler, nroff and search.
     fn viewer_step_file(&mut self, delta: isize) {
-        let Some(v) = self.viewer.as_ref() else {
+        let Some(v) = self.viewer() else {
             return;
         };
         let keep = ViewKeep {
@@ -4245,7 +4438,7 @@ impl App {
         };
         let raw = v.opened_raw;
         if !v.hex_edits.is_empty() {
-            if let Some(v) = self.viewer.as_mut() {
+            if let Some(v) = self.viewer_mut() {
                 v.note = Some(" bytes are still unwritten - F6 writes them ".into());
             }
             return;
@@ -4263,7 +4456,7 @@ impl App {
             }
         };
         let Some(target) = target else {
-            if let Some(v) = self.viewer.as_mut() {
+            if let Some(v) = self.viewer_mut() {
                 v.note = Some(match delta {
                     d if d > 0 => " no next file in the panel ".into(),
                     _ => " no previous file in the panel ".into(),
@@ -4280,7 +4473,7 @@ impl App {
     /// where the viewer is on the file itself - editing a scratch copy
     /// would write to something about to be deleted.
     fn viewer_hex_edit(&mut self) {
-        let Some(v) = self.viewer.as_mut() else {
+        let Some(v) = self.viewer_mut() else {
             return;
         };
         if v.hex_edit {
@@ -4301,14 +4494,14 @@ impl App {
 
     /// F6 in hex mode: write the changed bytes into the file.
     fn viewer_hex_save(&mut self) {
-        if let Some(v) = self.viewer.as_mut() {
+        if let Some(v) = self.viewer_mut() {
             hex_save(v);
         }
     }
 
     /// Quit, unless there are bytes the file has not been told about.
     fn viewer_quit(&mut self) {
-        match self.viewer.as_mut() {
+        match self.viewer_mut() {
             Some(v) if !v.hex_edits.is_empty() => v.confirm_quit = Some(0),
             _ => self.close_viewer(),
         }
@@ -4316,7 +4509,7 @@ impl App {
 
     /// Close the viewer, taking its scratch files with it.
     fn close_viewer(&mut self) {
-        if let Some(viewer) = self.viewer.take() {
+        if let Some(Screen::Viewer(viewer)) = self.take_current_screen() {
             for temp in viewer.temps {
                 let _ = std::fs::remove_file(temp);
             }
@@ -4360,20 +4553,25 @@ impl App {
                 self.status = Some(format!(" edit: {err} "));
                 return;
             }
-            self.remote_edit = Some(RemoteEdit {
+            let hook = RemoteEdit {
                 fs: panel.fs.clone(),
                 remote_path,
                 mtime_before: std::fs::metadata(&temp).and_then(|m| m.modified()).ok(),
                 temp: temp.clone(),
-            });
+            };
             if external {
+                // an editor outside rcmd has no screen to hang the
+                // upload on, so the App holds it until the child exits
+                self.remote_edit = Some(hook);
                 self.pending_exec = Some(Exec::Quiet(format!(
                     "{editor} {}",
                     shell_quote(&temp.to_string_lossy())
                 )));
-            } else if !self.open_internal_editor(&temp, title) {
-                // failed to open: don't leave a stale upload hook behind
-                self.remote_edit = None;
+            } else if !self.open_internal_editor_with(
+                &temp,
+                title,
+                Some(EditFollowUp::Remote(hook)),
+            ) {
                 let _ = std::fs::remove_file(&temp);
             }
             return;
@@ -4395,13 +4593,24 @@ impl App {
     }
 
     fn open_internal_editor(&mut self, path: &Path, title: String) -> bool {
+        self.open_internal_editor_with(path, title, None)
+    }
+
+    /// ...and with whatever closing it has to trigger: an upload back
+    /// to a server, or a bulk rename to diff.
+    fn open_internal_editor_with(
+        &mut self,
+        path: &Path,
+        title: String,
+        follow_up: Option<EditFollowUp>,
+    ) -> bool {
         match rcmd_edit::Editor::open(path) {
             Ok(mut ed) => {
                 let len = std::fs::metadata(path)
                     .map(|m| m.len() as usize)
                     .unwrap_or(0);
                 ed.prefs = self.config.edit_prefs();
-                self.editor = Some(EditorState {
+                self.open_screen(Screen::Editor(Box::new(EditorState {
                     hl: rcmd_edit::Highlighter::new(path, len),
                     ed,
                     title,
@@ -4415,10 +4624,11 @@ impl App {
                     note: None,
                     wrap_column: self.config.edit_wrap_column as usize,
                     menu: None,
+                    follow_up,
                     bookmarks: Vec::new(),
                     line_numbers: self.config.edit_line_numbers,
                     gutter: 0,
-                });
+                })));
                 true
             }
             Err(err) => {
@@ -4429,9 +4639,15 @@ impl App {
     }
 
     fn close_editor(&mut self) {
-        self.editor = None;
-        self.finish_remote_edit();
-        self.finish_bulk_rename();
+        let follow_up = match self.take_current_screen() {
+            Some(Screen::Editor(st)) => st.follow_up,
+            _ => None,
+        };
+        match follow_up {
+            Some(EditFollowUp::Remote(edit)) => self.upload_remote_edit(edit),
+            Some(EditFollowUp::Bulk(bulk)) => self.finish_bulk_rename(bulk),
+            None => {}
+        }
         for panel in &mut self.panels {
             let _ = panel.reload();
         }
@@ -4464,9 +4680,12 @@ impl App {
             "bulk rename: {} name(s) - edit, save, close (keep the numbers)",
             names.len()
         );
-        if self.open_internal_editor(&temp, title) {
-            self.bulk_rename = Some(BulkRename { dir, names, temp });
-        } else {
+        let bulk = BulkRename {
+            dir,
+            names,
+            temp: temp.clone(),
+        };
+        if !self.open_internal_editor_with(&temp, title, Some(EditFollowUp::Bulk(bulk))) {
             let _ = std::fs::remove_file(&temp);
         }
     }
@@ -4474,10 +4693,7 @@ impl App {
     /// After the bulk-rename editor closes: diff the saved buffer and
     /// hand the outcome to the preview dialog. An unsaved session left
     /// the temp file untouched, which diffs to "no changes".
-    fn finish_bulk_rename(&mut self) {
-        let Some(bulk) = self.bulk_rename.take() else {
-            return;
-        };
+    fn finish_bulk_rename(&mut self, bulk: BulkRename) {
         let text = std::fs::read_to_string(&bulk.temp).unwrap_or_default();
         let _ = std::fs::remove_file(&bulk.temp);
         match rcmd_core::rename::parse(&text, &bulk.names) {
@@ -4521,7 +4737,7 @@ impl App {
 
     /// Save (used by F2 and the quit confirm); returns success.
     fn editor_save(&mut self) -> bool {
-        let Some(st) = self.editor.as_mut() else {
+        let Some(st) = self.editor_mut() else {
             return false;
         };
         match st.ed.save() {
@@ -4537,7 +4753,7 @@ impl App {
     }
 
     fn editor_quit(&mut self) {
-        let Some(st) = self.editor.as_mut() else {
+        let Some(st) = self.editor_mut() else {
             return;
         };
         if st.ed.modified() {
@@ -4549,7 +4765,7 @@ impl App {
 
     /// Search from just after `from`; select the match so it is visible.
     fn editor_find(&mut self, pattern: &str, from: rcmd_edit::Pos) {
-        let Some(st) = self.editor.as_mut() else {
+        let Some(st) = self.editor_mut() else {
             return;
         };
         let re = match rcmd_edit::Editor::compile(pattern) {
@@ -4576,11 +4792,10 @@ impl App {
     /// it, and nothing else does.
     fn on_editor_key(&mut self, key: KeyEvent) {
         let before = self
-            .editor
-            .as_ref()
+            .editor()
             .map(|st| (st.ed.line_count(), st.ed.cursor.line));
         self.on_editor_key_inner(key);
-        if let (Some((lines, at)), Some(st)) = (before, self.editor.as_mut())
+        if let (Some((lines, at)), Some(st)) = (before, self.editor_mut())
             && st.ed.line_count() != lines
         {
             let now = st.ed.line_count();
@@ -4596,16 +4811,18 @@ impl App {
     }
 
     fn on_editor_key_inner(&mut self, key: KeyEvent) {
-        if self.editor.as_ref().is_some_and(|st| st.menu.is_some()) {
+        // looked up before the borrow below, which is the whole App
+        let bound = self.editor_keys.get(&(key.code, key.modifiers)).copied();
+        if self.editor().is_some_and(|st| st.menu.is_some()) {
             self.editor_menu_key(key);
             return;
         }
-        if self.editor.as_ref().is_some_and(|st| st.prompt.is_some()) {
+        if self.editor().is_some_and(|st| st.prompt.is_some()) {
             self.on_editor_prompt_key(key);
             self.ensure_editor_visible();
             return;
         }
-        let Some(st) = self.editor.as_mut() else {
+        let Some(st) = self.editor_mut() else {
             return;
         };
         st.note = None;
@@ -4624,7 +4841,7 @@ impl App {
         let mut edited = true; // most arms below edit; movement resets it
         // action keys first (rebindable via [keys.editor]); Shift is
         // part of the lookup so Shift+F7 can differ from F7
-        if let Some(action) = self.editor_keys.get(&(key.code, mods)).copied() {
+        if let Some(action) = bound {
             self.editor_action(action);
             return;
         }
@@ -4712,7 +4929,7 @@ impl App {
                 return;
             }
             EA::Goto => {
-                if let Some(st) = self.editor.as_mut() {
+                if let Some(st) = self.editor_mut() {
                     let at = (st.ed.cursor.line + 1).to_string();
                     st.prompt = Some(EditPrompt::Goto {
                         cursor: at.chars().count(),
@@ -4722,7 +4939,7 @@ impl App {
                 return;
             }
             EA::Menu => {
-                if let Some(st) = self.editor.as_mut() {
+                if let Some(st) = self.editor_mut() {
                     st.menu = Some(MenuState {
                         menu: 0,
                         item: first_edit_item(EDIT_MENUS[0].1),
@@ -4731,13 +4948,13 @@ impl App {
                 return;
             }
             EA::SearchNext => {
-                let Some(st) = self.editor.as_ref() else {
+                let Some(st) = self.editor() else {
                     return;
                 };
                 let pattern = st.ed.search.clone();
                 let from = next_pos(&st.ed);
                 if pattern.is_empty() {
-                    if let Some(st) = self.editor.as_mut() {
+                    if let Some(st) = self.editor_mut() {
                         st.prompt = Some(EditPrompt::Search {
                             value: String::new(),
                             cursor: 0,
@@ -4751,7 +4968,7 @@ impl App {
             _ => {}
         }
         let share_clipboard = self.config.edit_clipboard;
-        let Some(st) = self.editor.as_mut() else {
+        let Some(st) = self.editor_mut() else {
             return;
         };
         // lowest line this action might touch, for highlight invalidation
@@ -4895,7 +5112,7 @@ impl App {
     }
 
     fn on_editor_prompt_key(&mut self, key: KeyEvent) {
-        let Some(st) = self.editor.as_mut() else {
+        let Some(st) = self.editor_mut() else {
             return;
         };
         let Some(prompt) = st.prompt.take() else {
@@ -5120,6 +5337,47 @@ impl App {
                     st.prompt = Some(EditPrompt::Goto { value, cursor });
                 }
             },
+            EditPrompt::Syntax { mut row, mut top } => {
+                let rows = syntax_rows();
+                let page = SYNTAX_ROWS;
+                let mut keep = true;
+                match key.code {
+                    KeyCode::Esc => keep = false,
+                    KeyCode::Enter => {
+                        keep = false;
+                        // row 0 is plain text: no highlighter at all,
+                        // which is also the fast path
+                        st.hl = match row {
+                            0 => None,
+                            at => rcmd_edit::Highlighter::by_name(rows[at]),
+                        };
+                        st.note = Some(format!(" {} ", rows[row]));
+                    }
+                    KeyCode::Up => row = row.saturating_sub(1),
+                    KeyCode::Down => row = (row + 1).min(rows.len() - 1),
+                    KeyCode::PageUp => row = row.saturating_sub(page),
+                    KeyCode::PageDown => row = (row + page).min(rows.len() - 1),
+                    KeyCode::Home => row = 0,
+                    KeyCode::End => row = rows.len() - 1,
+                    // a letter jumps to the first syntax starting with
+                    // it, which is the only way to walk 200 of them
+                    KeyCode::Char(c) => {
+                        let c = c.to_ascii_lowercase();
+                        if let Some(at) = rows.iter().position(|name| {
+                            name.chars()
+                                .next()
+                                .is_some_and(|f| f.to_ascii_lowercase() == c)
+                        }) {
+                            row = at;
+                        }
+                    }
+                    _ => {}
+                }
+                if keep {
+                    top = top.min(row).max((row + 1).saturating_sub(page));
+                    st.prompt = Some(EditPrompt::Syntax { row, top });
+                }
+            }
             EditPrompt::Options(mut d) => {
                 let rows = EDIT_OPTION_ROWS.len();
                 match key.code {
@@ -5178,7 +5436,7 @@ impl App {
         cfg.edit_clipboard = d.clipboard;
         ui::set_tab_size(d.tab_size as usize);
         let prefs = self.config.edit_prefs();
-        if let Some(st) = self.editor.as_mut() {
+        if let Some(st) = self.editor_mut() {
             st.ed.prefs = prefs;
             st.wrap_column = d.wrap_column as usize;
             st.line_numbers = d.line_numbers;
@@ -5196,7 +5454,7 @@ impl App {
             s.edit_line_numbers = Some(numbers);
             s.edit_backups = Some(backups);
             s.edit_clipboard = Some(clip);
-        }) && let Some(st) = self.editor.as_mut()
+        }) && let Some(st) = self.editor_mut()
         {
             st.note = Some(format!(" could not save state: {err} "));
         }
@@ -5204,7 +5462,7 @@ impl App {
 
     /// F9 in the editor: mc's menu bar over the text.
     fn editor_menu_key(&mut self, key: KeyEvent) {
-        let Some(st) = self.editor.as_mut() else {
+        let Some(st) = self.editor_mut() else {
             return;
         };
         let Some(ms) = st.menu.as_mut() else { return };
@@ -5252,8 +5510,24 @@ impl App {
         match run {
             Some(EditMenuAction::Key(action)) => self.editor_action(action),
             Some(EditMenuAction::Options) => self.open_edit_options(),
+            Some(EditMenuAction::ScreenList) => self.open_screen_list(),
+            Some(EditMenuAction::Syntax) => self.open_syntax_picker(),
             None => {}
         }
+    }
+
+    /// Options > Syntax: the list, opened on what is in force now.
+    fn open_syntax_picker(&mut self) {
+        let rows = syntax_rows();
+        let Some(st) = self.editor_mut() else {
+            return;
+        };
+        let now = st.hl.as_ref().map(|hl| hl.syntax_name()).unwrap_or("");
+        let row = rows.iter().position(|name| *name == now).unwrap_or(0);
+        st.prompt = Some(EditPrompt::Syntax {
+            row,
+            top: row.saturating_sub(5),
+        });
     }
 
     /// The editor options form, filled from what is in force now.
@@ -5271,14 +5545,14 @@ impl App {
             cursor: 0,
             ok: true,
         };
-        if let Some(st) = self.editor.as_mut() {
+        if let Some(st) = self.editor_mut() {
             st.prompt = Some(EditPrompt::Options(dialog));
         }
     }
 
     /// Scroll the editor viewport so the cursor stays on screen.
     fn ensure_editor_visible(&mut self) {
-        let Some(st) = self.editor.as_mut() else {
+        let Some(st) = self.editor_mut() else {
             return;
         };
         let rows = st.rows.max(1);
@@ -7388,7 +7662,7 @@ impl App {
         } else {
             let mut ed = rcmd_edit::Editor::create(&path);
             ed.prefs = self.config.edit_prefs();
-            self.editor = Some(EditorState {
+            self.open_screen(Screen::Editor(Box::new(EditorState {
                 hl: rcmd_edit::Highlighter::new(&path, 0),
                 ed,
                 title,
@@ -7402,10 +7676,11 @@ impl App {
                 note: None,
                 wrap_column: self.config.edit_wrap_column as usize,
                 menu: None,
+                follow_up: None,
                 bookmarks: Vec::new(),
                 line_numbers: self.config.edit_line_numbers,
                 gutter: 0,
-            });
+            })));
         }
     }
 
@@ -7691,7 +7966,7 @@ impl App {
     fn confirm_yes(&mut self, d: ConfirmDialog) {
         match d.kind {
             ConfirmKind::Delete => self.start_delete(d.paths, d.permanent),
-            ConfirmKind::Quit => self.quit = true,
+            ConfirmKind::Quit => self.quit_now(),
             ConfirmKind::HotlistDelete { index } => {
                 if index < self.config.hotlist.len() {
                     self.config.hotlist.remove(index);

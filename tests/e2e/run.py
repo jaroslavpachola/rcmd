@@ -3317,6 +3317,17 @@ def test_editmenu():
           os.path.exists(state) and "edit_tab_size = 4" in open(state).read(),
           open(state).read() if os.path.exists(state) else "no state file")
 
+    # Options > Syntax picks the highlighting by hand
+    s.send(b"\x1b[20~", wait=STEP)          # F9
+    s.send(b"oy", wait=STEP * 2)            # Options > Syntax...
+    scr = s.screen()
+    check("editmenu: the syntax list", "Syntax" in scr and "Plain text" in scr, scr)
+    s.send(b"\x1b[H", wait=STEP)            # Home -> plain text
+    s.send(b"\r", wait=STEP * 2)
+    check("editmenu: the choice is named back",
+          wait_for(s, "Plain text (no highlighting)"))
+    check("editmenu: and the list closed", "Syntax" not in s.screen(), s.screen())
+
     s.send(F10, wait=STEP * 2)
     s.send(b"d", wait=STEP * 2)             # discard the edit
     s.quit()
@@ -3383,6 +3394,75 @@ def test_editkeys():
     check("editkeys: and the file has the change", "x" in open(path).read().split("\n")[0])
 
     s.send(F10, wait=STEP * 2)
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_screens():
+    """PLAN4 S4: several editors and viewers open at once, with mc's
+    screen list behind M-` to move between them."""
+    root, play, home = sandbox()
+    a = os.path.join(play, "alpha.txt")
+    b = os.path.join(play, "bravo.txt")
+    open(a, "w").write("alpha content\n")
+    open(b, "w").write("bravo content\n")
+    s = Session(play, home)
+    s.send(b"\x13alpha\r", wait=STEP)
+    s.send(F4, wait=STEP * 2)
+    check("screens: the editor opens", "alpha content" in s.screen())
+
+    # M-` lists what is open, with the panels as the first row
+    s.send(b"\x1b`", wait=STEP)
+    scr = s.screen()
+    check("screens: the list", "Screens" in scr and "Panels" in scr, scr)
+    check("screens: the editor is in it", "Edit" in scr and "alpha.txt" in scr, scr)
+    s.send(b"\x1b[A\r", wait=STEP * 2)      # Up -> Panels, Enter
+    check("screens: back at the panels", "Modify time" in s.screen(), s.screen())
+
+    # a viewer beside it - the editor is still open, not replaced
+    s.send(b"\x13bravo\r", wait=STEP)
+    s.send(F3, wait=STEP * 2)
+    check("screens: the viewer opens", "bravo content" in s.screen())
+    s.send(b"\x1b`", wait=STEP)
+    scr = s.screen()
+    check("screens: both are listed",
+          "alpha.txt" in scr and "bravo.txt" in scr and "View" in scr, scr)
+
+    # switch back to the editor, and it is where it was
+    s.send(b"\x1b[A\r", wait=STEP * 2)      # Up -> the editor row
+    scr = s.screen()
+    check("screens: the editor came back", "alpha content" in scr and "F2 Save" in scr, scr)
+    s.send(F10, wait=STEP * 2)              # close it (nothing to save)
+    check("screens: closing lands on the panels", "Modify time" in s.screen(), s.screen())
+    s.send(b"\x1b`", wait=STEP)
+    scr = s.screen()
+    # (the panel lists alpha.txt of course, and the key bar says 4Edit:
+    # what must be gone is the "Edit  <path>" row of the Screens box)
+    check("screens: and it left the list", ("Edit  " + a) not in scr, scr)
+    s.send(b"\x1b[B\r", wait=STEP * 2)      # Down -> the viewer, Enter
+    check("screens: the viewer was still there", "bravo content" in s.screen())
+    s.send(b"q", wait=STEP * 2)
+
+    # quitting with an editor open elsewhere says so
+    s.send(b"\x13alpha\r", wait=STEP)
+    s.send(F4, wait=STEP * 2)
+    s.send(b"zz", wait=STEP)
+    s.send(b"\x1b`", wait=STEP)
+    s.send(b"\x1b[A\r", wait=STEP * 2)      # -> Panels
+    s.send(F10, wait=STEP * 2)              # quit
+    scr = s.screen()
+    check("screens: quitting counts the unsaved editor",
+          "unsaved changes" in scr, scr)
+    s.send(b"n", wait=STEP)
+    check("screens: and n keeps rcmd running", "Modify time" in s.screen())
+    check("screens: the file was not written", open(a).read() == "alpha content\n")
+
+    # leave nothing unsaved behind, or F10 would ask again on the way
+    # out and s.quit() would wait for an answer that never comes
+    s.send(b"\x1b`", wait=STEP)
+    s.send(b"\x1b[B\r", wait=STEP * 2)      # -> the editor
+    s.send(F10, wait=STEP * 2)
+    s.send(b"d", wait=STEP * 2)             # discard
     s.quit()
     shutil.rmtree(root)
 
@@ -3512,6 +3592,7 @@ def main():
         test_editor,
         test_editmenu,
         test_editkeys,
+        test_screens,
         test_subshell,
         test_sftp,
         test_fish,
