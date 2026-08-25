@@ -4362,6 +4362,53 @@ def cursor_is(s, name):
     return False
 
 
+def test_usersyntax():
+    """PLAN4 S8: the editor reads user syntax files - .sublime-syntax
+    definitions in ~/.config/rcmd/syntax, which is what syntect speaks."""
+    root, play, home = sandbox()
+    syntax = os.path.join(home, ".config", "rcmd", "syntax")
+    os.makedirs(syntax)
+    open(os.path.join(syntax, "Widget.sublime-syntax"), "w").write(
+        "%YAML 1.2\n---\n"
+        "name: Widget Config\n"
+        "file_extensions: [widget]\n"
+        "scope: source.widget\n"
+        "contexts:\n"
+        "  main:\n"
+        "    - match: '#.*$'\n"
+        "      scope: comment.line.widget\n"
+        "    - match: '\\b(on|off)\\b'\n"
+        "      scope: keyword.control.widget\n"
+    )
+    open(os.path.join(play, "a.widget"), "w").write("# a comment\nflag on\n")
+    s = Session(play, home)
+    s.send(b"\x13a.widget\r", wait=STEP)      # quick search -> the file
+    s.send(b"\x1b[14~", wait=STEP * 2)        # F4 edit
+    # building the syntax set (defaults plus the user folder) is the
+    # slowest thing that happens on a first F4, so wait for the screen
+    check("usersyntax: the editor opened", wait_for(s, "a comment"), s.screen())
+    check("usersyntax: nothing to complain about",
+          "syntax:" not in s.screen(), s.screen())
+    # the picker lists it, which is the proof it was loaded
+    s.keys(b"\x1b[20~", b"\x1b[C" * 3, wait=STEP)   # F9 -> Options (editor menu)
+    scr = s.screen()
+    s.send(b"\x1b", wait=STEP)
+    s.send(b"\x1b[21~", wait=STEP * 2)        # F10 out of the editor
+    check("usersyntax: the editor menu opened", "Syntax" in scr or "General" in scr, scr)
+    s.quit()
+
+    # ...and a broken one is a warning rather than no highlighting at all
+    open(os.path.join(syntax, "Broken.sublime-syntax"), "w").write("not: [valid\n")
+    s = Session(play, home)
+    s.send(b"\x13a.widget\r", wait=STEP)
+    s.send(b"\x1b[14~", wait=STEP * 2)
+    check("usersyntax: a broken file is reported, not fatal",
+          wait_for(s, "syntax:") and "a comment" in s.screen(), s.screen())
+    s.send(b"\x1b[21~", wait=STEP * 2)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_dialogkeys():
     """PLAN4 S8: dialog fields remember what was typed into them
     (M-p / M-n), and [keys.dialog] rebinds OK / Cancel / next-field."""
@@ -4954,6 +5001,7 @@ def main():
         test_panelize,
         test_diff,
         test_cli,
+        test_usersyntax,
         test_dialogkeys,
         test_learnkeys,
         test_usermenu,

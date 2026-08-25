@@ -5775,8 +5775,13 @@ impl App {
                     .map(|m| m.len() as usize)
                     .unwrap_or(0);
                 ed.prefs = self.config.edit_prefs();
+                let hl = rcmd_edit::Highlighter::new(path, len);
+                // the syntax set is built on first use, so a broken
+                // user syntax file is only knowable once something has
+                // asked to be highlighted
+                let note = rcmd_edit::user_syntax_warning().map(|w| format!(" {w} "));
                 self.open_screen(Screen::Editor(Box::new(EditorState {
-                    hl: rcmd_edit::Highlighter::new(path, len),
+                    hl,
                     ed,
                     title,
                     top: 0,
@@ -5786,7 +5791,7 @@ impl App {
                     rows: 1,
                     cols: 1,
                     prompt: None,
-                    note: None,
+                    note,
                     wrap_column: self.config.edit_wrap_column as usize,
                     menu: None,
                     follow_up,

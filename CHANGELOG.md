@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.57.0 - 2026-08-25
+
+- **User syntax files** (4.0 S8): `.sublime-syntax` definitions in
+  `~/.config/rcmd/syntax/` join the built-in list, by extension and in
+  the editor's syntax picker. That is the format syntect speaks and the
+  one that is actually downloadable; mc's own syntax language is not
+  read.
+- A syntax file that will not parse costs itself and a note on the
+  editor's status line - the syntax set is built on first use, so that
+  is the first moment a broken one can be known about, and it is said
+  there rather than swallowed.
+
 ## 3.56.0 - 2026-08-25
 
 - **Learn keys** (4.0 S8), under F9 > Options. mc's version rewrites its

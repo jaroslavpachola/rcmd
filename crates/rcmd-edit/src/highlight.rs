@@ -17,9 +17,52 @@ const CHECKPOINT: usize = 32;
 const MAX_BYTES: usize = 2 * 1024 * 1024;
 const MAX_LINE_CHARS: usize = 2000;
 
+/// Where a user's own `.sublime-syntax` files are looked for. Set once,
+/// before anything highlights - the set is built on first use and then
+/// never again.
+static USER_SYNTAX: std::sync::RwLock<Option<std::path::PathBuf>> = std::sync::RwLock::new(None);
+/// What went wrong loading them, if anything, for the caller to report.
+static USER_SYNTAX_WARNING: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// Point the highlighter at a directory of user syntax files. They are
+/// `.sublime-syntax` definitions, which is what syntect speaks and what
+/// is actually downloadable; mc's own syntax format is a different
+/// language and is not read.
+pub fn set_user_syntax_dir(dir: std::path::PathBuf) {
+    *USER_SYNTAX.write().unwrap_or_else(|e| e.into_inner()) = Some(dir);
+}
+
+/// A warning from loading them, once the set has been built. None until
+/// something has been highlighted.
+pub fn user_syntax_warning() -> Option<String> {
+    USER_SYNTAX_WARNING
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
 fn syntax_set() -> &'static SyntaxSet {
     static SS: OnceLock<SyntaxSet> = OnceLock::new();
-    SS.get_or_init(SyntaxSet::load_defaults_newlines)
+    SS.get_or_init(|| {
+        let defaults = SyntaxSet::load_defaults_newlines();
+        let dir = USER_SYNTAX
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let Some(dir) = dir.filter(|dir| dir.is_dir()) else {
+            return defaults;
+        };
+        let mut builder = defaults.into_builder();
+        // a broken syntax file costs its own file and a warning, never
+        // the highlighting of everything else
+        if let Err(err) = builder.add_from_folder(&dir, true) {
+            *USER_SYNTAX_WARNING
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) =
+                Some(format!("syntax: {}: {err}", dir.display()));
+        }
+        builder.build()
+    })
 }
 
 fn theme() -> &'static Theme {

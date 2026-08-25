@@ -76,6 +76,12 @@ fn main() -> Result<()> {
         warnings.push(format!("cannot write {}: {err}", path.display()));
     }
     ui::set_tab_size(cfg.edit_tab_size as usize);
+    // the editor's own syntax files, alongside the themes
+    if let Some(config) = config::config_path()
+        && let Some(dir) = config.parent()
+    {
+        rcmd_edit::set_user_syntax_dir(dir.join("syntax"));
+    }
     let mouse = cfg.mouse;
     let mut terminal = ratatui::init();
     if mouse {

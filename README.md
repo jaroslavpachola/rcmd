@@ -758,6 +758,15 @@ name = "git status"
 run = "git status | less"
 ```
 
+### Syntax files
+
+The editor highlights with syntect, which speaks **`.sublime-syntax`**.
+Drop your own into `~/.config/rcmd/syntax/` and they join the built-in
+list - by extension, and in F9 > Options > Syntax inside the editor.
+A file that will not parse costs itself and a note on the editor's
+status line, never the highlighting of everything else. (mc's own
+syntax format is a different language and is not read.)
+
 ### Skins
 
 A theme that is not one of the three built in (`mc`, `dark`, `bw`) is a

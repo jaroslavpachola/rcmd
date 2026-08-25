@@ -26,7 +26,16 @@ pub fn syntax_names() -> Vec<&'static str> {
 }
 
 #[cfg(feature = "syntax")]
-pub use highlight::syntax_names;
+pub use highlight::{set_user_syntax_dir, syntax_names, user_syntax_warning};
+
+/// Without the feature there is nowhere to put user syntax files.
+#[cfg(not(feature = "syntax"))]
+pub fn set_user_syntax_dir(_dir: std::path::PathBuf) {}
+
+#[cfg(not(feature = "syntax"))]
+pub fn user_syntax_warning() -> Option<String> {
+    None
+}
 
 #[cfg(not(feature = "syntax"))]
 impl Highlighter {
