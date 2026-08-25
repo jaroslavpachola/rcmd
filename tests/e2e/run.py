@@ -31,6 +31,8 @@ BIN = sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO, "target/debug/rcm
 
 COLS, ROWS = 120, 30
 FAILURES = []
+# (seconds, test name) per test, reported at the end
+TIMINGS = []
 
 # generous waits: CI runners are slow
 STEP = float(os.environ.get("RCMD_E2E_STEP", "0.5"))
@@ -135,6 +137,19 @@ class Session:
                 col += 1
             i += 1
         return "\n".join("".join(r).rstrip() for r in grid)
+
+
+def report_timings():
+    """Where the wall clock went. Almost all of it is the harness's own
+    waiting - `drain` burns its whole timeout whether or not the redraw
+    it is waiting for has already landed - so a slow test here means a
+    test that sends many keys, not a slow rcmd."""
+    if not TIMINGS:
+        return
+    total = sum(seconds for seconds, _ in TIMINGS)
+    print(f"\n{len(TIMINGS)} tests in {total:.0f}s - slowest:")
+    for seconds, name in sorted(TIMINGS, reverse=True)[:10]:
+        print(f"  {seconds:6.1f}s  {name}")
 
 
 def check(name, cond, detail=""):
@@ -3652,7 +3667,10 @@ def main():
         test_sftp_auth,
         test_scale,
     ):
+        started = time.time()
         test()
+        TIMINGS.append((time.time() - started, test.__name__))
+    report_timings()
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s): {', '.join(FAILURES)}")
         sys.exit(1)
