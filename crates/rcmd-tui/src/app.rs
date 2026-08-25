@@ -98,14 +98,95 @@ pub struct RemoteEdit {
 
 /// Alt+F7 find dialog: filename glob + optional content substring.
 pub struct FindDialog {
+    /// Where the walk starts; the panel's directory unless changed.
+    pub start: String,
+    pub start_cursor: usize,
     pub name: String,
     pub name_cursor: usize,
     pub content: String,
     pub content_cursor: usize,
+    /// The filename is a glob; off = a regular expression.
+    pub shell: bool,
+    pub case_sensitive: bool,
+    pub whole_words: bool,
+    /// The content is a regular expression, matched line by line.
+    pub regex: bool,
+    pub all_charsets: bool,
+    pub skip_hidden: bool,
+    pub follow_links: bool,
     /// Skip gitignored trees when searching inside a work tree.
     pub skip_ignored: bool,
-    /// 0 = name field, 1 = content field, 2 = the gitignore checkbox.
-    pub field: usize,
+    /// Focused row: the three fields, then the switches, then
+    /// [`FIND_ROWS`] for the button row.
+    pub row: usize,
+    pub ok: bool,
+}
+
+/// The three text fields, in row order.
+pub const FIND_FIELDS: usize = 3;
+/// The switches, in row order after the fields: label and which field
+/// of the dialog they tick.
+pub const FIND_SWITCHES: &[&str] = &[
+    "Shell patterns (name; off = regular expression)",
+    "Case sensitive (content)",
+    "Whole words (content)",
+    "Regular expression (content)",
+    "All charsets (content)",
+    "Skip hidden files",
+    "Follow symlinks",
+    "Skip gitignored files",
+];
+/// Rows before the button row.
+pub const FIND_ROWS: usize = FIND_FIELDS + FIND_SWITCHES.len();
+
+impl FindDialog {
+    pub fn switch(&self, index: usize) -> bool {
+        match index {
+            0 => self.shell,
+            1 => self.case_sensitive,
+            2 => self.whole_words,
+            3 => self.regex,
+            4 => self.all_charsets,
+            5 => self.skip_hidden,
+            6 => self.follow_links,
+            _ => self.skip_ignored,
+        }
+    }
+
+    fn toggle(&mut self) {
+        match self.row.checked_sub(FIND_FIELDS) {
+            Some(0) => self.shell = !self.shell,
+            Some(1) => self.case_sensitive = !self.case_sensitive,
+            Some(2) => self.whole_words = !self.whole_words,
+            Some(3) => self.regex = !self.regex,
+            Some(4) => self.all_charsets = !self.all_charsets,
+            Some(5) => self.skip_hidden = !self.skip_hidden,
+            Some(6) => self.follow_links = !self.follow_links,
+            Some(7) => self.skip_ignored = !self.skip_ignored,
+            _ => {}
+        }
+    }
+
+    fn step(&mut self, step: isize) {
+        let last = FIND_ROWS as isize; // the button row
+        let mut row = self.row as isize + step;
+        if row < 0 {
+            row = last;
+        } else if row > last {
+            row = 0;
+        }
+        self.row = row as usize;
+    }
+
+    /// The field the cursor is in, if it is in one.
+    fn field(&mut self) -> Option<(&mut String, &mut usize)> {
+        match self.row {
+            0 => Some((&mut self.start, &mut self.start_cursor)),
+            1 => Some((&mut self.name, &mut self.name_cursor)),
+            2 => Some((&mut self.content, &mut self.content_cursor)),
+            _ => None,
+        }
+    }
 }
 
 /// A running find, streaming matches into `panel`'s panelized listing.
@@ -381,7 +462,7 @@ pub enum Dialog {
     Confirm(ConfirmDialog),
     /// Directory hotlist; the payload is the selected row.
     Hotlist(usize),
-    Find(FindDialog),
+    Find(Box<FindDialog>),
     /// F2 user menu ([[commands]]); the payload is the selected row.
     UserMenu(usize),
     Options(OptionsDialog),
@@ -6476,26 +6557,33 @@ impl App {
             },
             Dialog::Find(mut d) => match key.code {
                 KeyCode::Esc => {}
-                KeyCode::Enter => self.submit_find(d),
+                KeyCode::Enter => {
+                    if d.row != FIND_ROWS || d.ok {
+                        self.submit_find(*d);
+                    }
+                }
                 KeyCode::Tab | KeyCode::Down => {
-                    d.field = (d.field + 1) % 3;
+                    d.step(1);
                     self.dialog = Some(Dialog::Find(d));
                 }
                 KeyCode::BackTab | KeyCode::Up => {
-                    d.field = (d.field + 2) % 3;
+                    d.step(-1);
                     self.dialog = Some(Dialog::Find(d));
                 }
-                KeyCode::Char(' ') if d.field == 2 => {
-                    d.skip_ignored = !d.skip_ignored;
+                KeyCode::Char(' ') if d.row >= FIND_FIELDS => {
+                    if d.row == FIND_ROWS {
+                        d.ok = !d.ok;
+                    } else {
+                        d.toggle();
+                    }
+                    self.dialog = Some(Dialog::Find(d));
+                }
+                KeyCode::Left | KeyCode::Right if d.row == FIND_ROWS => {
+                    d.ok = !d.ok;
                     self.dialog = Some(Dialog::Find(d));
                 }
                 code => {
-                    if d.field < 2 {
-                        let (value, cursor) = if d.field == 0 {
-                            (&mut d.name, &mut d.name_cursor)
-                        } else {
-                            (&mut d.content, &mut d.content_cursor)
-                        };
+                    if let Some((value, cursor)) = d.field() {
                         edit_line(value, cursor, code, key.modifiers);
                     }
                     self.dialog = Some(Dialog::Find(d));
@@ -6656,29 +6744,61 @@ impl App {
     }
 
     fn submit_find(&mut self, dialog: FindDialog) {
-        let panel_idx = self.active;
-        let panel = &mut self.panels[panel_idx];
-        let pattern = {
-            let name = dialog.name.trim();
-            if name.is_empty() { "*" } else { name }.to_string()
+        let text = dialog.name.trim();
+        let name = rcmd_core::pattern::Pattern {
+            text: if text.is_empty() { "*" } else { text }.to_string(),
+            shell: dialog.shell,
+            case_sensitive: dialog.case_sensitive,
+            files_only: false,
         };
         let content = {
             let text = dialog.content.trim();
-            (!text.is_empty()).then(|| text.to_string())
+            (!text.is_empty()).then(|| find::Content {
+                text: text.to_string(),
+                regex: dialog.regex,
+                case_sensitive: dialog.case_sensitive,
+                whole_words: dialog.whole_words,
+                all_charsets: dialog.all_charsets,
+            })
         };
-        let root = panel.cwd.clone();
         let label = match &content {
-            Some(text) => format!("find: {pattern} ~ \"{text}\""),
-            None => format!("find: {pattern}"),
+            Some(c) => format!("find: {} ~ \"{}\"", name.text, c.text),
+            None => format!("find: {}", name.text),
         };
-        panel.panelize(Vec::new(), label);
+        let query = find::Query {
+            name,
+            content,
+            skip_hidden: dialog.skip_hidden,
+            follow_links: dialog.follow_links,
+        };
+        let root = match dialog.start.trim() {
+            "" => self.panels[self.active].local_cwd(),
+            typed => self.resolve(typed),
+        };
+        if !root.is_dir() {
+            self.status = Some(format!(" {} is not a directory ", root.display()));
+            self.dialog = Some(Dialog::Find(Box::new(dialog)));
+            return;
+        }
         let skip = if dialog.skip_ignored {
             git::ignore_filter(&root)
         } else {
             None
         };
+        // a pattern that will not compile stops here, with the dialog
+        // still open on it: the message is about what was typed
+        let handle = match find::spawn_find(root, query, skip) {
+            Ok(handle) => handle,
+            Err(err) => {
+                self.status = Some(format!(" {} ", err.lines().next().unwrap_or("bad pattern")));
+                self.dialog = Some(Dialog::Find(Box::new(dialog)));
+                return;
+            }
+        };
+        let panel_idx = self.active;
+        self.panels[panel_idx].panelize(Vec::new(), label);
         self.find = Some(FindState {
-            handle: find::spawn_find(root, pattern, content, skip),
+            handle,
             panel: panel_idx,
             count: 0,
         });
@@ -6720,14 +6840,25 @@ impl App {
         if !self.require_local() {
             return;
         }
-        self.dialog = Some(Dialog::Find(FindDialog {
+        let start = self.panels[self.active].local_cwd().display().to_string();
+        self.dialog = Some(Dialog::Find(Box::new(FindDialog {
+            start_cursor: start.chars().count(),
+            start,
             name: "*".into(),
             name_cursor: 1,
             content: String::new(),
             content_cursor: 0,
+            shell: true,
+            case_sensitive: false,
+            whole_words: false,
+            regex: false,
+            all_charsets: false,
+            skip_hidden: false,
+            follow_links: false,
             skip_ignored: true,
-            field: 0,
-        }));
+            row: 1,
+            ok: true,
+        })));
     }
 
     fn open_panelize(&mut self) {

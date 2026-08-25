@@ -1,5 +1,31 @@
 # Changelog
 
+## 3.43.0 - 2026-08-25
+
+- **The find dialog grew mc's answers** (4.0 S6): a **start
+  directory**, and beside the two patterns **whole words**, **case
+  sensitive**, **regular expression**, **all charsets**, **skip
+  hidden** and **follow symlinks** - with rcmd's **skip gitignored**
+  kept where it was.
+- **Content can be a regular expression now**, matched line by line -
+  which is what a regular expression means anyway, since `.` does not
+  cross a line. Reading a line at a time also bounds what a search can
+  pull into memory, however binary the file turns out to be.
+- **All charsets looks for the word as another machine spelled it.**
+  A file written on a KOI8-R box holds different bytes for "Привет"
+  than a UTF-8 one; with the switch on, every codepage's spelling of
+  the word is looked for. It costs nothing for an ASCII search, where
+  every codepage spells it the same way and the duplicates collapse.
+- **Fixed: a non-ASCII content search never matched.** The needle was
+  lowercased in full while the haystack was folded a byte at a time,
+  which only touches ASCII - so "Привет" was looked for as "привет" in
+  a file that spelled it with a capital. The word is now looked for as
+  typed as well as lowered wherever the fold cannot reach.
+- **Follow symlinks is off by default**, and stays that way: a link
+  pointing at its own ancestor is a walk that never ends.
+- A pattern that will not compile stops before the walk starts, with
+  the dialog still open on what was typed.
+
 ## 3.42.0 - 2026-08-25
 
 - **The select, unselect and filter dialogs** (4.0 S6): `+`, `-` and

@@ -288,8 +288,11 @@ const HELP_TEXT: &[&str] = &[
     "                  patterns (off = a regular expression). '*'",
     "                  clears it; the panel says what it is filtering by",
     "  Ctrl+\\          directory hotlist (Enter cd, a add, d delete)",
-    "  Alt+F7          find file (glob + optional content substring);",
-    "                  results stream into the panel, Esc cancels",
+    "  Alt+F7          find file: where to start, the name, and the text",
+    "                  to look for inside - with whole words, case, a",
+    "                  regular expression, every codepage, skip hidden,",
+    "                  follow symlinks and skip gitignored beside them.",
+    "                  Results stream into the panel; Esc cancels.",
     "  Ctrl+X d        compare directories: marks files missing on the",
     "                  other side or differing in size/mtime (F5 syncs)",
     "  F9>Cmd>Panelize command output becomes the panel listing",
@@ -3292,44 +3295,66 @@ fn draw_pattern(frame: &mut Frame, d: &crate::app::PatternDialog) {
 }
 
 fn draw_find(frame: &mut Frame, d: &FindDialog) {
+    use crate::app::{FIND_FIELDS, FIND_ROWS, FIND_SWITCHES};
     let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
-    let area = centered(64, 9, frame.area());
-    let inner = popup(frame, area, " Find file ", style);
-    let row = |offset: u16| Rect {
+    // three labelled fields, the switches, a blank line and the buttons
+    let height = (FIND_FIELDS * 2 + FIND_SWITCHES.len() + 4) as u16;
+    let inner = popup(
+        frame,
+        centered(64, height, frame.area()),
+        " Find file ",
+        style,
+    );
+    let row = |offset: usize| Rect {
         x: inner.x + 1,
-        y: inner.y + offset,
+        y: inner.y + offset as u16,
         width: inner.width.saturating_sub(2),
         height: 1,
     };
-    frame.render_widget(Line::from("Filename glob:"), row(0));
-    field_row(
-        frame,
-        row(1),
-        &d.name,
-        (d.field == 0).then_some(d.name_cursor),
-    );
-    frame.render_widget(Line::from("Containing text (optional):"), row(3));
-    field_row(
-        frame,
-        row(4),
-        &d.content,
-        (d.field == 1).then_some(d.content_cursor),
-    );
-    let tick = if d.skip_ignored { 'x' } else { ' ' };
+    let fields = [
+        ("Start at:", &d.start, d.start_cursor),
+        ("Filename:", &d.name, d.name_cursor),
+        ("Containing text (optional):", &d.content, d.content_cursor),
+    ];
+    for (i, (label, value, cursor)) in fields.iter().enumerate() {
+        frame.render_widget(Line::from(*label).style(style), row(i * 2));
+        field_row(
+            frame,
+            row(i * 2 + 1),
+            value,
+            (d.row == i).then_some(*cursor),
+        );
+    }
+    let check = |on: bool| if on { "[x]" } else { "[ ]" };
+    for (i, label) in FIND_SWITCHES.iter().enumerate() {
+        let focused = d.row == FIND_FIELDS + i;
+        frame.render_widget(
+            Line::from(format!(" {} {label}", check(d.switch(i)))).style(if focused {
+                sel
+            } else {
+                style
+            }),
+            row(FIND_FIELDS * 2 + i),
+        );
+    }
     frame.render_widget(
-        Line::from(format!("[{tick}] Skip gitignored files")).style(if d.field == 2 {
-            sel
-        } else {
-            style
-        }),
-        row(5),
-    );
-    frame.render_widget(
-        Line::from("Tab - switch   Space - toggle   Enter - search   Esc - cancel")
-            .centered()
-            .style(style),
-        row(6),
+        buttons_line(
+            &["OK", "Cancel"],
+            if d.row == FIND_ROWS {
+                usize::from(!d.ok)
+            } else {
+                usize::MAX
+            },
+            style,
+            sel,
+        ),
+        Rect {
+            x: inner.x,
+            y: inner.y + (FIND_FIELDS * 2 + FIND_SWITCHES.len() + 1) as u16,
+            width: inner.width,
+            height: 1,
+        },
     );
 }
 

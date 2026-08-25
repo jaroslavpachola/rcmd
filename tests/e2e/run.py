@@ -198,6 +198,7 @@ def sandbox():
 F3, F5, F7, F8 = b"\x1b[13~", b"\x1b[15~", b"\x1b[18~", b"\x1b[19~"
 SF8 = b"\x1b[19;2~"
 DOWN, END, HOME_K, INSERT = b"\x1b[B", b"\x1b[F", b"\x1b[H", b"\x1b[2~"
+UP = b"\x1b[A"
 BACKSPACE = b"\x7f"
 
 
@@ -1251,7 +1252,9 @@ def test_find():
     check("find: non-match absent", "other.txt" not in scr.replace("sub/other", ""))
     if gitted:
         check("find: gitignored tree skipped", "needle-hidden" not in scr)
-        find(b"needle*" + b"\t\t" + b" ")   # Tab to the checkbox, untick
+        # Up from the Filename field wraps through Start at and the
+        # buttons to the last switch, which is the gitignore one
+        find(b"needle*" + UP * 3 + b" ")
         scr = s.screen()
         check("find: unticked finds ignored", "junk/needle-hidden.txt" in scr)
         check("find: unticked count", "3 match(es)" in scr)
@@ -3670,6 +3673,82 @@ def test_selectdialog():
     shutil.rmtree(root)
 
 
+def test_finddialog():
+    """PLAN4 S6: mc's Find File options - a start directory, content by
+    whole words, by regular expression, in every codepage, and hidden
+    files skipped."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "deep"))
+    os.makedirs(os.path.join(play, ".hidden"))
+    open(os.path.join(play, "a1.txt"), "w").write("the magic word\n")
+    open(os.path.join(play, "a2.txt"), "w").write("magically\n")
+    open(os.path.join(play, "deep", "b1.txt"), "w").write("nothing here\n")
+    open(os.path.join(play, ".hidden", "secret.txt"), "w").write("magic\n")
+    # a file written by a machine that spoke KOI8-R
+    open(os.path.join(play, "koi.txt"), "wb").write("Привет".encode("koi8-r"))
+    s = Session(play, home)
+
+    # the rows below the two text fields, in order, from the content
+    # field: 1 Shell patterns, 2 Case sensitive, 3 Whole words,
+    # 4 Regular expression, 5 All charsets, 6 Skip hidden
+    def find(keys, wait=STEP * 3):
+        s.send(b"\x1b[20~")                  # F9
+        s.send(b"\x1b[C" * 2)                # -> Command
+        s.send(DOWN * 5)                     # -> Find file...
+        s.send(b"\r", wait=STEP)
+        s.send(keys)
+        s.send(b"\r", wait=wait)
+
+    s.send(b"\x1b[20~"); s.send(b"\x1b[C" * 2); s.send(DOWN * 5)
+    s.send(b"\r", wait=STEP)
+    scr = s.screen()
+    check("finddialog: the switches are there",
+          "Whole words" in scr and "All charsets" in scr
+          and "Follow symlinks" in scr and "Start at" in scr, scr)
+    check("finddialog: it starts where the panel is", play in scr, scr)
+    s.send(b"\x1b\x1b", wait=STEP)
+
+    # whole words: "magic" is not "magically", so a2.txt drops out
+    # while the hidden file - which does say the word - stays
+    find(b"\x15*.txt\t" + b"magic" + DOWN * 3 + b" ")
+    scr = s.screen()
+    check("finddialog: whole words dropped the longer word",
+          "2 match(es)" in scr, scr)
+    # the other panel lists the directory too, so the count is what
+    # says which panel the name is in
+    check("finddialog: and kept the two that say it",
+          scr.count("a1.txt") == 2 and scr.count("a2.txt") == 1
+          and "secret.txt" in scr, scr)
+
+    # a regular expression over the content
+    find(b"\x15*.txt\t" + b"^magic\\w+$" + DOWN * 4 + b" ")
+    scr = s.screen()
+    check("finddialog: the regex found the other",
+          "1 match(es)" in scr and scr.count("a2.txt") == 2, scr)
+
+    # all charsets finds the word as another machine spelled it
+    find(b"\x15*\t" + "Привет".encode() + DOWN * 5 + b" ")
+    scr = s.screen()
+    check("finddialog: found it in KOI8-R",
+          "1 match(es)" in scr and scr.count("koi.txt") == 2, scr)
+
+    # skip hidden leaves the dotted tree alone
+    find(b"\x15*.txt\t" + b"magic")
+    check("finddialog: the hidden file is found by default",
+          ".hidden/secret.txt" in s.screen(), s.screen())
+    find(b"\x15*.txt\t" + b"magic" + DOWN * 6 + b" ")
+    check("finddialog: hidden skipped", "secret.txt" not in s.screen(), s.screen())
+
+    # a start directory of its own
+    find(UP + b"\x15" + os.path.join(play, "deep").encode() + b"\t\x15*.txt")
+    scr = s.screen()
+    check("finddialog: searched where it was told",
+          "1 match(es)" in scr and scr.count("b1.txt") == 1, scr)
+
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_subshell():
     """R1 per-shell scenarios: forced subshell=true in every suite mode."""
     shells = ["/bin/sh"]
@@ -3799,6 +3878,7 @@ def main():
         test_charset,
         test_panelcharset,
         test_selectdialog,
+        test_finddialog,
         test_subshell,
         test_sftp,
         test_fish,

@@ -280,10 +280,15 @@ instead of a glob. A regex that will not compile is quoted back at you
 rather than silently matching nothing. The panel names the filter it is
 under along its bottom edge, options included.
 
-**Power tools**: Alt+F7 opens find file - a filename glob plus an
-optional case-insensitive content substring; matches stream live into
-the active panel as a *panelized* listing (paths relative to the panel
-dir), where marking and F5/F6/F8 work as usual. *Panelize command…*
+**Power tools**: Alt+F7 opens **find file** - where to start, a
+filename pattern, and the text to look for inside the files, with mc's
+answers beside them: **whole words**, **case sensitive**, **regular
+expression** (matched line by line), **all charsets** (the same word as
+another machine spelled it - KOI8-R, CP1251, Shift_JIS and the rest),
+**skip hidden**, **follow symlinks**, and rcmd's own **skip
+gitignored**. Matches stream live into the active panel as a
+*panelized* listing (paths relative to the search root), where marking
+and F5/F6/F8 work as usual. *Panelize command…*
 (F9 → Left/Right) turns any command's stdout lines into such a listing
 (`git ls-files -m`, `rg -l TODO`, …). *Compare directories* (Ctrl+X d)
 marks files that are missing on the other side or differ in size/mtime
