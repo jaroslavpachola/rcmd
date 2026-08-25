@@ -5,10 +5,11 @@
 //! Mechanics (decision E2): bash, zsh and fish get a prompt hook that
 //! writes `pwd` to an inherited pipe on fd 27 - each message doubles as
 //! "the prompt is idle" detection. Shells without a precmd mechanism
-//! (sh, dash, …) fall back to `/proc/<pid>/cwd` plus the pty's
+//! (sh, dash, …) fall back to asking the kernel where the process is
+//! (`/proc/<pid>/cwd` on Linux, `proc_pidinfo` on macOS) plus the pty's
 //! foreground process group and output quiescence. The pty layer is
-//! hand-rolled over `libc::openpty` (decision E1) - Linux-only, like
-//! the rest of the terminal handling.
+//! hand-rolled over `libc::openpty` (decision E1); the three terminal
+//! ioctls it needs are spelled out per platform below.
 //!
 //! While the subshell is hidden its output is buffered (replayed on the
 //! next Ctrl+O) and a tiny shim answers the terminal queries that every
@@ -23,6 +24,23 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+
+/// The three terminal ioctls the pty needs. libc has them for Linux and
+/// not for macOS, where they are the BSD numbers every BSD has agreed
+/// on since 4.3 - `_IO('t', 97)` and friends. Spelling them out here is
+/// what the alternative (a second crate) would do anyway.
+#[cfg(target_os = "linux")]
+mod ioctls {
+    pub const SET_CTTY: libc::Ioctl = libc::TIOCSCTTY;
+    pub const SET_WINSIZE: libc::Ioctl = libc::TIOCSWINSZ;
+    pub const GET_PGRP: libc::Ioctl = libc::TIOCGPGRP;
+}
+#[cfg(not(target_os = "linux"))]
+mod ioctls {
+    pub const SET_CTTY: libc::c_ulong = 0x2000_7461;
+    pub const SET_WINSIZE: libc::c_ulong = 0x8008_7467;
+    pub const GET_PGRP: libc::c_ulong = 0x4004_7477;
+}
 
 /// The fd number the prompt hook writes to inside the shell. High
 /// enough not to collide with scripted redirections (0–9).
@@ -124,7 +142,7 @@ impl Subshell {
                 if libc::setsid() < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
-                if libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+                if libc::ioctl(0, ioctls::SET_CTTY, 0) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 // hand the hook channel to the shell on a fixed fd;
@@ -272,7 +290,7 @@ impl Subshell {
     /// Last known working directory of the shell.
     pub fn cwd(&mut self) -> PathBuf {
         if self.kind == Kind::Plain
-            && let Ok(cwd) = std::fs::read_link(format!("/proc/{}/cwd", self.child.id()))
+            && let Some(cwd) = plain_cwd(self.child.id())
         {
             self.cwd = cwd;
         }
@@ -350,7 +368,7 @@ impl Subshell {
             ws_ypixel: 0,
         };
         unsafe {
-            libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ, &ws);
+            libc::ioctl(self.master.as_raw_fd(), ioctls::SET_WINSIZE, &ws);
         }
     }
 
@@ -385,7 +403,7 @@ impl Subshell {
     /// Foreground process group of the pty == the shell itself?
     fn fg_is_shell(&self) -> bool {
         let mut pgrp: libc::pid_t = 0;
-        let rc = unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCGPGRP, &raw mut pgrp) };
+        let rc = unsafe { libc::ioctl(self.master.as_raw_fd(), ioctls::GET_PGRP, &raw mut pgrp) };
         rc == 0 && pgrp == self.child.id() as libc::pid_t
     }
 
@@ -534,12 +552,69 @@ fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd)> {
     Ok((master, slave))
 }
 
+/// Where a shell with no prompt hook (sh, dash) has got to - the only
+/// way to know is to ask the kernel about the process. Linux reads the
+/// symlink in `/proc`; macOS has no `/proc` and answers the same
+/// question through `proc_pidinfo`. Anywhere else the cwd simply stops
+/// following, which is what it did before either of these existed.
+fn plain_cwd(pid: u32) -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStringExt as _;
+        unsafe {
+            let mut info: libc::proc_vnodepathinfo = std::mem::zeroed();
+            let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+            let got = libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDVNODEPATHINFO,
+                0,
+                (&raw mut info).cast::<libc::c_void>(),
+                size,
+            );
+            if got != size {
+                return None;
+            }
+            // vip_path is a fixed buffer holding a NUL-terminated path
+            let bytes: Vec<u8> = info
+                .pvi_cdir
+                .vip_path
+                .iter()
+                .flatten()
+                .map(|&c| c as u8)
+                .take_while(|&c| c != 0)
+                .collect();
+            (!bytes.is_empty()).then(|| PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 fn control_pipe() -> Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0 as libc::c_int; 2];
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-        bail!("pipe2: {}", std::io::Error::last_os_error());
+    // pipe2 is Linux's; elsewhere close-on-exec goes on by hand
+    // afterwards, which is a race only if something else is forking
+    // at the same moment - nothing is, this is the startup path
+    #[cfg(target_os = "linux")]
+    let made = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+    #[cfg(not(target_os = "linux"))]
+    let made = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if made != 0 {
+        bail!("pipe: {}", std::io::Error::last_os_error());
     }
     let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    #[cfg(not(target_os = "linux"))]
+    {
+        set_cloexec(&r)?;
+        set_cloexec(&w)?;
+    }
     set_nonblocking(&r)?;
     Ok((r, w))
 }

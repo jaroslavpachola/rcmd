@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.51.0 - 2026-08-25
+
+- **macOS builds are back** (4.0 S7, and the last of the plan), in CI
+  and in the release tarballs, on both architectures with OpenSSL
+  vendored so nothing has to be installed alongside the binary.
+- The pty layer needed portability work to get there: the three
+  terminal ioctls it uses (`TIOCSCTTY`, `TIOCSWINSZ`, `TIOCGPGRP`) are
+  in libc for Linux and not for macOS, so they are spelled out per
+  platform - they are the BSD numbers every BSD has agreed on since
+  4.3; `pipe2` is Linux's, so elsewhere the pipe gets close-on-exec by
+  hand; and where Linux reads `/proc/<pid>/cwd` to follow a hookless
+  shell (sh, dash), macOS asks `proc_pidinfo`. Each branch is
+  type-checked against the real platform libc for all four targets.
+- CI runs fmt, clippy and the unit tests on Linux and macOS; the pty
+  e2e suite stays on Linux, where `/dev/pts` and an apt-installed zsh
+  and fish are.
+- **4.0 is feature-complete**: all eight phases of
+  [PLAN4](docs/PLAN4.md) are done.
+
 ## 3.50.0 - 2026-08-25
 
 - **Skins** (4.0 S7): a theme can be a file now. rcmd's own format is

@@ -67,6 +67,12 @@ by kind, which is mc's filehighlight without the second file.
 **3.12** - mc's menu bar: **Left, File, Command, Options, Right**, where
 the two panel menus act on their own panel whichever one has the focus.
 
+**3.51** - the wider world (4.0 S7, and the last of the plan): `-e` and
+`-v` and the **rcedit / rcview / rcdiff** aliases, mc's startup flags
+(`-b -c -C -S -d -u -U -l`), the shipped shell wrappers, **skins** -
+rcmd's own theme files and mc's skin files read where they lie - and
+**macOS builds back** in CI and in the releases.
+
 ## Install & run
 
 ```sh
@@ -77,11 +83,13 @@ cargo install --path crates/rcmd-tui   # installs the `rcmd` binary
 cargo run -p rcmd-tui                  # or: just run
 ```
 
-Release binaries for Linux are attached to GitHub releases (built by
-`.github/workflows/release.yml` on `v*` tags; macOS builds are
-temporarily suspended). Two tarballs per release: the glibc build and a
+Release binaries are attached to GitHub releases (built by
+`.github/workflows/release.yml` on `v*` tags): the glibc Linux build, a
 **static musl build** (`x86_64-unknown-linux-musl`, C dependencies
-vendored) that runs on any distro with no shared-library requirements.
+vendored) that runs on any distro with no shared-library requirements,
+and macOS on both architectures (`x86_64-apple-darwin`,
+`aarch64-apple-darwin`, OpenSSL vendored so nothing has to be installed
+alongside).
 
 ```
 usage: rcmd [OPTIONS] [DIR1 [DIR2]]
@@ -749,6 +757,6 @@ server (`pip install paramiko`; skipped when unavailable).
 Workspace layout: `crates/rcmd-core` (panel/fs logic, no TUI deps),
 `crates/rcmd-edit` (editor buffer/undo/search, TUI-free; syntect behind
 the `syntax` feature), `crates/rcmd-tui` (ratatui frontend, binary
-`rcmd`). CI runs fmt,
-clippy, unit tests, and the pty e2e suite on Linux (macOS temporarily
-suspended). Licensed MIT.
+`rcmd`). CI runs fmt, clippy and the unit tests on Linux and macOS, and
+the pty e2e suite on Linux - it drives the binary through `/dev/pts`
+and installs shells to test them, which is a Linux job. Licensed MIT.

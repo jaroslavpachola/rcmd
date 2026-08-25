@@ -11,8 +11,6 @@ permissions:
 
 jobs:
   build:
-    # macOS builds temporarily suspended; restore the macos-13 /
-    # macos-latest entries to bring them back.
     strategy:
       fail-fast: false
       matrix:
@@ -23,6 +21,14 @@ jobs:
           # static build: runs on any distro, no shared libs
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
+            flags: "--features vendored"
+          # macOS: OpenSSL vendored too, so the binary does not need a
+          # brew install on the machine that runs it
+          - os: macos-13
+            target: x86_64-apple-darwin
+            flags: "--features vendored"
+          - os: macos-latest
+            target: aarch64-apple-darwin
             flags: "--features vendored"
     runs-on: ${{ matrix.os }}
     steps:

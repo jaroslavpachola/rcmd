@@ -10,12 +10,20 @@ env:
 
 jobs:
   test:
-    # macOS temporarily suspended (slow runner queues); re-add
-    # macos-latest to the matrix to restore it.
+    # The pty e2e suite is Linux-only (it drives the binary through
+    # /dev/pts and installs shells with apt); macOS builds, lints and
+    # runs the unit tests, which is what the platform support is.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        include:
+          - os: ubuntu-latest
+            flags: ""
+          # vendored OpenSSL: the runner's own is a brew install that
+          # openssl-sys has to go looking for, and a build that finds
+          # nothing is a worse answer than one that compiles its own
+          - os: macos-latest
+            flags: "--features vendored"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -26,11 +34,11 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets ${{ matrix.flags }} -- -D warnings
       - name: Unit tests
-        run: cargo test --workspace
+        run: cargo test --workspace ${{ matrix.flags }}
       - name: Build
-        run: cargo build
+        run: cargo build ${{ matrix.flags }}
       - name: Install paramiko (sftp e2e server)
         if: runner.os == 'Linux'
         run: pip3 install --user paramiko

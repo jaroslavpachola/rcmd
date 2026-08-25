@@ -124,13 +124,29 @@ mc's, and every row of it actually decodes.
 - Compare directories: quick / size-only / thorough.
 - Internal diff viewer + "Compare files".
 
-### S7 - packaging & the wider world
+### S7 - packaging & the wider world - DONE (2026-08-25)
 
 - `-e FILE` / `-v FILE`, argv0 dispatch (`rcedit`/`rcview`/`rcdiff`
-  symlinks), the missing mc flags (`-b -c -C -S -d -u/-U -l`).
-- Shipped shell wrappers (`rc.sh`, `rc.fish`).
-- Skins (theme files; mc skin import optional).
-- macOS builds restored to CI and releases.
+  symlinks, and mc's own names), the missing mc flags
+  (`-b -c -C -S -d -u/-U -l`). The alias modes come up on one screen
+  with no panels underneath, so closing it ends the session; each goes
+  through the panel that holds the file, which is what keeps the view
+  filters, the codepage and the diff's size guard in one place.
+- Shipped shell wrappers: `contrib/rc.sh`, `contrib/rc.fish`, in the
+  release tarballs and covered by the e2e suite.
+- Skins: rcmd's TOML theme files over an optional base, **and mc's own
+  skin files read where they lie** - the import was optional and turned
+  out to be cheaper than a converter. F9 > Options > Appearance picks
+  one.
+- macOS builds restored to CI and releases (both architectures,
+  OpenSSL vendored). The pty layer needed the three terminal ioctls
+  spelled out (libc has them for Linux only), `pipe` instead of
+  `pipe2`, and `proc_pidinfo` where Linux reads `/proc/<pid>/cwd`.
+
+**All eight phases are done.** What 4.0 set out to be - a drop-in an mc
+user's hands, config files and expectations all land somewhere - is
+what rcmd now is, with the deliberate divergences written down in
+[MC-DIFF.md](MC-DIFF.md) rather than quietly closed.
 
 ## Sequencing
 
