@@ -58,6 +58,7 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("alt+n", "sort-name"),
     // MC hands own these: M-s = quick search, M-t = cycle listing,
     // C-u = swap panels (sort by ext/size/mtime lives in F9 > Sort).
+    ("alt+e", "charset"), // MC: M-e, the panel's codepage
     ("alt+s", "quick-search"),
     ("alt+t", "listing-cycle"),
     ("ctrl+u", "swap-panels"),
@@ -183,6 +184,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "listing-tree" => Action::Listing(ListMode::Tree),
         "listing-user" => Action::Listing(ListMode::User),
         "dir-tree" => Action::DirTree,
+        "charset" => Action::Charset,
         "listing-cycle" => Action::ListingCycle,
         "other-same-dir" => Action::OtherSameDir,
         "other-open-dir" => Action::OtherOpenDir,

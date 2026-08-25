@@ -393,6 +393,8 @@ pub enum Dialog {
     RenamePreview(RenamePreview),
     /// Background-jobs list; the payload is the selected row.
     Jobs(usize),
+    /// M-e: the panel's codepage, with the row it is on.
+    Charset(usize),
     /// M-h: the command-line history; the payload is the selected row.
     History(usize),
     /// F9 > Command > Directory tree. Enter here changes the *current*
@@ -1471,6 +1473,8 @@ pub enum Action {
     ViewRaw,
     /// M-`: the list of open editors and viewers.
     ScreenList,
+    /// M-e: which codepage this panel's filenames are written in.
+    Charset,
     /// C-l: redraw the screen from scratch.
     Repaint,
 }
@@ -3798,6 +3802,12 @@ impl App {
             Action::CompareDirs => self.compare_dirs(),
             Action::DirSize => self.dir_size(),
             Action::ScreenList => self.open_screen_list(),
+            Action::Charset => {
+                let now = self.panels[self.active]
+                    .charset
+                    .map(rcmd_core::charset::label_of);
+                self.dialog = Some(Dialog::Charset(charset_row(now)));
+            }
             Action::View => self.open_viewer(false),
             Action::ViewRaw => self.open_viewer(true),
             Action::Edit => self.open_editor(),
@@ -5922,6 +5932,16 @@ impl App {
                     _ => self.dialog = Some(Dialog::Vfs(d)),
                 }
             }
+            Dialog::Charset(row) => match charset_pick_key(row, key) {
+                PickKey::Move(to) => self.dialog = Some(Dialog::Charset(to)),
+                PickKey::Close => {}
+                PickKey::Chose(to) => {
+                    let side = self.active;
+                    self.panels[side].charset = charset_at(to);
+                    self.status = Some(format!(" {} ", CHARSET_ROWS[to]));
+                }
+                PickKey::Ignored => self.dialog = Some(Dialog::Charset(row)),
+            },
             Dialog::Jobs(mut selected) => {
                 let len = self.jobs.len();
                 match key.code {
@@ -7258,17 +7278,21 @@ impl App {
     /// Resolve user input to a normalized path: `~` expands to $HOME,
     /// relative paths are anchored at the active panel's directory.
     fn resolve(&self, input: &str) -> PathBuf {
+        // a name typed on a panel is spelled in that panel's codepage:
+        // the bytes it makes are the bytes the names already there
+        // have, so what is created is what the panel then shows
+        let typed = |text: &str| PathBuf::from(self.panels[self.active].name_bytes(text));
         let raw = if input == "~" {
             std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .unwrap_or_default()
         } else if let Some(rest) = input.strip_prefix("~/") {
             match std::env::var_os("HOME") {
-                Some(home) => PathBuf::from(home).join(rest),
-                None => PathBuf::from(input),
+                Some(home) => PathBuf::from(home).join(typed(rest)),
+                None => typed(input),
             }
         } else {
-            let path = PathBuf::from(input);
+            let path = typed(input);
             if path.is_absolute() {
                 path
             } else {
@@ -7661,11 +7685,16 @@ impl App {
         self.cmdline.hist_pos = None;
     }
 
-    fn describe(paths: &[PathBuf]) -> String {
+    fn describe(&self, paths: &[PathBuf]) -> String {
         if paths.len() == 1 {
+            // named in the panel's codepage, so the question is about
+            // the file the panel is showing rather than about mojibake
             format!(
                 "\"{}\"",
-                paths[0].file_name().unwrap_or_default().to_string_lossy()
+                rcmd_core::charset::decode_name(
+                    paths[0].file_name().unwrap_or_default(),
+                    self.panels[self.active].charset,
+                )
             )
         } else {
             format!("{} items", paths.len())
@@ -7720,8 +7749,9 @@ impl App {
         if !(is_move && in_archive) && !dest.ends_with('/') {
             dest.push('/');
         }
+        let title = format!(" {verb} {} to: ", self.describe(&sources));
         self.dialog = Some(Dialog::Transfer(Box::new(TransferDialog {
-            title: format!(" {verb} {} to: ", Self::describe(&sources)),
+            title,
             mask: "*".into(),
             mask_cursor: 1,
             cursor: dest.chars().count(),
@@ -7752,7 +7782,7 @@ impl App {
             self.status = Some(" nothing selected ".into());
             return;
         };
-        let name = entry.name.to_string_lossy().into_owned();
+        let name = panel.name_of(entry);
         let sources = vec![panel.cwd.join(&entry.name)];
         let (verb, action) = if is_move {
             ("Rename", InputAction::MoveTo { sources })
@@ -7842,14 +7872,15 @@ impl App {
             return;
         };
         let remote = self.panels[self.active].is_remote();
-        let entry = self.panels[self.active].selected();
+        let panel = &self.panels[self.active];
+        let entry = panel.selected();
         let mode = entry.map_or(0o644, |e| e.mode & 0o7777);
         let mut dialog = ChmodDialog {
             paths,
             mode,
             octal: String::new(),
             octal_cursor: 0,
-            name: entry.map_or_else(String::new, |e| e.name.to_string_lossy().into_owned()),
+            name: entry.map_or_else(String::new, |e| panel.name_of(e)),
             owner: entry.map_or_else(String::new, |e| {
                 crate::ui::owner_label(e.extra.uid, remote, true)
             }),
@@ -7876,14 +7907,15 @@ impl App {
         // belong to the server, so it stays a typed spec.
         if self.panels[self.active].is_remote() {
             self.dialog = Some(Dialog::Input(InputDialog {
-                title: format!(" Chown {} (user[:group]) ", Self::describe(&paths)),
+                title: format!(" Chown {} (user[:group]) ", self.describe(&paths)),
                 value: String::new(),
                 cursor: 0,
                 action: InputAction::Chown { paths },
             }));
             return;
         }
-        let entry = self.panels[self.active].selected();
+        let panel = &self.panels[self.active];
+        let entry = panel.selected();
         let users = crate::ui::all_users();
         let groups = crate::ui::all_groups();
         let find = |list: &[(u32, String)], id: Option<u32>| {
@@ -7898,7 +7930,7 @@ impl App {
             paths,
             column: 0,
             button: 0,
-            name: entry.map_or_else(String::new, |e| e.name.to_string_lossy().into_owned()),
+            name: entry.map_or_else(String::new, |e| panel.name_of(e)),
             owner: entry.map_or_else(String::new, |e| {
                 crate::ui::owner_label(e.extra.uid, false, true)
             }),
@@ -7923,7 +7955,7 @@ impl App {
             self.status = Some(" nothing selected ".into());
             return;
         };
-        let name = entry.name.to_string_lossy().into_owned();
+        let name = panel.name_of(entry);
         // relative to the directory the link lands in, which is this one
         let target = if relative {
             name.clone()
@@ -7962,7 +7994,7 @@ impl App {
             kind: LinkKind::EditSymlink,
             target_cursor: target.chars().count(),
             target,
-            name: entry.name.to_string_lossy().into_owned(),
+            name: panel.name_of(entry),
             name_cursor: 0,
             row: 0,
             ok: true,
@@ -8076,7 +8108,7 @@ impl App {
             self.status = Some(" nothing selected ".into());
             return;
         }
-        let what = Self::describe(&paths);
+        let what = self.describe(&paths);
         let message = if self.panels[self.active].is_remote() {
             format!("Permanently delete {what} from the server?")
         } else if permanent {

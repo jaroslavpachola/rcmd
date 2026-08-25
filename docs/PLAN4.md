@@ -57,8 +57,8 @@ only way to script), rcmd keeps its own shape and imports mc's data.
 - Multi-column brief listing; user-defined listing format.
 - Per-extension/type file highlighting rules.
 - Per-panel Left/Right menus (listing mode, sort, filter, panelize,
-  rescan, encoding, links) - the mc menu structure. Encoding is the one
-  entry still missing: it joins them in S5, with the codepage work.
+  rescan, encoding, links) - the mc menu structure. Encoding joined
+  them in S5 as "Character set", with the codepage work.
 
 ### S2 - file-operation dialogs - DONE (2026-08-23)
 
@@ -103,11 +103,13 @@ only way to script), rcmd keeps its own shape and imports mc's data.
   carries its own follow-up (a remote upload, a bulk rename), which is
   what makes more than one safe.
 
-### S5 - encoding
+### S5 - encoding - DONE (2026-08-25)
 
 Full parity, all three surfaces: per-panel codepage (`M-e`), recoding on
 read/write in viewer and editor, and correct round-tripping of non-UTF-8
-filenames (no more lossy display).
+filenames (no more lossy display). The list is `encoding_rs`, which is
+the set every browser implements - a couple of DOS codepages short of
+mc's, and every row of it actually decodes.
 
 ### S6 - search, compare, panelize
 

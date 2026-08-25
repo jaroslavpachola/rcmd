@@ -74,6 +74,30 @@ pub fn encode(text: &str, encoding: Option<&'static Encoding>) -> Vec<u8> {
     }
 }
 
+/// A filename as text, read in a codepage. On Unix a name is bytes and
+/// nothing in it says what they mean, so a panel can be told - and
+/// until it is, the bytes are read as UTF-8 and whatever is not UTF-8
+/// shows as the replacement character, which is what every file
+/// manager does and what nobody can read.
+pub fn decode_name(name: &std::ffi::OsStr, encoding: Option<&'static Encoding>) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    match encoding {
+        None => name.to_string_lossy().into_owned(),
+        Some(enc) => enc.decode(name.as_bytes()).0.into_owned(),
+    }
+}
+
+/// ...and back: text typed into a dialog becomes the bytes the
+/// filesystem will hold, so a name created on a codepage panel is
+/// spelled the way the names already there are.
+pub fn encode_name(text: &str, encoding: Option<&'static Encoding>) -> std::ffi::OsString {
+    use std::os::unix::ffi::OsStringExt;
+    match encoding {
+        None => std::ffi::OsString::from(text),
+        Some(enc) => std::ffi::OsString::from_vec(enc.encode(text).0.into_owned()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,6 +120,25 @@ mod tests {
             assert!(!seen.contains(&enc), "{label} duplicates another row");
             seen.push(enc);
         }
+    }
+
+    #[test]
+    fn names_round_trip_through_a_codepage() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        let koi = by_label("KOI8-R (Russian)").unwrap();
+        // a name written by a machine that spoke KOI8-R: six bytes,
+        // and not a valid UTF-8 string
+        let raw = OsString::from_vec(encode("Привет", Some(koi)));
+        assert!(raw.to_str().is_none());
+        assert_eq!(decode_name(&raw, Some(koi)), "Привет");
+        // read as UTF-8 it is unreadable, which is the state of things
+        // before anyone is asked
+        assert!(decode_name(&raw, None).contains('\u{FFFD}'));
+        // and typing it back produces the same bytes, so the file the
+        // panel shows is the file the panel makes
+        assert_eq!(encode_name("Привет", Some(koi)), raw);
+        assert_eq!(encode_name("plain", None), OsString::from("plain"));
     }
 
     #[test]

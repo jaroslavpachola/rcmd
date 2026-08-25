@@ -78,6 +78,9 @@ pub struct Panel {
     pub list_mode: ListMode,
     /// Glob applied to files (directories always show), MC's "filter".
     pub filter: Option<String>,
+    /// Codepage the filenames in this directory are written in (M-e).
+    /// None = UTF-8, read leniently, which is every modern filesystem.
+    pub charset: Option<&'static crate::charset::Encoding>,
     /// When Some(label), the listing is an external result set (find /
     /// command output) instead of the directory; any reload restores the
     /// normal listing.
@@ -108,6 +111,7 @@ impl Panel {
             show_hidden: true,
             list_mode: ListMode::Full,
             filter: None,
+            charset: None,
             panelized: None,
             pending: None,
             history: Vec::new(),
@@ -140,6 +144,7 @@ impl Panel {
         let show_hidden = self.show_hidden;
         let filter = self.filter.clone();
         let (sort_key, sort_reverse) = (self.sort_key, self.sort_reverse);
+        let charset = self.charset;
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
         let (tx, rx) = mpsc::channel();
@@ -151,6 +156,7 @@ impl Panel {
                 filter.as_deref(),
                 sort_key,
                 sort_reverse,
+                charset,
             );
             if !flag.load(AtomicOrdering::Relaxed) {
                 let _ = tx.send(result);
@@ -353,6 +359,7 @@ impl Panel {
             self.filter.as_deref(),
             self.sort_key,
             self.sort_reverse,
+            self.charset,
         );
         self.cwd = start;
         if self.cwd.parent().is_some() {
@@ -405,6 +412,7 @@ impl Panel {
                 self.filter.as_deref(),
                 self.sort_key,
                 self.sort_reverse,
+                self.charset,
             )
         };
         // the directory this panel is standing in can be renamed or
@@ -428,6 +436,17 @@ impl Panel {
             .and_then(|name| self.entries.iter().position(|e| e.name == name))
             .unwrap_or_else(|| self.cursor.min(self.entries.len().saturating_sub(1)));
         Ok(())
+    }
+
+    /// An entry's name as text, in this panel's codepage.
+    pub fn name_of(&self, entry: &Entry) -> String {
+        crate::charset::decode_name(&entry.name, self.charset)
+    }
+
+    /// ...and the other way: what the filesystem will hold for a name
+    /// typed into a dialog on this panel.
+    pub fn name_bytes(&self, text: &str) -> std::ffi::OsString {
+        crate::charset::encode_name(text, self.charset)
     }
 
     pub fn selected(&self) -> Option<&Entry> {
@@ -601,7 +620,12 @@ impl Panel {
             .first()
             .is_some_and(Entry::is_parent)
             .then(|| self.entries.remove(0));
-        sort_entries(&mut self.entries, self.sort_key, self.sort_reverse);
+        sort_entries(
+            &mut self.entries,
+            self.sort_key,
+            self.sort_reverse,
+            self.charset,
+        );
         if let Some(parent) = parent {
             self.entries.insert(0, parent);
         }
@@ -639,7 +663,7 @@ impl Panel {
             if entry.is_parent() {
                 continue;
             }
-            if glob_match(pattern, &entry.name.to_string_lossy()) {
+            if glob_match(pattern, &self.name_of(entry)) {
                 if mark {
                     self.marked.insert(entry.name.clone());
                 } else {
@@ -693,9 +717,7 @@ impl Panel {
         (0..n).map(|i| (from + i) % n).find(|&i| {
             let entry = &self.entries[i];
             !entry.is_parent()
-                && entry
-                    .name
-                    .to_string_lossy()
+                && crate::charset::decode_name(&entry.name, self.charset)
                     .to_lowercase()
                     .starts_with(&prefix)
         })
@@ -745,6 +767,7 @@ fn prepare_listing(
     filter: Option<&str>,
     key: SortKey,
     reverse: bool,
+    charset: Option<&'static crate::charset::Encoding>,
 ) -> io::Result<Vec<Entry>> {
     Ok(shape_listing(
         fs.read_dir(dir)?,
@@ -752,6 +775,7 @@ fn prepare_listing(
         filter,
         key,
         reverse,
+        charset,
     ))
 }
 
@@ -763,24 +787,37 @@ fn shape_listing(
     filter: Option<&str>,
     key: SortKey,
     reverse: bool,
+    charset: Option<&'static crate::charset::Encoding>,
 ) -> Vec<Entry> {
     if !show_hidden {
         entries.retain(|e| !e.is_hidden());
     }
+    // the filter is typed in the panel's codepage, so it is matched
+    // against the names as that codepage spells them
     if let Some(pattern) = filter {
-        entries.retain(|e| e.is_dir() || glob_match(pattern, &e.name.to_string_lossy()));
+        entries.retain(|e| {
+            e.is_dir() || glob_match(pattern, &crate::charset::decode_name(&e.name, charset))
+        });
     }
-    sort_entries(&mut entries, key, reverse);
+    sort_entries(&mut entries, key, reverse, charset);
     entries
 }
 
 /// Directories always group first (even reversed); ties broken bytewise so
 /// ordering is total even for names differing only in case. The lowercase
 /// sort key is computed once per entry, which matters at 100k entries.
-fn sort_entries(entries: &mut Vec<Entry>, key: SortKey, reverse: bool) {
+fn sort_entries(
+    entries: &mut Vec<Entry>,
+    key: SortKey,
+    reverse: bool,
+    charset: Option<&'static crate::charset::Encoding>,
+) {
     let mut decorated: Vec<(bool, String, Entry)> = std::mem::take(entries)
         .into_iter()
-        .map(|e| (!e.is_dir(), e.name.to_string_lossy().to_lowercase(), e))
+        .map(|e| {
+            let key = crate::charset::decode_name(&e.name, charset).to_lowercase();
+            (!e.is_dir(), key, e)
+        })
         .collect();
     decorated.sort_by(|a, b| {
         let dirs_first = a.0.cmp(&b.0);

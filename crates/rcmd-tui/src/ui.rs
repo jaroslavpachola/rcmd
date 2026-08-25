@@ -126,6 +126,9 @@ struct Rule {
 }
 
 impl Rule {
+    // the glob is matched against the name read as UTF-8 rather than
+    // through the panel's codepage: a highlight rule is an extension
+    // pattern, and those are ASCII whatever the rest of the name is
     fn matches(&self, entry: &Entry) -> bool {
         match &self.matcher {
             Matcher::Glob(pattern) => glob_match(pattern, &entry.name.to_string_lossy()),
@@ -294,6 +297,10 @@ const HELP_TEXT: &[&str] = &[
     "  (watch = false in config disables). Slow directories load in the",
     "  background: old listing + spinner stay up, Esc cancels the load.",
     "  Alt+.           show/hide dotfiles",
+    "  Alt+E           the codepage this panel's filenames are written",
+    "                  in (Left/Right menu > Character set). Unix names",
+    "                  are bytes; this is where you say what they mean,",
+    "                  and names typed here are written back in it.",
     "  Alt+N           sort by name (again = reverse); other orders are in",
     "                  the panel's own F9 menu (Left or Right)",
     "  Alt+T           cycle listing format: brief (names in columns,",
@@ -742,6 +749,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::UserMenu(selected) => draw_user_menu(frame, &app.config.commands, *selected),
             Dialog::Find(d) => draw_find(frame, d),
             Dialog::Options(d) => draw_options(frame, d),
+            Dialog::Charset(row) => {
+                draw_pick_list(frame, " Character set ", &crate::app::CHARSET_ROWS, *row, 0)
+            }
             Dialog::RenamePreview(d) => draw_rename_preview(frame, d),
             Dialog::Jobs(selected) => draw_jobs(frame, &app.jobs, *selected),
             Dialog::Vfs(d) => draw_vfs(frame, d),
@@ -835,10 +845,17 @@ fn draw_panel(
     } else {
         Style::new().fg(th().panel_fg).bg(th().panel_bg)
     };
+    // the codepage rides in the title when there is one: a panel read
+    // in the wrong one looks like a directory full of broken names,
+    // and nothing else on screen would say why
+    let codepage = match panel.charset {
+        None => String::new(),
+        Some(enc) => format!(" [{}]", rcmd_core::charset::label_of(enc)),
+    };
     let mut block = Block::bordered()
         .style(Style::new().fg(th().panel_fg).bg(th().panel_bg))
         .title(Span::styled(
-            format!(" {} ", panel.display_path()),
+            format!(" {}{codepage} ", panel.display_path()),
             title_style,
         ));
     if let Some(branch) = git.map(|g| g.branch.as_str()).filter(|b| !b.is_empty()) {
@@ -981,6 +998,7 @@ fn draw_panel(
             git_mark,
             panel.list_mode,
             remote,
+            panel.charset,
         )
     });
 
@@ -1014,14 +1032,20 @@ fn draw_panel(
 
 /// One field's text for one entry. `mark` is the panel's tag state and
 /// `remote` decides whether uid/gid can be resolved to names.
-fn field_text(field: Field, entry: &Entry, marked: bool, remote: bool) -> String {
+fn field_text(
+    field: Field,
+    entry: &Entry,
+    marked: bool,
+    remote: bool,
+    charset: Option<&'static rcmd_core::charset::Encoding>,
+) -> String {
     let time = |t: Option<std::time::SystemTime>| {
         t.map(|t| DateTime::<Local>::from(t).format("%b %e %H:%M").to_string())
             .unwrap_or_default()
     };
     let number = |n: Option<u64>| n.map(|n| n.to_string()).unwrap_or_default();
     match field {
-        Field::Name => entry.name.to_string_lossy().into_owned(),
+        Field::Name => rcmd_core::charset::decode_name(&entry.name, charset),
         Field::Size => format_size(entry.size),
         // mc's bsize: directories say what they are instead of a byte count
         Field::BSize => {
@@ -1136,7 +1160,7 @@ fn draw_user_columns(
                     (Item::Space, _) | (_, None) => " ".repeat(width),
                     (Item::Bar, _) => fit("│", width, false),
                     (Item::Field(field, _), Some(entry)) => {
-                        let mut text = field_text(*field, entry, marked, remote);
+                        let mut text = field_text(*field, entry, marked, remote, panel.charset);
                         // the git column only exists inside a work tree,
                         // and rides on the name like the other listings
                         if *field == Field::Name
@@ -1256,13 +1280,10 @@ fn draw_brief_columns(
                     let (marker, base) = entry_style(entry);
                     let style = cell_style(marked, under_cursor, base);
                     // the git column only exists inside a work tree
+                    let name = panel.name_of(entry);
                     let text = match mark {
-                        Some(mark) => format!(
-                            "{}{marker}{}",
-                            mark.unwrap_or(' '),
-                            entry.name.to_string_lossy()
-                        ),
-                        None => format!("{marker}{}", entry.name.to_string_lossy()),
+                        Some(mark) => format!("{}{marker}{name}", mark.unwrap_or(' ')),
+                        None => format!("{marker}{name}"),
                     };
                     let text: String = text.chars().take(width).collect();
                     spans.push(Span::styled(format!("{text:<width$}"), style));
@@ -1312,7 +1333,7 @@ fn entry_summary(panel: &Panel) -> String {
                 "{} {:>9} {}{}",
                 e.perm_string(),
                 e.size,
-                e.name.to_string_lossy(),
+                panel.name_of(e),
                 link
             )
         }
@@ -1456,6 +1477,7 @@ fn cell_style(marked: bool, under_cursor: bool, base: Style) -> Style {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn entry_row(
     entry: &Entry,
     marked: bool,
@@ -1463,7 +1485,8 @@ fn entry_row(
     git: Option<Option<char>>,
     mode: ListMode,
     remote: bool,
-) -> Row<'_> {
+    charset: Option<&'static rcmd_core::charset::Encoding>,
+) -> Row<'static> {
     let (marker, base) = entry_style(entry);
     let style = cell_style(marked, under_cursor, base);
 
@@ -1477,7 +1500,10 @@ fn entry_row(
         .map(|t| DateTime::<Local>::from(t).format("%b %e %H:%M").to_string())
         .unwrap_or_default();
 
-    let name_text = format!("{marker}{}", entry.name.to_string_lossy());
+    let name_text = format!(
+        "{marker}{}",
+        rcmd_core::charset::decode_name(&entry.name, charset)
+    );
     let name_cell = match git {
         None => Cell::from(name_text),
         Some(mark) => {
@@ -1577,7 +1603,7 @@ fn draw_info(
                         .unwrap_or_default()
                 ),
             };
-            lines.push(format!("Name:      {}", e.name.to_string_lossy()));
+            lines.push(format!("Name:      {}", browse.name_of(e)));
             lines.push(format!("Type:      {kind}"));
             lines.push(format!("Size:      {}  ({})", e.size, human_size(e.size)));
             lines.push(format!("Perms:     {}  ({:o})", e.perm_string(), e.mode));

@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.41.0 - 2026-08-25
+
+- **Per-panel codepages** (4.0 S5, completing it): `Alt+E` on a panel -
+  or Left/Right > Character set, which is the one entry the panel menus
+  were still missing from S1 - says what the filenames in this
+  directory are written in. Unix names are bytes; a directory made on a
+  CP1251 or KOI8-R machine shows as replacement characters until the
+  panel is told.
+- **The whole panel reads that way**, not just the drawing: the
+  listing, the sort order, the glob filter, select/unselect by pattern
+  and the quick search all work on the name as the codepage spells it,
+  because a name you can read is a name you can look for.
+- **Names typed on that panel are written back in it**, so creating
+  `Мир` on a KOI8-R panel makes the file the panel then shows rather
+  than a second unreadable one beside it. One funnel does it - every
+  dialog that turns typed text into a path goes through the same place.
+- The panel title names the codepage while one is set, and the dialogs
+  that quote a filename (rename, chmod, chown, delete, links) quote it
+  as the panel shows it.
+- Highlight rules and `[[open]]` globs still match the name read as
+  UTF-8: those patterns are extensions, and extensions are ASCII
+  whatever the rest of the name is.
+
 ## 3.40.0 - 2026-08-25
 
 - **Codepages in the viewer and the editor** (4.0 S5): `Alt+E` picks

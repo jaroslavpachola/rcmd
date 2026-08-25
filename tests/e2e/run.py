@@ -3560,6 +3560,51 @@ def test_charset():
     shutil.rmtree(root)
 
 
+def test_panelcharset():
+    """PLAN4 S5: a panel reads its filenames in the codepage it is told
+    to - names that are not UTF-8 at all, which is the case that made
+    the setting necessary."""
+    root, play, home = sandbox()
+    # a name written by a machine that spoke KOI8-R: bytes, and not a
+    # valid UTF-8 string. Python writes it as bytes for the same reason.
+    raw = "Привет".encode("koi8-r")
+    with open(os.path.join(play.encode(), raw + b".txt"), "wb") as f:
+        f.write(b"hello\n")
+    open(os.path.join(play, "plain.txt"), "w").write("hi\n")
+    s = Session(play, home)
+    scr = s.screen()
+    check("panelcharset: unreadable as UTF-8",
+          "Привет" not in scr and "plain.txt" in scr, scr)
+
+    # M-e names the codepage, and the name is a name again
+    s.send(b"\x1be", wait=STEP)
+    check("panelcharset: the picker", "Character set" in s.screen(), s.screen())
+    s.send(b"k\r", wait=STEP * 2)           # first "K..." = KOI8-R
+    scr = s.screen()
+    check("panelcharset: the name reads", "Привет.txt" in scr, scr)
+    check("panelcharset: the title says which", "[KOI8-R (Russian)]" in scr, scr)
+
+    # and it is still the same file: view it
+    # the terminal sends what you type as UTF-8; the panel's codepage
+    # is what the name is spelled in on disk, not what the keyboard says
+    s.send(b"\x13" + "При".encode() + b"\r", wait=STEP)
+    s.send(F3, wait=STEP * 2)
+    check("panelcharset: opens the file it names", "hello" in s.screen(), s.screen())
+    s.send(b"q", wait=STEP)
+
+    # a name typed on that panel is written in that codepage too, so
+    # what is created is what the panel then shows
+    s.send(b"\x1b[17~", wait=STEP)          # F7 mkdir
+    s.send("Мир".encode() + b"\r", wait=STEP * 2)
+    made = os.listdir(play.encode())
+    check("panelcharset: the new name is in the codepage",
+          "Мир".encode("koi8-r") in made, made)
+    check("panelcharset: and the panel shows it", "Мир" in s.screen(), s.screen())
+
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_subshell():
     """R1 per-shell scenarios: forced subshell=true in every suite mode."""
     shells = ["/bin/sh"]
@@ -3687,6 +3732,7 @@ def main():
         test_editkeys,
         test_screens,
         test_charset,
+        test_panelcharset,
         test_subshell,
         test_sftp,
         test_fish,
