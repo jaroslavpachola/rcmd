@@ -31,7 +31,7 @@ use crate::format::{self, Field, Format, Item};
 use rcmd_core::vfs::{FsProvider, LocalFs, RemoteFs};
 use rcmd_core::view::{FileView, Search, SearchKind};
 
-use crate::config::{Config, HotEntry};
+use crate::config::{Config, HotEntry, UserCommand};
 use crate::keymap::Keymap;
 use crate::subshell::Subshell;
 use crate::{config, git, keymap, state, ui};
@@ -648,6 +648,34 @@ pub enum ConfirmKind {
     Execute,
 }
 
+/// The F2 user menu: the entries that apply here, the way down into
+/// whatever submenu is open, and the row the cursor is on.
+pub struct UserMenuDialog {
+    /// The whole menu for this directory - `[[commands]]` plus a local
+    /// `.mc.menu` if there is one - gathered when the menu opened, so
+    /// the conditions are answered once and the list cannot change
+    /// under the cursor.
+    pub menu: Vec<UserCommand>,
+    pub path: Vec<usize>,
+    pub row: usize,
+    /// Whether a `.mc.menu` in the panel's directory contributed.
+    pub local: bool,
+}
+
+impl UserMenuDialog {
+    /// The submenu being looked at.
+    pub fn entries(&self) -> &[UserCommand] {
+        let mut here = &self.menu[..];
+        for &at in &self.path {
+            match here.get(at) {
+                Some(entry) => here = &entry.entries,
+                None => break,
+            }
+        }
+        here
+    }
+}
+
 /// One drawn row of the hotlist: the way back up, a group to walk into,
 /// a place to go, or one of rcmd's own recent directories.
 pub enum HotRow {
@@ -684,8 +712,9 @@ pub enum Dialog {
     /// Directory hotlist; the payload says where in the tree it is.
     Hotlist(Box<HotlistDialog>),
     Find(Box<FindDialog>),
-    /// F2 user menu ([[commands]]); the payload is the selected row.
-    UserMenu(usize),
+    /// F2 user menu ([[commands]]); the payload says which submenu it
+    /// is in and where the cursor is.
+    UserMenu(Box<UserMenuDialog>),
     Options(OptionsDialog),
     /// Bulk rename: what the edited buffer asks for, awaiting Yes/No.
     RenamePreview(RenamePreview),
@@ -4598,13 +4627,7 @@ impl App {
             Action::HistoryForward => self.history_step(true),
             Action::QuickView => self.toggle_quick_view(),
             Action::InfoView => self.toggle_info(),
-            Action::UserMenu => {
-                if self.config.commands.is_empty() {
-                    self.status = Some(" no [[commands]] in the config - see F1 ".into());
-                } else {
-                    self.dialog = Some(Dialog::UserMenu(0));
-                }
-            }
+            Action::UserMenu => self.open_user_menu(),
             Action::UserCommand(i) => self.run_user_command(i),
             Action::Listing(mode) => {
                 if mode == ListMode::Tree && !self.panels[self.active].is_local() {
@@ -5052,6 +5075,119 @@ impl App {
                 rest,
             } => self.ask_macro(question, format!("{before}{mid}"), rest, quiet),
         }
+    }
+
+    /// F2: the entries that apply to what the panels are showing.
+    /// mc reads a `.mc.menu` in the current directory before its own;
+    /// rcmd puts those first and keeps the configured ones after them,
+    /// because a project's menu is an addition to your own rather than
+    /// a replacement for it.
+    fn open_user_menu(&mut self) {
+        let mut menu: Vec<UserCommand> = Vec::new();
+        let local = self.local_menu();
+        let have_local = !local.is_empty();
+        menu.extend(local);
+        menu.extend(self.config.commands.iter().cloned());
+        let menu = self.applicable(menu);
+        if menu.is_empty() {
+            self.status = Some(match self.config.commands.is_empty() {
+                true => " no [[commands]] in the config - see F1 ".into(),
+                false => " no user-menu entry applies here ".into(),
+            });
+            return;
+        }
+        self.dialog = Some(Dialog::UserMenu(Box::new(UserMenuDialog {
+            menu,
+            path: Vec::new(),
+            row: 0,
+            local: have_local,
+        })));
+    }
+
+    /// A `.mc.menu` in the panel's directory, in mc's own format.
+    fn local_menu(&self) -> Vec<UserCommand> {
+        let panel = &self.panels[self.active];
+        if !panel.is_local() {
+            return Vec::new();
+        }
+        let path = panel.local_cwd().join(".mc.menu");
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+        crate::mcimport::parse_menu(&text).0
+    }
+
+    /// Keep the entries whose condition holds, submenus and all. A
+    /// submenu whose entries all dropped out drops out with them -
+    /// an empty section is a dead end with a name.
+    fn applicable(&self, entries: Vec<UserCommand>) -> Vec<UserCommand> {
+        let cx = self.menu_context();
+        let cx = rcmd_core::usermenu::Context {
+            file: &cx.0,
+            dir: &cx.1,
+            kind: cx.2,
+            tagged: cx.3,
+            other_file: &cx.4,
+            other_dir: &cx.5,
+            other_kind: cx.6,
+            other_tagged: cx.7,
+        };
+        fn keep(entries: Vec<UserCommand>, cx: &rcmd_core::usermenu::Context) -> Vec<UserCommand> {
+            entries
+                .into_iter()
+                .filter_map(|mut entry| {
+                    let when = entry.when.clone().unwrap_or_default();
+                    if !rcmd_core::usermenu::matches(&when, cx) {
+                        return None;
+                    }
+                    if entry.is_submenu() {
+                        entry.entries = keep(std::mem::take(&mut entry.entries), cx);
+                        if entry.entries.is_empty() {
+                            return None;
+                        }
+                    }
+                    Some(entry)
+                })
+                .collect()
+        }
+        keep(entries, &cx)
+    }
+
+    /// What the conditions look at, as owned strings - the panels are
+    /// borrowed for the whole evaluation otherwise.
+    #[allow(clippy::type_complexity)]
+    fn menu_context(
+        &self,
+    ) -> (
+        String,
+        String,
+        rcmd_core::usermenu::FileKind,
+        bool,
+        String,
+        String,
+        rcmd_core::usermenu::FileKind,
+        bool,
+    ) {
+        let side = |i: usize| {
+            let panel = &self.panels[i];
+            let entry = panel.selected().filter(|e| !e.is_parent());
+            let name = entry.map(|e| panel.name_of(e)).unwrap_or_default();
+            let kind = entry.map(menu_kind).unwrap_or_default();
+            let marked = panel.entries.iter().any(|e| panel.is_marked(e));
+            (name, panel.display_path(), kind, marked)
+        };
+        let (file, dir, kind, tagged) = side(self.active);
+        let (other_file, other_dir, other_kind, other_tagged) = side(self.active ^ 1);
+        (
+            file,
+            dir,
+            kind,
+            tagged,
+            other_file,
+            other_dir,
+            other_kind,
+            other_tagged,
+        )
     }
 
     fn run_user_command(&mut self, i: usize) {
@@ -7433,29 +7569,57 @@ impl App {
                     }
                 }
             }
-            Dialog::UserMenu(mut selected) => {
-                let len = self.config.commands.len();
+            Dialog::UserMenu(mut d) => {
+                let len = d.entries().len();
+                let run =
+                    |app: &mut Self, d: Box<UserMenuDialog>, at: usize| match d.entries().get(at) {
+                        Some(entry) if entry.is_submenu() => {
+                            let mut d = d;
+                            d.path.push(at);
+                            d.row = 0;
+                            app.dialog = Some(Dialog::UserMenu(d));
+                        }
+                        Some(entry) => {
+                            let run = entry.run.clone();
+                            app.run_macro_command(&run, false);
+                        }
+                        None => app.dialog = Some(Dialog::UserMenu(d)),
+                    };
                 match key.code {
                     KeyCode::Esc => {}
-                    KeyCode::Enter => self.run_user_command(selected),
+                    KeyCode::Enter => {
+                        let at = d.row;
+                        run(self, d, at)
+                    }
+                    KeyCode::Left | KeyCode::Backspace if !d.path.is_empty() => {
+                        let was = d.path.pop().unwrap_or(0);
+                        d.row = was;
+                        self.dialog = Some(Dialog::UserMenu(d));
+                    }
                     KeyCode::Char(c @ '1'..='9') => {
-                        let i = c as usize - '1' as usize;
-                        if i < len {
-                            self.run_user_command(i);
-                        } else {
-                            self.dialog = Some(Dialog::UserMenu(selected));
+                        let at = c as usize - '1' as usize;
+                        match at < len {
+                            true => run(self, d, at),
+                            false => self.dialog = Some(Dialog::UserMenu(d)),
                         }
                     }
                     KeyCode::Up => {
-                        self.dialog = Some(Dialog::UserMenu(selected.saturating_sub(1)));
+                        d.row = d.row.saturating_sub(1);
+                        self.dialog = Some(Dialog::UserMenu(d));
                     }
                     KeyCode::Down => {
-                        if selected + 1 < len {
-                            selected += 1;
-                        }
-                        self.dialog = Some(Dialog::UserMenu(selected));
+                        d.row = (d.row + 1).min(len.saturating_sub(1));
+                        self.dialog = Some(Dialog::UserMenu(d));
                     }
-                    _ => self.dialog = Some(Dialog::UserMenu(selected)),
+                    KeyCode::Home => {
+                        d.row = 0;
+                        self.dialog = Some(Dialog::UserMenu(d));
+                    }
+                    KeyCode::End => {
+                        d.row = len.saturating_sub(1);
+                        self.dialog = Some(Dialog::UserMenu(d));
+                    }
+                    _ => self.dialog = Some(Dialog::UserMenu(d)),
                 }
             }
             Dialog::Options(mut d) => match key.code {
@@ -10274,6 +10438,19 @@ fn clipboard_get() -> Option<String> {
         return Some(String::from_utf8_lossy(&out.stdout).into_owned());
     }
     clip_file_read().filter(|text| !text.is_empty())
+}
+
+/// What a listing entry looks like to mc's `t` conditions.
+fn menu_kind(entry: &entry::Entry) -> rcmd_core::usermenu::FileKind {
+    use rcmd_core::entry::EntryKind;
+    use rcmd_core::usermenu::FileKind;
+    match entry.kind {
+        EntryKind::Dir => FileKind::Dir,
+        EntryKind::SymlinkDir => FileKind::LinkDir,
+        EntryKind::SymlinkFile | EntryKind::SymlinkBroken => FileKind::Link,
+        EntryKind::File if entry.is_executable() => FileKind::Executable,
+        EntryKind::File => FileKind::File,
+    }
 }
 
 fn first_edit_item(entries: &[EditMenuEntry]) -> usize {

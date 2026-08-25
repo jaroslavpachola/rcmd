@@ -387,7 +387,30 @@ lynx-like motion on, Right still only enters directories - Enter opens.
 name = "git status"
 run = "git status | less"
 key = "ctrl+g"
+
+[[commands]]                     # only offered where it makes sense
+name = "extract here"
+run = "tar xf %f"
+when = "f *.tar.gz | f *.tgz"
+
+[[commands]]                     # a submenu: Enter walks in, ← walks out
+name = "Tools"
+entries = [
+  { name = "line count", run = "wc -l %s" },
+]
 ```
+
+`when` is **mc's user-menu condition language**: `f`/`F` the cursor file
+here or in the other panel, `d`/`D` the directory, `t`/`T` the file's
+type (`r` regular, `d` directory, `l` link, `x` executable, `n` not a
+directory, `t` something is marked), `x` a program that must exist,
+`!` to negate, `|` and `&` to join - evaluated left to right, as mc
+evaluates them. Patterns are globs.
+
+A **`.mc.menu` in the panel's directory** is read too, in mc's own
+format (`shell_patterns=0` files have their regexes converted). Its
+entries come first and the configured ones stay after them: a project's
+menu is an addition to yours, where mc's would have replaced it.
 
 Both expand **mc's macros** before running in the active panel's
 directory, everything shell-quoted:

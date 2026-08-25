@@ -2811,10 +2811,12 @@ def test_mcimport():
     os.makedirs(mcdir)
     open(os.path.join(mcdir, "menu"), "w").write(
         "# menu\n"
+        "shell_patterns=0\n"
         "+ f \\.tar\\.gz$\n"
         "a\tExtract here\n"
         "\ttar xzf %f\n"
     )
+    open(os.path.join(play, "keep.tar.gz"), "w").write("x\n")
     open(os.path.join(mcdir, "mc.ext"), "w").write(
         "shell/.md\n"
         "\tOpen=glow %f\n"
@@ -2843,6 +2845,9 @@ def test_mcimport():
     open(os.path.join(cfgdir, "config.toml"), "w").write(out)
     s = Session(play, home)
     check("mcimport: output loads as a config", "Modify time" in s.screen())
+    check("mcimport: the condition came across as `when`",
+          'when = "f *.tar.gz"' in out, out)
+    s.send(b"\x13keep\r", wait=STEP)        # the entry's condition wants a tarball
     s.send(b"\x1b[12~", wait=STEP)          # F2 user menu
     check("mcimport: imported command is in the F2 menu", "Extract here" in s.screen(), s.screen())
     s.send(b"\x1b", wait=STEP)
@@ -4355,6 +4360,85 @@ def cursor_is(s, name):
     return False
 
 
+def test_usermenu():
+    """PLAN4 S8: the user menu gains mc's conditions, submenus, and the
+    per-directory .mc.menu."""
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write(
+        '[[commands]]\n'
+        'name = "for tarballs only"\n'
+        'run = "echo %f > tar.out"\n'
+        'when = "f *.tar.gz"\n'
+        '\n'
+        '[[commands]]\n'
+        'name = "for anything"\n'
+        'run = "echo any > any.out"\n'
+        '\n'
+        '[[commands]]\n'
+        'name = "Tools"\n'
+        'entries = [\n'
+        '  { name = "inner one", run = "echo inner > inner.out" },\n'
+        ']\n'
+    )
+    open(os.path.join(play, "a.tar.gz"), "w").write("x\n")
+    open(os.path.join(play, "b.txt"), "w").write("x\n")
+    s = Session(play, home)
+
+    # on a .txt the tarball entry is not offered...
+    s.send(b"\x13b.txt\r", wait=STEP)            # quick search -> b.txt
+    s.send(b"\x1b[12~", wait=STEP)               # F2
+    scr = s.screen()
+    check("usermenu: a condition that does not hold hides the entry",
+          "for anything" in scr and "for tarballs only" not in scr, scr)
+    check("usermenu: a submenu says how many are in it",
+          "Tools" in scr and "entries..." in scr, scr)
+
+    # ...and on the tarball it is
+    s.send(b"\x1b", wait=STEP)
+    s.send(b"\x13a.tar\r", wait=STEP)            # quick search -> a.tar.gz
+    s.send(b"\x1b[12~", wait=STEP)
+    check("usermenu: a condition that holds shows it",
+          "for tarballs only" in s.screen(), s.screen())
+
+    # a submenu is walked into and back out of
+    s.send(END, wait=STEP)                       # -> Tools
+    s.send(b"\r", wait=STEP)
+    scr = s.screen()
+    check("usermenu: the submenu opens", "inner one" in scr and "Tools" in scr, scr)
+    s.send(b"\x1b[D", wait=STEP)                 # Left goes back
+    check("usermenu: and closes again", "for anything" in s.screen(), s.screen())
+    s.send(END, wait=STEP)
+    s.send(b"\r", wait=STEP)
+    s.send(b"\r", wait=STEP * 3)                 # run the inner entry
+    if not SUBSHELL:
+        s.send(b"\r", wait=STEP * 2)
+    check("usermenu: the submenu entry ran",
+          os.path.isfile(os.path.join(play, "inner.out")))
+
+    # a .mc.menu in the directory is read, in mc's own format
+    open(os.path.join(play, ".mc.menu"), "w").write(
+        "shell_patterns=0\n"
+        "+ f \\.tar\\.gz$\n"
+        "l       local tar entry\n"
+        "        echo local > local.out\n"
+    )
+    s.send(b"\x12", wait=STEP)                   # Ctrl+R so the file is listed
+    s.send(b"\x13a.tar\r", wait=STEP)            # quick search -> a.tar.gz
+    s.send(b"\x1b[12~", wait=STEP)
+    scr = s.screen()
+    check("usermenu: .mc.menu entries come first",
+          "local tar entry" in scr and ".mc.menu" in scr, scr)
+    s.send(b"\r", wait=STEP * 3)
+    if not SUBSHELL:
+        s.send(b"\r", wait=STEP * 2)
+    check("usermenu: the local entry ran",
+          os.path.isfile(os.path.join(play, "local.out")))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_hotlist():
     """PLAN4 S8: mc's hotlist - groups to walk into, a label prompt, a
     rename, a reorder and a move between groups."""
@@ -4788,6 +4872,7 @@ def main():
         test_panelize,
         test_diff,
         test_cli,
+        test_usermenu,
         test_hotlist,
         test_macros,
         test_quicksearch,

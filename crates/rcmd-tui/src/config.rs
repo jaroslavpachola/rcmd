@@ -212,9 +212,24 @@ pub struct HighlightRule {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserCommand {
     pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub run: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// mc's user-menu condition: the entry is only offered when it
+    /// holds. See [`rcmd_core::usermenu`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<String>,
+    /// A submenu. mc's `menu` file is flat; rcmd's TOML is not, because
+    /// a menu of thirty entries wants sections and TOML can say so.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<UserCommand>,
+}
+
+impl UserCommand {
+    pub fn is_submenu(&self) -> bool {
+        !self.entries.is_empty()
+    }
 }
 
 /// `[keys]` split by context, with anything unparsable reported.

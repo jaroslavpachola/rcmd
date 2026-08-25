@@ -1,5 +1,27 @@
 # Changelog
 
+## 3.55.0 - 2026-08-25
+
+- **The user menu grew conditions** (4.0 S8): `when = "f *.tar.gz | t d"`
+  on a `[[commands]]` entry, in **mc's own condition language** - `f`/`F`
+  the cursor file here or in the other panel, `d`/`D` the directory,
+  `t`/`T` the type, `x` a program that must exist, `!` `|` `&` - so an
+  entry that only makes sense for a tarball is only offered on one.
+- **Submenus**: a `[[commands]]` entry with `entries` is a section you
+  walk into with Enter and out of with ←. mc's `menu` file is flat; a
+  menu of thirty entries wants sections, and TOML can say so.
+- **A `.mc.menu` in the panel's directory is read**, in mc's format,
+  when F2 opens - the per-directory menu S0 left for later. Its entries
+  come first and the configured ones stay after them, which is rcmd's
+  divergence: mc's local menu replaces your own, and an addition is
+  more useful than a replacement.
+- `rcmd --import-mc` carries conditions across as `when` instead of
+  gluing them into the entry's name, converting the regexes in a
+  `shell_patterns=0` file into globs (and saying which ones it could
+  not). It also stopped warning about the macros rcmd now expands.
+- A submenu whose entries all fail their conditions is not offered
+  either: an empty section is a dead end with a name.
+
 ## 3.54.0 - 2026-08-25
 
 The first three of 4.0 S8 - the MC-DIFF rows that no phase had claimed.

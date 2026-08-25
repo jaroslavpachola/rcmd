@@ -75,6 +75,9 @@ pub fn parse_menu(text: &str) -> (Vec<UserCommand>, Vec<String>) {
     let mut warnings = Vec::new();
     let mut body: Vec<String> = Vec::new();
     let mut pending_condition: Option<String> = None;
+    // mc's default; `shell_patterns=0` at the top means the patterns in
+    // the conditions are regexes instead of globs
+    let mut shell_patterns = true;
     let mut current: Option<(String, Option<String>)> = None; // title, condition
 
     let flush = |current: &mut Option<(String, Option<String>)>,
@@ -86,14 +89,15 @@ pub fn parse_menu(text: &str) -> (Vec<UserCommand>, Vec<String>) {
             if run.trim().is_empty() {
                 return;
             }
-            let name = match condition {
-                Some(cond) => format!("{title}  (mc condition: {cond})"),
-                None => title,
-            };
             commands.push(UserCommand {
-                name,
+                name: title,
                 run,
                 key: None,
+                // mc's condition language is rcmd's too now, so it
+                // comes across as itself rather than as a note in the
+                // entry's name
+                when: condition,
+                entries: Vec::new(),
             });
         } else {
             body.clear();
@@ -111,9 +115,19 @@ pub fn parse_menu(text: &str) -> (Vec<UserCommand>, Vec<String>) {
             }
             continue;
         }
+        if let Some(value) = line.trim().strip_prefix("shell_patterns=") {
+            shell_patterns = value.trim() != "0";
+            continue;
+        }
         if first == '+' || first == '=' {
-            // condition for the entry that follows
-            pending_condition = Some(line[1..].trim().to_string());
+            // condition for the entry that follows. `=` marks mc's
+            // default entry, which rcmd has no notion of - the entry
+            // is kept, the "start here" is not.
+            let condition = line[1..].trim_start_matches('=').trim();
+            pending_condition = Some(match shell_patterns {
+                true => condition.to_string(),
+                false => regex_condition(condition, &mut warnings),
+            });
             continue;
         }
         flush(&mut current, &mut body, &mut commands);
@@ -374,6 +388,52 @@ fn convert_command(command: &str) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
+/// A condition from a `shell_patterns=0` file: the patterns in it are
+/// regexes, and rcmd's conditions are globs. Each term is converted on
+/// its own; one that will not convert is left as it is and reported,
+/// which is better than a menu entry that quietly never shows up.
+fn regex_condition(condition: &str, warnings: &mut Vec<String>) -> String {
+    let mut out = String::new();
+    let mut rest = condition;
+    while !rest.is_empty() {
+        let at = rest.find(['|', '&']).unwrap_or(rest.len());
+        let (term, tail) = rest.split_at(at);
+        let (joiner, next) = match tail.chars().next() {
+            Some(c) => (c.to_string(), &tail[c.len_utf8()..]),
+            None => (String::new(), ""),
+        };
+        let term = term.trim();
+        let converted = match term.split_once(char::is_whitespace) {
+            // only the name conditions carry a pattern; `t` takes
+            // letters and `x` takes a path
+            Some((head, pattern))
+                if head
+                    .trim_start_matches('!')
+                    .starts_with(['f', 'F', 'd', 'D']) =>
+            {
+                match regex_to_globs(pattern.trim()).and_then(|globs| globs.into_iter().next()) {
+                    Some(glob) => format!("{head} {glob}"),
+                    None => {
+                        warnings.push(format!(
+                            "menu condition '{term}': this regex has no glob, left as it is"
+                        ));
+                        term.to_string()
+                    }
+                }
+            }
+            _ => term.to_string(),
+        };
+        out.push_str(&converted);
+        if !joiner.is_empty() {
+            out.push(' ');
+            out.push_str(&joiner);
+            out.push(' ');
+        }
+        rest = next;
+    }
+    out.trim().to_string()
+}
+
 /// Macros rcmd does not expand, so the user can fix them by hand.
 fn macro_warnings(run: &str, where_: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -383,7 +443,7 @@ fn macro_warnings(run: &str, where_: &str) -> Vec<String> {
             continue;
         }
         match chars.next() {
-            Some('f' | 'd' | 'D' | 't' | '%') => {}
+            Some('f' | 'F' | 'd' | 'D' | 't' | 'T' | 'u' | 'U' | 's' | 'S' | 'q' | '{' | '%') => {}
             Some(other) => out.push(format!("'{where_}': macro %{other} is not supported")),
             None => {}
         }
@@ -535,6 +595,9 @@ pub fn to_toml(imported: &Imported) -> String {
             toml_str(&cmd.name),
             toml_str(&cmd.run)
         ));
+        if let Some(when) = &cmd.when {
+            out.push_str(&format!("when = {}\n", toml_str(when)));
+        }
     }
     out
 }
@@ -554,6 +617,7 @@ mod tests {
 
     // shaped like a real ~/.config/mc/menu
     const MENU: &str = r#"# comment line
+shell_patterns=0
 + f \.tar\.gz$ | f \.tgz$
 a       Extract the tar file
         tar xzf %f
@@ -570,15 +634,19 @@ c       Uses an unsupported macro
     fn menu_entries_become_commands() {
         let (commands, warnings) = parse_menu(MENU);
         assert_eq!(commands.len(), 3);
-        assert!(commands[0].name.starts_with("Extract the tar file"));
-        // the condition is preserved as a note, since rcmd has none yet
-        assert!(commands[0].name.contains("f \\.tar\\.gz$"));
+        assert_eq!(commands[0].name, "Extract the tar file");
+        // the condition comes across as rcmd's own, and this file said
+        // its patterns were regexes, so they arrive as globs
+        assert_eq!(commands[0].when.as_deref(), Some("f *.tar.gz | f *.tgz"));
         assert_eq!(commands[0].run, "tar xzf %f");
         // multi-line bodies stay multi-line
         assert_eq!(commands[1].run, "wc -l %t\necho done");
         assert!(commands[1].name.starts_with("Count lines"));
-        // and an unsupported macro is reported, not silently kept
-        assert!(warnings.iter().any(|w| w.contains("%q")), "{warnings:?}");
+        // %q is one rcmd expands now, so it is no longer reported; a
+        // macro rcmd really does not have still is
+        assert!(!warnings.iter().any(|w| w.contains("%q")), "{warnings:?}");
+        let (_, warnings) = parse_menu("a Entry\n        echo %i\n");
+        assert!(warnings.iter().any(|w| w.contains("%i")), "{warnings:?}");
     }
 
     #[test]
@@ -682,6 +750,8 @@ Save = f2\n";
                 name: "two lines".into(),
                 run: "echo one\necho two\n".into(),
                 key: None,
+                when: Some("f *.tar.gz".into()),
+                entries: Vec::new(),
             }],
             open: vec![OpenRule {
                 pattern: "*.pdf".into(),
@@ -693,5 +763,7 @@ Save = f2\n";
         let config: crate::config::Config = toml::from_str(&text).expect("emits valid TOML");
         assert_eq!(config.open[0].pattern, "*.pdf");
         assert_eq!(config.commands[0].run, "echo one\necho two\n");
+        // mc's condition comes across as rcmd's `when`, not as a note
+        assert_eq!(config.commands[0].when.as_deref(), Some("f *.tar.gz"));
     }
 }

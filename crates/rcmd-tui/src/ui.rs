@@ -972,7 +972,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Chown(d) => draw_chown(frame, d),
             Dialog::Link(d) => draw_link(frame, d),
             Dialog::Hotlist(d) => draw_hotlist(frame, app, d),
-            Dialog::UserMenu(selected) => draw_user_menu(frame, &app.config.commands, *selected),
+            Dialog::UserMenu(d) => draw_user_menu(frame, d),
             Dialog::Find(d) => draw_find(frame, d),
             Dialog::Options(d) => draw_options(frame, d),
             Dialog::Pattern(d) => draw_pattern(frame, d),
@@ -3827,15 +3827,25 @@ fn draw_find(frame: &mut Frame, d: &FindDialog) {
 
 /// The F2 user menu: `[[commands]]` from the config, first nine with
 /// digit hotkeys.
-fn draw_user_menu(frame: &mut Frame, commands: &[crate::config::UserCommand], selected: usize) {
+fn draw_user_menu(frame: &mut Frame, d: &crate::app::UserMenuDialog) {
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let commands = d.entries();
     let rows = commands.len().max(1) as u16;
     let area = centered(60, (rows + 2).min(20), frame.area());
     frame.render_widget(Clear, area);
+    let title = match d.path.is_empty() {
+        true if d.local => " User menu (.mc.menu) ".to_string(),
+        true => " User menu ".to_string(),
+        false => format!(" {} ", submenu_path(d)),
+    };
+    let hint = match d.path.is_empty() {
+        true => " Enter or 1-9 runs ",
+        false => " Enter runs · ← back ",
+    };
     let block = Block::bordered()
-        .title(" User menu ")
-        .title_bottom(Line::from(" Enter or 1-9 runs ").centered())
+        .title(title)
+        .title_bottom(Line::from(hint).centered())
         .style(base);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -3860,19 +3870,37 @@ fn draw_user_menu(frame: &mut Frame, commands: &[crate::config::UserCommand], se
         } else {
             " ".into()
         };
-        let text: String = format!(" {hotkey} {:<name_w$}  {}", cmd.name, cmd.run)
+        // a submenu says so where a command would show its command line
+        let what = match cmd.is_submenu() {
+            true => format!("{} entries...", cmd.entries.len()),
+            false => cmd.run.replace('\n', " ; "),
+        };
+        let text: String = format!(" {hotkey} {:<name_w$}  {what}", cmd.name)
             .chars()
             .take(inner.width as usize)
             .collect();
+        let style = if i == d.row { sel } else { base };
         frame.render_widget(
-            Line::from(format!("{text:<w$}", w = inner.width as usize)).style(if i == selected {
-                sel
-            } else {
-                base
-            }),
+            Line::from(format!("{text:<w$}", w = inner.width as usize)).style(style),
             row,
         );
     }
+}
+
+/// The names on the way into a submenu, for its title.
+fn submenu_path(d: &crate::app::UserMenuDialog) -> String {
+    let mut names = Vec::new();
+    let mut here = &d.menu[..];
+    for &at in &d.path {
+        match here.get(at) {
+            Some(entry) => {
+                names.push(entry.name.as_str());
+                here = &entry.entries;
+            }
+            None => break,
+        }
+    }
+    names.join(" / ")
 }
 
 /// One line of the figure: the trunk, drawn from the ancestors' "does
