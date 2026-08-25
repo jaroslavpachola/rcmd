@@ -143,10 +143,40 @@ mc's, and every row of it actually decodes.
   spelled out (libc has them for Linux only), `pipe` instead of
   `pipe2`, and `proc_pidinfo` where Linux reads `/proc/<pid>/cwd`.
 
-**All eight phases are done.** What 4.0 set out to be - a drop-in an mc
-user's hands, config files and expectations all land somewhere - is
-what rcmd now is, with the deliberate divergences written down in
-[MC-DIFF.md](MC-DIFF.md) rather than quietly closed.
+### S8 - the leftovers (added 2026-08-25)
+
+S0-S7 are done, but a sweep of [MC-DIFF.md](MC-DIFF.md) afterwards found
+**Adopt** rows that no phase had claimed - each one small enough to fall
+between two milestones, which is exactly how they did. The policy is
+still MC-DIFF's, so they are parity work rather than a shrug:
+
+- **Quick search** (§2): still prefix-only, still swallowing a
+  character that matches nothing. mc's is a substring/wildcard search
+  with an input field of its own.
+- **Learn keys** (§2): no dialog at all. The keys a terminal sends and
+  the keys rcmd expects are not always the same, and the answer cannot
+  be "edit the config until it works".
+- **`[keys.dialog]`** (§2, deferred out of S0): rebinding OK / Cancel /
+  next-field. It was parked for "the dialog work in S2/S6", which came
+  and went without it.
+- **Hotlist** (§4): groups, a label prompt, edit and move. Today `a`
+  adds with a label it made up and `d` drops; that is the whole of it.
+- **User menu** (§11): conditions and submenus in the TOML, and the
+  per-directory `.mc.menu` that S0 left for "the user-menu conditions
+  in a later phase".
+- **Macros** (§11): five of mc's (`%f %d %D %t %%`) against its full
+  set - `%F %T %s %S %u %U %q` and `%{prompt}`.
+- **Dialogs** (§11): input history (`M-p`), mouse, and mc's
+  underlined-hotkey scheme in place of today's ad-hoc single letters.
+- **Editor odds** (§8): the mc clipboard file, and user syntax files.
+
+The rest of §9's tail is in: `lha`/`arj`/`cab` browse through their own
+tools alongside `rar` and `7z`.
+
+**Then 4.0 is what it set out to be** - a drop-in where an mc user's
+hands, config files and expectations all land somewhere, with the
+deliberate divergences written down in MC-DIFF rather than quietly
+closed.
 
 ## Sequencing
 

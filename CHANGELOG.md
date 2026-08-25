@@ -16,8 +16,11 @@
 - CI runs fmt, clippy and the unit tests on Linux and macOS; the pty
   e2e suite stays on Linux, where `/dev/pts` and an apt-installed zsh
   and fish are.
-- **4.0 is feature-complete**: all eight phases of
-  [PLAN4](docs/PLAN4.md) are done.
+- All eight phases of [PLAN4](docs/PLAN4.md) are done. A sweep of
+  MC-DIFF afterwards found a handful of **Adopt** rows that no phase had
+  claimed - quick search, Learn keys, hotlist groups, user-menu
+  conditions, the rest of mc's macros, dialog polish - so they are
+  written down as S8 rather than left to be discovered by a user.
 
 ## 3.50.0 - 2026-08-25
 
