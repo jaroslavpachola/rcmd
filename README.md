@@ -84,9 +84,43 @@ temporarily suspended). Two tarballs per release: the glibc build and a
 vendored) that runs on any distro with no shared-library requirements.
 
 ```
-usage: rcmd [-P FILE] [DIR1 [DIR2]]   (-V version, -h help)
+usage: rcmd [OPTIONS] [DIR1 [DIR2]]
+       rcedit FILE...    rcview FILE    rcdiff FILE1 FILE2
        rcmd --import-mc [MC_CONFIG_DIR]
+
+  -e, --edit FILE     start in the editor on FILE (repeatable)
+  -v, --view FILE     start in the viewer on FILE
+  -P, --printwd FILE  write the last active directory to FILE on exit
+  -S, --skin NAME     theme: mc, dark, bw
+  -b, --nocolor       black and white
+  -c, --color         colour (the default)
+  -C, --colors SPEC   mc colour spec: keyword=fg,bg:keyword=fg,bg
+  -d, --nomouse       no mouse
+  -u / -U             subshell off / on for this run
+  -l, --ftplog FILE   log the FTP/fish dialogue to FILE
 ```
+
+`-e` and `-v` bring rcmd up on **one screen instead of the panels**, and
+closing it ends the session - that is mc's `mcedit` / `mcview`, and the
+same thing happens when the binary is reached through a link named
+`rcedit`, `rcview` or `rcdiff` (mc's names work too, if that is what
+your fingers type):
+
+```sh
+ln -s "$(command -v rcmd)" ~/.local/bin/rcedit    # and rcview, rcdiff
+rcedit notes.txt draft.txt   # two editor screens; Alt+` lists them
+rcdiff old.rs new.rs         # the two files side by side
+```
+
+`-b` is the one to reach for when the colours are not arriving - it
+drops to the terminal's own foreground and background, with reverse
+video where something has to stand out, and it overrides `-S`. `-C`
+takes mc's colour spec (`normal=brightgreen,black:directory=white`) and
+lays it over whatever theme is loaded; keywords rcmd has nowhere to put
+are named on the status line rather than dropped in silence. `-l` writes
+every line of FTP and `fish://` dialogue to a file - the transcript is
+what a server that will not list looks like from outside - with the
+password redacted.
 
 Coming from mc? `rcmd --import-mc` reads your `menu`, `mc.ext` and
 `mc.keymap` and prints the equivalent rcmd config on stdout - user menu
@@ -96,29 +130,21 @@ Anything with no rcmd equivalent (`type/` matchers, `%cd` commands,
 unsupported macros) is reported on stderr rather than guessed at.
 
 To make your shell follow rcmd's last directory on exit (the mc-wrapper
-trick), add this to your shell config:
+trick), source one of the shipped wrappers - [`contrib/rc.sh`](contrib/rc.sh)
+for bash/zsh, [`contrib/rc.fish`](contrib/rc.fish) for fish. They come
+with the release tarballs, and are one function each if you would rather
+copy it into your shell config than source a file:
 
 ```sh
-# bash/zsh
-rc() {
-    local tmp; tmp="$(mktemp)"
-    rcmd -P "$tmp" "$@"
-    local dir; dir="$(cat -- "$tmp" 2>/dev/null)"
-    rm -f -- "$tmp"
-    [ -n "$dir" ] && [ -d "$dir" ] && cd -- "$dir"
-}
+. /path/to/rc.sh                              # bash/zsh: in ~/.bashrc
+cp rc.fish ~/.config/fish/functions/rc.fish   # fish
+rc                                            # rcmd, and cd where it ended
 ```
 
-```fish
-# fish (~/.config/fish/functions/rc.fish)
-function rc
-    set -l tmp (mktemp)
-    rcmd -P $tmp $argv
-    set -l dir (cat $tmp 2>/dev/null)
-    rm -f $tmp
-    test -n "$dir" -a -d "$dir"; and cd $dir
-end
-```
+Both are the same idea: rcmd writes its last active directory to a file
+on exit (`-P`), the function reads it and `cd`s there. A run that ends
+in a crash, or in a directory that has since gone away, leaves the shell
+exactly where it was.
 
 ## Keys
 
@@ -584,7 +610,7 @@ overwriting / quitting), *Shell and editor* (persistent subshell,
 internal or external editor) and *Appearance* (theme):
 
 ```toml
-theme = "mc"        # or "dark" (truecolor); applied at startup
+theme = "mc"        # or "dark" (truecolor), "bw" (none at all)
 keymap = "mc"       # or "modern" (= lynx-like motion on by default)
 lynx = false        # Left/Right = parent/enter; in the options form
 watch = true        # auto-reload panels on external changes

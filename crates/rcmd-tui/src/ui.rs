@@ -74,6 +74,37 @@ fn mc_theme() -> Theme {
     }
 }
 
+/// mc's `-b`: no colour at all. Everything is the terminal's own
+/// foreground and background, and the things that must stand out do it
+/// with reverse video - which is what a monochrome terminal, or an
+/// `ssh` into one, has always had. Marks and directories are bold
+/// wherever they are drawn, so they survive this too.
+fn bw_theme() -> Theme {
+    Theme {
+        panel_bg: Color::Reset,
+        panel_fg: Color::Reset,
+        dir_fg: Color::Reset,
+        exec_fg: Color::Reset,
+        broken_fg: Color::Reset,
+        header_fg: Color::Reset,
+        mark_fg: Color::Reset,
+        select_bg: Color::White,
+        select_fg: Color::Black,
+        dialog_bg: Color::Reset,
+        dialog_fg: Color::Reset,
+        error_bg: Color::White,
+        error_fg: Color::Black,
+        help_bg: Color::Reset,
+        help_fg: Color::Reset,
+        help_header_fg: Color::Reset,
+        prompt_fg: Color::Reset,
+        key_fg: Color::Black,
+        key_bg: Color::White,
+        label_fg: Color::Reset,
+        label_bg: Color::Reset,
+    }
+}
+
 /// Truecolor dark theme (One Dark-ish).
 fn dark_theme() -> Theme {
     Theme {
@@ -250,20 +281,102 @@ pub fn parse_color(name: &str) -> Option<Color> {
 }
 
 static THEME: std::sync::RwLock<Option<Theme>> = std::sync::RwLock::new(None);
+static SPEC: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
 
 /// Install the theme; returns a warning for unknown names. Called at
-/// startup and again when the options form switches themes.
+/// startup and again when the options form switches themes - which is
+/// why a `-C` spec is kept and laid over the new theme as well: it was
+/// asked for on the command line, and a theme switch is not a retraction.
 pub fn init_theme(name: &str) -> Option<String> {
-    let (theme, warning) = match name {
+    let (mut theme, warning) = match name {
         "mc" => (mc_theme(), None),
         "dark" => (dark_theme(), None),
+        "bw" => (bw_theme(), None),
         other => (
             mc_theme(),
             Some(format!("unknown theme '{other}', using mc")),
         ),
     };
+    let spec = SPEC.read().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(spec) = spec {
+        apply_color_spec(&spec, &mut theme);
+    }
     *THEME.write().unwrap_or_else(|e| e.into_inner()) = Some(theme);
     warning
+}
+
+/// mc's `-C keyword=fg,bg:...`: colours named one at a time on the
+/// command line, laid over whatever theme is installed. Keywords mc has
+/// and rcmd has nowhere to put are reported together rather than one
+/// complaint per word - a spec pasted out of an old `.bashrc` carries a
+/// lot of them.
+pub fn set_color_spec(spec: &str) -> Vec<String> {
+    *SPEC.write().unwrap_or_else(|e| e.into_inner()) = Some(spec.to_string());
+    let mut theme = th();
+    let warnings = apply_color_spec(spec, &mut theme);
+    *THEME.write().unwrap_or_else(|e| e.into_inner()) = Some(theme);
+    warnings
+}
+
+fn apply_color_spec(spec: &str, theme: &mut Theme) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let mut unmapped: Vec<&str> = Vec::new();
+    for item in spec.split(':').map(str::trim).filter(|s| !s.is_empty()) {
+        let Some((keyword, colors)) = item.split_once('=') else {
+            warnings.push(format!("colors: '{item}' is not keyword=fg,bg"));
+            continue;
+        };
+        let mut fields = colors.split(',').map(str::trim);
+        let mut color = |warnings: &mut Vec<String>| match fields.next() {
+            None | Some("") => None,
+            Some(name) => match parse_color(name) {
+                Some(color) => Some(color),
+                None => {
+                    warnings.push(format!("colors: unknown colour '{name}'"));
+                    None
+                }
+            },
+        };
+        let fg = color(&mut warnings);
+        let bg = color(&mut warnings);
+        // mc's third field is an attribute list (bold, underline); rcmd
+        // decides those per element, so it is read and dropped
+        let pair = |theme_fg: &mut Color, theme_bg: &mut Color| {
+            if let Some(fg) = fg {
+                *theme_fg = fg;
+            }
+            if let Some(bg) = bg {
+                *theme_bg = bg;
+            }
+        };
+        let only = |theme_fg: &mut Color| {
+            if let Some(fg) = fg {
+                *theme_fg = fg;
+            }
+        };
+        match keyword.trim() {
+            "normal" => pair(&mut theme.panel_fg, &mut theme.panel_bg),
+            "selected" => pair(&mut theme.select_fg, &mut theme.select_bg),
+            "errors" => pair(&mut theme.error_fg, &mut theme.error_bg),
+            "dnormal" => pair(&mut theme.dialog_fg, &mut theme.dialog_bg),
+            "helpnormal" => pair(&mut theme.help_fg, &mut theme.help_bg),
+            "marked" => only(&mut theme.mark_fg),
+            "directory" => only(&mut theme.dir_fg),
+            "executable" => only(&mut theme.exec_fg),
+            "stalelink" => only(&mut theme.broken_fg),
+            "header" => only(&mut theme.header_fg),
+            "input" => only(&mut theme.prompt_fg),
+            "helpbold" => only(&mut theme.help_header_fg),
+            other => unmapped.push(other),
+        }
+    }
+    if !unmapped.is_empty() {
+        warnings.push(format!(
+            "colors: no rcmd equivalent for {}",
+            unmapped.join(", ")
+        ));
+    }
+    warnings
 }
 
 fn th() -> Theme {

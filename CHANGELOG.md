@@ -1,5 +1,38 @@
 # Changelog
 
+## 3.49.0 - 2026-08-25
+
+- **The other personalities** (4.0 S7): `rcmd -e FILE` and `rcmd -v FILE`
+  bring the program up on **one screen instead of the panels**, and
+  closing that screen ends the session - there is nothing underneath it
+  to land on. Reached through a link named `rcedit`, `rcview` or
+  `rcdiff` it does the same thing off argv[0], mc's own names included,
+  since somebody's fingers are already typing `mcedit`.
+- `rcedit a b` opens a screen per file with the first one in front, and
+  ``Alt+` `` lists them as it always did; `rcdiff a b` is Compare files
+  on two paths. Each goes through the panel that holds the file, so the
+  `[[view]]` filters, the codepage and the size guard on a diff are the
+  same ones F3 and F4 go through, and no subshell is started behind a
+  screen nobody can reach it from.
+- **mc's startup flags**: `-b` (black and white - the terminal's own
+  colours with reverse video where something must stand out, and it
+  overrides `-S`), `-c`, `-C keyword=fg,bg:...` laid over the loaded
+  theme, `-S NAME`, `-d` (no mouse), `-u`/`-U` (subshell off/on for one
+  run) and `-l FILE`.
+- `-l FILE` writes every line of FTP and `fish://` dialogue to a file,
+  which is what a server that will not list looks like from outside.
+  The password is redacted, and control bytes are spelled out so a
+  stray one cannot rearrange the log it lands in.
+- `-C` names the mc keywords it has nowhere to put rather than dropping
+  them in silence, and a theme switch mid-session keeps the overlay:
+  it was asked for on the command line, and switching themes is not a
+  retraction.
+- **Shipped shell wrappers**: `contrib/rc.sh` (bash/zsh) and
+  `contrib/rc.fish`, in the release tarballs, doing the one thing rcmd
+  cannot do for itself - leaving the shell in the directory you were
+  last looking at. A run that ends in a crash, or in a directory that
+  has since gone away, leaves the shell exactly where it was.
+
 ## 3.48.0 - 2026-08-25
 
 - **Compare files** (4.0 S6, and the last of it): F9 > Command puts the

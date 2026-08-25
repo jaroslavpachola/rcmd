@@ -63,7 +63,8 @@ signal.alarm(900)  # hard cap for the whole suite (the scale test is slow)
 
 
 class Session:
-    def __init__(self, cwd, home, args=(), shell="/bin/sh", subshell=None):
+    def __init__(self, cwd, home, args=(), shell="/bin/sh", subshell=None, argv0=None,
+                 exec_argv=None):
         self.buf = b""
         want = SUBSHELL if subshell is None else subshell
         cfg = os.path.join(home, ".config", "rcmd", "config.toml")
@@ -85,7 +86,13 @@ class Session:
             os.environ.pop("SSH_AUTH_SOCK", None)  # keep sftp auth deterministic
             os.environ["SHELL"] = shell
             os.environ["TERM"] = "xterm-256color"
-            os.execv(BIN, [BIN, *args])
+            # the binary under test is what `rcmd` means in here - the
+            # shipped wrappers call it by name
+            os.environ["PATH"] = os.path.dirname(BIN) + ":" + os.environ.get("PATH", "")
+            if exec_argv:                     # a shell that will run rcmd itself
+                os.execv(exec_argv[0], exec_argv)
+            # argv[0] is what picks rcedit/rcview/rcdiff apart from rcmd
+            os.execv(BIN, [argv0 or BIN, *args])
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
         os.kill(self.pid, signal.SIGWINCH)
         self.drain(STEP * 2)
@@ -3226,6 +3233,26 @@ def test_editor():
     shutil.rmtree(root)
 
 
+def wait_for_exit(s, timeout=10):
+    """A standalone personality ends with its screen: the process is
+    gone, not sitting in the panels somebody never asked for."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            done, _ = os.waitpid(s.pid, os.WNOHANG)
+        except ChildProcessError:
+            done = s.pid
+        if done:
+            try:
+                os.close(s.fd)
+            except OSError:
+                pass
+            return True
+        s.drain(0.2)
+    s.quit()
+    return False
+
+
 def wait_for(s, needle, timeout=10):
     deadline = time.time() + timeout
     while time.time() < deadline and needle not in s.screen():
@@ -4231,6 +4258,119 @@ def test_diff():
     shutil.rmtree(root)
 
 
+def test_cli():
+    """PLAN4 S7: the personalities - `-e` / `-v` and the rcedit /
+    rcview / rcdiff argv[0] aliases, each coming up on one screen
+    instead of the panels and ending when that screen closes."""
+    root, play, home = sandbox()
+    a = os.path.join(play, "a.txt")
+    b = os.path.join(play, "b.txt")
+    open(a, "w").write("roses are red\nviolets are blue\nthe end\n")
+    open(b, "w").write("roses are red\nVIOLETS ARE BLUE\nthe end\n")
+
+    # -v FILE: the viewer, no panels behind it
+    s = Session(play, home, args=("-v", a))
+    scr = s.screen()
+    check("cli: -v opens the viewer", "violets are blue" in scr, scr)
+    check("cli: -v has no panel listing", "Modify time" not in scr, scr)
+    s.send(b"\x1b[21~", wait=STEP * 2)          # F10 closes it...
+    check("cli: closing the viewer ends the session", wait_for_exit(s))
+
+    # -e FILE: the editor, and it is the session
+    s = Session(play, home, args=("-e", a))
+    scr = s.screen()
+    check("cli: -e opens the editor", "roses are red" in scr, scr)
+    check("cli: -e has no panel listing", "Modify time" not in scr, scr)
+    s.send(b"typed ", wait=STEP)
+    s.send(b"\x1b[21~", wait=STEP)              # F10 asks about the change
+    s.send(b"\r", wait=STEP * 2)                # ...default is Save
+    check("cli: the editor saved on the way out",
+          open(a).read().startswith("typed roses"))
+    check("cli: closing the editor ends the session", wait_for_exit(s))
+
+    # rcedit FILE FILE: one screen each, the first one in front
+    s = Session(play, home, args=(a, b), argv0="rcedit")
+    scr = s.screen()
+    check("cli: rcedit shows the first file", "typed roses" in scr, scr)
+    s.send(b"\x1b`", wait=STEP)                 # M-` screen list
+    scr = s.screen()
+    check("cli: both files are screens",
+          scr.count("Edit") >= 2 and "b.txt" in scr, scr)
+    s.send(b"\x1b", wait=STEP)
+    s.send(b"\x1b[21~", wait=STEP)              # F10 closes the first
+    scr = s.screen()
+    check("cli: the other file is still open", "VIOLETS" in scr, scr)
+    s.send(b"\x1b[21~", wait=STEP * 2)
+    check("cli: the last screen ends the session", wait_for_exit(s))
+
+    # rcdiff A B
+    s = Session(play, home, args=(a, b), argv0="rcdiff")
+    scr = s.screen()
+    check("cli: rcdiff lines the files up",
+          "VIOLETS ARE BLUE" in scr and "difference(s)" in scr, scr)
+    s.send(b"q", wait=STEP * 2)
+    check("cli: closing the diff ends the session", wait_for_exit(s))
+
+    # rcview, and an alias with the wrong number of files says so
+    s = Session(play, home, args=(b,), argv0="rcview")
+    check("cli: rcview opens the viewer", "VIOLETS ARE BLUE" in s.screen())
+    s.send(b"\x1b[21~", wait=STEP * 2)
+    check("cli: rcview ends with its screen", wait_for_exit(s))
+
+    out = subprocess.run([BIN, "--help"], capture_output=True, text=True)
+    check("cli: help lists the aliases", "rcdiff FILE1 FILE2" in out.stdout, out.stdout)
+
+    # the flags that override the config for one run
+    s = Session(play, home, args=("-b", "-d", "-u", play))
+    check("cli: -b -d -u still start the panels", "Modify time" in s.screen())
+    s.quit()
+
+    log = os.path.join(root, "ftp.log")
+    s = Session(play, home, args=("-l", log, "-S", "dark", play))
+    check("cli: -S picks a theme", "Modify time" in s.screen())
+    s.quit()
+    check("cli: -l opened the log", os.path.isfile(log) and "session start" in open(log).read())
+
+    # -C paints over the theme, and names a keyword it cannot place
+    # rather than dropping it quietly
+    s = Session(play, home, args=("-C", "normal=brightgreen,black:markselect=red", play))
+    check("cli: -C says what it could not place",
+          "no rcmd equivalent for markselect" in s.screen(), s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_wrapper():
+    """PLAN4 S7: the shipped wrappers - the shell follows rcmd's last
+    directory out, which is the one thing rcmd cannot do for itself."""
+    for shell, script, run in (
+        ("/bin/sh", "contrib/rc.sh", ". %s; rc; printf '\\nLANDED:%%s\\n' \"$PWD\""),
+        ("fish", "contrib/rc.fish", "source %s; rc; printf '\\nLANDED:%%s\\n' $PWD"),
+    ):
+        path = shutil.which(shell) or (shell if os.path.exists(shell) else None)
+        if not path:
+            print(f"SKIP wrapper: {shell} not installed")
+            continue
+        root, play, home = sandbox()
+        os.makedirs(os.path.join(play, "sub"))
+        command = run % os.path.join(REPO, script)
+        s = Session(play, home, exec_argv=[path, "-c", command])
+        check(f"wrapper ({shell}): rcmd started", wait_for(s, "Modify time"))
+        s.send(DOWN, wait=STEP)               # -> sub
+        s.send(b"\r", wait=STEP)              # enter it
+        s.send(b"\x1b[21~", wait=STEP * 2)    # F10
+        landed = wait_for(s, "LANDED:")
+        text = s.buf.decode("utf-8", "replace")
+        check(f"wrapper ({shell}): the shell followed rcmd",
+              landed and os.path.join(play, "sub") in text, text[-400:])
+        try:
+            os.waitpid(s.pid, 0)
+        except ChildProcessError:
+            pass
+        os.close(s.fd)
+        shutil.rmtree(root)
+
+
 def test_subshell():
     """R1 per-shell scenarios: forced subshell=true in every suite mode."""
     shells = ["/bin/sh"]
@@ -4373,6 +4513,8 @@ def main():
         test_findwindow,
         test_panelize,
         test_diff,
+        test_cli,
+        test_wrapper,
         test_subshell,
         test_sftp,
         test_fish,

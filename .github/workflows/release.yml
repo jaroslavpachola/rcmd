@@ -49,6 +49,7 @@ jobs:
           name="rcmd-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir "$name"
           cp "target/${{ matrix.target }}/release/rcmd" README.md LICENSE CHANGELOG.md "$name/"
+          cp -r contrib "$name/"
           tar czf "$name.tar.gz" "$name"
       - uses: actions/upload-artifact@v4
         with:

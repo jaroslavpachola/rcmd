@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -2070,6 +2071,63 @@ impl CmdLine {
     }
 }
 
+/// What the program came up as. mc's `mcedit` / `mcview` / `mcdiff`
+/// are the same binary in a different personality, reached by argv[0]
+/// or by `-e` / `-v`, and the personality is: one screen instead of the
+/// panels, and closing it ends the session rather than landing there.
+pub enum Startup {
+    Panels,
+    Edit(Vec<PathBuf>),
+    View(PathBuf),
+    Diff(PathBuf, PathBuf),
+}
+
+impl Startup {
+    /// The directories the panels open on, and the name to put the
+    /// cursor on in each. A file named on the command line is opened
+    /// through the panel that holds it, so the openers - the `[[view]]`
+    /// filters, the codepage, the size guard on a diff - are the same
+    /// ones F3 and F4 go through.
+    fn panels(&self, dirs: &[PathBuf]) -> Result<(Vec<PathBuf>, [Option<OsString>; 2])> {
+        let split = |file: &Path| -> Result<(PathBuf, OsString)> {
+            let file = std::path::absolute(file)
+                .with_context(|| format!("cannot resolve {}", file.display()))?;
+            let dir = file
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("/"));
+            let name = file.file_name().unwrap_or_default().to_os_string();
+            Ok((dir, name))
+        };
+        Ok(match self {
+            Startup::Panels => (dirs.to_vec(), [None, None]),
+            // the editor is opened on the path itself (it can be a file
+            // that does not exist yet), so the panel only has to be
+            // somewhere sensible underneath it
+            Startup::Edit(files) => match files.first() {
+                Some(file) => (vec![split(file)?.0], [None, None]),
+                None => (dirs.to_vec(), [None, None]),
+            },
+            Startup::View(file) => {
+                let (dir, name) = split(file)?;
+                (vec![dir], [Some(name), None])
+            }
+            Startup::Diff(left, right) => {
+                let (left_dir, left_name) = split(left)?;
+                let (right_dir, right_name) = split(right)?;
+                (
+                    vec![left_dir, right_dir],
+                    [Some(left_name), Some(right_name)],
+                )
+            }
+        })
+    }
+
+    pub fn is_panels(&self) -> bool {
+        matches!(self, Startup::Panels)
+    }
+}
+
 pub struct App {
     pub panels: [Panel; 2],
     pub table_states: [TableState; 2],
@@ -2150,12 +2208,23 @@ pub struct App {
     /// The persistent subshell (PLAN3 R1); None = plain exec fallback,
     /// either by `subshell = false` or because the spawn failed.
     subshell: Option<Subshell>,
+    /// Started as an editor/viewer/diff rather than as a file manager:
+    /// there is nothing to land back on, so closing the last screen is
+    /// the end of the session.
+    standalone: bool,
     pub quit: bool,
 }
 
 impl App {
-    pub fn new(dirs: &[PathBuf], config: Config, mut warnings: Vec<String>) -> Result<Self> {
+    pub fn new(
+        dirs: &[PathBuf],
+        config: Config,
+        mut warnings: Vec<String>,
+        startup: &Startup,
+    ) -> Result<Self> {
         let cwd = std::env::current_dir().context("cannot determine current directory")?;
+        let (dirs, cursors) = startup.panels(dirs)?;
+        let dirs = &dirs[..];
         let dir_at = |i: usize| -> Result<PathBuf> {
             match dirs.get(i) {
                 Some(dir) => std::fs::canonicalize(dir)
@@ -2180,6 +2249,11 @@ impl App {
             panel.list_mode = config::list_mode_from_name(&config.listing);
             let _ = panel.reload();
         }
+        for (panel, name) in [&mut left, &mut right].into_iter().zip(&cursors) {
+            if let Some(name) = name {
+                panel.select_name(name);
+            }
+        }
         let (keymap, keymap_warnings) = full_keymap(&config);
         warnings.extend(keymap_warnings);
         let (contexts, _) = config.key_contexts();
@@ -2194,7 +2268,9 @@ impl App {
         } else {
             None
         };
-        let subshell = if config.subshell {
+        // no subshell behind an editor or a viewer: mcedit is not a
+        // file manager, and a pty nobody can reach is a process to no end
+        let subshell = if config.subshell && startup.is_panels() {
             let (cols, rows) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
             match Subshell::spawn(&left.local_cwd(), cols, rows) {
                 Ok(sub) => Some(sub),
@@ -2268,13 +2344,46 @@ impl App {
             editor_keys,
             pending_exec: None,
             subshell,
+            standalone: !startup.is_panels(),
             quit: false,
         })
+    }
+
+    /// Open what the command line asked to come up on. Fails rather
+    /// than dropping the user into the panels: `rcedit binary-file`
+    /// that quietly turned into a file manager would be worse than an
+    /// error message.
+    pub fn open_startup(&mut self, startup: Startup) -> Result<()> {
+        match startup {
+            Startup::Panels => return Ok(()),
+            Startup::Edit(files) => {
+                for file in &files {
+                    let title = file.display().to_string();
+                    self.open_internal_editor(file, title);
+                }
+                // several files open as several screens, and the one in
+                // front is the first named, not the last opened
+                if !self.screens.is_empty() {
+                    self.current = Some(0);
+                }
+            }
+            Startup::View(_) => self.open_viewer(false),
+            Startup::Diff(_, _) => self.open_diff(),
+        }
+        if self.screens.is_empty() {
+            let why = self.status.take().unwrap_or_default();
+            anyhow::bail!("{}", why.trim().trim_matches('-').trim());
+        }
+        Ok(())
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut last_frame = Instant::now();
         while !self.quit {
+            // nothing to land back on when the last screen closes
+            if self.standalone && self.screens.is_empty() {
+                break;
+            }
             self.drain_job();
             self.drain_find();
             self.drain_connect();
@@ -4027,10 +4136,16 @@ impl App {
     }
 
     /// Take the screen on top out of the list; the panels come back up,
-    /// which is where mc lands after closing one too.
+    /// which is where mc lands after closing one too - unless there are
+    /// no panels to land on, `rcedit a b` having opened two screens and
+    /// nothing underneath them.
     fn take_current_screen(&mut self) -> Option<Screen> {
         let at = self.current.take()?;
-        (at < self.screens.len()).then(|| self.screens.remove(at))
+        let screen = (at < self.screens.len()).then(|| self.screens.remove(at));
+        if self.standalone && !self.screens.is_empty() {
+            self.current = Some(at.min(self.screens.len() - 1));
+        }
+        screen
     }
 
     /// Follow mode: re-index on growth and stick to the bottom.

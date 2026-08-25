@@ -123,6 +123,7 @@ impl FishFs {
     /// Run one command on the server. `stdin` is fed to it, which is
     /// how a file gets uploaded without a temporary anywhere.
     fn run(&self, command: &str, stdin: &[u8]) -> io::Result<Output> {
+        crate::vfslog::line(">", command);
         let session = self.session.lock().unwrap_or_else(|p| p.into_inner());
         let mut channel = session.channel_session().map_err(ioerr)?;
         channel.exec(command).map_err(ioerr)?;
@@ -136,6 +137,14 @@ impl FishFs {
         let _ = channel.stderr().read_to_string(&mut stderr);
         channel.wait_close().map_err(ioerr)?;
         let status = channel.exit_status().unwrap_or(-1);
+        if crate::vfslog::is_on() {
+            // the payload is a listing or a whole file; what is worth
+            // reading back is how it went, and anything it complained about
+            crate::vfslog::line("<", &format!("exit {status}, {} byte(s)", stdout.len()));
+            for line in stderr.lines() {
+                crate::vfslog::line("<", line);
+            }
+        }
         Ok(Output {
             stdout,
             stderr,

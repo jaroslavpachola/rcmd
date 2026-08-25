@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// "mc" (classic blue) or "dark" (truecolor). Applied at startup.
+    /// "mc" (classic blue), "dark" (truecolor) or "bw" (no colour at
+    /// all, mc's `-b`). Applied at startup.
     pub theme: String,
     /// "mc" or "modern" (turns lynx-like motion on by default).
     pub keymap: String,

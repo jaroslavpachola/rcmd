@@ -184,6 +184,7 @@ impl Control {
     }
 
     fn command(&mut self, line: &str) -> io::Result<Reply> {
+        crate::vfslog::line(">", crate::vfslog::redact(line));
         self.stream.get_mut().write_all(line.as_bytes())?;
         self.stream.get_mut().write_all(b"\r\n")?;
         self.stream.get_mut().flush()?;
@@ -224,6 +225,7 @@ impl Control {
                 "the server closed the connection",
             ));
         }
+        crate::vfslog::line("<", &line);
         Ok(line)
     }
 
