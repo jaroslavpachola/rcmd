@@ -38,16 +38,22 @@ TIMINGS = []
 # cost of every keypress - see Session.drain.
 STEP = float(os.environ.get("RCMD_E2E_STEP", "0.5"))
 # How long the pty must stay quiet before a wait is over. Measured on
-# the suite, the gap between two chunks of one answer clusters around
-# 70 ms, while an idle rcmd repaints every 500 ms - so a quarter second
-# sits clear of both: long enough not to mistake a pause inside an
-# answer for the end of it, short enough to return well before the next
-# idle repaint.
-SETTLE = float(os.environ.get("RCMD_E2E_SETTLE", "0.25"))
+# the suite: rcmd answers a key in ~17 ms and, while it is doing
+# something, repaints every ~65 ms - so this sits at about twice the
+# gap between two frames of one answer, and an idle rcmd (which now
+# repaints once every two seconds, not twenty times a second) is silent
+# long before it.
+SETTLE = float(os.environ.get("RCMD_E2E_SETTLE", "0.12"))
 
 # RCMD_E2E_SUBSHELL=1 runs the whole suite with the persistent subshell
 # on (commands run inside it, no "Press Enter" pause); default is off.
 SUBSHELL = os.environ.get("RCMD_E2E_SUBSHELL", "0") == "1"
+# With the subshell on, running a command hands the terminal to a shell
+# and takes it back again. That handover goes quiet in the middle - the
+# shell is starting, rcmd is waiting - so the window has to be wider
+# than the gap between two frames of a redraw.
+if SUBSHELL and "RCMD_E2E_SETTLE" not in os.environ:
+    SETTLE = 0.25
 
 # Terminal queries a shell may block on (fish probes at every prompt);
 # a real terminal answers these, so the harness must too.
@@ -122,6 +128,19 @@ class Session:
 
     def send(self, keys, wait=None, settle=None):
         os.write(self.fd, keys)
+        self.drain(wait if wait is not None else STEP, settle)
+
+    def keys(self, *presses, wait=None, settle=None):
+        """Several keys with one wait at the end. Nothing looks at the
+        screen between them, so there is nothing to wait for until the
+        last one - and one wait costs one settle rather than six.
+
+        Not for a lone Esc: whether Esc and the key after it are two
+        keystrokes or one Alt+key depends on the gap between them, so
+        those stay separate sends.
+        """
+        for press in presses:
+            os.write(self.fd, press)
         self.drain(wait if wait is not None else STEP, settle)
 
     def quit(self):
@@ -224,9 +243,12 @@ def test_fileops():
     s.send(INSERT + b"\x1b[A" + INSERT)    # mark b.txt, up, mark a.txt
     s.send(F5)
     s.send(b"sub\r", wait=STEP * 3)        # copy both into sub/
-    s.send(END)                            # -> b.txt
-    s.send(SF8)                            # permanent delete
-    s.send(b"y", wait=STEP * 3)
+    s.keys(
+        END,                            # -> b.txt
+        SF8,                            # permanent delete
+        b"y",
+        wait=STEP * 3,
+    )
     s.quit()
     check("fileops: mkdir", os.path.isdir(os.path.join(play, "sub")))
     check("fileops: copy", open(os.path.join(play, "sub/a.txt")).read() == "a.txt\n")
@@ -240,8 +262,11 @@ def test_cmdline():
     open(os.path.join(play, "sub", "deep-target.txt"), "w").write("x\n")
     wdfile = os.path.join(root, "lastdir")
     s = Session(play, home, args=("-P", wdfile, play))
-    s.send(b"ls sub/de")
-    s.send(b"\t", wait=STEP)            # Tab completes the path
+    s.keys(
+        b"ls sub/de",
+        b"\t",            # Tab completes the path
+        wait=STEP,
+    )
     check("cmdline: tab completion", "ls sub/deep-target.txt" in s.screen())
     s.send(b"\x1b", wait=STEP)          # clear the line (Esc Esc: real Esc)
     s.send(b"\x1b", wait=STEP)
@@ -271,11 +296,17 @@ def test_viewer():
         'fn main() {\n    let greeting = "hello";\n    println!("{greeting}");\n}\n'
     )
     s = Session(play, home)
-    s.send(DOWN)                        # -> big.txt
-    s.send(F3, wait=STEP * 2)
+    s.keys(
+        DOWN,                        # -> big.txt
+        F3,
+        wait=STEP * 2,
+    )
     check("viewer: opens", "line 0000" in s.screen())
-    s.send(b"/")
-    s.send(b"findme\r", wait=STEP * 2)  # case-insensitive search
+    s.keys(
+        b"/",
+        b"findme\r",  # case-insensitive search
+        wait=STEP * 2,
+    )
     check("viewer: search", "FINDME here" in s.screen())
     # the matched substring is styled on its own: a style change sits
     # between the match and the rest of the line in the raw stream
@@ -283,15 +314,20 @@ def test_viewer():
           re.search(rb"FINDME(?:\x1b\[[0-9;]*m)+ here", s.buf))
     s.send(b"\x1b[14~")                 # F4 hex
     check("viewer: hex", re.search(r"00000000  .*\|line", s.screen()))
-    s.send(b"\x1b[14~")                 # back to text
-    s.send(b"f", wait=STEP)             # follow mode (R3): tail -f
+    s.keys(
+        b"\x1b[14~",                 # back to text
+        b"f",             # follow mode (R3): tail -f
+        wait=STEP,
+    )
     check("viewer: follow tag and jump to end", "[follow]" in s.screen()
           and "FINDME here" in s.screen())
     with open(os.path.join(play, "big.txt"), "a") as f:
         f.write("APPENDED tail line\n")
     check("viewer: follow picks up appends", wait_for(s, "APPENDED tail line"))
-    s.send(b"f")                        # stop following
-    s.send(b"q")
+    s.keys(
+        b"f",                        # stop following
+        b"q",
+    )
     # syntax highlighting: a .rs file emits RGB color runs, plain .txt
     # (checked above) never did
     s.send(b"\x13code\r", wait=STEP)    # quick search -> code.rs
@@ -313,8 +349,11 @@ def test_archive():
     with tarfile.open(os.path.join(play, "b.tar.gz"), "w:gz") as t:
         t.add(os.path.join(src, "inside.txt"), arcname="inside.txt")
     s = Session(play, home, args=(play, os.path.join(play, "out")))
-    s.send(DOWN + DOWN)                 # .., out, b.tar.gz -> b.tar.gz
-    s.send(b"\r", wait=STEP * 2)        # enter archive
+    s.keys(
+        DOWN + DOWN,                 # .., out, b.tar.gz -> b.tar.gz
+        b"\r",        # enter archive
+        wait=STEP * 2,
+    )
     check("archive: entered", "b.tar.gz://" in s.screen())
     s.send(END)                         # -> inside.txt
     # a tar is writable now: F8 offers to delete rather than refusing.
@@ -322,8 +361,11 @@ def test_archive():
     s.send(F8, wait=STEP)
     check("archive: delete offered", "Delete" in s.screen())
     s.send(b"n", wait=STEP)
-    s.send(F5)
-    s.send(b"\r", wait=STEP * 3)        # extract to out/
+    s.keys(
+        F5,
+        b"\r",        # extract to out/
+        wait=STEP * 3,
+    )
     extracted = os.path.join(play, "out/inside.txt")
     check(
         "archive: extracted",
@@ -336,9 +378,12 @@ def test_archive():
     s.send(b"\t")                       # -> right panel (out/)
     s.send(b"\x12")                     # reload to see fresh.txt
     s.send(b"\x13fresh\r", wait=STEP)   # quick search -> fresh.txt
-    s.send(F5)
-    s.send(b"\x15")                     # clear the prefilled destination
-    s.send(os.path.join(play, "b.tar.gz").encode() + b"://\r", wait=STEP * 4)
+    s.keys(
+        F5,
+        b"\x15",                     # clear the prefilled destination
+        os.path.join(play, "b.tar.gz").encode() + b"://\r",
+        wait=STEP * 4,
+    )
     check("archive: packed into tar", wait_for(s, "done -"))
     s.quit()
     with tarfile.open(os.path.join(play, "b.tar.gz")) as t:
@@ -398,8 +443,11 @@ def test_cpio():
     check("cpio: F3 views member", "from the cpio" in s.screen())
     s.send(b"q")
     s.send(b"\x13alias\r", wait=STEP)   # -> alias.txt, the empty record
-    s.send(F5)
-    s.send(b"\r", wait=STEP * 3)        # extract into out/
+    s.keys(
+        F5,
+        b"\r",        # extract into out/
+        wait=STEP * 3,
+    )
     extracted = os.path.join(play, "out", "alias.txt")
     check("cpio: hard link extracts the shared bytes",
           wait_for(s, "done -") and open(extracted).read() == "shared bytes\n")
@@ -439,9 +487,12 @@ def test_cmdarchive():
     s.send(b"\x13hello\r", wait=STEP)   # -> hello.txt
     s.send(F3, wait=STEP * 2)
     check("cmdarchive: F3 views member", "packed content" in s.screen())
-    s.send(b"q")
-    s.send(F5)
-    s.send(b"\r", wait=STEP * 3)        # extract into out/
+    s.keys(
+        b"q",
+        F5,
+        b"\r",        # extract into out/
+        wait=STEP * 3,
+    )
     extracted = os.path.join(play, "out", "hello.txt")
     check("cmdarchive: F5 extracts",
           wait_for(s, "done -") and open(extracted).read() == "packed content\n")
@@ -503,25 +554,37 @@ def test_deb():
     check("deb: the version stamp rides along", "debian-binary" in scr)
 
     # the root lists .., CONTENTS, CONTROL, debian-binary in that order
-    s.send(DOWN + DOWN)                 # -> CONTROL
-    s.send(b"\r", wait=STEP * 2)
+    s.keys(
+        DOWN + DOWN,                 # -> CONTROL
+        b"\r",
+        wait=STEP * 2,
+    )
     scr = s.screen()
     check("deb: control files listed", "control" in scr and "postinst" in scr)
-    s.send(DOWN)                        # -> control
-    s.send(F3, wait=STEP * 2)
+    s.keys(
+        DOWN,                        # -> control
+        F3,
+        wait=STEP * 2,
+    )
     check("deb: F3 reads the control file", "Package: hello" in s.screen())
     s.send(b"q")
 
     s.send(BACKSPACE, wait=STEP)        # back to the package root
-    s.send(HOME_K + DOWN)               # -> CONTENTS
-    s.send(b"\r", wait=STEP * 2)
+    s.keys(
+        HOME_K + DOWN,               # -> CONTENTS
+        b"\r",
+        wait=STEP * 2,
+    )
     check("deb: the installed tree opens", "usr" in s.screen())
     for _ in range(4):                  # usr/ share/ doc/ hello/
         s.send(DOWN)
         s.send(b"\r", wait=STEP)
-    s.send(DOWN)                        # -> README
-    s.send(F5)
-    s.send(b"\r", wait=STEP * 3)
+    s.keys(
+        DOWN,                        # -> README
+        F5,
+        b"\r",
+        wait=STEP * 3,
+    )
     extracted = os.path.join(play, "out", "README")
     check("deb: F5 extracts an installed file",
           wait_for(s, "done -") and open(extracted).read() == "installed by the package\n")
@@ -569,27 +632,36 @@ def test_rpm():
     check("rpm: entered", "hello-1.0-3.noarch.rpm://" in scr)
     check("rpm: both halves listed", "CONTROL" in scr and "CONTENTS" in scr)
 
-    s.send(DOWN + DOWN)                 # .., CONTENTS, CONTROL
-    s.send(b"\r", wait=STEP * 2)        # into CONTROL/
+    s.keys(
+        DOWN + DOWN,                 # .., CONTENTS, CONTROL
+        b"\r",        # into CONTROL/
+        wait=STEP * 2,
+    )
     check("rpm: the header is a file", "header" in s.screen())
-    s.send(DOWN)
-    s.send(F3, wait=STEP * 2)
+    s.send(DOWN, wait=STEP)                 # the listing arrives on its
+    s.send(F3, wait=STEP * 2)               # own thread - let it land
     scr = s.screen()
     check("rpm: F3 reads the header", "Name" in scr and "hello" in scr)
     check("rpm: the summary is there", "a fixture package" in scr)
     s.send(b"q")
 
     s.send(BACKSPACE, wait=STEP)
-    s.send(HOME_K + DOWN)               # -> CONTENTS
-    s.send(b"\r", wait=STEP * 2)
+    s.keys(
+        HOME_K + DOWN,               # -> CONTENTS
+        b"\r",
+        wait=STEP * 2,
+    )
     check("rpm: the payload tree opens", "usr" in s.screen())
     s.send(DOWN)
     s.send(b"\r", wait=STEP)            # usr/
     s.send(DOWN)
     s.send(b"\r", wait=STEP)            # bin/
-    s.send(DOWN)                        # -> hello
-    s.send(F5)
-    s.send(b"\r", wait=STEP * 3)
+    s.keys(
+        DOWN,                        # -> hello
+        F5,
+        b"\r",
+        wait=STEP * 3,
+    )
     extracted = os.path.join(play, "out", "hello")
     check("rpm: F5 extracts a payload file",
           wait_for(s, "done -") and open(extracted).read() == "#!/bin/sh\necho hi\n")
@@ -626,12 +698,18 @@ def test_iso():
     check("iso: rock ridge names", "readme.txt" in scr and "docs" in scr)
     s.send(F8, wait=STEP)               # a disc image cannot be rewritten
     check("iso: read-only", "only .zip and .tar" in s.screen())
-    s.send(END)                         # -> readme.txt
-    s.send(F3, wait=STEP * 2)
+    s.keys(
+        END,                         # -> readme.txt
+        F3,
+        wait=STEP * 2,
+    )
     check("iso: F3 views a file", "burned to the disc" in s.screen())
-    s.send(b"q")
-    s.send(F5)
-    s.send(b"\r", wait=STEP * 3)
+    s.keys(
+        b"q",
+        F5,
+        b"\r",
+        wait=STEP * 3,
+    )
     extracted = os.path.join(play, "out", "readme.txt")
     check("iso: F5 extracts",
           wait_for(s, "done -") and open(extracted).read() == "burned to the disc\n")
@@ -711,14 +789,20 @@ def test_mbox():
     check("mbox: messages are numbered", "0001 the first message" in scr)
     check("mbox: the encoded subject is readable", "0002 a reply" in scr)
 
-    s.send(DOWN)                        # -> the first message
-    s.send(F3, wait=STEP * 2)
+    s.keys(
+        DOWN,                        # -> the first message
+        F3,
+        wait=STEP * 2,
+    )
     scr = s.screen()
     check("mbox: F3 shows the message", "Hello Bob, this is the body." in scr)
     check("mbox: without the mbox separator line", "From alice@example.com Mon" not in scr)
-    s.send(b"q")
-    s.send(F5)
-    s.send(b"\r", wait=STEP * 3)
+    s.keys(
+        b"q",
+        F5,
+        b"\r",
+        wait=STEP * 3,
+    )
     extracted = os.path.join(play, "out", "0001 the first message")
     check("mbox: F5 writes the message out",
           wait_for(s, "done -")
@@ -780,8 +864,11 @@ def test_archive_write():
     check("archwrite: entered", "box.zip://" in s.screen())
 
     # .., dir, drop.txt, keep.txt
-    s.send(DOWN + DOWN)                 # -> drop.txt
-    s.send(F8, wait=STEP)
+    s.keys(
+        DOWN + DOWN,                 # -> drop.txt
+        F8,
+        wait=STEP,
+    )
     check("archwrite: delete asks first", "Delete" in s.screen())
     s.send(b"y", wait=STEP * 3)
     check("archwrite: delete ran", wait_for(s, "done - 1 item"))
@@ -815,8 +902,7 @@ def test_archive_write():
     open(os.path.join(play, "out", "renamed.txt"), "w").write("replaced\n")
     s = Session(play, home, args=(os.path.join(play, "out"), play))
     s.send(b"\x13renamed\r", wait=STEP)
-    s.send(F5)
-    s.send(b"\x15" + box.encode() + b"://\r", wait=STEP * 4)
+    s.keys(F5, b"\x15" + box.encode() + b"://\r", wait=STEP * 4)
     check("archwrite: packed over the member", wait_for(s, "done -"))
     s.quit()
     with zipfile.ZipFile(box) as z:
@@ -849,9 +935,11 @@ def test_ftp():
         s = Session(play, home)
         s.send(f"cd ftp://tester@127.0.0.1:{port}/\r".encode(), wait=STEP * 2)
         check("ftp: password prompt", wait_for(s, "password"))
-        s.send(b"secret\r", wait=STEP * 3)
+        s.send(b"secret\r", wait=STEP)
+        # connecting takes as long as it takes: wait for the panel to
+        # say it is there rather than for a fixed number of seconds
+        check("ftp: connected", wait_for(s, "ftp://tester@127.0.0.1"))
         scr = s.screen()
-        check("ftp: connected", "ftp://tester@127.0.0.1" in scr)
         check("ftp: listing", "server.txt" in scr and "docs" in scr)
 
         # F3 on a remote file reads it through the data connection
@@ -861,8 +949,7 @@ def test_ftp():
         s.send(b"q", wait=STEP)
 
         # F5 downloads into the other panel
-        s.send(F5)
-        s.send(b"\x15" + play.encode() + b"\r", wait=STEP * 3)
+        s.keys(F5, b"\x15" + play.encode() + b"\r", wait=STEP * 3)
         downloaded = os.path.join(play, "server.txt")
         check("ftp: download",
               wait_for(s, "done -")
@@ -878,8 +965,11 @@ def test_ftp():
         s.send(b"\t", wait=STEP)             # -> the local panel
         s.send(b"\x12", wait=STEP)           # reload so upload.txt is listed
         s.send(b"\x13upload\r", wait=STEP)
-        s.send(F5)
-        s.send(f"\x15ftp://tester@127.0.0.1:{port}/\r".encode(), wait=STEP * 4)
+        s.keys(
+            F5,
+            f"\x15ftp://tester@127.0.0.1:{port}/\r".encode(),
+            wait=STEP * 4,
+        )
         uploaded = os.path.join(remote, "upload.txt")
         check("ftp: upload",
               wait_for(s, "done -")
@@ -931,11 +1021,13 @@ def test_viewsearch():
         return s.screen()
 
     def set_kind(want):
-        """The cursor is on the kind row; Space cycles it."""
+        """The cursor is on the kind row; Space cycles it. Waiting for
+        the redraw before pressing again matters: a Space too many
+        cycles past what was asked for."""
         for _ in range(4):
-            if want in s.screen():
+            if wait_for(s, want, timeout=0.8):
                 return True
-            s.send(b" ", wait=STEP * 2)
+            s.send(b" ", wait=STEP)
         return want in s.screen()
 
     scr = dialog()
@@ -1240,13 +1332,19 @@ def test_find():
     def find(keys):
         # F9 -> Command -> Find file...
         # (Help, User menu, Quick search, Hotlist, Directory tree, Find)
-        s.send(b"\x1b[20~")                 # F9
-        s.send(b"\x1b[C" * 2)               # Left -> File -> Command
-        s.send(DOWN * 5)                    # -> Find file...
-        s.send(b"\r")                       # open find dialog
-        s.send(b"\x15")                     # Ctrl+U clears the "*" prefill
-        s.send(keys)
-        s.send(b"\r", wait=STEP * 3)        # search
+        s.keys(
+            b"\x1b[20~",                 # F9
+            b"\x1b[C" * 2,               # Left -> File -> Command
+            DOWN * 5,                    # -> Find file...
+            b"\r",                       # open find dialog
+            b"\x15",                     # Ctrl+U clears the "*" prefill
+            keys,
+            b"\r",            # search
+            wait=STEP,
+        )
+        # the walk runs on its own thread: wait for it to say what it
+        # found rather than for a number of seconds
+        wait_for(s, "match(es)")
 
     s = Session(play, home)
     find(b"needle*")
@@ -1280,8 +1378,11 @@ def test_compare():
     open(os.path.join(left, "differs.txt"), "w").write("short\n")
     open(os.path.join(right, "differs.txt"), "w").write("much longer content\n")
     s = Session(play, home, args=(left, right))
-    s.send(b"\x18")                     # Ctrl+X
-    s.send(b"d", wait=STEP * 2)         # compare
+    s.keys(
+        b"\x18",                     # Ctrl+X
+        b"d",         # compare
+        wait=STEP * 2,
+    )
     scr = s.screen()
     check("compare: difference count", "2 difference(s) marked" in scr)
     check("compare: marked summary shown", "file(s)" in scr)
@@ -1309,8 +1410,11 @@ def test_dirsize():
     open(os.path.join(play, "sub", "a"), "w").write("12345")
     open(os.path.join(play, "sub", "b"), "w").write("1234567")
     s = Session(play, home)
-    s.send(DOWN)                        # -> sub
-    s.send(b"\x00", wait=STEP * 2)      # Ctrl+Space
+    s.keys(
+        DOWN,                        # -> sub
+        b"\x00",      # Ctrl+Space
+        wait=STEP * 2,
+    )
     deadline = time.time() + 8
     while time.time() < deadline and "12 bytes in 2 file(s)" not in s.screen():
         s.drain(0.5)
@@ -1336,8 +1440,7 @@ def test_history():
     os.makedirs(os.path.join(play, "one"))
     os.makedirs(os.path.join(play, "two"))
     s = Session(play, home)
-    s.send(b"cd one\r")
-    s.send(b"cd ../two\r")
+    s.keys(b"cd one\r", b"cd ../two\r")
     check("history: cd landed", play + "/two" in s.screen())
     s.send(ALT_LEFT)
     check("history: back", play + "/one" in s.screen())
@@ -1366,9 +1469,11 @@ def test_quickview():
     open(os.path.join(play, "poem.txt"), "w").write("roses are red\nviolets too\n")
     open(os.path.join(play, "prose.txt"), "w").write("second file content\n")
     s = Session(play, home)
-    s.send(b"\x18")                     # Ctrl+X ...
-    s.send(b"q")                        # ... Q -> quick view
-    s.send(DOWN)                        # -> poem.txt
+    s.keys(
+        b"\x18",                     # Ctrl+X ...
+        b"q",                        # ... Q -> quick view
+        DOWN,                        # -> poem.txt
+    )
     scr = s.screen()
     check(
         "quickview: preview follows cursor",
@@ -1376,14 +1481,19 @@ def test_quickview():
     )
     s.send(DOWN)                        # -> prose.txt
     check("quickview: switches file", "second file content" in s.screen())
-    s.send(b"\t")                       # focus the preview
-    s.send(F4, wait=STEP)               # R4: hex mode
+    s.keys(
+        b"\t",                       # focus the preview
+        F4,               # R4: hex mode
+        wait=STEP,
+    )
     check("quickview: hex dump",           # "se" of "second" in hex
           "00000000  73 65" in s.screen())
     s.send(F4, wait=STEP)               # back to text
     check("quickview: hex off", "00000000" not in s.screen())
-    s.send(b"\t")                       # focus back to the listing
-    s.send(b"\x18q")                    # toggle off
+    s.keys(
+        b"\t",                       # focus back to the listing
+        b"\x18q",                    # toggle off
+    )
     check("quickview: toggles off", "Quick view" not in s.screen())
     s.quit()
     shutil.rmtree(root)
@@ -1630,15 +1740,21 @@ def test_aliases():
     s.send(END)                             # -> fresh.txt (last entry)
     s.send(b"\x1b[15;2~", wait=STEP)        # Shift+F5
     check("aliases: S-F5 in-place dialog", "in place" in s.screen())
-    s.send(b"\x15")                         # clear the prefilled name
-    s.send(b"fresh-copy.txt\r", wait=STEP * 3)
+    s.keys(
+        b"\x15",                         # clear the prefilled name
+        b"fresh-copy.txt\r",
+        wait=STEP * 3,
+    )
     copy = os.path.join(play, "fresh-copy.txt")
     check("aliases: in-place copy", os.path.isfile(copy)
           and open(copy).read() == "hello")
 
-    s.send(END)                             # -> fresh.txt again
-    s.send(b"echo ")
-    s.send(b"\x18t", wait=STEP)             # C-x t: tagged names
+    s.keys(
+        END,                             # -> fresh.txt again
+        b"echo ",
+        b"\x18t",             # C-x t: tagged names
+        wait=STEP,
+    )
     check("aliases: C-x t pastes the name", "echo fresh.txt" in s.screen())
     s.send(b"\x18p", wait=STEP)             # C-x p: panel path
     check("aliases: C-x p pastes the path",
@@ -1659,16 +1775,22 @@ def test_cxops():
 
     s.send(b"\x18c", wait=STEP)             # C-x c
     check("cxops: chmod dialog", "Chmod" in s.screen())
-    s.send(b"\x15")                         # clear the prefilled mode
-    s.send(b"600\r", wait=STEP * 2)
+    s.keys(
+        b"\x15",                         # clear the prefilled mode
+        b"600\r",
+        wait=STEP * 2,
+    )
     mode = os.stat(os.path.join(play, "target.txt")).st_mode & 0o777
     check("cxops: chmod applied", mode == 0o600, f"mode {oct(mode)}")
 
     s.send(b"\x18o", wait=STEP)             # C-x o
     check("cxops: chown dialog", "Chown" in s.screen())
     # the lists open on the entry's own owner, so Set is a no-op chown
-    s.send(b"\t" * 3)                       # users -> groups -> recurse -> Set
-    s.send(b"\r", wait=STEP * 2)
+    s.keys(
+        b"\t" * 3,                       # users -> groups -> recurse -> Set
+        b"\r",
+        wait=STEP * 2,
+    )
     check("cxops: chown self ok", "chown: 1 item(s)" in status_line(s), status_line(s))
 
     s.send(b"\x18s", wait=STEP)             # C-x s
@@ -1693,8 +1815,11 @@ def test_jobs():
     os.mkfifo(os.path.join(play, "pipe.dat"))
     s = Session(play, home, args=(play, dest))
     s.send(b"\x13pipe\r", wait=STEP)        # quick search -> pipe.dat
-    s.send(F5)
-    s.send(b"\r", wait=STEP * 2)            # copy to dest/ - blocks on the fifo
+    s.keys(
+        F5,
+        b"\r",            # copy to dest/ - blocks on the fifo
+        wait=STEP * 2,
+    )
     check("jobs: progress dialog", "copy 1 item" in s.screen())
     s.send(b"b", wait=STEP)                 # detach
     check("jobs: status shows background job",
@@ -1726,9 +1851,12 @@ def test_bulk_rename():
     s = Session(play, home)
     s.send(b"+")                            # select group dialog
     s.send(b"\r", wait=STEP)                # "*" marks all files
-    s.send(b"\x1b[20~")                     # F9 (opens on Left, as in MC)
-    s.send(b"f")                            # -> File, by its title letter
-    s.send(b"b", wait=STEP)                 # Bulk rename (entry hotkey)
+    s.keys(
+        b"\x1b[20~",                     # F9 (opens on Left, as in MC)
+        b"f",                            # -> File, by its title letter
+        b"b",                 # Bulk rename (entry hotkey)
+        wait=STEP,
+    )
     check("bulk: editor opens with numbered names",
           "bulk rename" in s.screen() and "aaa.txt" in s.screen())
     s.send(END)                             # end of line 1: "0<TAB>aaa.txt"
@@ -1784,8 +1912,11 @@ def test_extensibility():
     s = Session(play, home)
 
     # Enter on a matching file runs the opener (quietly, no pause)
-    s.send(DOWN)                       # cursor -> notes.txt
-    s.send(b"\r", wait=STEP * 3)
+    s.keys(
+        DOWN,                       # cursor -> notes.txt
+        b"\r",
+        wait=STEP * 3,
+    )
     copy = os.path.join(play, "opened_copy")
     check(
         "extensibility: opener ran on Enter",
@@ -1807,11 +1938,15 @@ def test_extensibility():
 
     # a command bound via key = "ctrl+g" sees %t (marked files);
     # listing by now: .., marker.out, notes.txt, opened_copy
-    s.send(HOME_K + DOWN + DOWN + INSERT)  # mark notes.txt
-    s.send(b"\x07", wait=STEP * 3)     # Ctrl+G
+    s.keys(
+        HOME_K + DOWN + DOWN + INSERT,  # mark notes.txt
+        b"\x07",     # Ctrl+G
+        wait=STEP * 3,
+    )
     if not SUBSHELL:
         s.send(b"\r", wait=STEP * 2)
     tagged = os.path.join(play, "tagged.out")
+    wait_file(tagged, "notes.txt")
     check(
         "extensibility: %t + key binding",
         os.path.isfile(tagged) and "notes.txt" in open(tagged).read(),
@@ -1902,9 +2037,12 @@ def test_layout():
     s.send(b"\x1b", wait=STEP)
 
     # switch back to a vertical split from the options form
-    s.send(b"\x1b[20~")
-    s.send(b"o")
-    s.send(b"p", wait=STEP)
+    s.keys(
+        b"\x1b[20~",
+        b"o",
+        b"p",
+        wait=STEP,
+    )
     check("layout: form has a Layout section", "Layout" in s.screen(), s.screen())
     check("layout: ratio row shows the split", "30%" in s.screen(), s.screen())
     s.send(b" ", wait=STEP)                 # row 1 = Split radio -> vertical
@@ -1916,9 +2054,12 @@ def test_layout():
     check("layout: saved to state", 'split = "vertical"' in open(statepath).read())
 
     # mini status: a per-panel row describing that panel's cursor entry
-    s.send(b"\x1b[20~")
-    s.send(b"o")
-    s.send(b"p", wait=STEP)
+    s.keys(
+        b"\x1b[20~",
+        b"o",
+        b"p",
+        wait=STEP,
+    )
     for _ in range(option_downs(s.screen(), "Mini status")):
         s.send(DOWN)
     s.send(b" ")
@@ -1959,9 +2100,11 @@ def test_tree():
 
     # F9 -> Command -> Directory tree...
     # (Help, User menu, Quick search, Hotlist, *Directory tree*)
-    s.send(b"\x1b[20~")
-    s.send(b"\x1b[C" * 2)
-    s.send(DOWN * 4 + b"\r")
+    s.keys(
+        b"\x1b[20~",
+        b"\x1b[C" * 2,
+        DOWN * 4 + b"\r",
+    )
     scr = s.screen()
     check("tree: dialog opens", "Directory tree" in scr, scr[:120])
     fig = dialog(scr)
@@ -1986,8 +2129,7 @@ def test_tree():
     check("tree: and only this one", scr.count("play/beta") < 3, scr[:240])
 
     # the listing mode: F9 -> Left (Brief, Full, Long, User, *Tree*)
-    s.send(b"\x1b[20~")
-    s.send(DOWN * 4 + b"\r")
+    s.keys(b"\x1b[20~", DOWN * 4 + b"\r")
     scr = s.screen()
     left_half = [ln[:60] for ln in scr.split("\n")]
     check("tree: listing mode draws the figure", len(figure(scr, 0, 60)) > 3, scr[:120])
@@ -1996,8 +2138,7 @@ def test_tree():
 
     # Enter moves the *other* panel and stays in the tree. The cursor
     # sits on beta (the panel's directory), so Up lands on its sibling.
-    s.send(b"\x1b[A")
-    s.send(b"\r")
+    s.keys(b"\x1b[A", b"\r")
     scr = s.screen()
     check("tree: mode survives Enter", len(figure(scr, 0, 60)) > 3, scr[:120])
     check("tree: Enter moved the other panel", "play/alpha" in scr.split("\n")[0][60:],
@@ -2007,11 +2148,12 @@ def test_tree():
 
     # Ctrl+S searches the figure - in a tree view mc keeps plain
     # characters for the command line until the search is switched on
-    s.send(b"\x13")
-    s.send(b"g")
+    s.keys(b"\x13", b"g")
     check("tree: Ctrl+S searches the figure", "Search: g" in status_line(s), status_line(s))
-    s.send(b"\r")                  # end the search
-    s.send(b"\r")                  # Enter on the match
+    s.keys(
+        b"\r",                  # end the search
+        b"\r",                  # Enter on the match
+    )
     scr = s.screen()
     check("tree: the search landed on gamma", "play/gamma" in scr.split("\n")[0][60:],
           scr.split("\n")[0][60:])
@@ -2145,8 +2287,7 @@ def test_panelmenus():
 
     # Right menu, Brief listing: the right panel loses its columns and
     # the left keeps them, though the left panel is the one with focus
-    s.send(b"r")
-    s.send(b"b", wait=STEP)
+    s.keys(b"r", b"b", wait=STEP)
     hdr = header_line(s)
     check("panelmenus: the right menu hit the right panel",
           "Modify time" not in hdr[60:], hdr[60:])
@@ -2166,8 +2307,7 @@ def test_panelmenus():
           "/other$" in scr.split("\n")[-2], scr.split("\n")[-2])
 
     # ...and the same entry again puts the panel back
-    s.send(b"\x1b[20~")
-    s.send(b"q", wait=STEP)
+    s.keys(b"\x1b[20~", b"q", wait=STEP)
     check("panelmenus: quick view toggles back off",
           "hello from the right" not in s.screen(), s.screen()[:200])
     s.quit()
@@ -2196,8 +2336,11 @@ def test_overwrite():
         check("overwrite: %s offered" % label.lower(), "[ %s ]" % label in scr, scr[:400])
 
     # Append puts the source on the end of what is already there
-    s.send(b"\x1b[C")                       # -> Append
-    s.send(b"\r", wait=STEP * 3)
+    s.keys(
+        b"\x1b[C",                       # -> Append
+        b"\r",
+        wait=STEP * 3,
+    )
     check("overwrite: append kept both halves",
           open(os.path.join(other, "log.txt")).read() == "first\nsecond\n",
           repr(open(os.path.join(other, "log.txt")).read()))
@@ -2215,9 +2358,12 @@ def test_overwrite():
     s.send(F5, wait=STEP)
     s.send(b"\r", wait=STEP * 2)
     check("overwrite: the prompt is back", "File exists" in s.screen())
-    s.send(b"\x1b[B")                       # Down: onto the "all files" row
-    s.send(b"\x1b[C")                       # -> Update
-    s.send(b"\r", wait=STEP * 3)
+    s.keys(
+        b"\x1b[B",                       # Down: onto the "all files" row
+        b"\x1b[C",                       # -> Update
+        b"\r",
+        wait=STEP * 3,
+    )
     check("overwrite: update left the newer target alone",
           open(os.path.join(other, "keep.txt")).read() == "newer target\n",
           repr(open(os.path.join(other, "keep.txt")).read()))
@@ -2236,8 +2382,11 @@ def test_copyform():
     open(os.path.join(play, "b.txt"), "w").write("bye\n")
     s = Session(play, home, args=(play, other))
 
-    s.send(DOWN)                            # onto a.txt
-    s.send(F5, wait=STEP)
+    s.keys(
+        DOWN,                            # onto a.txt
+        F5,
+        wait=STEP,
+    )
     scr = s.screen()
     check("copyform: the form opens", "Copy" in scr and "/other" in scr, scr[:200])
     for label in ("Preserve attributes", "Follow links", "Dive into subdirs",
@@ -2249,16 +2398,21 @@ def test_copyform():
 
     # Cancel really cancels: down to the buttons, along to Cancel, Enter
     # (the form opens on the destination, with four boxes below it)
-    s.send(DOWN * 5)
-    s.send(b"\x1b[C" * 2)
-    s.send(b"\r", wait=STEP * 2)
+    s.keys(
+        DOWN * 5,
+        b"\x1b[C" * 2,
+        b"\r",
+        wait=STEP * 2,
+    )
     check("copyform: cancel copied nothing",
           not os.path.exists(os.path.join(other, "a.txt")))
 
     # Preserve off: the copy gets its own timestamp, not the source's
     s.send(F5, wait=STEP)
-    s.send(DOWN)                            # -> Preserve attributes
-    s.send(b" ")
+    s.keys(
+        DOWN,                            # -> Preserve attributes
+        b" ",
+    )
     check("copyform: space flips the box", "[ ] Preserve attributes" in s.screen(),
           s.screen()[:400])
     s.send(b"\r", wait=STEP * 3)
@@ -2273,9 +2427,12 @@ def test_copyform():
     if "b.txt" not in status_line(s):
         s.send(DOWN, wait=STEP)
     s.send(F5, wait=STEP)
-    s.send(DOWN * 5)
-    s.send(b"\x1b[C")                       # -> Background
-    s.send(b"\r", wait=STEP * 3)
+    s.keys(
+        DOWN * 5,
+        b"\x1b[C",                       # -> Background
+        b"\r",
+        wait=STEP * 3,
+    )
     scr = s.screen()
     check("copyform: background leaves no dialog up", "[ Background ]" not in scr, scr[:200])
     check("copyform: and the copy still happened",
@@ -2300,12 +2457,14 @@ def test_masks():
     check("masks: the form asks for a mask first", "mask" in s.screen(), s.screen()[:300])
     check("masks: it starts as catch-all", "mask *" in s.screen(), s.screen()[:300])
 
-    s.send(b"\x1b[A")                       # up to the mask row
-    s.send(b"\x15")                         # Ctrl+U clears it
-    s.send(b"*.tar.gz")
-    s.send(DOWN)                            # back to the destination
-    s.send(END)
-    s.send(b"*.tgz")
+    s.keys(
+        b"\x1b[A",                       # up to the mask row
+        b"\x15",                         # Ctrl+U clears it
+        b"*.tar.gz",
+        DOWN,                            # back to the destination
+        END,
+        b"*.tgz",
+    )
     scr = s.screen()
     check("masks: both fields show", "*.tar.gz" in scr and "*.tgz" in scr, scr[:300])
     s.send(b"\r", wait=STEP * 3)
@@ -2331,8 +2490,11 @@ def test_chmod():
         os.chmod(os.path.join(play, name), mode)
     s = Session(play, home)
 
-    s.send(DOWN)                            # onto a.sh
-    s.send(b"\x18c", wait=STEP)             # Ctrl+X c
+    s.keys(
+        DOWN,                            # onto a.sh
+        b"\x18c",             # Ctrl+X c
+        wait=STEP,
+    )
     scr = s.screen()
     check("chmod: the matrix opens", "Chmod" in scr and "Permissions" in scr, scr[:200])
     check("chmod: the file section names what changes",
@@ -2343,8 +2505,10 @@ def test_chmod():
 
     # Space on a bit rewrites the octal: 0754 + group write = 0774
     # (the dialog opens on the octal field, so the bits are above it)
-    s.send(b"\x1b[A" * 5)                   # -> write   group
-    s.send(b" ")
+    s.keys(
+        b"\x1b[A" * 5,                   # -> write   group
+        b" ",
+    )
     check("chmod: space flips a bit", "[x] write   group" in s.screen(), s.screen()[:600])
     check("chmod: and the octal follows", "octal 774" in s.screen(), s.screen()[:600])
     s.send(b"\r", wait=STEP * 2)             # Set
@@ -2354,8 +2518,10 @@ def test_chmod():
 
     # typing an octal moves the boxes the other way
     s.send(b"\x18c", wait=STEP)             # opens on the octal field
-    s.send(b"\x15")                         # Ctrl+U clears it
-    s.send(b"640")
+    s.keys(
+        b"\x15",                         # Ctrl+U clears it
+        b"640",
+    )
     check("chmod: the octal moves the boxes", "[ ] exec    owner" in s.screen(),
           s.screen()[:600])
     s.send(b"\r", wait=STEP * 2)
@@ -2366,14 +2532,20 @@ def test_chmod():
     # leaves each file's other bits alone. a.sh is 0640, b.sh is 0600,
     # and the boxes come from the cursor entry - b.sh - so 0600 comes
     # off both: b.sh empties, a.sh keeps the group-read bit it alone had
-    s.send(HOME_K)
-    s.send(DOWN + INSERT + INSERT)          # mark a.sh and b.sh
-    s.send(b"\x18c", wait=STEP)
+    s.keys(
+        HOME_K,
+        DOWN + INSERT + INSERT,          # mark a.sh and b.sh
+        b"\x18c",
+        wait=STEP,
+    )
     check("chmod: the boxes come from the cursor entry", "0600" in s.screen(),
           s.screen()[:400])
-    s.send(DOWN * 2)                        # -> past recurse, to the buttons
-    s.send(b"\x1b[C" * 2)                   # -> Clear marked
-    s.send(b"\r", wait=STEP * 3)
+    s.keys(
+        DOWN * 2,                        # -> past recurse, to the buttons
+        b"\x1b[C" * 2,                   # -> Clear marked
+        b"\r",
+        wait=STEP * 3,
+    )
     a = os.stat(os.path.join(play, "a.sh")).st_mode & 0o777
     b = os.stat(os.path.join(play, "b.sh")).st_mode & 0o777
     check("chmod: clear marked cleared only those bits",
@@ -2391,8 +2563,11 @@ def test_chown():
     s = Session(play, home)
     me = getpass.getuser()
 
-    s.send(DOWN)                            # onto target.txt
-    s.send(b"\x18o", wait=STEP)             # Ctrl+X o
+    s.keys(
+        DOWN,                            # onto target.txt
+        b"\x18o",             # Ctrl+X o
+        wait=STEP,
+    )
     scr = s.screen()
     check("chown: the window opens", "Chown" in scr, scr[:200])
     check("chown: both lists are headed", "User" in scr and "Group" in scr, scr[:400])
@@ -2417,8 +2592,7 @@ def test_chown():
 
     # Set with the entry's own owner is a no-op chown that still runs
     s.send(b"\x18o", wait=STEP)
-    s.send(b"\t" * 3)
-    s.send(b"\r", wait=STEP * 2)
+    s.keys(b"\t" * 3, b"\r", wait=STEP * 2)
     check("chown: Set ran", "chown: 1 item(s)" in status_line(s), status_line(s))
     s.quit()
     shutil.rmtree(root)
@@ -2447,16 +2621,14 @@ def test_confirmations():
     s.send(b"n", wait=STEP)                 # No puts the hotlist back
     check("confirm: no keeps the entry",
           "Directory hotlist" in s.screen() and "play" in s.screen(), s.screen()[:400])
-    s.send(b"d")
-    s.send(b"y", wait=STEP)
+    s.keys(b"d", b"y", wait=STEP)
     scr = s.screen()
     check("confirm: yes dropped it and came back",
           "Directory hotlist" in scr and "empty" in scr, scr[:400])
     s.send(b"\x1b", wait=STEP)
 
     # Enter on a file with an opener asks before running it
-    s.send(DOWN)
-    s.send(b"\r", wait=STEP)
+    s.keys(DOWN, b"\r", wait=STEP)
     check("confirm: execute asks", "Execute" in s.screen() and "touch" in s.screen(),
           s.screen()[:400])
     s.send(b"n", wait=STEP)
@@ -2468,9 +2640,12 @@ def test_confirmations():
           str(sorted(os.listdir(play))))
 
     # and both are in the options form
-    s.send(b"\x1b[20~")
-    s.send(b"o")
-    s.send(b"p", wait=STEP)
+    s.keys(
+        b"\x1b[20~",
+        b"o",
+        b"p",
+        wait=STEP,
+    )
     scr = s.screen()
     check("confirm: the form offers both toggles",
           "hotlist entry" in scr and "opener" in scr, scr[:600])
@@ -2493,24 +2668,33 @@ def test_links():
     check("links: the form names both halves",
           "points at" in scr and "named" in scr, scr[:400])
     check("links: relative keeps it short", "points at orig.txt" in scr, scr[:400])
-    s.send(b"\x15")                         # Ctrl+U over the suggested name
-    s.send(b"rel.txt")
-    s.send(b"\r", wait=STEP * 2)
+    s.keys(
+        b"\x15",                         # Ctrl+U over the suggested name
+        b"rel.txt",
+        b"\r",
+        wait=STEP * 2,
+    )
     rel = os.path.join(play, "rel.txt")
     check("links: relative symlink created",
           os.path.islink(rel) and os.readlink(rel) == "orig.txt",
           os.readlink(rel) if os.path.islink(rel) else "missing")
 
     # C-x l: a hard link - a real file sharing the original's inode
-    s.send(HOME_K)
-    s.send(DOWN, wait=STEP)                 # back onto orig.txt
+    s.keys(
+        HOME_K,
+        DOWN,                 # back onto orig.txt
+        wait=STEP,
+    )
     if "orig.txt" not in status_line(s):
         s.send(DOWN, wait=STEP)
     s.send(b"\x18l", wait=STEP)
     check("links: the hard link form opens", "Hard link" in s.screen(), s.screen()[:300])
-    s.send(b"\x15")
-    s.send(b"hard.txt")
-    s.send(b"\r", wait=STEP * 2)
+    s.keys(
+        b"\x15",
+        b"hard.txt",
+        b"\r",
+        wait=STEP * 2,
+    )
     hard = os.path.join(play, "hard.txt")
     check("links: hard link created",
           os.path.exists(hard) and not os.path.islink(hard))
@@ -2529,9 +2713,12 @@ def test_links():
     scr = s.screen()
     check("links: edit shows the current target",
           "Edit symlink" in scr and "orig.txt" in scr, scr[:300])
-    s.send(b"\x15")
-    s.send(b"hard.txt")
-    s.send(b"\r", wait=STEP * 2)
+    s.keys(
+        b"\x15",
+        b"hard.txt",
+        b"\r",
+        wait=STEP * 2,
+    )
     check("links: the link was retargeted",
           os.path.islink(rel) and os.readlink(rel) == "hard.txt",
           os.readlink(rel) if os.path.islink(rel) else "missing")
@@ -2550,16 +2737,21 @@ def test_recursive_attrs():
 
     s.send(DOWN)                            # onto tree/
     s.send(b"\x18c", wait=STEP)             # Ctrl+X c, on the octal field
-    s.send(b"\x15")
-    s.send(b"750")
-    s.send(DOWN)                            # -> recurse into directories
+    s.keys(
+        b"\x15",
+        b"750",
+        DOWN,                            # -> recurse into directories
+    )
     check("recattrs: the box is there", "recurse into directories" in s.screen(),
           s.screen()[:600])
     s.send(b" ")
     check("recattrs: and it ticks", "[x] recurse into directories" in s.screen(),
           s.screen()[:600])
-    s.send(DOWN)                            # -> the buttons
-    s.send(b"\r", wait=STEP * 4)            # Set
+    s.keys(
+        DOWN,                            # -> the buttons
+        b"\r",            # Set
+        wait=STEP * 4,
+    )
 
     deep = os.path.join(play, "tree/sub/deep.txt")
     check("recattrs: the change reached the bottom",
@@ -2572,8 +2764,10 @@ def test_recursive_attrs():
     s.send(b"\x18o", wait=STEP)
     check("recattrs: chown offers it too", "recurse into directories" in s.screen(),
           s.screen()[:600])
-    s.send(b"\t" * 2)                       # -> the recurse row
-    s.send(b" ")
+    s.keys(
+        b"\t" * 2,                       # -> the recurse row
+        b" ",
+    )
     check("recattrs: space ticks it", "[x] recurse into directories" in s.screen(),
           s.screen()[:600])
     s.send(b"\x1b", wait=STEP)
@@ -2652,8 +2846,11 @@ def test_keycontexts():
     s = Session(play, home)
 
     # panel context still works from the bare table
-    s.send(DOWN)                            # cursor -> wide.txt
-    s.send(F3, wait=STEP)
+    s.keys(
+        DOWN,                            # cursor -> wide.txt
+        F3,
+        wait=STEP,
+    )
     check("keycontexts: viewer opened", "viewer wide" in s.screen())
     # Ctrl+W now wraps, and the default F2 still does too
     s.send(b"\x17", wait=STEP)               # Ctrl+W
@@ -2681,9 +2878,12 @@ def test_options():
     s = Session(play, home)
 
     # F9 o p reaches the form; it now has sections
-    s.send(b"\x1b[20~")
-    s.send(b"o")
-    s.send(b"p", wait=STEP)
+    s.keys(
+        b"\x1b[20~",
+        b"o",
+        b"p",
+        wait=STEP,
+    )
     scr = s.screen()
     check("options: form opens with sections",
           "Confirmation" in scr and "Appearance" in scr and "Panel" in scr)
@@ -2703,15 +2903,21 @@ def test_options():
     check("options: written to state", "confirm_delete = false" in open(statepath).read())
 
     # with the question off, F8 deletes straight away (no dialog)
-    s.send(HOME_K + DOWN)                   # cursor -> gone.txt
-    s.send(F8, wait=STEP * 3)
+    s.keys(
+        HOME_K + DOWN,                   # cursor -> gone.txt
+        F8,
+        wait=STEP * 3,
+    )
     check("options: confirm_delete off deletes at once",
           not os.path.exists(os.path.join(play, "gone.txt")))
 
     # turn "Ask before quitting" on and check F10 asks
-    s.send(b"\x1b[20~")
-    s.send(b"o")
-    s.send(b"p", wait=STEP)
+    s.keys(
+        b"\x1b[20~",
+        b"o",
+        b"p",
+        wait=STEP,
+    )
     for _ in range(option_downs(s.screen(), "Ask before quitting")):
         s.send(DOWN)
     scr = s.screen()
@@ -2788,8 +2994,10 @@ def test_keysbatch():
     s.send(b"\x12", wait=STEP)          # Ctrl+R restores the listing
     s.quit()
 
-    # history survived the session, in the state file
+    # history survived the session, in the state file (written as rcmd
+    # goes down, which is not always before waitpid returns)
     statepath = os.path.join(home, ".local", "state", "rcmd", "state.toml")
+    wait_file(statepath, "cmd_history")
     st = open(statepath).read()
     check("keys: history persisted to state", "cmd_history" in st and "cd one" in st, st)
 
@@ -2915,8 +3123,11 @@ def test_editor():
     path = os.path.join(play, "notes.txt")
     open(path, "w").write("alpha\nbeta\n")
     s = Session(play, home)
-    s.send(DOWN)                        # -> notes.txt
-    s.send(F4, wait=STEP * 2)           # internal editor
+    s.keys(
+        DOWN,                        # -> notes.txt
+        F4,           # internal editor
+        wait=STEP * 2,
+    )
     scr = s.screen()
     check("editor: opens with content", "alpha" in scr and "notes.txt" in scr)
     s.send(b"\x1b[1;5F")                # Ctrl+End -> end of buffer
@@ -2929,14 +3140,19 @@ def test_editor():
 
     # replace all via F4-in-editor, then quit-confirm discard path
     s.send(F4, wait=STEP * 2)
-    s.send(F4)                          # replace prompt
-    s.send(b"beta\r")                   # pattern
-    s.send(b"BETA\r")                   # replacement -> confirm dialog
+    s.keys(
+        F4,                          # replace prompt
+        b"beta\r",                   # pattern
+        b"BETA\r",                   # replacement -> confirm dialog
+    )
     check("editor: replace asks", "Replace?" in s.screen())
     s.send(b"a", wait=STEP)             # All
     check("editor: replaced note", "1 replaced" in s.screen())
-    s.send(F2)                          # save the replacement
-    s.send(F10, wait=STEP * 2)
+    s.keys(
+        F2,                          # save the replacement
+        F10,
+        wait=STEP * 2,
+    )
     check("editor: replace-all wrote", "BETA" in open(path).read())
 
     # R4: $1 capture groups in the replacement
@@ -2945,17 +3161,23 @@ def test_editor():
     s.send(b"(BET)(A)\r")               # pattern with two groups
     s.send(b"$2-$1\r")                  # replacement using both
     s.send(b"a", wait=STEP)             # All
-    s.send(F2)                          # save
-    s.send(F10, wait=STEP * 2)
+    s.keys(
+        F2,                          # save
+        F10,
+        wait=STEP * 2,
+    )
     check("editor: capture groups", "A-BET" in open(path).read())
 
     # R4: F5/F6 block ops - duplicate the first line, then cut one copy
     s.send(F4, wait=STEP * 2)
-    s.send(F5)                          # no selection: duplicate line 1
-    s.send(F6)                          # cut the duplicate (clipboard)
-    s.send(b"\x16")                     # Ctrl+V pastes it back
-    s.send(F2)
-    s.send(F10, wait=STEP * 2)
+    s.keys(
+        F5,                          # no selection: duplicate line 1
+        F6,                          # cut the duplicate (clipboard)
+        b"\x16",                     # Ctrl+V pastes it back
+        F2,
+        F10,
+        wait=STEP * 2,
+    )
     check("editor: F5 duplicated the line",
           open(path).read().count("alpha") == 2)
 
@@ -2976,8 +3198,10 @@ def test_editor():
     s.send(b"\x1bs")                    # back to notes.txt
     s.send(b"notes\r", wait=STEP)
     s.send(F4, wait=STEP * 2)           # reopen
-    s.send(b"junk")                     # modify
-    s.send(F10)                         # quit -> unsaved-changes dialog
+    s.keys(
+        b"junk",                     # modify
+        F10,                         # quit -> unsaved-changes dialog
+    )
     check("editor: quit confirms", "Unsaved changes" in s.screen())
     s.send(b"d", wait=STEP * 2)         # discard
     check("editor: discard kept file", "junk" not in open(path).read())
@@ -3039,9 +3263,12 @@ def test_sftp():
         connected = wait_for(s, "server.txt", timeout=15)
         check("sftp: connected and listed", connected and "sftp://tester@" in s.screen())
 
-        s.send(END)                         # -> server.txt
-        s.send(F5)
-        s.send(b"\r", wait=STEP * 4)        # download into local panel dir
+        s.keys(
+            END,                         # -> server.txt
+            F5,
+            b"\r",        # download into local panel dir
+            wait=STEP * 4,
+        )
         downloaded = os.path.join(play, "server.txt")
         check(
             "sftp: download via F5",
@@ -3050,10 +3277,13 @@ def test_sftp():
             and open(downloaded).read() == "from the server\n",
         )
 
-        s.send(b"\t")                       # -> local panel
-        s.send(END)                         # -> upload.txt
-        s.send(F5)                          # dest prefilled with the sftp URL
-        s.send(b"\r", wait=STEP * 4)
+        s.keys(
+            b"\t",                       # -> local panel
+            END,                         # -> upload.txt
+            F5,                          # dest prefilled with the sftp URL
+            b"\r",
+            wait=STEP * 4,
+        )
         uploaded = os.path.join(remote, "upload.txt")
         check(
             "sftp: upload via F5",
@@ -3062,9 +3292,12 @@ def test_sftp():
             and open(uploaded).read() == "to the server\n",
         )
 
-        s.send(b"\t")                       # -> remote panel
-        s.send(HOME_K + DOWN)               # .. -> server.txt
-        s.send(F4, wait=STEP * 2)           # edit a scratch copy internally
+        s.keys(
+            b"\t",                       # -> remote panel
+            HOME_K + DOWN,               # .. -> server.txt
+            F4,           # edit a scratch copy internally
+            wait=STEP * 2,
+        )
         check("sftp: remote edit opens", "from the server" in s.screen())
         s.send(b"X")                        # prepend a byte
         s.send(F2, wait=STEP)               # save the scratch copy
@@ -3075,12 +3308,13 @@ def test_sftp():
             s.drain(0.3)
         check("sftp: edit uploaded back", open(remote_file).read() == "Xfrom the server\n")
 
-        s.send(F7)
-        s.send(b"made-remotely\r", wait=STEP * 3)
+        s.keys(F7, b"made-remotely\r", wait=STEP * 3)
         check("sftp: remote mkdir", os.path.isdir(os.path.join(remote, "made-remotely")))
 
-        s.send(END)                         # -> upload.txt on the server
-        s.send(F8)
+        s.keys(
+            END,                         # -> upload.txt on the server
+            F8,
+        )
         check("sftp: delete asks server-side", wait_for(s, "from the server?"))
         s.send(b"y", wait=STEP * 4)
         deadline = time.time() + 8
@@ -3146,9 +3380,11 @@ def test_fish():
         check("fish: host key dialog", wait_for(s, "Unknown host"))
         s.send(b"y")
         check("fish: password prompt", wait_for(s, "SSH authentication"))
-        s.send(b"secret\r", wait=STEP * 3)
+        s.send(b"secret\r", wait=STEP)
+        # logging in takes as long as it takes: wait for the panel to
+        # say it is there rather than for a fixed number of seconds
+        check("fish: connected", wait_for(s, "fish://tester@127.0.0.1"))
         scr = s.screen()
-        check("fish: connected", "fish://tester@127.0.0.1" in scr)
         check("fish: listing", "server.txt" in scr and "docs" in scr)
         # ls -l could not promise this one; NUL-separated records can
         check("fish: a name with a space in it", "two words.txt" in scr)
@@ -3158,8 +3394,7 @@ def test_fish():
         check("fish: F3 reads through the shell", "through the shell" in s.screen())
         s.send(b"q", wait=STEP)
 
-        s.send(F5)
-        s.send(b"\x15" + play.encode() + b"\r", wait=STEP * 3)
+        s.keys(F5, b"\x15" + play.encode() + b"\r", wait=STEP * 3)
         downloaded = os.path.join(play, "server.txt")
         check("fish: download",
               wait_for(s, "done -")
@@ -3173,8 +3408,11 @@ def test_fish():
         s.send(b"\t", wait=STEP * 2)
         s.send(b"\x12", wait=STEP)
         s.send(b"\x13upload\r", wait=STEP)
-        s.send(F5)
-        s.send(f"\x15fish://tester@127.0.0.1:{port}{remote}\r".encode(), wait=STEP * 4)
+        s.keys(
+            F5,
+            f"\x15fish://tester@127.0.0.1:{port}{remote}\r".encode(),
+            wait=STEP * 4,
+        )
         uploaded = os.path.join(remote, "upload.txt")
         check("fish: upload",
               wait_for(s, "done -")
@@ -3299,6 +3537,45 @@ def test_scale():
     check("scale: End reaches last of 100k", "f099999.dat" in s.screen())
     s.quit()
     shutil.rmtree(root)
+
+
+def at_panels(s, start, timeout=15):
+    """Wait until rcmd is back on its own screen. Which screen is up
+    cannot be read from screen(): that renders every byte the pty ever
+    carried, and knows nothing about the alternate screen the panels
+    live on - so the key bar the panels drew before handing the
+    terminal to a shell is still "on screen" while the shell owns it.
+    Entering the alternate screen is the thing to wait for."""
+    return wait_buf(s, b"\x1b[?1049h", timeout=timeout, start=start)
+
+
+def wait_file(path, needle=None, timeout=10):
+    """Wait for a file to exist (and hold `needle`). A command that
+    runs in the subshell finishes when it finishes: the screen is back
+    long before its output is on disk."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            text = open(path).read()
+            if needle is None or needle in text:
+                return True
+        except OSError:
+            pass
+        time.sleep(0.1)
+    return False
+
+
+def ensure_panels(s, timeout=15):
+    """Get back to rcmd's own screen, whichever one is up now. Whether
+    a dead shell hands the terminal back by itself depends on the
+    shell, so asking "are we there yet" beats assuming either way: a
+    Ctrl+O sent to panels that are already up walks into the shell."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if s.buf.rfind(b"\x1b[?1049h") > s.buf.rfind(b"\x1b[?1049l"):
+            return True
+        s.send(b"\x0f", wait=STEP, settle=0)
+    return False
 
 
 def wait_buf(s, needle, timeout=40, start=0):
@@ -3699,13 +3976,17 @@ def test_finddialog():
     # the rows below the two text fields, in order, from the content
     # field: 1 Shell patterns, 2 Case sensitive, 3 Whole words,
     # 4 Regular expression, 5 All charsets, 6 Skip hidden
-    def find(keys, wait=STEP * 3):
-        s.send(b"\x1b[20~")                  # F9
-        s.send(b"\x1b[C" * 2)                # -> Command
-        s.send(DOWN * 5)                     # -> Find file...
-        s.send(b"\r", wait=STEP)
-        s.send(keys)
-        s.send(b"\r", wait=wait)
+    def find(keys, wait=STEP):
+        s.keys(
+            b"\x1b[20~",                     # F9
+            b"\x1b[C" * 2,                   # -> Command
+            DOWN * 5,                        # -> Find file...
+            b"\r",                           # open the dialog
+            wait=STEP,
+        )
+        s.keys(keys, b"\r", wait=wait)
+        # the walk runs on its own thread
+        wait_for(s, "match(es)")
 
     s.send(b"\x1b[20~"); s.send(b"\x1b[C" * 2); s.send(DOWN * 5)
     s.send(b"\r", wait=STEP)
@@ -3767,13 +4048,17 @@ def test_findwindow():
     open(os.path.join(play, "deep", "deeper", "bottom.txt"), "w").write("bottom\n")
     s = Session(play, home)
 
-    def find(keys, wait=STEP * 3):
-        s.send(b"\x1b[20~")                  # F9
-        s.send(b"\x1b[C" * 2)                # -> Command
-        s.send(DOWN * 5)                     # -> Find file...
-        s.send(b"\r", wait=STEP)
-        s.send(keys)
-        s.send(b"\r", wait=wait)
+    def find(keys, wait=STEP):
+        s.keys(
+            b"\x1b[20~",                     # F9
+            b"\x1b[C" * 2,                   # -> Command
+            DOWN * 5,                        # -> Find file...
+            b"\r",                           # open the dialog
+            wait=STEP,
+        )
+        s.keys(keys, b"\r", wait=wait)
+        # the walk runs on its own thread
+        wait_for(s, "match(es)")
 
     find(b"\x15*.txt")
     scr = s.screen()
@@ -3843,21 +4128,27 @@ def test_subshell():
         # a typed command runs in the subshell, panels come right back
         # ('' splits the marker so the echoed command line can't match;
         # rcmd waits out slow shell startups - compinit and the like)
+        mark = len(s.buf)
         s.send(b"echo AA''BB\r")
         check(
             f"subshell {name}: typed command ran",
-            wait_buf(s, b"AABB"),
+            wait_buf(s, b"AABB", start=mark),
             detail=repr(s.buf[-400:]),
         )
         check(
             f"subshell {name}: auto-returned to panels",
-            wait_for(s, "10Quit", timeout=10),
+            at_panels(s, mark),
         )
 
-        # Ctrl+O into the shell, cd there, Ctrl+O back: the panel follows
-        s.send(b"\x0f", wait=STEP * 2)
-        s.send(b"cd followme\r", wait=STEP * 2)
-        s.send(b"\x0f", wait=STEP * 2)
+        # Ctrl+O into the shell, cd there, Ctrl+O back: the panel
+        # follows. settle=0 waits the whole time on these: handing the
+        # terminal to another process is not a redraw, and the pause
+        # while it happens is not the end of it.
+        s.send(b"\x0f", wait=STEP * 2, settle=0)
+        s.send(b"cd followme\r", wait=STEP * 2, settle=0)
+        mark = len(s.buf)
+        s.send(b"\x0f", wait=STEP, settle=0)
+        check(f"subshell {name}: back at the panels", at_panels(s, mark))
         check(
             f"subshell {name}: panel follows the shell cwd",
             wait_for(s, play + "/followme", timeout=10),
@@ -3873,10 +4164,13 @@ def test_subshell():
         )
 
         # exit respawns the shell (with a note on the output screen)
-        s.send(b"\x0f", wait=STEP * 2)
-        s.send(b"exit\r")
-        check(f"subshell {name}: exit respawns", wait_buf(s, b"respawned"))
-        s.send(b"\x0f", wait=STEP * 2)
+        s.send(b"\x0f", wait=STEP * 2, settle=0)
+        mark = len(s.buf)
+        s.send(b"exit\r", settle=0)
+        check(f"subshell {name}: exit respawns", wait_buf(s, b"respawned", start=mark))
+        # the panels have to be up before F10 goes out, or the shell
+        # gets it and there is nobody left to quit
+        check(f"subshell {name}: back at the panels to quit", ensure_panels(s))
         s.quit()
         shutil.rmtree(root, ignore_errors=True)
 

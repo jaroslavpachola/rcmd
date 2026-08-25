@@ -1,5 +1,35 @@
 # Changelog
 
+## 3.45.0 - 2026-08-25
+
+- **An idle rcmd stops repainting.** The event loop wakes on a timer to
+  poll jobs, watches and the like, and it drew a frame on every one of
+  those wakeups - eighteen a second, forever, for a screen that was not
+  moving. That is a stream of escape sequences down every ssh
+  connection and a process waking twenty times a second to say nothing.
+  A frame is now drawn when something changed, when something is
+  moving, or once every two seconds regardless - the last of those
+  being insurance against a change that forgot to say so.
+- **...and stops spinning behind a dialog.** A directory change picked
+  up by the watcher cannot be acted on while a dialog is open, but the
+  pending flag still put the loop in its 50 ms polling mode - so
+  opening any dialog after any file change left rcmd busy-waiting until
+  the dialog closed. The flag now only counts while the reload could
+  actually fire.
+- The e2e suite reads the screen rather than the clock: **288 s for a
+  full run, down from 447 s**, with the same checks. Most of what it
+  used to wait for was rcmd's own idle repainting - the two fixes above
+  are what made the difference, and 159 keystrokes that nothing looks
+  at in between now go out together.
+- Several checks in that suite were **passing vacuously** and are
+  fixed: the subshell test asked whether the panels were back by
+  looking for the key bar, which the screen still shows while a shell
+  owns the terminal (the alternate screen is invisible to the test's
+  renderer), so it had been one screen-toggle out of step for a long
+  time; and the viewer's search-kind helper pressed Space again before
+  the answer to the last one had landed, which could cycle past what it
+  was asked for.
+
 ## 3.44.0 - 2026-08-25
 
 - **The find results window** (4.0 S6): matches now land in a list of

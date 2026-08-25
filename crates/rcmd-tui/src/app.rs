@@ -35,6 +35,11 @@ use crate::keymap::Keymap;
 use crate::subshell::Subshell;
 use crate::{config, git, keymap, state, ui};
 
+/// How long an idle rcmd goes without repainting: long enough that the
+/// terminal is left alone, short enough that a state change nobody
+/// flagged still turns up.
+const IDLE_FRAME: Duration = Duration::from_secs(2);
+
 /// Fallback for `esc_timeout_ms`: how long a lone Esc waits for its
 /// follow-up key before acting as a plain Escape (MC's meta prefix).
 /// Short, so "Esc clears the command line" feels immediate; raise it in
@@ -1994,6 +1999,12 @@ pub struct App {
     remote_edit: Option<RemoteEdit>,
     du: Option<DuJob>,
     watch: Option<WatchState>,
+    /// Something on screen has changed since the last frame. The loop
+    /// wakes on a timer to poll jobs, watches and the like; drawing on
+    /// every one of those wakeups repainted an idle rcmd eighteen times
+    /// a second, which is a stream of escape sequences down every ssh
+    /// connection for a screen that is not moving.
+    dirty: bool,
     /// Ctrl+X was pressed; the next key completes the chord.
     prefix_cx: bool,
     /// C-l: clear the terminal before the next draw.
@@ -2121,6 +2132,7 @@ impl App {
             remote_edit: None,
             du: None,
             watch,
+            dirty: true,
             prefix_cx: false,
             repaint: false,
             areas: Areas::default(),
@@ -2141,6 +2153,7 @@ impl App {
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let mut last_frame = Instant::now();
         while !self.quit {
             self.drain_job();
             self.drain_find();
@@ -2159,19 +2172,20 @@ impl App {
                 && at.elapsed() >= Duration::from_millis(self.config.esc_timeout_ms)
             {
                 self.esc_at = None;
+                self.dirty = true;
                 self.dispatch_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
             }
-            if self.repaint {
-                self.repaint = false;
-                terminal.clear()?;
-            }
-            terminal.draw(|frame| ui::draw(frame, self))?;
             let loading = self.panels.iter().any(Panel::is_loading);
-            let watch_pending = self
-                .watch
-                .as_ref()
-                .is_some_and(|w| w.dirty.iter().any(Option::is_some));
-            let timeout = if !self.jobs.is_empty()
+            // a change waiting on a dialog to close is not something
+            // to spin over: it cannot be acted on until the dialog goes
+            let watch_pending = self.watch_can_fire()
+                && self
+                    .watch
+                    .as_ref()
+                    .is_some_and(|w| w.dirty.iter().any(Option::is_some));
+            // "busy" is anything that moves on its own: a job's
+            // progress, a listing still arriving, a followed file
+            let busy = !self.jobs.is_empty()
                 || self.find.is_some()
                 || self.connect.is_some()
                 || self.du.is_some()
@@ -2179,13 +2193,30 @@ impl App {
                 || watch_pending
                 || self.esc_at.is_some()
                 || self.subshell.as_ref().is_some_and(|s| !s.ready())
-                || self.viewer().is_some_and(|v| v.follow)
-            {
+                || self.viewer().is_some_and(|v| v.follow);
+            // ...and a frame is drawn when something changed, when
+            // something is moving, or once in a while regardless - the
+            // last of those is insurance against a state change that
+            // forgot to say so, and at one frame every two seconds it
+            // costs nothing.
+            if self.dirty || busy || last_frame.elapsed() >= IDLE_FRAME {
+                if self.repaint {
+                    self.repaint = false;
+                    terminal.clear()?;
+                }
+                terminal.draw(|frame| ui::draw(frame, self))?;
+                self.dirty = false;
+                last_frame = Instant::now();
+            }
+            let timeout = if busy {
                 Duration::from_millis(50)
             } else {
                 Duration::from_millis(500)
             };
             if event::poll(timeout)? {
+                // whatever the event turns out to be, the screen may
+                // answer it
+                self.dirty = true;
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
                     Event::Mouse(mouse) => self.on_mouse(mouse),
@@ -2226,9 +2257,14 @@ impl App {
     }
 
     fn poll_loads(&mut self) {
-        for panel in &mut self.panels {
-            if let Some(Err(err)) = panel.poll_pending() {
-                self.status = Some(format!(" {err} "));
+        for i in 0..2 {
+            match self.panels[i].poll_pending() {
+                Some(Err(err)) => {
+                    self.status = Some(format!(" {err} "));
+                    self.dirty = true;
+                }
+                Some(Ok(())) => self.dirty = true,
+                None => {}
             }
         }
     }
@@ -2284,9 +2320,20 @@ impl App {
 
     /// Debounced auto-reload: fire after 250 ms of quiet, or at the
     /// latest 2 s after the first event of a burst.
+    /// Whether a pending directory reload could fire right now. While
+    /// a dialog is up, the listing underneath is left alone - and
+    /// until it can be reloaded, the pending flag must not keep the
+    /// event loop awake either.
+    fn watch_can_fire(&self) -> bool {
+        self.fg_job().is_none()
+            && self.find.is_none()
+            && self.dialog.is_none()
+            && self.quick_search.is_none()
+    }
+
     fn tick_watch(&mut self) {
         use std::time::Instant;
-        let busy = self.fg_job().is_some();
+        let can_fire = self.watch_can_fire();
         let Some(watch) = self.watch.as_mut() else {
             return;
         };
@@ -2304,7 +2351,7 @@ impl App {
                 }
             }
         }
-        if busy || self.find.is_some() || self.dialog.is_some() || self.quick_search.is_some() {
+        if !can_fire {
             return;
         }
         for i in 0..2 {
@@ -2725,11 +2772,15 @@ impl App {
             return;
         };
         sub.pump(false);
-        if let Some(note) = sub.note.take() {
+        let note = sub.note.take();
+        let failed = sub.failed;
+        if let Some(note) = note {
             self.status = Some(note);
+            self.dirty = true;
         }
-        if sub.failed {
+        if failed {
             self.subshell = None;
+            self.dirty = true;
         }
     }
 
@@ -4226,6 +4277,7 @@ impl App {
             let panel = &self.panels[side];
             if panel.is_local() && panel.cwd == dir {
                 self.git_info[side] = status.map(|s| (dir, s));
+                self.dirty = true;
             }
         }
         if !git::ENABLED || !self.config.git {
@@ -4284,6 +4336,12 @@ impl App {
     /// Keep the preview in sync with the cursor of the browsing panel;
     /// called every loop iteration, reopens only when the file changes.
     fn update_quick_view(&mut self) {
+        if self.quick_view.is_none() {
+            return;
+        }
+        // the preview follows the other panel's cursor, and what it
+        // shows can change without a key of its own
+        self.dirty = true;
         let Some(qv) = self.quick_view.as_mut() else {
             return;
         };
@@ -4343,7 +4401,15 @@ impl App {
                 None => true,
             };
             if stale {
-                self.disk[side] = Some((panel.cwd.clone(), Instant::now(), free_space(&panel.cwd)));
+                let now = Some((panel.cwd.clone(), Instant::now(), free_space(&panel.cwd)));
+                // only a changed figure is worth a frame; the clock
+                // ticking over is not
+                if now.as_ref().map(|(dir, _, free)| (dir, free))
+                    != self.disk[side].as_ref().map(|(dir, _, free)| (dir, free))
+                {
+                    self.dirty = true;
+                }
+                self.disk[side] = now;
             }
         }
     }
