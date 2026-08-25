@@ -271,6 +271,15 @@ listing stays up with a spinner, typing never blocks, Esc cancels.
 Panels also auto-reload when their directory changes on disk (debounced;
 `watch = false` in the config disables it).
 
+**Selecting and filtering**: `+` and `-` select and unselect by
+pattern, and `Ctrl+F` filters what the panel shows at all. All three
+are mc's one dialog: the pattern, then **Files only** (directories are
+left alone, so a filter can never strand you), **Case sensitive**, and
+**Shell patterns** - unticked, the pattern is a regular expression
+instead of a glob. A regex that will not compile is quoted back at you
+rather than silently matching nothing. The panel names the filter it is
+under along its bottom edge, options included.
+
 **Power tools**: Alt+F7 opens find file - a filename glob plus an
 optional case-insensitive content substring; matches stream live into
 the active panel as a *panelized* listing (paths relative to the panel

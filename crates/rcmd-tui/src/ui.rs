@@ -283,7 +283,10 @@ const HELP_TEXT: &[&str] = &[
     "  Backspace       go to parent directory / leave the archive",
     "  Ctrl+S, Alt+S   quick search (type to jump, Ctrl+S again = next)",
     "  Ctrl+U          swap the two panels",
-    "  Ctrl+F          filter shown files by glob ('*' clears)",
+    "  Ctrl+F          filter which files the panel shows: a pattern,",
+    "                  plus Files only, Case sensitive and Shell",
+    "                  patterns (off = a regular expression). '*'",
+    "                  clears it; the panel says what it is filtering by",
     "  Ctrl+\\          directory hotlist (Enter cd, a add, d delete)",
     "  Alt+F7          find file (glob + optional content substring);",
     "                  results stream into the panel, Esc cancels",
@@ -386,8 +389,10 @@ const HELP_TEXT: &[&str] = &[
     "",
     "# Marking",
     "  Insert, Ctrl+T  toggle mark and advance",
-    "  +               select by glob pattern",
-    "  - or \\          unselect by glob pattern",
+    "  +               select by pattern: a glob or (with Shell patterns",
+    "                  unticked) a regular expression, plus Files only",
+    "                  and Case sensitive - Tab walks, Space ticks",
+    "  - or \\          unselect the same way",
     "  *               invert selection",
     "  (the four keys above work while the command line is empty)",
     "",
@@ -749,6 +754,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::UserMenu(selected) => draw_user_menu(frame, &app.config.commands, *selected),
             Dialog::Find(d) => draw_find(frame, d),
             Dialog::Options(d) => draw_options(frame, d),
+            Dialog::Pattern(d) => draw_pattern(frame, d),
             Dialog::Charset(row) => {
                 draw_pick_list(frame, " Character set ", &crate::app::CHARSET_ROWS, *row, 0)
             }
@@ -3233,6 +3239,55 @@ fn draw_options(frame: &mut Frame, d: &OptionsDialog) {
     frame.render_widget(
         buttons_line(&["OK", "Cancel"], selected, base, sel),
         buttons,
+    );
+}
+
+/// MC's select / unselect / filter form: the pattern, then the three
+/// answers that change what it means.
+fn draw_pattern(frame: &mut Frame, d: &crate::app::PatternDialog) {
+    use crate::app::PATTERN_ROWS;
+    let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let inner = popup(frame, centered(56, 9, frame.area()), &d.title, style);
+    let row = |offset: u16| Rect {
+        x: inner.x + 1,
+        y: inner.y + offset,
+        width: inner.width.saturating_sub(2),
+        height: 1,
+    };
+    field_row(frame, row(0), &d.value, (d.row == 0).then_some(d.cursor));
+    let check = |on: bool| if on { "[x]" } else { "[ ]" };
+    for (i, (on, label)) in [
+        (d.files_only, "Files only"),
+        (d.case_sensitive, "Case sensitive"),
+        (d.shell, "Shell patterns (off = regular expression)"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let focused = d.row == i + 1;
+        frame.render_widget(
+            Line::from(format!(" {} {label}", check(*on))).style(if focused { sel } else { style }),
+            row(i as u16 + 2),
+        );
+    }
+    frame.render_widget(
+        buttons_line(
+            &["OK", "Cancel"],
+            if d.row == PATTERN_ROWS {
+                usize::from(!d.ok)
+            } else {
+                usize::MAX
+            },
+            style,
+            sel,
+        ),
+        Rect {
+            x: inner.x,
+            y: inner.y + 6,
+            width: inner.width,
+            height: 1,
+        },
     );
 }
 

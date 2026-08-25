@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.42.0 - 2026-08-25
+
+- **The select, unselect and filter dialogs** (4.0 S6): `+`, `-` and
+  `Ctrl+F` now ask mc's question - the pattern, plus **Files only**,
+  **Case sensitive** and **Shell patterns**. Unticking the last one
+  makes the pattern a **regular expression**, which is the thing a glob
+  cannot do: `^\d+\.txt$` selects the numbered files and nothing else.
+- One form serves all three, because in mc they are one dialog with a
+  different title, and one type in the core (`pattern::Pattern`)
+  carries the answers to whoever is matching.
+- **Files only leaves directories alone.** A filter that hid them would
+  strand you in a directory with no way down, which is why the switch
+  is on by default; unticking it lets a pattern take directories too,
+  which is what "select every backup" sometimes means.
+- **A regex that will not compile is reported**, quoting what the
+  regex crate said about the pattern you typed, rather than quietly
+  matching nothing. A listing never reports it a second time: the
+  dialog has already refused it.
+- The panel names the filter it is under along its bottom edge, with
+  the options that are not the usual ones spelled out - `*.log (regex)
+  (any case)` rather than a pattern that does not look like one.
+- Select and unselect now say how many entries they moved.
+
 ## 3.41.0 - 2026-08-25
 
 - **Per-panel codepages** (4.0 S5, completing it): `Alt+E` on a panel -

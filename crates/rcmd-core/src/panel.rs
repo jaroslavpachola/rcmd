@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use crate::archive::ArchiveFs;
 use crate::entry::Entry;
-use crate::glob::glob_match;
 use crate::vfs::{FsProvider, LocalFs, is_archive_name};
 
 /// How long a directory listing may take before the panel switches to a
@@ -76,8 +75,9 @@ pub struct Panel {
     pub sort_reverse: bool,
     pub show_hidden: bool,
     pub list_mode: ListMode,
-    /// Glob applied to files (directories always show), MC's "filter".
-    pub filter: Option<String>,
+    /// MC's "filter": which entries the listing shows at all, as the
+    /// pattern and the answers beside it.
+    pub filter: Option<crate::pattern::Pattern>,
     /// Codepage the filenames in this directory are written in (M-e).
     /// None = UTF-8, read leniently, which is every modern filesystem.
     pub charset: Option<&'static crate::charset::Encoding>,
@@ -153,7 +153,7 @@ impl Panel {
                 &*fs,
                 &dir,
                 show_hidden,
-                filter.as_deref(),
+                filter.as_ref(),
                 sort_key,
                 sort_reverse,
                 charset,
@@ -356,7 +356,7 @@ impl Panel {
         let mut entries = shape_listing(
             raw,
             self.show_hidden,
-            self.filter.as_deref(),
+            self.filter.as_ref(),
             self.sort_key,
             self.sort_reverse,
             self.charset,
@@ -409,7 +409,7 @@ impl Panel {
                 fs,
                 dir,
                 self.show_hidden,
-                self.filter.as_deref(),
+                self.filter.as_ref(),
                 self.sort_key,
                 self.sort_reverse,
                 self.charset,
@@ -658,19 +658,31 @@ impl Panel {
         self.move_down();
     }
 
-    pub fn mark_glob(&mut self, pattern: &str, mark: bool) {
-        for entry in &self.entries {
-            if entry.is_parent() {
-                continue;
-            }
-            if glob_match(pattern, &self.name_of(entry)) {
-                if mark {
-                    self.marked.insert(entry.name.clone());
-                } else {
-                    self.marked.remove(&entry.name);
-                }
-            }
+    /// MC's select / unselect group. Returns how many entries the
+    /// pattern moved, or why it could not be read.
+    pub fn mark_pattern(
+        &mut self,
+        pattern: &crate::pattern::Pattern,
+        mark: bool,
+    ) -> Result<usize, String> {
+        let matcher = pattern.compile()?;
+        let mut moved = 0;
+        let hits: Vec<std::ffi::OsString> = self
+            .entries
+            .iter()
+            .filter(|entry| !entry.is_parent())
+            .filter(|entry| !(pattern.files_only && entry.is_dir()))
+            .filter(|entry| matcher.matches(&self.name_of(entry)))
+            .map(|entry| entry.name.clone())
+            .collect();
+        for name in hits {
+            let changed = match mark {
+                true => self.marked.insert(name),
+                false => self.marked.remove(&name),
+            };
+            moved += usize::from(changed);
         }
+        Ok(moved)
     }
 
     pub fn invert_marks(&mut self) {
@@ -764,7 +776,7 @@ fn prepare_listing(
     fs: &dyn FsProvider,
     dir: &Path,
     show_hidden: bool,
-    filter: Option<&str>,
+    filter: Option<&crate::pattern::Pattern>,
     key: SortKey,
     reverse: bool,
     charset: Option<&'static crate::charset::Encoding>,
@@ -784,7 +796,7 @@ fn prepare_listing(
 fn shape_listing(
     mut entries: Vec<Entry>,
     show_hidden: bool,
-    filter: Option<&str>,
+    filter: Option<&crate::pattern::Pattern>,
     key: SortKey,
     reverse: bool,
     charset: Option<&'static crate::charset::Encoding>,
@@ -793,10 +805,16 @@ fn shape_listing(
         entries.retain(|e| !e.is_hidden());
     }
     // the filter is typed in the panel's codepage, so it is matched
-    // against the names as that codepage spells them
-    if let Some(pattern) = filter {
+    // against the names as that codepage spells them. A pattern that
+    // will not compile filters nothing rather than everything: the
+    // dialog has already refused it, and a listing is not the place to
+    // report it a second time.
+    if let Some(pattern) = filter
+        && let Ok(matcher) = pattern.compile()
+    {
         entries.retain(|e| {
-            e.is_dir() || glob_match(pattern, &crate::charset::decode_name(&e.name, charset))
+            (pattern.files_only && e.is_dir())
+                || matcher.matches(&crate::charset::decode_name(&e.name, charset))
         });
     }
     sort_entries(&mut entries, key, reverse, charset);
@@ -958,7 +976,11 @@ mod tests {
         panel.toggle_mark(); // marks "Docs"
         assert_eq!(panel.marked_stats().0, 1);
 
-        panel.mark_glob("*.md", true);
+        let glob = |text: &str| crate::pattern::Pattern {
+            text: text.into(),
+            ..crate::pattern::Pattern::default()
+        };
+        assert_eq!(panel.mark_pattern(&glob("*.md"), true).unwrap(), 1);
         assert!(
             panel.is_marked(
                 panel
@@ -974,7 +996,24 @@ mod tests {
         assert_eq!(count, panel.entries.len() - 1 - 2); // all except "..", Docs, README.md
 
         panel.marked.clear();
-        panel.mark_glob("*", true);
+        // "*" with "files only" on leaves the directories alone, so
+        // the marks are the files and targets falls back to nothing
+        // else - the switch is the difference between "everything" and
+        // "every file"
+        let all_files = panel.mark_pattern(&glob("*"), true).unwrap();
+        let dirs = panel.entries.iter().filter(|e| e.is_dir()).count();
+        assert_eq!(all_files, panel.entries.len() - dirs);
+        panel.marked.clear();
+        panel
+            .mark_pattern(
+                &crate::pattern::Pattern {
+                    text: "*".into(),
+                    files_only: false,
+                    ..crate::pattern::Pattern::default()
+                },
+                true,
+            )
+            .unwrap();
         let targets = panel.targets();
         assert_eq!(targets.len(), panel.entries.len() - 1);
         assert!(targets.iter().all(|p| p.parent() == Some(tree.path())));
@@ -991,7 +1030,10 @@ mod tests {
     fn filter_hides_files_but_not_dirs() {
         let tree = make_tree();
         let mut panel = Panel::new(tree.path().to_path_buf()).unwrap();
-        panel.filter = Some("*.md".into());
+        panel.filter = Some(crate::pattern::Pattern {
+            text: "*.md".into(),
+            ..crate::pattern::Pattern::default()
+        });
         panel.reload().unwrap();
         let listed = names(&panel);
         assert!(listed.contains(&"README.md".to_string()));
@@ -1035,7 +1077,16 @@ mod tests {
     fn changing_directory_clears_marks() {
         let tree = make_tree();
         let mut panel = Panel::new(tree.path().to_path_buf()).unwrap();
-        panel.mark_glob("*", true);
+        panel
+            .mark_pattern(
+                &crate::pattern::Pattern {
+                    text: "*".into(),
+                    files_only: false,
+                    ..crate::pattern::Pattern::default()
+                },
+                true,
+            )
+            .unwrap();
         assert!(!panel.marked.is_empty());
         let src_pos = panel.entries.iter().position(|e| e.name == "src").unwrap();
         panel.cursor = src_pos;
@@ -1269,7 +1320,16 @@ mod tests {
     fn adopt_remote_and_return_to_local() {
         let tree = make_tree();
         let mut panel = Panel::new(tree.path().to_path_buf()).unwrap();
-        panel.mark_glob("*", true);
+        panel
+            .mark_pattern(
+                &crate::pattern::Pattern {
+                    text: "*".into(),
+                    files_only: false,
+                    ..crate::pattern::Pattern::default()
+                },
+                true,
+            )
+            .unwrap();
 
         let raw = vec![
             Entry {

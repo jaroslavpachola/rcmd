@@ -14,6 +14,7 @@ pub mod mail;
 pub mod mask;
 pub mod panel;
 pub mod patch;
+pub mod pattern;
 pub mod remote;
 pub mod rename;
 pub mod rpm;

@@ -52,10 +52,6 @@ pub enum InputAction {
         sources: Vec<PathBuf>,
     },
     Mkdir,
-    SelectGlob {
-        mark: bool,
-    },
-    Filter,
     Panelize,
     /// F9 → Command → Remote link: the value is an sftp:// or ftp:// URL.
     SftpConnect,
@@ -395,6 +391,8 @@ pub enum Dialog {
     Jobs(usize),
     /// M-e: the panel's codepage, with the row it is on.
     Charset(usize),
+    /// Select / unselect group, and the panel filter.
+    Pattern(Box<PatternDialog>),
     /// M-h: the command-line history; the payload is the selected row.
     History(usize),
     /// F9 > Command > Directory tree. Enter here changes the *current*
@@ -457,6 +455,65 @@ pub enum EditFollowUp {
     Remote(RemoteEdit),
     /// A bulk-rename buffer, to diff into renames.
     Bulk(BulkRename),
+}
+
+/// MC's select / unselect / filter dialog: a pattern and the three
+/// answers that change what it means. One form for all three, because
+/// in mc they are one dialog with a different title.
+pub struct PatternDialog {
+    pub title: String,
+    pub value: String,
+    pub cursor: usize,
+    pub shell: bool,
+    pub case_sensitive: bool,
+    pub files_only: bool,
+    /// Focused row: 0 is the pattern, then one per switch, then
+    /// [`PATTERN_ROWS`] for the button row.
+    pub row: usize,
+    pub ok: bool,
+    /// What OK does: mark, unmark, or filter the listing.
+    pub kind: PatternKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PatternKind {
+    Select { mark: bool },
+    Filter,
+}
+
+/// The pattern field plus the three switches.
+pub const PATTERN_ROWS: usize = 4;
+
+impl PatternDialog {
+    /// The core's shape of the same question.
+    pub fn to_pattern(&self) -> rcmd_core::pattern::Pattern {
+        rcmd_core::pattern::Pattern {
+            text: self.value.trim().to_string(),
+            shell: self.shell,
+            case_sensitive: self.case_sensitive,
+            files_only: self.files_only,
+        }
+    }
+
+    fn toggle(&mut self) {
+        match self.row {
+            1 => self.files_only = !self.files_only,
+            2 => self.case_sensitive = !self.case_sensitive,
+            3 => self.shell = !self.shell,
+            _ => {}
+        }
+    }
+
+    fn step(&mut self, step: isize) {
+        let last = PATTERN_ROWS as isize; // the button row
+        let mut row = self.row as isize + step;
+        if row < 0 {
+            row = last;
+        } else if row > last {
+            row = 0;
+        }
+        self.row = row as usize;
+    }
 }
 
 /// F9 > Options > Panel options - MC-style checkbox form over the
@@ -5932,6 +5989,40 @@ impl App {
                     _ => self.dialog = Some(Dialog::Vfs(d)),
                 }
             }
+            Dialog::Pattern(mut d) => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => {
+                    if d.row != PATTERN_ROWS || d.ok {
+                        self.submit_pattern(&d);
+                    }
+                }
+                KeyCode::Up | KeyCode::BackTab => {
+                    d.step(-1);
+                    self.dialog = Some(Dialog::Pattern(d));
+                }
+                KeyCode::Down | KeyCode::Tab => {
+                    d.step(1);
+                    self.dialog = Some(Dialog::Pattern(d));
+                }
+                KeyCode::Char(' ') if d.row != 0 => {
+                    if d.row == PATTERN_ROWS {
+                        d.ok = !d.ok;
+                    } else {
+                        d.toggle();
+                    }
+                    self.dialog = Some(Dialog::Pattern(d));
+                }
+                KeyCode::Left | KeyCode::Right if d.row == PATTERN_ROWS => {
+                    d.ok = !d.ok;
+                    self.dialog = Some(Dialog::Pattern(d));
+                }
+                code if d.row == 0 => {
+                    let (value, cursor) = (&mut d.value, &mut d.cursor);
+                    edit_line(value, cursor, code, key.modifiers);
+                    self.dialog = Some(Dialog::Pattern(d));
+                }
+                _ => self.dialog = Some(Dialog::Pattern(d)),
+            },
             Dialog::Charset(row) => match charset_pick_key(row, key) {
                 PickKey::Move(to) => self.dialog = Some(Dialog::Charset(to)),
                 PickKey::Close => {}
@@ -6707,16 +6798,6 @@ impl App {
 
     fn submit_input(&mut self, dialog: InputDialog) {
         let value = dialog.value.trim().to_string();
-        if let InputAction::Filter = dialog.action {
-            let panel = &mut self.panels[self.active];
-            panel.filter = if value.is_empty() || value == "*" {
-                None
-            } else {
-                Some(value)
-            };
-            self.fallible(|p| p.reload().map(|()| true));
-            return;
-        }
         if value.is_empty() {
             return;
         }
@@ -6754,8 +6835,7 @@ impl App {
                     Err(err) => self.status = Some(format!(" mkdir: {err} ")),
                 }
             }
-            InputAction::SelectGlob { mark } => self.panels[self.active].mark_glob(&value, mark),
-            InputAction::Filter => unreachable!("handled above"),
+
             InputAction::Panelize => self.run_panelize(&value),
             InputAction::SftpConnect => self.connect_remote(&value),
             InputAction::EditNew => {
@@ -7063,16 +7143,47 @@ impl App {
     }
 
     fn open_filter(&mut self) {
-        let current = self.panels[self.active]
-            .filter
-            .clone()
-            .unwrap_or_else(|| "*".into());
-        self.dialog = Some(Dialog::Input(InputDialog {
-            title: " Filter (files matching) ".into(),
-            cursor: current.chars().count(),
-            value: current,
-            action: InputAction::Filter,
-        }));
+        // the filter in force, so the dialog opens on what is hiding
+        // things rather than on a blank
+        let current = self.panels[self.active].filter.clone().unwrap_or_default();
+        self.dialog = Some(Dialog::Pattern(Box::new(PatternDialog {
+            title: " Filter (show files matching) ".into(),
+            cursor: current.text.chars().count(),
+            value: current.text,
+            shell: current.shell,
+            case_sensitive: current.case_sensitive,
+            files_only: current.files_only,
+            row: 0,
+            ok: true,
+            kind: PatternKind::Filter,
+        })));
+    }
+
+    /// OK on that form: mark, unmark, or set the panel's filter.
+    fn submit_pattern(&mut self, d: &PatternDialog) {
+        let pattern = d.to_pattern();
+        if let Err(err) = pattern.compile() {
+            // the regular expression is the user's, so it is quoted
+            // back rather than swallowed
+            self.status = Some(format!(" {} ", err.lines().next().unwrap_or("bad pattern")));
+            return;
+        }
+        match d.kind {
+            PatternKind::Select { mark } => {
+                match self.panels[self.active].mark_pattern(&pattern, mark) {
+                    Ok(moved) => {
+                        let verb = if mark { "selected" } else { "unselected" };
+                        self.status = Some(format!(" {moved} {verb} "));
+                    }
+                    Err(err) => self.status = Some(format!(" {err} ")),
+                }
+            }
+            PatternKind::Filter => {
+                let panel = &mut self.panels[self.active];
+                panel.filter = (!pattern.is_open()).then_some(pattern);
+                self.fallible(|p| p.reload().map(|()| true));
+            }
+        }
     }
 
     fn start_transfer(
@@ -8083,17 +8194,20 @@ impl App {
     }
 
     fn open_select(&mut self, mark: bool) {
-        self.dialog = Some(Dialog::Input(InputDialog {
-            title: if mark {
-                " Select group "
-            } else {
-                " Unselect group "
-            }
-            .into(),
+        self.dialog = Some(Dialog::Pattern(Box::new(PatternDialog {
+            title: match mark {
+                true => " Select group ".into(),
+                false => " Unselect group ".into(),
+            },
             value: "*".into(),
             cursor: 1,
-            action: InputAction::SelectGlob { mark },
-        }));
+            shell: true,
+            case_sensitive: true,
+            files_only: true,
+            row: 0,
+            ok: true,
+            kind: PatternKind::Select { mark },
+        })));
     }
 
     fn open_delete(&mut self, permanent: bool) {

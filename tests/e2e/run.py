@@ -3605,6 +3605,71 @@ def test_panelcharset():
     shutil.rmtree(root)
 
 
+def test_selectdialog():
+    """PLAN4 S6: mc's select / unselect / filter dialog - files only,
+    case sensitive, and shell patterns or a regular expression."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "sub"))
+    for name in ("Alpha.TXT", "beta.txt", "gamma.md"):
+        open(os.path.join(play, name), "w").write(name + "\n")
+    s = Session(play, home)
+
+    s.send(b"+", wait=STEP)
+    scr = s.screen()
+    check("selectdialog: the switches are there",
+          "Files only" in scr and "Case sensitive" in scr
+          and "Shell patterns" in scr, scr)
+
+    # case sensitive is on, so "*.txt" is not "*.TXT"
+    s.send(b"\x15*.txt\r", wait=STEP * 2)
+    check("selectdialog: case sensitive means case", wait_for(s, "1 selected"))
+
+    # ...and unticking it makes it both
+    s.send(b"-", wait=STEP)                 # unselect group, to start clean
+    s.send(b"\x15*\r", wait=STEP * 2)
+    s.send(b"+", wait=STEP)
+    s.send(b"\x15*.txt", wait=STEP)
+    s.send(b"\t\t ", wait=STEP)             # -> Case sensitive, off
+    check("selectdialog: the box unticked", "[ ] Case sensitive" in s.screen(), s.screen())
+    s.send(b"\r", wait=STEP * 2)
+    check("selectdialog: now it is both", wait_for(s, "2 selected"))
+
+    # a regular expression instead of a glob
+    s.send(b"-", wait=STEP)
+    s.send(b"\x15*\r", wait=STEP * 2)
+    s.send(b"+", wait=STEP)
+    s.send(b"\x15^beta", wait=STEP)
+    s.send(b"\t\t\t ", wait=STEP)           # -> Shell patterns, off = regex
+    s.send(b"\r", wait=STEP * 2)
+    check("selectdialog: the regex matched one", wait_for(s, "1 selected"))
+
+    # a broken one is reported rather than swallowed
+    s.send(b"+", wait=STEP)
+    s.send(b"\x15(", wait=STEP)
+    s.send(b"\t\t\t ", wait=STEP)
+    s.send(b"\r", wait=STEP * 2)
+    check("selectdialog: a broken regex says so", wait_for(s, "regex parse error"))
+    s.send(b"\x1b\x1b", wait=STEP)
+
+    # the filter is the same form: it hides what does not match, and
+    # says what it is filtering by
+    s.send(b"\x06", wait=STEP)              # Ctrl+F
+    s.send(b"\x15*.md\r", wait=STEP * 2)
+    scr = s.screen()
+    # both panels start in the same directory and only this one is
+    # filtered, so the count is what says it worked
+    check("selectdialog: the filter hid the rest",
+          scr.count("gamma.md") == 2 and scr.count("beta.txt") == 1, scr)
+    check("selectdialog: and the panel says why", "filter: *.md" in scr, scr)
+    check("selectdialog: directories stay", "sub" in scr, scr)
+    s.send(b"\x06", wait=STEP)
+    s.send(b"\x15*\r", wait=STEP * 2)
+    check("selectdialog: cleared again", "beta.txt" in s.screen())
+
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_subshell():
     """R1 per-shell scenarios: forced subshell=true in every suite mode."""
     shells = ["/bin/sh"]
@@ -3733,6 +3798,7 @@ def main():
         test_screens,
         test_charset,
         test_panelcharset,
+        test_selectdialog,
         test_subshell,
         test_sftp,
         test_fish,
