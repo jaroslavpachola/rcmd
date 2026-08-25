@@ -155,6 +155,47 @@ pub fn parse_key(spec: &str) -> Option<(KeyCode, KeyModifiers)> {
     Some((code, mods))
 }
 
+/// The inverse of [`parse_key`]: what a key event is called in the
+/// config. This is what the Learn keys dialog shows, so that whatever
+/// the terminal sent can be pasted into `[keys.panel]` as it stands.
+pub fn key_name(code: KeyCode, mods: KeyModifiers) -> String {
+    let mut out = String::new();
+    if mods.contains(KeyModifiers::CONTROL) {
+        out.push_str("ctrl+");
+    }
+    if mods.contains(KeyModifiers::ALT) {
+        out.push_str("alt+");
+    }
+    // shift is part of the character for letters; it only earns a name
+    // where the key has no case of its own
+    if mods.contains(KeyModifiers::SHIFT) && !matches!(code, KeyCode::Char(_)) {
+        out.push_str("shift+");
+    }
+    let name = match code {
+        KeyCode::Enter => "enter".into(),
+        KeyCode::Tab => "tab".into(),
+        KeyCode::BackTab => "shift+tab".into(),
+        KeyCode::Esc => "esc".into(),
+        KeyCode::Char(' ') => "space".into(),
+        KeyCode::Backspace => "backspace".into(),
+        KeyCode::Insert => "insert".into(),
+        KeyCode::Delete => "delete".into(),
+        KeyCode::Home => "home".into(),
+        KeyCode::End => "end".into(),
+        KeyCode::PageUp => "pgup".into(),
+        KeyCode::PageDown => "pgdn".into(),
+        KeyCode::Up => "up".into(),
+        KeyCode::Down => "down".into(),
+        KeyCode::Left => "left".into(),
+        KeyCode::Right => "right".into(),
+        KeyCode::F(n) => format!("f{n}"),
+        KeyCode::Char(c) => c.to_lowercase().to_string(),
+        other => format!("{other:?}").to_lowercase(),
+    };
+    out.push_str(&name);
+    out
+}
+
 pub fn parse_action(name: &str) -> Option<Action> {
     Some(match name {
         "help" => Action::Help,
@@ -226,6 +267,29 @@ pub fn parse_action(name: &str) -> Option<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_names_round_trip() {
+        for spec in [
+            "f5",
+            "ctrl+s",
+            "alt+enter",
+            "shift+f3",
+            "ctrl+alt+left",
+            "space",
+            "pgdn",
+            "insert",
+            "a",
+        ] {
+            let (code, mods) = parse_key(spec).expect(spec);
+            assert_eq!(key_name(code, mods), spec, "{spec}");
+        }
+        // BackTab is one key crossterm reports as its own, and it is
+        // spelled the way the config spells it
+        assert_eq!(key_name(KeyCode::BackTab, KeyModifiers::NONE), "shift+tab");
+        // a shifted letter is the letter; its case is the shift
+        assert_eq!(key_name(KeyCode::Char('A'), KeyModifiers::SHIFT), "a");
+    }
 
     #[test]
     fn parse_key_variants() {
@@ -507,6 +571,39 @@ pub fn parse_editor_action(name: &str) -> Option<EditorAction> {
 }
 
 /// Defaults plus the user's `[keys.viewer]` overrides.
+/// What a dialog key can be rebound to. There are only four things a
+/// dialog does with a key that is not text, and every dialog does them
+/// the same way - so `[keys.dialog]` is a translation table rather than
+/// a per-dialog action list: a bound key arrives at the dialog as the
+/// key it stands for, and every dialog already knows that one.
+pub fn build_dialog(custom: &BTreeMap<String, String>) -> (DialogMap, Vec<String>) {
+    let mut map = DialogMap::new();
+    let mut warnings = Vec::new();
+    for (spec, action) in custom {
+        let Some(key) = parse_key(spec) else {
+            warnings.push(format!("[keys.dialog]: unknown key '{spec}'"));
+            continue;
+        };
+        let canonical = match action.as_str() {
+            "ok" | "accept" => (KeyCode::Enter, KeyModifiers::NONE),
+            "cancel" => (KeyCode::Esc, KeyModifiers::NONE),
+            "next" | "next-field" => (KeyCode::Tab, KeyModifiers::NONE),
+            "prev" | "prev-field" => (KeyCode::BackTab, KeyModifiers::NONE),
+            other => {
+                warnings.push(format!(
+                    "[keys.dialog]: unknown action '{other}' (ok, cancel, next, prev)"
+                ));
+                continue;
+            }
+        };
+        map.insert((key.0, key.1), canonical);
+    }
+    (map, warnings)
+}
+
+/// A key in a dialog, and the key it stands in for.
+pub type DialogMap = std::collections::HashMap<(KeyCode, KeyModifiers), (KeyCode, KeyModifiers)>;
+
 pub fn build_viewer(custom: &BTreeMap<String, String>) -> (ViewerMap, Vec<String>) {
     build_context(VIEWER_DEFAULTS, custom, parse_viewer_action, "viewer")
 }

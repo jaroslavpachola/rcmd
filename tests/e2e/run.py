@@ -326,8 +326,10 @@ def test_viewer():
         b"f",             # follow mode (R3): tail -f
         wait=STEP,
     )
-    check("viewer: follow tag and jump to end", "[follow]" in s.screen()
-          and "FINDME here" in s.screen())
+    # follow mode re-indexes the file before it draws, so this one
+    # waits for the screen rather than assuming one keypress of time
+    check("viewer: follow tag and jump to end",
+          wait_for(s, "[follow]") and "FINDME here" in s.screen(), s.screen())
     with open(os.path.join(play, "big.txt"), "a") as f:
         f.write("APPENDED tail line\n")
     check("viewer: follow picks up appends", wait_for(s, "APPENDED tail line"))
@@ -4360,6 +4362,86 @@ def cursor_is(s, name):
     return False
 
 
+def test_dialogkeys():
+    """PLAN4 S8: dialog fields remember what was typed into them
+    (M-p / M-n), and [keys.dialog] rebinds OK / Cancel / next-field."""
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write(
+        '[keys.dialog]\n'
+        '"ctrl+j" = "ok"\n'
+        '"ctrl+q" = "cancel"\n'
+    )
+    s = Session(play, home)
+
+    # two directories made through F7, so the field has a history
+    for name in ("alpha", "beta"):
+        s.send(F7, wait=STEP)
+        s.send(name.encode() + b"\r", wait=STEP * 2)
+    check("dialogkeys: both were made",
+          os.path.isdir(os.path.join(play, "alpha"))
+          and os.path.isdir(os.path.join(play, "beta")))
+
+    # M-p walks back through them, newest first
+    s.send(F7, wait=STEP)
+    s.send(b"\x1bp", wait=STEP)
+    check("dialogkeys: M-p offers the last answer", "beta" in s.screen(), s.screen())
+    s.send(b"\x1bp", wait=STEP)
+    check("dialogkeys: and the one before that", "alpha" in s.screen(), s.screen())
+    s.send(b"\x1bn", wait=STEP)
+    check("dialogkeys: M-n walks forward again", "beta" in s.screen(), s.screen())
+    s.send(b"\x1b", wait=STEP)                 # Esc closes without making it
+
+    # the rebound keys: Ctrl+J accepts, Ctrl+Q cancels
+    s.send(F7, wait=STEP)
+    s.send(b"gamma", wait=STEP)
+    s.send(b"\x0a", wait=STEP * 2)             # Ctrl+J = OK
+    check("dialogkeys: [keys.dialog] ok accepted it",
+          os.path.isdir(os.path.join(play, "gamma")), s.screen())
+    s.send(F7, wait=STEP)
+    s.send(b"delta", wait=STEP)
+    s.send(b"\x11", wait=STEP * 2)             # Ctrl+Q = Cancel
+    check("dialogkeys: [keys.dialog] cancel dropped it",
+          not os.path.isdir(os.path.join(play, "delta")), s.screen())
+
+    s.quit()
+    st = open(os.path.join(home, ".local", "state", "rcmd", "state.toml")).read()
+    check("dialogkeys: the field history is in the state file",
+          "field_history" in st and "alpha" in st, st)
+    shutil.rmtree(root)
+
+
+def test_learnkeys():
+    """PLAN4 S8: mc's Learn keys - which keys arrive, and what rcmd
+    calls whatever was pressed."""
+    root, play, home = sandbox()
+    s = Session(play, home)
+    s.keys(b"\x1b[20~", b"o", b"l", wait=STEP)       # F9 > Options > Learn keys
+    scr = s.screen()
+    check("learnkeys: the dialog opens",
+          "Learn keys" in scr and "shift+tab" in scr, scr)
+    check("learnkeys: nothing seen yet", "0/" in scr and "seen" in scr, scr)
+
+    s.send(F5, wait=STEP)
+    scr = s.screen()
+    check("learnkeys: a key that arrived is ticked", "1/" in scr, scr)
+    s.send(b"\x1b[1;5D", wait=STEP)                  # Ctrl+Left
+    scr = s.screen()
+    check("learnkeys: and it names what it saw", "ctrl+left" in scr, scr)
+    check("learnkeys: the count follows", "2/" in scr, scr)
+
+    # a key that is not on the list is still named - that is the point
+    s.send(b"\x07", wait=STEP)                       # Ctrl+G
+    check("learnkeys: an unlisted key is named too",
+          "rcmd sees: ctrl+g" in s.screen(), s.screen())
+
+    s.send(b"\x1b", wait=STEP)
+    check("learnkeys: Esc closes it", "Learn keys" not in s.screen(), s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_usermenu():
     """PLAN4 S8: the user menu gains mc's conditions, submenus, and the
     per-directory .mc.menu."""
@@ -4872,6 +4954,8 @@ def main():
         test_panelize,
         test_diff,
         test_cli,
+        test_dialogkeys,
+        test_learnkeys,
         test_usermenu,
         test_hotlist,
         test_macros,

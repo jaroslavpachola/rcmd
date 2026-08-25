@@ -203,7 +203,10 @@ exactly where it was.
 Typing goes to the **command line** at the bottom; Enter runs it in the
 active panel's directory (`cd` changes the panel instead, and `cd -`
 goes back to where the panel came from; a relative `cd` that misses
-locally also tries `$CDPATH`). MC's macros expand there too (the same
+locally also tries `$CDPATH`). Dialog fields remember what was typed
+into them before - Alt+P and Alt+N walk a field's own history, kept per
+kind of question (destinations, `mkdir`, `cd`, `chown`…) and saved
+between sessions. MC's macros expand there too (the same
 set the user menu gets, below - so `%%s` is how you type a literal
 `%s`). Alt+Enter
 inserts the selected filename, Ctrl+P/Ctrl+N walk history, Ctrl+A/E are
@@ -704,6 +707,9 @@ listing_format = "half type name | size | mtime"
 "ctrl+w" = "wrap"            # quit wrap hex search search-next follow
                              # goto set-mark go-mark ruler nroff raw
                              # next-file prev-file hex-edit hex-save
+[keys.dialog]                # ...and these wherever a dialog is open
+"ctrl+j" = "ok"              # ok cancel next prev - a bound key stands
+                             # in for Enter / Esc / Tab / Shift+Tab
 [keys.editor]                # ...and these inside the F4 editor
 "ctrl+q" = "quit"            # save quit mark replace search search-next
                              # block-copy block-move delete-line undo

@@ -238,6 +238,7 @@ pub struct KeyContexts {
     pub panel: BTreeMap<String, String>,
     pub viewer: BTreeMap<String, String>,
     pub editor: BTreeMap<String, String>,
+    pub dialog: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -273,9 +274,11 @@ impl Config {
                         "panel" => &mut out.panel,
                         "viewer" => &mut out.viewer,
                         "editor" => &mut out.editor,
+                        "dialog" => &mut out.dialog,
                         other => {
                             warnings.push(format!(
-                                "unknown key context '[keys.{other}]' (panel, viewer, editor)"
+                                "unknown key context '[keys.{other}]' \
+                                 (panel, viewer, editor, dialog)"
                             ));
                             continue;
                         }

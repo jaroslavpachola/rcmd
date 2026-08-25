@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.56.0 - 2026-08-25
+
+- **Learn keys** (4.0 S8), under F9 > Options. mc's version rewrites its
+  keymap from what the terminal sends; rcmd cannot reprogram a terminal
+  and does not pretend to, so this one answers the question a user
+  actually has - **what does rcmd see when I press this?** - ticking off
+  the keys that arrive as themselves and naming whatever was pressed in
+  the spelling `[keys.panel]` uses, ready to paste.
+- **Dialog fields remember what was typed into them.** Alt+P and Alt+N
+  walk a field's history, kept per kind of question - a destination is a
+  destination whether F5 or F6 asked for it - thirty deep, and saved to
+  the state file between sessions.
+- **`[keys.dialog]`**, the context S0 deferred: `ok`, `cancel`, `next`
+  and `prev`. It is a translation table rather than a per-dialog action
+  list - a bound key arrives at the dialog as the key it stands for, so
+  every dialog sees the keys it already knew and none of them had to
+  learn a table.
+
 ## 3.55.0 - 2026-08-25
 
 - **The user menu grew conditions** (4.0 S8): `when = "f *.tar.gz | t d"`

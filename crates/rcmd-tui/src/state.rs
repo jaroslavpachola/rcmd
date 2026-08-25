@@ -7,6 +7,7 @@
 //! only keys rcmd actually changed are stored, so a config edit keeps
 //! working for everything the user never touched in the UI.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -95,6 +96,11 @@ pub struct State {
     /// them, C-p/M-p walk them).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cmd_history: Vec<String>,
+    /// What was typed into each dialog field before, newest last, kept
+    /// per field (`mkdir`, `cd`, `chown`…). mc keeps these too; M-p and
+    /// M-n walk them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub field_history: BTreeMap<String, Vec<String>>,
 }
 
 /// `$XDG_STATE_HOME/rcmd/state.toml`, falling back to

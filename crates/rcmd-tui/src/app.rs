@@ -125,6 +125,26 @@ pub fn expand_template(template: &str, m: &Macros) -> (Expanded, [bool; 2]) {
     (Expanded::Done(out), untag)
 }
 
+impl InputAction {
+    /// The name of the history ring this field walks. Fields that ask
+    /// the same kind of question share one - a destination is a
+    /// destination whether F5 or F6 asked for it. `None` = a question
+    /// too specific to be worth remembering (a `%{...}` prompt asks
+    /// something different every time).
+    pub fn history(&self) -> Option<&'static str> {
+        Some(match self {
+            InputAction::CopyTo { .. } | InputAction::MoveTo { .. } => "destination",
+            InputAction::Mkdir => "mkdir",
+            InputAction::SftpConnect => "connect",
+            InputAction::EditNew => "edit",
+            InputAction::QuickCd => "cd",
+            InputAction::Chown { .. } => "chown",
+            InputAction::HotlistLabel { .. } => "label",
+            InputAction::MacroPrompt { .. } => return None,
+        })
+    }
+}
+
 /// What expanding a command template produced: the finished line, or a
 /// stop at a `%{question}` whose answer the rest of the line waits on.
 pub enum Expanded {
@@ -410,6 +430,9 @@ pub struct InputDialog {
     /// Cursor position in characters, not bytes.
     pub cursor: usize,
     pub action: InputAction,
+    /// Where in this field's history M-p / M-n have walked to, counted
+    /// back from the newest. `None` = on the line being typed.
+    pub hist: Option<usize>,
 }
 
 /// F5/F6: MC's copy/move form - where the files go, the switches that
@@ -648,6 +671,57 @@ pub enum ConfirmKind {
     Execute,
 }
 
+/// mc's Learn keys: the keys a terminal is supposed to send, and which
+/// of them have actually arrived. rcmd cannot reprogram a terminal the
+/// way mc's version rewrites its keymap, so this one answers the
+/// question a user actually has - *what does rcmd see when I press
+/// this?* - and names it the way the config would.
+pub struct LearnDialog {
+    /// Which of [`LEARN_KEYS`] have been pressed and arrived intact.
+    pub seen: Vec<bool>,
+    pub row: usize,
+    /// The last key that arrived, in config spelling, and whether it
+    /// was the one the cursor was on.
+    pub last: Option<(String, bool)>,
+}
+
+/// The keys worth checking, in mc's order-ish: the function keys, the
+/// movement block, and the modified arrows that terminals disagree
+/// about most.
+pub const LEARN_KEYS: &[&str] = &[
+    "f1",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "f6",
+    "f7",
+    "f8",
+    "f9",
+    "f10",
+    "f11",
+    "f12",
+    "up",
+    "down",
+    "left",
+    "right",
+    "home",
+    "end",
+    "pgup",
+    "pgdn",
+    "insert",
+    "delete",
+    "tab",
+    "shift+tab",
+    "shift+f3",
+    "shift+f4",
+    "ctrl+left",
+    "ctrl+right",
+    "ctrl+up",
+    "ctrl+down",
+    "alt+enter",
+];
+
 /// The F2 user menu: the entries that apply here, the way down into
 /// whatever submenu is open, and the row the cursor is on.
 pub struct UserMenuDialog {
@@ -675,6 +749,9 @@ impl UserMenuDialog {
         here
     }
 }
+
+/// How many answers a dialog field remembers.
+const FIELD_HISTORY: usize = 30;
 
 /// One drawn row of the hotlist: the way back up, a group to walk into,
 /// a place to go, or one of rcmd's own recent directories.
@@ -724,6 +801,8 @@ pub enum Dialog {
     Charset(usize),
     /// F9 > Options > Appearance: the theme list, with the row it is on.
     Skin(usize),
+    /// F9 > Options > Learn keys.
+    Learn(Box<LearnDialog>),
     /// C-x d: how to compare the two listings, with the row it is on.
     Compare(usize),
     /// External panelize: the saved commands and the one being typed.
@@ -1874,6 +1953,8 @@ pub enum Action {
     Options,
     /// F9 > Options > Appearance: the skin list.
     Appearance,
+    /// F9 > Options > Learn keys: what the terminal really sends.
+    LearnKeys,
     Sort(SortKey),
     SortReverse,
     /// S-F4: open the editor on a file that need not exist yet.
@@ -1976,6 +2057,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
         &[
             Some(("&Panel options...", "", Action::Options)),
             Some(("&Appearance...", "", Action::Appearance)),
+            Some(("&Learn keys...", "", Action::LearnKeys)),
         ],
     ),
     ("&Right", PANEL_MENU),
@@ -2399,6 +2481,9 @@ pub struct App {
     /// through `[keys.viewer]` / `[keys.editor]`.
     viewer_keys: keymap::ViewerMap,
     editor_keys: keymap::EditorMap,
+    /// `[keys.dialog]`: keys that stand in for Enter / Esc / Tab /
+    /// Shift+Tab wherever a dialog is open.
+    dialog_keys: keymap::DialogMap,
     pending_exec: Option<Exec>,
     /// The persistent subshell (PLAN3 R1); None = plain exec fallback,
     /// either by `subshell = false` or because the spawn failed.
@@ -2454,8 +2539,10 @@ impl App {
         let (contexts, _) = config.key_contexts();
         let (viewer_keys, viewer_warnings) = keymap::build_viewer(&contexts.viewer);
         let (editor_keys, editor_warnings) = keymap::build_editor(&contexts.editor);
+        let (dialog_keys, dialog_warnings) = keymap::build_dialog(&contexts.dialog);
         warnings.extend(viewer_warnings);
         warnings.extend(editor_warnings);
+        warnings.extend(dialog_warnings);
         let watch = if config.watch {
             let (watch, warning) = build_watch();
             warnings.extend(warning);
@@ -2537,6 +2624,7 @@ impl App {
             keymap,
             viewer_keys,
             editor_keys,
+            dialog_keys,
             pending_exec: None,
             subshell,
             standalone: !startup.is_panels(),
@@ -4568,6 +4656,13 @@ impl App {
                     .map(rcmd_core::charset::label_of);
                 self.dialog = Some(Dialog::Charset(charset_row(now)));
             }
+            Action::LearnKeys => {
+                self.dialog = Some(Dialog::Learn(Box::new(LearnDialog {
+                    seen: vec![false; LEARN_KEYS.len()],
+                    row: 0,
+                    last: None,
+                })))
+            }
             Action::Appearance => {
                 let now = crate::theme::list()
                     .iter()
@@ -4621,6 +4716,7 @@ impl App {
                     value: "sftp://".into(),
                     cursor: 7,
                     action: InputAction::SftpConnect,
+                    hist: None,
                 }));
             }
             Action::HistoryBack => self.history_step(false),
@@ -4738,6 +4834,7 @@ impl App {
                     value: String::new(),
                     cursor: 0,
                     action: InputAction::QuickCd,
+                    hist: None,
                 }));
             }
             Action::Repaint => self.repaint = true,
@@ -5055,6 +5152,7 @@ impl App {
                 rest,
                 quiet,
             },
+            hist: None,
         }));
     }
 
@@ -6796,12 +6894,34 @@ impl App {
         let Some(dialog) = self.dialog.take() else {
             return;
         };
+        // `[keys.dialog]` is a translation: a rebound key arrives as
+        // the one it stands for, so every dialog below sees the keys it
+        // already knows and none of them had to learn a table
+        let key = match self
+            .dialog_keys
+            .get(&(key.code, key.modifiers.difference(KeyModifiers::SHIFT)))
+        {
+            Some(&(code, modifiers)) => KeyEvent::new(code, modifiers),
+            None => key,
+        };
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
         match dialog {
             Dialog::Input(mut d) => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => self.submit_input(d),
+                // M-p / M-n walk what was typed into this field before
+                KeyCode::Char('p') if alt => {
+                    self.field_history_step(&mut d, true);
+                    self.dialog = Some(Dialog::Input(d));
+                }
+                KeyCode::Char('n') if alt => {
+                    self.field_history_step(&mut d, false);
+                    self.dialog = Some(Dialog::Input(d));
+                }
                 code => {
                     edit_line(&mut d.value, &mut d.cursor, code, key.modifiers);
+                    // typing leaves the history and keeps what is typed
+                    d.hist = None;
                     self.dialog = Some(Dialog::Input(d));
                 }
             },
@@ -7092,6 +7212,29 @@ impl App {
                     }
                     _ => self.dialog = Some(Dialog::Compare(row)),
                 }
+            }
+            Dialog::Learn(mut d) => {
+                let name = keymap::key_name(key.code, key.modifiers);
+                // Esc closes: it is the one key a dialog cannot also be
+                // learning, and F10 is in the list
+                if key.code == KeyCode::Esc {
+                    return;
+                }
+                match LEARN_KEYS.iter().position(|k| *k == name) {
+                    Some(at) => {
+                        d.seen[at] = true;
+                        d.last = Some((name, at == d.row));
+                        // move on to the next one still unanswered
+                        let next = (d.row + 1..LEARN_KEYS.len())
+                            .chain(0..d.row)
+                            .find(|i| !d.seen[*i]);
+                        d.row = next.unwrap_or(d.row);
+                    }
+                    // any other key still gets named - that is what the
+                    // dialog is for, as much as the checklist is
+                    None => d.last = Some((name, false)),
+                }
+                self.dialog = Some(Dialog::Learn(d));
             }
             Dialog::Skin(row) => {
                 let names = crate::theme::list();
@@ -7915,6 +8058,7 @@ impl App {
             cursor: value.chars().count(),
             value,
             action: InputAction::HotlistLabel { group, index, path },
+            hist: None,
         }));
     }
 
@@ -8431,11 +8575,58 @@ impl App {
         }
     }
 
+    /// M-p / M-n: step back or forward through this field's history.
+    fn field_history_step(&mut self, d: &mut InputDialog, back: bool) {
+        let Some(name) = d.action.history() else {
+            return;
+        };
+        let history = state::load()
+            .0
+            .field_history
+            .remove(name)
+            .unwrap_or_default();
+        if history.is_empty() {
+            return;
+        }
+        let at = match (d.hist, back) {
+            (None, true) => Some(0),
+            (None, false) => None,
+            (Some(at), true) => Some((at + 1).min(history.len() - 1)),
+            (Some(0), false) => None,
+            (Some(at), false) => Some(at - 1),
+        };
+        d.value = match at {
+            Some(at) => history[history.len() - 1 - at].clone(),
+            None => String::new(),
+        };
+        d.cursor = d.value.chars().count();
+        d.hist = at;
+    }
+
+    /// Remember what was answered, so M-p can offer it next time.
+    fn remember_field(&mut self, action: &InputAction, value: &str) {
+        let Some(name) = action.history() else {
+            return;
+        };
+        let (name, value) = (name.to_string(), value.to_string());
+        if let Err(err) = state::update(move |s| {
+            let ring = s.field_history.entry(name).or_default();
+            ring.retain(|old| old != &value);
+            ring.push(value);
+            // a field's history is a convenience, not an archive
+            let over = ring.len().saturating_sub(FIELD_HISTORY);
+            ring.drain(..over);
+        }) {
+            self.status = Some(format!(" could not save state: {err} "));
+        }
+    }
+
     fn submit_input(&mut self, dialog: InputDialog) {
         let value = dialog.value.trim().to_string();
         if value.is_empty() {
             return;
         }
+        self.remember_field(&dialog.action, &value);
         match dialog.action {
             InputAction::CopyTo { sources } => {
                 self.route_transfer(sources, &value, false, TransferOpts::default(), None)
@@ -9641,6 +9832,7 @@ impl App {
             cursor: name.chars().count(),
             value: name,
             action,
+            hist: None,
         }));
     }
 
@@ -9654,6 +9846,7 @@ impl App {
             value: String::new(),
             cursor: 0,
             action: InputAction::EditNew,
+            hist: None,
         }));
     }
 
@@ -9758,6 +9951,7 @@ impl App {
                 value: String::new(),
                 cursor: 0,
                 action: InputAction::Chown { paths },
+                hist: None,
             }));
             return;
         }
@@ -9926,6 +10120,7 @@ impl App {
             value: String::new(),
             cursor: 0,
             action: InputAction::Mkdir,
+            hist: None,
         }));
     }
 

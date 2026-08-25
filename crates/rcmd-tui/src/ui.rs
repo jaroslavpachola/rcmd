@@ -988,6 +988,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Charset(row) => {
                 draw_pick_list(frame, " Character set ", &crate::app::CHARSET_ROWS, *row, 0)
             }
+            Dialog::Learn(d) => draw_learn(frame, d),
             Dialog::Skin(row) => {
                 let names = crate::theme::list();
                 let rows: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -2343,6 +2344,74 @@ fn draw_diff(frame: &mut Frame, app: &mut App) {
 
 /// A pick list in a popup: the rows that fit around the selected one,
 /// which is what both the syntax and the codepage pickers are.
+/// mc's Learn keys, rcmd's way round: the checklist says which keys
+/// arrived, and the line under it names whatever was pressed in the
+/// spelling `[keys.panel]` uses - so a key that turns out to be
+/// something else can be bound as what it really is.
+fn draw_learn(frame: &mut Frame, d: &crate::app::LearnDialog) {
+    use crate::app::LEARN_KEYS;
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let ok = Style::new()
+        .fg(th().mark_fg)
+        .bg(th().dialog_bg)
+        .add_modifier(Modifier::BOLD);
+
+    const COLS: usize = 4;
+    let cell = 14usize;
+    let rows = LEARN_KEYS.len().div_ceil(COLS);
+    let width = (COLS * cell + 2) as u16;
+    let area = centered(width, rows as u16 + 5, frame.area());
+    frame.render_widget(Clear, area);
+    let done = d.seen.iter().filter(|seen| **seen).count();
+    let block = Block::bordered()
+        .title(" Learn keys ")
+        .title_bottom(
+            Line::from(format!(" {done}/{} seen · Esc closes ", LEARN_KEYS.len())).centered(),
+        )
+        .style(base);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    frame.render_widget(
+        Line::from(" Press each key. A tick means it arrived as itself.").style(base),
+        Rect { height: 1, ..inner },
+    );
+    for (i, key) in LEARN_KEYS.iter().enumerate() {
+        let (row, col) = (i / COLS, i % COLS);
+        let at = Rect {
+            x: inner.x + (col * cell) as u16,
+            y: inner.y + 2 + row as u16,
+            width: cell as u16,
+            height: 1,
+        };
+        if at.y >= inner.y + inner.height {
+            break;
+        }
+        let mark = if d.seen[i] { "✓" } else { " " };
+        let style = match (i == d.row, d.seen[i]) {
+            (true, _) => sel,
+            (false, true) => ok,
+            (false, false) => base,
+        };
+        frame.render_widget(Line::from(format!(" {mark} {key:<10}")).style(style), at);
+    }
+    // what the last key really was
+    let text = match &d.last {
+        Some((name, true)) => format!(" that was {name} - as expected "),
+        Some((name, false)) => format!(" rcmd sees: {name} "),
+        None => " waiting ".into(),
+    };
+    frame.render_widget(
+        Line::from(text).style(base),
+        Rect {
+            y: inner.y + inner.height.saturating_sub(1),
+            height: 1,
+            ..inner
+        },
+    );
+}
+
 fn draw_pick_list(frame: &mut Frame, title: &str, rows: &[&str], row: usize, top: usize) {
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
