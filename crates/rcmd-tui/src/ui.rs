@@ -295,6 +295,9 @@ const HELP_TEXT: &[&str] = &[
     "                  Results land in a window of their own - Chdir,",
     "                  Again, Panelize, View, Edit - or stream into the",
     "                  panel with find_window = false. Esc cancels.",
+    "  F9>Cmd>Compare files: the cursor file of each panel side by",
+    "     side, lined up by the diff - n and p walk the differences,",
+    "     a gap marked ~~~ is a line only one of them has, q closes",
     "  Ctrl+X d        compare directories, mc's three ways: Quick (size",
     "                  and date), Size only, or Thorough - which reads",
     "                  the files and is the only one that can tell two",
@@ -624,6 +627,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.viewer().is_some() {
         draw_viewer(frame, app);
+        draw_screen_list(frame, app);
+        return;
+    }
+    if app.diff().is_some() {
+        draw_diff(frame, app);
         draw_screen_list(frame, app);
         return;
     }
@@ -2029,6 +2037,77 @@ pub fn tab_size() -> usize {
 /// the line end).
 pub fn ed_line_segs(ed: &rcmd_edit::Editor, line: usize, cols: usize) -> usize {
     screen_col(&ed.line(line), ed.line_len(line)) / cols.max(1) + 1
+}
+
+/// MC's Compare files: the two files side by side, the rows lined up
+/// by the diff. A row with one side missing is a line only one of them
+/// has, and shows as an empty half rather than as text sliding up.
+fn draw_diff(frame: &mut Frame, app: &mut App) {
+    let Some(d) = app.diff_mut() else { return };
+    let [title_area, content, bottom] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
+    d.height = content.height as usize;
+    let bar = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let width = content.width as usize;
+    let half = width.saturating_sub(1) / 2;
+
+    let changed = Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD);
+    let missing = Style::new().fg(th().header_fg).bg(th().panel_bg);
+    let plain = Style::new().fg(th().panel_fg).bg(th().panel_bg);
+    frame.render_widget(
+        Line::from(format!(
+            "{:<half$} {:<half$}",
+            tail(&d.left_title, half),
+            tail(&d.right_title, half)
+        ))
+        .style(bar),
+        title_area,
+    );
+    frame.render_widget(ratatui::widgets::Block::new().style(plain), content);
+    for row in 0..content.height as usize {
+        let at = d.top + row;
+        let Some(entry) = d.rows.get(at).copied() else {
+            break;
+        };
+        let cell = |text: Option<&str>| -> (String, Style) {
+            match text {
+                // the filler is what says "this line is not here",
+                // which is different from "this line is empty"
+                None => ("~".repeat(half), missing),
+                Some(text) => {
+                    let shown: String = expand_line(text).chars().skip(d.col).take(half).collect();
+                    (
+                        format!("{shown:<half$}"),
+                        if entry.same { plain } else { changed },
+                    )
+                }
+            }
+        };
+        let (left, left_style) = cell(d.line(at, false));
+        let (right, right_style) = cell(d.line(at, true));
+        frame.render_widget(
+            Line::from(vec![
+                Span::styled(left, left_style),
+                Span::styled("│", plain),
+                Span::styled(right, right_style),
+            ]),
+            Rect {
+                y: content.y + row as u16,
+                height: 1,
+                ..content
+            },
+        );
+    }
+    let help = " q/F10 Quit  n/p Next/prev difference  ←→ Scroll ";
+    let note = d.note.clone().unwrap_or_default();
+    frame.render_widget(
+        bottom_bar(help, &note, bottom.width as usize).style(bar),
+        bottom,
+    );
 }
 
 /// A pick list in a popup: the rows that fit around the selected one,

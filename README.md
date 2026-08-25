@@ -309,6 +309,14 @@ in the background, marks each pair as it finds it, and Esc stops it.
 Size only is for a tree whose timestamps were never going to survive
 the trip.
 
+**Compare files** (F9 → Command) puts the cursor file of each panel
+side by side, lined up by a Myers diff: changed lines are highlighted
+on both sides, a line only one file has shows opposite a `~~~` gap, and
+`n` and `p` walk from one difference to the next (it opens on the first
+one). `q` closes it. It is a screen like the viewer and the editor, so
+``Alt+` `` lists it and you can leave it open while you do something
+else.
+
 **Mouse**: click focuses a panel and moves the cursor, double-click
 enters, the wheel scrolls whatever it hovers (panels, viewer, editor,
 quick view), the bottom keybar and the F9 menu are clickable, and a

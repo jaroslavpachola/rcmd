@@ -4177,6 +4177,60 @@ def test_panelize():
     shutil.rmtree(root)
 
 
+def test_diff():
+    """PLAN4 S6: Compare files - the two cursor files side by side,
+    lined up by the diff."""
+    root, play, home = sandbox()
+    left = os.path.join(play, "left")
+    right = os.path.join(play, "right")
+    os.makedirs(left)
+    os.makedirs(right)
+    open(os.path.join(left, "poem.txt"), "w").write(
+        "roses are red\nviolets are blue\nthis line goes\nthe end\n")
+    open(os.path.join(right, "poem.txt"), "w").write(
+        "roses are red\nVIOLETS ARE BLUE\nthe end\nand a new one\n")
+    s = Session(play, home, args=(left, right))
+    # both cursors start on "..": compare files wants files
+    s.send(DOWN, wait=STEP)
+    s.send(b"\t", wait=STEP)
+    s.send(DOWN, wait=STEP)
+    s.send(b"\t", wait=STEP)
+
+    # F9 > Command > Compare files
+    s.keys(
+        b"\x1b[20~",                          # F9
+        b"\x1b[C" * 2,                        # -> Command
+        wait=STEP,
+    )
+    s.send(b"l", wait=STEP * 2)               # Compare fi&les
+    scr = s.screen()
+    check("diff: both files are shown",
+          "roses are red" in scr and "VIOLETS ARE BLUE" in scr, scr)
+    check("diff: it says how many differences", "difference(s)" in scr, scr)
+    check("diff: a line only one side has shows as a gap", "~~~~" in scr, scr)
+    check("diff: the titles name both files", scr.count("poem.txt") >= 2, scr)
+
+    # n walks the differences, q closes
+    s.send(b"n", wait=STEP)
+    s.send(b"n", wait=STEP)
+    check("diff: walked past the last one", wait_for(s, "no more differences"))
+    s.send(b"q", wait=STEP * 2)
+    check("diff: closed", "Modify time" in s.screen())
+
+    # identical files say so
+    open(os.path.join(right, "poem.txt"), "w").write(
+        open(os.path.join(left, "poem.txt")).read())
+    s.send(b"\x12", wait=STEP)                # Ctrl+R reload
+    s.send(DOWN, wait=STEP)                   # the reload put us back on ".."
+    s.keys(b"\x1b[20~", b"\x1b[C" * 2, wait=STEP)
+    s.send(b"l", wait=STEP * 2)
+    check("diff: identical files say so", wait_for(s, "identical"))
+    s.send(b"q", wait=STEP)
+
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_subshell():
     """R1 per-shell scenarios: forced subshell=true in every suite mode."""
     shells = ["/bin/sh"]
@@ -4318,6 +4372,7 @@ def main():
         test_finddialog,
         test_findwindow,
         test_panelize,
+        test_diff,
         test_subshell,
         test_sftp,
         test_fish,

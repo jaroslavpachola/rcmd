@@ -111,14 +111,15 @@ filenames (no more lossy display). The list is `encoding_rs`, which is
 the set every browser implements - a couple of DOS codepages short of
 mc's, and every row of it actually decodes.
 
-### S6 - search, compare, panelize
+### S6 - search, compare, panelize - DONE (2026-08-25)
 
 - Select/unselect and filter dialogs: files only, case sensitive, shell
   patterns or regex.
 - Find dialog: regex content, case, whole words, skip hidden, follow
   symlinks, start directory, charsets - keeping the gitignore checkbox.
 - Find **results window** (Chdir/Again/Panelize/View/Edit) as the
-  default; today's stream-into-the-panel stays behind a setting.
+  default; today's stream-into-the-panel stays behind a setting
+  (`find_window = false`).
 - Panelize presets, saved and async.
 - Compare directories: quick / size-only / thorough.
 - Internal diff viewer + "Compare files".

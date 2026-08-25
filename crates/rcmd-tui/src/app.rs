@@ -1719,6 +1719,9 @@ pub enum Action {
     ScreenList,
     /// M-e: which codepage this panel's filenames are written in.
     Charset,
+    /// F9 > Command > Compare files: the cursor file of each panel,
+    /// side by side.
+    CompareFiles,
     /// C-l: redraw the screen from scratch.
     Repaint,
 }
@@ -1768,6 +1771,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Directory tr&ee...", "", Action::DirTree)),
             Some(("&Find file...", "M-F7", Action::FindFile)),
             Some(("&Compare directories", "C-x d", Action::CompareDirs)),
+            Some(("Compare fi&les", "", Action::CompareFiles)),
             Some(("&Open shell", "C-o", Action::Shell)),
             Some(("S&wap panels", "C-u", Action::SwapPanels)),
             Some(("Toggle hidde&n files", "M-.", Action::ToggleHidden)),
@@ -1778,7 +1782,9 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Jobs...", "C-x j", Action::Jobs)),
             Some(("Acti&ve VFS list...", "C-x a", Action::VfsList)),
             Some(("Command histor&y...", "M-h", Action::HistoryList)),
-            Some(("Screen &list...", "M-`", Action::ScreenList)),
+            // not "&list": Compare fi&les already spends the l, and a
+            // second entry with the same letter is one nobody can reach
+            Some(("Screen l&ist...", "M-`", Action::ScreenList)),
         ],
     ),
     (
@@ -1894,6 +1900,66 @@ fn full_keymap(config: &config::Config) -> (Keymap, Vec<String>) {
 pub enum Screen {
     Editor(Box<EditorState>),
     Viewer(Box<Viewer>),
+    Diff(Box<DiffView>),
+}
+
+/// Two files side by side, mc's Compare files. The rows are the two
+/// files paired up by the diff; a row missing one side is a line that
+/// only one of them has.
+pub struct DiffView {
+    pub left_title: String,
+    pub right_title: String,
+    pub left: Vec<String>,
+    pub right: Vec<String>,
+    pub rows: Vec<rcmd_core::diff::Row>,
+    /// Where the changes are, for "next difference".
+    pub blocks: Vec<(usize, usize)>,
+    pub top: usize,
+    /// Horizontal scroll, in characters, shared by both sides.
+    pub col: usize,
+    /// Rows on screen; updated on every draw, drives paging.
+    pub height: usize,
+    pub note: Option<String>,
+}
+
+impl DiffView {
+    pub fn line(&self, row: usize, right: bool) -> Option<&str> {
+        let row = self.rows.get(row)?;
+        let (at, side) = match right {
+            true => (row.right?, &self.right),
+            false => (row.left?, &self.left),
+        };
+        side.get(at).map(String::as_str)
+    }
+
+    fn scroll(&mut self, delta: isize) {
+        let last = self.rows.len().saturating_sub(1) as isize;
+        self.top = (self.top as isize + delta).clamp(0, last.max(0)) as usize;
+    }
+
+    /// The next (or previous) run of changed rows, put at the top with
+    /// a couple of lines of context above it.
+    fn jump(&mut self, forward: bool) {
+        let here = self.top;
+        let found = match forward {
+            true => self
+                .blocks
+                .iter()
+                .find(|(start, _)| *start > here + 2)
+                .copied(),
+            false => self
+                .blocks
+                .iter()
+                .rev()
+                .find(|(start, _)| *start + 2 < here)
+                .copied(),
+        };
+        match found {
+            Some((start, _)) => self.top = start.saturating_sub(2),
+            None if self.blocks.is_empty() => self.note = Some(" the files are identical ".into()),
+            None => self.note = Some(" no more differences that way ".into()),
+        }
+    }
 }
 
 impl Screen {
@@ -1907,6 +1973,7 @@ impl Screen {
                 if st.ed.modified() { " [+]" } else { "" }
             ),
             Screen::Viewer(v) => format!("View  {}", v.path.display()),
+            Screen::Diff(d) => format!("Diff  {} | {}", d.left_title, d.right_title),
         }
     }
 }
@@ -3175,6 +3242,8 @@ impl App {
             self.on_editor_key(key);
         } else if self.viewer().is_some() {
             self.on_viewer_key(key);
+        } else if self.diff().is_some() {
+            self.on_diff_key(key);
         } else if self.menu.is_some() {
             self.on_menu_key(key);
         } else if self.quick_search.is_some() {
@@ -3936,6 +4005,21 @@ impl App {
         }
     }
 
+    /// The diff on top, if the screen on top is one.
+    pub fn diff(&self) -> Option<&DiffView> {
+        match self.screens.get(self.current?) {
+            Some(Screen::Diff(d)) => Some(d),
+            _ => None,
+        }
+    }
+
+    pub fn diff_mut(&mut self) -> Option<&mut DiffView> {
+        match self.screens.get_mut(self.current?) {
+            Some(Screen::Diff(d)) => Some(d),
+            _ => None,
+        }
+    }
+
     /// Put a new screen on top and switch to it.
     fn open_screen(&mut self, screen: Screen) {
         self.screens.push(screen);
@@ -4118,6 +4202,7 @@ impl App {
             Action::FindFile => self.open_find(),
             Action::Panelize => self.open_panelize(),
             Action::CompareDirs => self.open_compare(),
+            Action::CompareFiles => self.open_diff(),
             Action::DirSize => self.dir_size(),
             Action::ScreenList => self.open_screen_list(),
             Action::Charset => {
@@ -7357,6 +7442,108 @@ impl App {
 
     /// Quick compare of both panel listings: marks files that are missing
     /// on the other side or differ in size/mtime.
+    /// F9 > Command > Compare files: the cursor file of each panel,
+    /// paired up line by line.
+    fn open_diff(&mut self) {
+        const MAX_BYTES: u64 = 8 * 1024 * 1024;
+        let mut sides = Vec::new();
+        for side in [0, 1] {
+            let panel = &self.panels[side];
+            let Some(entry) = panel.selected().filter(|e| !e.is_parent()) else {
+                self.status = Some(" both panels need a file under the cursor ".into());
+                return;
+            };
+            if entry.is_dir() {
+                self.status = Some(" compare files: that is a directory ".into());
+                return;
+            }
+            if entry.size > MAX_BYTES {
+                self.status = Some(format!(
+                    " {} is too big to diff (over {} MB) ",
+                    panel.name_of(entry),
+                    MAX_BYTES / (1024 * 1024)
+                ));
+                return;
+            }
+            let path = panel.cwd.join(&entry.name);
+            let read = panel.fs.open_read(&path).and_then(|mut reader| {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut reader, &mut bytes)?;
+                Ok(bytes)
+            });
+            match read {
+                Ok(bytes) => {
+                    let text = rcmd_core::charset::decode(&bytes, panel.charset);
+                    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+                    sides.push((panel.display_path() + "/" + &panel.name_of(entry), lines));
+                }
+                Err(err) => {
+                    self.status = Some(format!(" compare files: {err} "));
+                    return;
+                }
+            }
+        }
+        let (right_title, right) = sides.pop().expect("two sides");
+        let (left_title, left) = sides.pop().expect("two sides");
+        let rows = rcmd_core::diff::rows(&left, &right);
+        let blocks = rcmd_core::diff::blocks(&rows);
+        let note = match blocks.len() {
+            0 => Some(" the files are identical ".into()),
+            n => Some(format!(" {n} difference(s) - n and p walk them ")),
+        };
+        self.open_screen(Screen::Diff(Box::new(DiffView {
+            left_title,
+            right_title,
+            left,
+            right,
+            rows,
+            blocks,
+            top: 0,
+            col: 0,
+            height: 1,
+            note,
+        })));
+        // open on the first difference rather than on whatever the two
+        // files happen to agree about at the top
+        if let Some(d) = self.diff_mut()
+            && let Some((start, _)) = d.blocks.first().copied()
+        {
+            d.top = start.saturating_sub(2);
+        }
+    }
+
+    /// One key in the diff view.
+    fn on_diff_key(&mut self, key: KeyEvent) {
+        let Some(d) = self.diff_mut() else { return };
+        d.note = None;
+        let page = d.height.saturating_sub(1).max(1) as isize;
+        match key.code {
+            KeyCode::Esc | KeyCode::F(10) | KeyCode::F(3) | KeyCode::Char('q') => {
+                self.close_screen()
+            }
+            KeyCode::Up => d.scroll(-1),
+            KeyCode::Down => d.scroll(1),
+            KeyCode::PageUp => d.scroll(-page),
+            KeyCode::PageDown => d.scroll(page),
+            KeyCode::Home => d.top = 0,
+            KeyCode::End => d.top = d.rows.len().saturating_sub(1),
+            KeyCode::Left => d.col = d.col.saturating_sub(8),
+            KeyCode::Right => d.col += 8,
+            KeyCode::Char('n') | KeyCode::Tab => d.jump(true),
+            KeyCode::Char('p') | KeyCode::BackTab => d.jump(false),
+            _ => {}
+        }
+    }
+
+    /// Close whatever screen is on top, cleaning up after a viewer.
+    fn close_screen(&mut self) {
+        if let Some(Screen::Viewer(v)) = self.take_current_screen() {
+            for temp in v.temps {
+                let _ = std::fs::remove_file(temp);
+            }
+        }
+    }
+
     /// C-x d: ask how, then compare. mc asks every time, and the
     /// answer matters - "the same size and date" and "the same bytes"
     /// are different questions.

@@ -4,6 +4,7 @@ pub mod charset;
 pub mod compare;
 pub mod complete;
 pub mod cpio;
+pub mod diff;
 pub mod entry;
 pub mod find;
 pub mod fish;

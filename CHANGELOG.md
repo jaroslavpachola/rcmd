@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.48.0 - 2026-08-25
+
+- **Compare files** (4.0 S6, and the last of it): F9 > Command puts the
+  cursor file of each panel side by side, lined up by a **Myers diff** -
+  the shortest edit script, which is what makes a diff read as a
+  description of the change rather than as a list of every line that
+  moved. Changed lines are marked on both sides, a line only one file
+  has sits opposite a `~~~` gap, `n` and `p` walk the differences, and
+  it opens on the first one rather than on whatever the two files
+  happen to agree about at the top.
+- The common prefix and suffix are taken off before the algorithm runs,
+  so a one-line change in a twenty-thousand-line file costs almost
+  nothing, and an edit script longer than twenty thousand lines is
+  reported as "all of it changed" rather than proved line by line.
+- It is a **screen** like the viewer and the editor, so ``Alt+` `` lists
+  it and it can be left open while you do something else.
+- Fixed: `Screen list...` and `Compare files` both claimed `l` in the
+  Command menu, which would have left the second one unreachable by
+  letter. With this, **S6 is complete**.
+
 ## 3.47.0 - 2026-08-25
 
 - **Panelize keeps a list** (4.0 S6): the commands worth running twice
