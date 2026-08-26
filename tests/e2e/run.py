@@ -3198,9 +3198,14 @@ def test_git():
     open(os.path.join(play, "tracked.txt"), "w").write("two\n")   # M
     open(os.path.join(play, "fresh.txt"), "w").write("x\n")       # ?
     open(os.path.join(play, "build.log"), "w").write("x\n")       # !
+    os.makedirs(os.path.join(play, "emptydir"))                   # nothing
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir, exist_ok=True)
+    open(os.path.join(cfgdir, "config.toml"), "w").write("git = true\n")  # off by default since 4.10
 
     s = Session(play, home)
     connected = wait_for(s, "[main]", timeout=10)
+    check("git: an empty directory is unmarked", "!/emptydir" not in s.screen(), s.screen())
     scr = s.screen()
     check("git: branch in the title", connected)
     check("git: modified mark", "M tracked.txt" in scr)

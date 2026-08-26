@@ -1843,7 +1843,9 @@ fn entry_row(
                 match mark {
                     Some('M') => Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD),
                     Some('A') => Style::new().fg(th().exec_fg).add_modifier(Modifier::BOLD),
-                    Some('?') => Style::new().fg(th().header_fg),
+                    // untracked and ignored are the common case in a
+                    // working tree, so they whisper; a change shouts
+                    Some('?') | Some('!') => style.add_modifier(Modifier::DIM),
                     _ => style,
                 }
             };

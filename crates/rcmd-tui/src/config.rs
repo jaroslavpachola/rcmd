@@ -418,7 +418,7 @@ impl Default for Config {
             listing_format: crate::format::DEFAULT.into(),
             watch: true,
             mouse: true,
-            git: true,
+            git: false,
             editor: "internal".into(),
             subshell: true,
             brief_columns: 2,

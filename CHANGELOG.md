@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.10.0 - 2026-08-26
+
+- **The git column is off by default.** It is a column on every row of
+  every listing in a work tree, and in a fresh checkout that is a `?`
+  in front of everything; `git = true` (or Options > Git status) turns
+  it back on, and the state file remembers the choice as before.
+- **An empty directory is no longer marked ignored.** libgit2 reports
+  one as ignored where git itself says nothing - it has no git state -
+  so a directory is `!` only when an ignore rule actually names it.
+- **`?` and `!` are dimmed**; `M` and `A` keep their colour. Untracked
+  and ignored are the common case in a working tree, and a change
+  should be the thing that stands out.
+
 ## 4.9.0 - 2026-08-26
 
 - **Enter hands unclaimed files to the desktop.** A file no `[[open]]`

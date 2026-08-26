@@ -704,7 +704,8 @@ keymap = "mc"       # or "modern" (= lynx-like motion on by default)
 lynx = false        # Left/Right = parent/enter; in the options form
 watch = true        # auto-reload panels on external changes
 mouse = true        # click/double-click/wheel support
-git = true          # git status column + branch in panel titles
+git = false         # git status column + branch in panel titles (off by
+                    # default since 4.10: it is a column on every row)
 editor = "internal" # or "external" ($VISUAL/$EDITOR for F4)
 subshell = true     # persistent $SHELL behind Ctrl+O (false = one-shot exec)
 brief_columns = 2          # name columns in the brief listing (1..6)

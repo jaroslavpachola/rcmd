@@ -129,6 +129,14 @@ pub fn scan(dir: &Path) -> Option<GitStatus> {
         } else if status.contains(Status::WT_NEW) {
             if deep { 'M' } else { '?' }
         } else if status.contains(Status::IGNORED) && !deep {
+            // libgit2 reports an empty directory as ignored, where git
+            // itself says nothing about it - it has no state at all; so
+            // a directory is `!` only when an ignore rule actually names it
+            let dir_ignored =
+                !workdir.join(path).is_dir() || repo.is_path_ignored(path).unwrap_or(false);
+            if !dir_ignored {
+                continue;
+            }
             '!'
         } else {
             continue;
@@ -188,8 +196,12 @@ mod tests {
         index.write().unwrap();
         fs::create_dir(root.join("sub")).unwrap();
         fs::write(root.join("sub/inner.txt"), "x").unwrap();
+        fs::create_dir(root.join("empty")).unwrap();
 
         let st = scan(root).unwrap();
+        // an empty directory has no git state - libgit2 calls it
+        // ignored, git does not mention it, and neither does the column
+        assert_eq!(st.marks.get(OsStr::new("empty")), None);
         assert!(!st.branch.is_empty());
         assert_eq!(st.marks.get(OsStr::new("committed.txt")), Some(&'M'));
         assert_eq!(st.marks.get(OsStr::new("added.txt")), Some(&'A'));
