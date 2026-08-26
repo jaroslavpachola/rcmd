@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.7.1 - 2026-08-26
+
+- **One key notation on screen**: the F1 help now spells keys the way
+  the menus and mc do - `C-s`, `M-e`, `C-x d`, `S-F8` - instead of
+  `Ctrl+S`, `Alt+E`. The README keeps the long form, being read outside
+  the terminal, and `[keys.panel]` keeps its own spelling (`ctrl+s`),
+  which Learn keys shows.
+
 ## 4.7.0 - 2026-08-26
 
 The look-and-feel release: 4.6.0 and 4.6.1 below, plus one more rule
