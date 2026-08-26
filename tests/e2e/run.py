@@ -492,7 +492,7 @@ def test_cmdarchive():
     check("cmdarchive: entered", ("box." + ext + "://") in scr)
     check("cmdarchive: listing", "hello.txt" in scr and "sub" in scr)
     s.send(F8)                          # must refuse
-    check("cmdarchive: read-only", "read-only" in s.screen())
+    check("cmdarchive: read-only", "only .zip and .tar" in s.screen())
     s.send(b"\x13hello\r", wait=STEP)   # -> hello.txt
     s.send(F3, wait=STEP * 2)
     check("cmdarchive: F3 views member", "packed content" in s.screen())
