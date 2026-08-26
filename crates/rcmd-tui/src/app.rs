@@ -20,7 +20,6 @@ use rcmd_core::find::{self, FindEvent, FindHandle};
 use rcmd_core::fish;
 use rcmd_core::fsops::{self, FileFacts, JobEvent, JobHandle, Rename, Reply, TransferOpts};
 use rcmd_core::ftp::{self, FtpUrl};
-use rcmd_core::glob::glob_match;
 use rcmd_core::mask::{self, Mask};
 use rcmd_core::panel::{ListMode, LoadKind, Panel, SortKey};
 use rcmd_core::remote::{self, ConnectEvent, ConnectHandle, ConnectReply};
@@ -5240,12 +5239,21 @@ impl App {
         if entry.is_parent() || entry.is_dir() {
             return;
         }
-        let name = entry.name.to_string_lossy().to_lowercase();
+        let name = entry.name.to_string_lossy().into_owned();
+        let dir = panel.cwd.clone();
+        let path = dir.join(&entry.name);
+        // `file -b` is asked once, and only if a rule has type =
+        let mut probed: Option<String> = None;
+        let mut file_type = || {
+            probed
+                .get_or_insert_with(|| crate::config::file_type_of(&path))
+                .clone()
+        };
         let run = match self
             .config
             .open
             .iter()
-            .find(|rule| glob_match(&rule.pattern.to_lowercase(), &name))
+            .find(|rule| rule.matches(&name, &dir, &mut file_type))
         {
             Some(rule) => rule.run.clone(),
             None => return,
@@ -5593,13 +5601,21 @@ impl App {
         let scratch = !temps.is_empty();
         // the [[view]] filter is a local-panel thing: its command runs
         // on a path, and an archive member has none until it is fetched
-        let lower = name.to_string_lossy().to_lowercase();
         let filter = self.panels[self.active].is_local().then(|| {
             keep.filter.clone().or_else(|| {
+                let dir = self.panels[self.active].cwd.clone();
+                let path = dir.join(&name);
+                let plain = name.to_string_lossy().into_owned();
+                let mut probed: Option<String> = None;
+                let mut file_type = || {
+                    probed
+                        .get_or_insert_with(|| crate::config::file_type_of(&path))
+                        .clone()
+                };
                 self.config
                     .view
                     .iter()
-                    .find(|rule| glob_match(&rule.pattern.to_lowercase(), &lower))
+                    .find(|rule| rule.matches(&plain, &dir, &mut file_type))
                     .cloned()
             })
         });
@@ -9017,10 +9033,7 @@ impl App {
             }
             InputAction::FilteredView => {
                 if !value.trim().is_empty() {
-                    let rule = crate::config::OpenRule {
-                        pattern: "*".into(),
-                        run: value.trim().to_string(),
-                    };
+                    let rule = crate::config::OpenRule::by_glob("*", value.trim());
                     self.open_viewer_keeping(
                         false,
                         ViewKeep {

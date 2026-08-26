@@ -77,7 +77,7 @@ stands, mc's variant added alongside · `Adopt`: parity work, PLAN4 ·
 
 | Difference | Decision | Note |
 |---|---|---|
-| `[[open]]` globs instead of mc.ext's matching language | Keep+ | extend TOML to mc.ext's power, import mc.ext |
+| `[[open]]` globs instead of mc.ext's matching language | Keep+ | done 4.4.0: `match` / `regex` / `type` (`file -b`) / `directory`, and the import carries all four |
 | No directory tree (panel mode or dialog) | Adopt | |
 | History is browser back/forward, no list popup | Keep+ | add mc's `M-H` history list |
 | Hotlist flat: auto label, no groups, no edit | Adopt | groups, label prompt, edit/move |

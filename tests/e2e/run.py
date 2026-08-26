@@ -1932,6 +1932,11 @@ def test_extensibility():
         'match = "*.txt"\n'
         'run = "cp %f opened_copy"\n'
         '\n'
+        '[[open]]\n'
+        'regex = "^weird[0-9]+$"\n'
+        'directory = "/play$"\n'
+        'run = "cp %f regex_copy"\n'
+        '\n'
         '[[view]]\n'
         'match = "*.dat"\n'
         'run = "tr a-z A-Z < %f"\n'
@@ -1946,18 +1951,24 @@ def test_extensibility():
         'key = "ctrl+g"\n'
     )
     open(os.path.join(play, "notes.txt"), "w").write("data\n")
+    open(os.path.join(play, "weird42"), "w").write("odd\n")
     s = Session(play, home)
 
     # Enter on a matching file runs the opener (quietly, no pause)
-    s.keys(
-        DOWN,                       # cursor -> notes.txt
-        b"\r",
-        wait=STEP * 3,
-    )
+    s.send(b"\x13notes\r", wait=STEP)   # quick search -> notes.txt
+    s.send(b"\r", wait=STEP * 3)
     copy = os.path.join(play, "opened_copy")
     check(
         "extensibility: opener ran on Enter",
         os.path.isfile(copy) and open(copy).read() == "data\n",
+    )
+    # a regex + directory rule, where no glob would do
+    s.send(b"\x13weird\r", wait=STEP)
+    s.send(b"\r", wait=STEP * 3)
+    copy = os.path.join(play, "regex_copy")
+    check(
+        "extensibility: regex/directory opener ran",
+        os.path.isfile(copy) and open(copy).read() == "odd\n",
     )
 
     # F2 user menu lists commands and runs the selection
@@ -2857,7 +2868,7 @@ def test_mcimport():
     check("mcimport: mc.ext became an opener", 'match = "*.md"' in out and "glow %f" in out, out)
     check("mcimport: View became a [[view]] rule", "[[view]]" in out and "cat %f" in out, out)
     check("mcimport: keymap converted", '"f5" = "copy"' in out and '"alt+." =' in out, out)
-    check("mcimport: warns about type/ matchers", "type/" in err, err)
+    check("mcimport: type/ matchers come through", 'type = "^ELF"' in out, out)
     check("mcimport: config.toml untouched",
           not os.path.exists(os.path.join(home, ".config", "rcmd", "config.toml")))
 

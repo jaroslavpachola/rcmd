@@ -393,13 +393,26 @@ chunked reader, so previewing a multi-GB log is instant. Tab focuses
 the preview for scrolling (arrows/PgUp/PgDn); Ctrl+X q turns it off.
 
 **Openers & user commands**: `[[open]]` rules in the config make Enter
-open files by type - the first matching glob wins (case-insensitive):
+open files by type - the first matching rule wins:
 
 ```toml
 [[open]]
-match = "*.pdf"
+match = "*.pdf"              # a glob on the name, case-insensitive
 run = "zathura %f >/dev/null 2>&1 &"
+
+[[open]]
+type = "^ELF"                # a regex over what `file -b` says of it
+run = "objdump -d %f | less"
+
+[[open]]
+regex = "^[a-z]+[0-9]+\\.log$"  # a regex on the name ((?i) folds case)
+directory = "^/var/log/"       # ...and one on the panel's path
+run = "less %f"
 ```
+
+Those are mc.ext's four matchers (`match`, `regex`, `type`,
+`directory`); every one a rule gives must hold. `file` is only asked
+when a rule has `type =`, and `[[view]]` rules take the same keys.
 
 Openers run without a "press Enter" pause, so terminal programs (mpv,
 less) feel native and GUI programs just need a trailing `&`. With
@@ -769,8 +782,8 @@ entries = [
 ]
 
 [[open]]                    # Enter on a matching file runs this
-match = "*.pdf"
-run = "zathura %f >/dev/null 2>&1 &"
+match = "*.pdf"             # match (glob) / regex (name) / type (file -b)
+run = "zathura %f >/dev/null 2>&1 &"   # / directory (path): all given must hold
 
 [[panelize]]                # saved panelize commands (Ctrl+S adds one)
 name = "modified"

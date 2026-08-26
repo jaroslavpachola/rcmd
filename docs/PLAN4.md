@@ -213,7 +213,11 @@ which is how it slipped past every phase. In the order to do them:
 - **`[[open]]` at mc.ext's power** (§4): rules are `match` + `run`
   only, so `--import-mc` can carry nothing a glob cannot express -
   `type =` (as `[[highlight]]` already has) and a regex option. The
-  only one of the four with design in it; last.
+  only one of the four with design in it; last. **Done** (4.4.0):
+  `regex`, `type` (a regex over `file -b`, asked only when a rule
+  wants it) and `directory` beside `match`, all four ANDed, the same
+  keys on `[[view]]`, and the importer keeps what it used to warn
+  about.
 - **Drop the S0 migration fallback**: state keys still read from
   `config.toml` when `state.toml` is absent were promised for one
   release, and 4.0 was it.

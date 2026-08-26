@@ -5,8 +5,9 @@
 //! [`crate::state`] and is overlaid on top at load time.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use rcmd_core::glob::glob_match;
 use rcmd_core::panel::{ListMode, SortKey};
 use serde::{Deserialize, Serialize};
 
@@ -182,12 +183,84 @@ pub struct PanelizePreset {
     pub run: String,
 }
 
-/// `[[open]]` - `match = "*.pdf"`, `run = "zathura %f &"`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `[[open]]` / `[[view]]` - mc.ext's four matchers and a command.
+/// What the file is called (`match`, a glob, or `regex`), what it is
+/// (`type`, a regex over what `file -b` says of it) and where it is
+/// (`directory`, a regex over the panel's path); every matcher given
+/// must hold, and a rule with none never matches.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OpenRule {
-    #[serde(rename = "match")]
-    pub pattern: String,
+    #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regex: Option<String>,
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
     pub run: String,
+}
+
+impl OpenRule {
+    pub fn by_glob(pattern: &str, run: &str) -> Self {
+        OpenRule {
+            pattern: Some(pattern.to_string()),
+            run: run.to_string(),
+            ..OpenRule::default()
+        }
+    }
+
+    /// Whether the rule applies to `name` in `dir`. The glob is
+    /// case-insensitive, the regexes are what they say (`(?i)` is
+    /// there). `file_type` is asked for `file -b`'s line only when a
+    /// rule wants it, so the usual rules cost no process.
+    pub fn matches(&self, name: &str, dir: &Path, file_type: &mut dyn FnMut() -> String) -> bool {
+        if self.pattern.is_none()
+            && self.regex.is_none()
+            && self.kind.is_none()
+            && self.directory.is_none()
+        {
+            return false;
+        }
+        if let Some(glob) = &self.pattern
+            && !glob_match(&glob.to_lowercase(), &name.to_lowercase())
+        {
+            return false;
+        }
+        if let Some(re) = &self.regex
+            && !regex_matches(re, name)
+        {
+            return false;
+        }
+        if let Some(re) = &self.directory
+            && !regex_matches(re, &dir.to_string_lossy())
+        {
+            return false;
+        }
+        if let Some(re) = &self.kind
+            && !regex_matches(re, &file_type())
+        {
+            return false;
+        }
+        true
+    }
+}
+
+/// A regex that does not compile matches nothing - a rule is not the
+/// place to fail loudly, Enter is pressed a hundred times a day.
+fn regex_matches(re: &str, text: &str) -> bool {
+    regex::Regex::new(re).is_ok_and(|re| re.is_match(text))
+}
+
+/// What `file -b` says about a path, for `type =` rules; empty when
+/// there is no `file` to ask.
+pub fn file_type_of(path: &Path) -> String {
+    std::process::Command::new("file")
+        .args(["-b", "--"])
+        .arg(path)
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_default()
 }
 
 /// `[[highlight]]` - `match = "*.tar.gz"` or `type = "exe"`, plus the
@@ -467,6 +540,49 @@ pub fn sort_key_name(key: SortKey) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn open_rules_match_by_name_type_and_place() {
+        use super::OpenRule;
+        use std::path::Path;
+        let dir = Path::new("/srv/www");
+        let asked = std::cell::Cell::new(0);
+        let mut probe = || {
+            asked.set(asked.get() + 1);
+            "ELF 64-bit LSB executable".to_string()
+        };
+        let glob = OpenRule::by_glob("*.LOG", "");
+        assert!(glob.matches("today.log", dir, &mut probe));
+        let re = OpenRule {
+            regex: Some("^[a-z]+[0-9]+\\.log$".into()),
+            ..OpenRule::default()
+        };
+        assert!(re.matches("app7.log", dir, &mut probe));
+        assert!(!re.matches("APP7.log", dir, &mut probe));
+        let place = OpenRule {
+            regex: Some("\\.log$".into()),
+            directory: Some("^/srv/".into()),
+            ..OpenRule::default()
+        };
+        assert!(place.matches("a.log", dir, &mut probe));
+        assert!(!place.matches("a.log", Path::new("/home/x"), &mut probe));
+        // nothing so far needed `file`
+        assert_eq!(asked.get(), 0);
+        let kind = OpenRule {
+            kind: Some("^ELF".into()),
+            ..OpenRule::default()
+        };
+        assert!(kind.matches("a.out", dir, &mut probe));
+        assert_eq!(asked.get(), 1);
+        // a rule that says nothing matches nothing, and a broken regex
+        // matches nothing rather than everything
+        assert!(!OpenRule::default().matches("x", dir, &mut probe));
+        let broken = OpenRule {
+            regex: Some("(".into()),
+            ..OpenRule::default()
+        };
+        assert!(!broken.matches("(", dir, &mut probe));
+    }
+
     use super::*;
 
     #[test]
@@ -557,7 +673,7 @@ name = "disk usage"
 run = "du -sh %t | less"
 "#;
         let config: Config = toml::from_str(text).unwrap();
-        assert_eq!(config.open[0].pattern, "*.pdf");
+        assert_eq!(config.open[0].pattern.as_deref(), Some("*.pdf"));
         assert_eq!(config.commands[0].key.as_deref(), Some("ctrl+g"));
         assert_eq!(config.commands[1].key, None);
 

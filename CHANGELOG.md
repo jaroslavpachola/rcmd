@@ -1,5 +1,20 @@
 # Changelog
 
+## 4.4.0 - 2026-08-26
+
+- **`[[open]]` and `[[view]]` speak mc.ext** (4.x leftovers, the last
+  of them): beside `match` (a glob) a rule may say `regex` (on the
+  name), `type` (a regex over what `file -b` says of the file) and
+  `directory` (a regex over the panel's path); every matcher given
+  must hold, a rule with none never matches, and a regex that will not
+  compile matches nothing rather than everything. `file` is run once
+  per Enter and only when some rule has `type =`, so the usual rules
+  cost what they did.
+- **`--import-mc` stops dropping rules**: `type/` lines and regexes too
+  rich for a glob used to be warnings; they come through as `type =`
+  and `regex =` now, `directory/` as `directory =`, mc's `i/` flag and
+  the ini's `*IgnoreCase=true` as `(?i)`.
+
 ## 4.3.0 - 2026-08-26
 
 - **`show_free_space`** (4.x leftovers): the free-space figure in a

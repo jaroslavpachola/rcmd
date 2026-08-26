@@ -155,16 +155,16 @@ pub fn parse_ext(text: &str) -> (Vec<OpenRule>, Vec<OpenRule>, Vec<String>) {
     let mut open = Vec::new();
     let mut view = Vec::new();
     let mut warnings = Vec::new();
-    let mut patterns: Vec<String> = Vec::new();
+    let mut matchers: Vec<OpenRule> = Vec::new();
 
     for line in text.lines() {
         if line.trim_start().starts_with('#') || line.trim().is_empty() {
             continue;
         }
         if !line.starts_with(char::is_whitespace) {
-            let (globs, warning) = matcher_to_globs(line.trim());
+            let (rules, warning) = matcher_to_rules(line.trim());
             warnings.extend(warning);
-            patterns = globs;
+            matchers = rules;
             continue;
         }
         let body = line.trim();
@@ -175,10 +175,10 @@ pub fn parse_ext(text: &str) -> (Vec<OpenRule>, Vec<OpenRule>, Vec<String>) {
             warnings.push(format!("skipped '{}': no rcmd equivalent", body.trim()));
             continue;
         };
-        for pattern in &patterns {
+        for matcher in &matchers {
             let rule = OpenRule {
-                pattern: pattern.clone(),
                 run: run.clone(),
+                ..matcher.clone()
             };
             match verb.trim() {
                 "Open" => open.push(rule),
@@ -197,7 +197,7 @@ pub fn parse_ext_ini(text: &str) -> (Vec<OpenRule>, Vec<OpenRule>, Vec<String>) 
     let mut open = Vec::new();
     let mut view = Vec::new();
     let mut warnings = Vec::new();
-    let mut patterns: Vec<String> = Vec::new();
+    let mut matchers: Vec<OpenRule> = Vec::new();
 
     for line in text.lines() {
         let line = line.trim();
@@ -205,7 +205,7 @@ pub fn parse_ext_ini(text: &str) -> (Vec<OpenRule>, Vec<OpenRule>, Vec<String>) 
             continue;
         }
         if line.starts_with('[') {
-            patterns.clear();
+            matchers.clear();
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
@@ -215,19 +215,33 @@ pub fn parse_ext_ini(text: &str) -> (Vec<OpenRule>, Vec<OpenRule>, Vec<String>) 
         match key {
             "Regex" | "Shell" | "Type" | "Directory" => {
                 let matcher = format!("{}/{value}", key.to_lowercase());
-                let (globs, warning) = matcher_to_globs(&matcher);
+                let (rules, warning) = matcher_to_rules(&matcher);
                 warnings.extend(warning);
-                patterns = globs;
+                matchers = rules;
+            }
+            // the ini spells the i/ flag as its own key, which may come
+            // after the pattern it applies to
+            "RegexIgnoreCase" | "TypeIgnoreCase" | "ShellIgnoreCase"
+                if value.eq_ignore_ascii_case("true") =>
+            {
+                for rule in &mut matchers {
+                    if let Some(re) = rule.regex.as_mut().filter(|re| !re.starts_with("(?i)")) {
+                        re.insert_str(0, "(?i)");
+                    }
+                    if let Some(re) = rule.kind.as_mut().filter(|re| !re.starts_with("(?i)")) {
+                        re.insert_str(0, "(?i)");
+                    }
+                }
             }
             "Open" | "View" | "Edit" => {
                 let Some(run) = convert_command(value) else {
                     warnings.push(format!("skipped '{key}={value}': no rcmd equivalent"));
                     continue;
                 };
-                for pattern in &patterns {
+                for matcher in &matchers {
                     let rule = OpenRule {
-                        pattern: pattern.clone(),
                         run: run.clone(),
+                        ..matcher.clone()
                     };
                     match key {
                         "Open" => open.push(rule),
@@ -242,16 +256,28 @@ pub fn parse_ext_ini(text: &str) -> (Vec<OpenRule>, Vec<OpenRule>, Vec<String>) 
     (open, view, warnings)
 }
 
-/// An mc.ext matcher line to rcmd globs. `shell/.txt` is an extension
-/// match; `regex/...` is converted when it is simple enough; `type/`
-/// (file(1) output) and `directory/` have no rcmd equivalent.
-fn matcher_to_globs(line: &str) -> (Vec<String>, Option<String>) {
+/// An mc.ext matcher line to rule templates (everything but `run`).
+/// `shell/.txt` is an extension glob; `regex/...` becomes globs when it
+/// is simple enough to read as one and a `regex =` otherwise; `type/`
+/// and `directory/` are the same regexes on `file -b` and the path.
+fn matcher_to_rules(line: &str) -> (Vec<OpenRule>, Option<String>) {
     let (kind, value) = match line.split_once('/') {
         Some(pair) => pair,
         None => return (Vec::new(), Some(format!("unknown matcher '{line}'"))),
     };
     // mc allows a case-insensitivity flag: shell/i/.txt
-    let value = value.strip_prefix("i/").unwrap_or(value);
+    let (value, fold) = match value.strip_prefix("i/") {
+        Some(rest) => (rest, true),
+        None => (value, false),
+    };
+    let re = |value: &str| {
+        if fold {
+            format!("(?i){value}")
+        } else {
+            value.to_string()
+        }
+    };
+    let blank = OpenRule::default();
     match kind {
         "shell" => {
             let glob = if let Some(ext) = value.strip_prefix('.') {
@@ -259,22 +285,34 @@ fn matcher_to_globs(line: &str) -> (Vec<String>, Option<String>) {
             } else {
                 value.to_string()
             };
-            (vec![glob], None)
+            (vec![OpenRule::by_glob(&glob, "")], None)
         }
         "regex" => match regex_to_globs(value) {
-            Some(globs) => (globs, None),
+            Some(globs) => (
+                globs.iter().map(|g| OpenRule::by_glob(g, "")).collect(),
+                None,
+            ),
             None => (
-                Vec::new(),
-                Some(format!("regex '{value}' is too complex for a glob")),
+                vec![OpenRule {
+                    regex: Some(re(value)),
+                    ..blank
+                }],
+                None,
             ),
         },
         "type" => (
-            Vec::new(),
-            Some(format!("type/ matcher '{value}' needs file(1); skipped")),
+            vec![OpenRule {
+                kind: Some(re(value)),
+                ..blank
+            }],
+            None,
         ),
         "directory" => (
-            Vec::new(),
-            Some(format!("directory/ matcher '{value}' skipped")),
+            vec![OpenRule {
+                directory: Some(re(value)),
+                ..blank
+            }],
+            None,
         ),
         other => (Vec::new(), Some(format!("unknown matcher kind '{other}'"))),
     }
@@ -570,6 +608,22 @@ fn mc_key(key: &str) -> Option<String> {
 }
 
 /// The imported settings as an rcmd config fragment.
+fn rule_toml(table: &str, rule: &OpenRule) -> String {
+    let mut out = format!("\n[[{table}]]\n");
+    for (key, value) in [
+        ("match", &rule.pattern),
+        ("regex", &rule.regex),
+        ("type", &rule.kind),
+        ("directory", &rule.directory),
+    ] {
+        if let Some(value) = value {
+            out.push_str(&format!("{key} = {}\n", toml_str(value)));
+        }
+    }
+    out.push_str(&format!("run = {}\n", toml_str(&rule.run)));
+    out
+}
+
 pub fn to_toml(imported: &Imported) -> String {
     let mut out = String::new();
     out.push_str("# Imported from Midnight Commander by `rcmd --import-mc`.\n");
@@ -582,18 +636,10 @@ pub fn to_toml(imported: &Imported) -> String {
         }
     }
     for rule in &imported.open {
-        out.push_str(&format!(
-            "\n[[open]]\nmatch = {}\nrun = {}\n",
-            toml_str(&rule.pattern),
-            toml_str(&rule.run)
-        ));
+        out.push_str(&rule_toml("open", rule));
     }
     for rule in &imported.view {
-        out.push_str(&format!(
-            "\n[[view]]\nmatch = {}\nrun = {}\n",
-            toml_str(&rule.pattern),
-            toml_str(&rule.run)
-        ));
+        out.push_str(&rule_toml("view", rule));
     }
     for cmd in &imported.commands {
         out.push_str(&format!(
@@ -666,18 +712,46 @@ regex/\\.(png|jpg)$\n\
 type/^ELF\n\
 \tOpen=objdump -d %f\n";
         let (open, view, warnings) = parse_ext(text);
-        assert_eq!(open[0].pattern, "*.txt");
+        assert_eq!(open[0].pattern.as_deref(), Some("*.txt"));
         assert_eq!(open[0].run, "less %f");
         // %view{...} is what a [[view]] rule means, so the prefix goes
         assert_eq!(view[0].run, "cat %f");
         // one alternation regex expands into two globs
-        let pngs: Vec<&str> = open.iter().map(|r| r.pattern.as_str()).collect();
+        let pngs: Vec<&str> = open.iter().filter_map(|r| r.pattern.as_deref()).collect();
         assert!(
             pngs.contains(&"*.png") && pngs.contains(&"*.jpg"),
             "{pngs:?}"
         );
-        // type/ needs file(1): reported, not guessed at
-        assert!(warnings.iter().any(|w| w.contains("type/")), "{warnings:?}");
+        // type/ is a regex over file -b, carried as such
+        let elf = open.iter().find(|r| r.kind.is_some()).expect("type rule");
+        assert_eq!(elf.kind.as_deref(), Some("^ELF"));
+        assert_eq!(elf.run, "objdump -d %f");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn regexes_a_glob_cannot_say_are_kept_as_regexes() {
+        let text = "\
+regex/i/^[a-z]+[0-9]+\\.log$\n\
+\tOpen=less %f\n\
+directory/^/srv/\n\
+\tOpen=echo srv %f\n";
+        let (open, _, warnings) = parse_ext(text);
+        assert_eq!(open[0].regex.as_deref(), Some("(?i)^[a-z]+[0-9]+\\.log$"));
+        assert!(open[0].pattern.is_none());
+        assert_eq!(open[1].directory.as_deref(), Some("^/srv/"));
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn ext_ini_ignore_case_key_reaches_the_pattern_before_it() {
+        let text = "\
+[logs]\n\
+Regex=^[a-z]+\\.log$\n\
+RegexIgnoreCase=true\n\
+Open=less %f\n";
+        let (open, _, _) = parse_ext_ini(text);
+        assert_eq!(open[0].regex.as_deref(), Some("(?i)^[a-z]+\\.log$"));
     }
 
     #[test]
@@ -689,7 +763,7 @@ Open=zathura %f\n\
 View=pdftotext %f -\n";
         let (open, view, warnings) = parse_ext_ini(text);
         assert_eq!(open.len(), 1);
-        assert_eq!(open[0].pattern, "*.pdf");
+        assert_eq!(open[0].pattern.as_deref(), Some("*.pdf"));
         assert_eq!(view[0].run, "pdftotext %f -");
         assert!(warnings.is_empty(), "{warnings:?}");
     }
@@ -759,15 +833,23 @@ Save = f2\n";
                 when: Some("f *.tar.gz".into()),
                 entries: Vec::new(),
             }],
-            open: vec![OpenRule {
-                pattern: "*.pdf".into(),
-                run: "zathura %f &".into(),
-            }],
+            open: vec![
+                OpenRule::by_glob("*.pdf", "zathura %f &"),
+                OpenRule {
+                    kind: Some("^ELF".into()),
+                    directory: Some("^/opt/".into()),
+                    run: "objdump -d %f".into(),
+                    ..OpenRule::default()
+                },
+            ],
             ..Imported::default()
         };
         let text = to_toml(&imported);
         let config: crate::config::Config = toml::from_str(&text).expect("emits valid TOML");
-        assert_eq!(config.open[0].pattern, "*.pdf");
+        assert_eq!(config.open[0].pattern.as_deref(), Some("*.pdf"));
+        assert_eq!(config.open[1].kind.as_deref(), Some("^ELF"));
+        assert_eq!(config.open[1].directory.as_deref(), Some("^/opt/"));
+        assert!(config.open[1].pattern.is_none());
         assert_eq!(config.commands[0].run, "echo one\necho two\n");
         // mc's condition comes across as rcmd's `when`, not as a note
         assert_eq!(config.commands[0].when.as_deref(), Some("f *.tar.gz"));
