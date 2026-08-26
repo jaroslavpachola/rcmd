@@ -4396,7 +4396,7 @@ def cursor_is(s, name):
     which is the only place on screen that says where the cursor is
     (the listing shows every name whatever is selected)."""
     for line in s.screen().split("\n"):
-        line = line.strip()
+        line = line.strip().strip("│ ")
         if line[:1] in "-dl" and line[1:3] in ("rw", "r-", "wx") and line.endswith(name):
             return True
     return False

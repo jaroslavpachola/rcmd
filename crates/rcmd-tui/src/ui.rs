@@ -997,6 +997,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
     }
     draw_quick_search(frame, active_area, app);
+    // a message too long for the active panel's status row spills
+    // across both panels' rows, which sit on one line in a vertical
+    // split - a startup warning cut in half is no warning
+    if let Some(msg) = &app.status
+        && !app.config.horizontal_split()
+        && app.panel_mini(app.active)
+        && active_area.height > MINI_STATUS_ROWS
+        && msg.chars().count() > active_area.width.saturating_sub(2) as usize
+    {
+        let row = Rect {
+            x: main.x + 1,
+            y: active_area.y + active_area.height - 2,
+            width: main.width.saturating_sub(2),
+            height: 1,
+        };
+        frame.render_widget(
+            Line::from(tail(msg, row.width as usize))
+                .style(Style::new().fg(th().error_fg).bg(th().error_bg)),
+            row,
+        );
+    }
     if menubar.height > 0 {
         draw_menubar(frame, menubar, app.menu.as_ref().map(|m| m.menu));
     }
