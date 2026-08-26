@@ -15,7 +15,8 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("f1", "help"),
     ("f3", "view"),
     ("shift+f3", "view-raw"),
-    ("f15", "view-raw"), // S-F3 on legacy terminals
+    ("alt+!", "filtered-view"), // MC: M-! view a command's output
+    ("f15", "view-raw"),        // S-F3 on legacy terminals
     ("f4", "edit"),
     ("f5", "copy"),
     ("f6", "move"),
@@ -216,6 +217,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "help" => Action::Help,
         "view" => Action::View,
         "view-raw" => Action::ViewRaw,
+        "filtered-view" => Action::FilteredView,
         "edit" => Action::Edit,
         "copy" => Action::Copy,
         "move" => Action::Move,

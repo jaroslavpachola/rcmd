@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.2.0 - 2026-08-26
+
+- **`M-!` filtered view** (4.x leftovers): mc's dialog, not just a menu
+  row - the field starts as the file name and the command goes in front
+  of it (`rev `, `strings `, a pipe; `%f` works too), and the output
+  opens in the viewer exactly as a `[[view]]` rule's would, so F6 swaps
+  the file itself back in. Ctrl+F to the next file leaves the one-off
+  command behind and lets that file's own rule apply. It is
+  F9 > File > Filtered view, `filtered-view` in `[keys.panel]`, and
+  the command field keeps its own history.
+- `--import-mc` maps mc's `ViewFiltered` and spells `alt-exclamation`.
+
 ## 4.1.0 - 2026-08-26
 
 - **`M-H` lists the panel's directory history** (4.x leftovers): the

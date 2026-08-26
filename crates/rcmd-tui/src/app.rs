@@ -138,6 +138,7 @@ impl InputAction {
             InputAction::SftpConnect => "connect",
             InputAction::EditNew => "edit",
             InputAction::QuickCd => "cd",
+            InputAction::FilteredView => "filter",
             InputAction::Chown { .. } => "chown",
             InputAction::HotlistLabel { .. } => "label",
             InputAction::MacroPrompt { .. } => return None,
@@ -179,6 +180,8 @@ pub enum InputAction {
     EditNew,
     /// M-c: the value is a cd target (path or sftp:// URL).
     QuickCd,
+    /// M-!: the value is a command whose output the viewer shows.
+    FilteredView,
     /// The hotlist asking for a label: for a new entry (`path` set), a
     /// new group (`path` empty and `index` None) or a rename (`index`).
     HotlistLabel {
@@ -1943,6 +1946,9 @@ pub struct ViewKeep {
     pub ruler: bool,
     pub nroff: bool,
     pub search: ViewSearch,
+    /// M-!'s command: a filter for this one opening, in place of
+    /// whatever `[[view]]` rule the name would have matched.
+    pub filter: Option<crate::config::OpenRule>,
 }
 
 impl Viewer {
@@ -2109,6 +2115,8 @@ pub enum Action {
     DirHistory,
     /// Shift+F3: the internal viewer without any [[view]] filter.
     ViewRaw,
+    /// M-!: the viewer on the output of a command asked for now.
+    FilteredView,
     /// M-`: the list of open editors and viewers.
     ScreenList,
     /// M-e: which codepage this panel's filenames are written in.
@@ -2138,6 +2146,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
         "&File",
         &[
             Some(("&View", "F3", Action::View)),
+            Some(("Filtered vie&w...", "M-!", Action::FilteredView)),
             Some(("&Edit", "F4", Action::Edit)),
             Some(("&Copy...", "F5", Action::Copy)),
             Some(("&Move/rename...", "F6", Action::Move)),
@@ -4838,6 +4847,25 @@ impl App {
             }
             Action::View => self.open_viewer(false),
             Action::ViewRaw => self.open_viewer(true),
+            Action::FilteredView => {
+                // mc's shape: the field starts as the file name and the
+                // command goes in front of it, so the cursor sits at 0
+                let panel = &self.panels[self.active];
+                let name = match panel.selected() {
+                    Some(entry) if !entry.is_dir() => entry.name.to_string_lossy().into_owned(),
+                    _ => {
+                        self.status = Some(" cannot view a directory ".into());
+                        return;
+                    }
+                };
+                self.dialog = Some(Dialog::Input(InputDialog {
+                    title: " Filtered view: command and arguments ".into(),
+                    value: name,
+                    cursor: 0,
+                    action: InputAction::FilteredView,
+                    hist: None,
+                }));
+            }
             Action::Edit => self.open_editor(),
             Action::Copy => self.open_transfer(false),
             Action::Move => self.open_transfer(true),
@@ -5564,11 +5592,13 @@ impl App {
         // on a path, and an archive member has none until it is fetched
         let lower = name.to_string_lossy().to_lowercase();
         let filter = self.panels[self.active].is_local().then(|| {
-            self.config
-                .view
-                .iter()
-                .find(|rule| glob_match(&rule.pattern.to_lowercase(), &lower))
-                .cloned()
+            keep.filter.clone().or_else(|| {
+                self.config
+                    .view
+                    .iter()
+                    .find(|rule| glob_match(&rule.pattern.to_lowercase(), &lower))
+                    .cloned()
+            })
         });
         let filter = filter.flatten();
         // F3 runs the filter, Shift+F3 does not; a filter that cannot
@@ -5776,6 +5806,9 @@ impl App {
             ruler: v.ruler,
             nroff: v.nroff,
             search: v.search.clone(),
+            // an M-! command was asked about this file; the next one
+            // gets whatever [[view]] rule its own name matches
+            filter: None,
         };
         let raw = v.opened_raw;
         if !v.hex_edits.is_empty() {
@@ -8975,6 +9008,21 @@ impl App {
             InputAction::QuickCd => {
                 if !value.trim().is_empty() {
                     self.do_cd(value.trim());
+                }
+            }
+            InputAction::FilteredView => {
+                if !value.trim().is_empty() {
+                    let rule = crate::config::OpenRule {
+                        pattern: "*".into(),
+                        run: value.trim().to_string(),
+                    };
+                    self.open_viewer_keeping(
+                        false,
+                        ViewKeep {
+                            filter: Some(rule),
+                            ..ViewKeep::default()
+                        },
+                    );
                 }
             }
             InputAction::HotlistLabel { group, index, path } => {

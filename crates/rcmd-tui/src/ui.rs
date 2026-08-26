@@ -757,6 +757,8 @@ const HELP_TEXT: &[&str] = &[
     "  Ctrl+F / Ctrl+B the next / previous file of the panel, in the",
     "                  same viewer, keeping wrap, hex and the search",
     "  Shift+F3        raw view (skip any [[view]] filter)",
+    "  Alt+!           filtered view: a command typed now, its output",
+    "                  in the viewer (the field starts as the file name)",
     "  F3/F10/Esc/q    close the viewer",
     "  Alt+`           the screen list (see the editor section)",
     "  Alt+E           which codepage the file is in: the bytes do not",

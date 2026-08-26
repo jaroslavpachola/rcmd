@@ -2001,6 +2001,15 @@ def test_extensibility():
     check("extensibility: Shift+F3 raw view",
           "filtered view content" in s.screen())
     s.send(b"q")
+    # M-! asks for a command with the file name already in the field
+    s.send(b"\x1b!", wait=STEP)
+    check("extensibility: M-! asks for a command",
+          "Filtered view" in s.screen() and "message.dat" in s.screen())
+    s.send(b"rev ", wait=STEP)
+    s.send(b"\r", wait=STEP * 2)
+    check("extensibility: M-! shows the command's output",
+          "tnetnoc weiv deretlif" in s.screen())
+    s.send(b"q")
     s.quit()
     shutil.rmtree(root)
 

@@ -497,6 +497,7 @@ fn mc_action(name: &str) -> Option<&'static str> {
         "Help" => "help",
         "View" => "view",
         "ViewRaw" => "view-raw",
+        "ViewFiltered" => "filtered-view",
         "Edit" => "edit",
         "Copy" => "copy",
         "Move" => "move",
@@ -546,6 +547,7 @@ fn mc_key(key: &str) -> Option<String> {
             // mc spells punctuation out; rcmd wants the character
             "dot" | "period" => ".",
             "question" => "?",
+            "exclamation" => "!",
             "slash" => "/",
             "backslash" => "\\",
             "comma" => ",",

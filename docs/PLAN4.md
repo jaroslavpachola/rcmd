@@ -203,7 +203,9 @@ which is how it slipped past every phase. In the order to do them:
   no popup. Same list-dialog machinery as `M-h` over data the panel
   already keeps. **Done** (4.1.0).
 - **"Filtered view" menu entry** (§7): F3 runs the `[[view]]` filter
-  and `S-F3` skips it; the menu shows neither choice.
+  and `S-F3` skips it; the menu shows neither choice. **Done** (4.2.0)
+  - and as mc's actual feature, `M-!`, rather than a menu row over
+  `S-F3`: a command typed now, its output in the viewer.
 - **Free space / marked totals toggle** (§3): promised as an options
   checkbox, still always on.
 - **`[[open]]` at mc.ext's power** (§4): rules are `match` + `run`

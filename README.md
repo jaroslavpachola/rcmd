@@ -297,6 +297,12 @@ parsed text from `pdftotext`, `tr`, `unzip -l` or whatever the rule
 runs, or the file as it actually is. It is the in-viewer form of the
 choice Shift+F3 makes when opening.
 
+**Alt+!** (F9 > File > Filtered view) is the same thing for a command
+typed on the spot: the field starts as the file name, the command goes
+in front of it (`head -50 `, `strings `, `xxd | less`-style pipes are
+fine, `%f` works too), and the output opens in the viewer as a filter
+would, so F6 swaps the file itself back in.
+
 **Ctrl+F** and **Ctrl+B** move to the next and previous file of the
 panel without leaving the viewer, keeping wrap, hex, the ruler, the
 formatting mode and the search - so reading through a directory is one
