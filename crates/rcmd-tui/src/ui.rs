@@ -2299,16 +2299,29 @@ fn draw_keybar(frame: &mut Frame, area: Rect) {
 fn draw_keybar_labels(frame: &mut Frame, area: Rect, labels: &[&str; 10]) {
     let mut spans = Vec::with_capacity(labels.len() * 2);
     for (i, label) in labels.iter().enumerate() {
+        // the ten boxes share the whole width, as mc's do: on a wide
+        // terminal the bar grows with it instead of stopping at column 80
+        let width = keybar_box(area.width, i + 1) - keybar_box(area.width, i);
+        if width < 3 {
+            continue;
+        }
         spans.push(Span::styled(
             format!("{:>2}", i + 1),
             Style::new().fg(th().key_fg).bg(th().key_bg),
         ));
+        let room = width as usize - 2;
         spans.push(Span::styled(
-            format!("{label:<6}"),
+            format!("{:<room$}", tail(label, room)),
             Style::new().fg(th().label_fg).bg(th().label_bg),
         ));
     }
     frame.render_widget(Line::from(spans), area);
+}
+
+/// Where box `i` (0..=10) of the key bar starts across `width` cells;
+/// the boundaries are proportional, so the boxes differ by at most one.
+pub fn keybar_box(width: u16, i: usize) -> u16 {
+    (u32::from(width) * i as u32 / 10) as u16
 }
 
 fn draw_help(frame: &mut Frame, app: &mut App) {

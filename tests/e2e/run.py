@@ -1549,8 +1549,9 @@ def test_mouse():
     # click focuses the right panel and puts the cursor on the row
     s.send(click(62, 4))
     check("mouse: click focuses+selects", "inner.txt" in status_line(s))
-    # keybar: the "9 PullDn" button opens the menu (on Left, as in MC)
-    s.send(click(66, 30))
+    # keybar: the "9 PullDn" button opens the menu (on Left, as in MC);
+    # the ten boxes share the width, so box 9 starts at 8/10 of it
+    s.send(click(COLS * 8 // 10 + 2, 30))
     check("mouse: keybar opens menu", "Brief listing" in s.screen())
     # menu bar: switch to Command, whose title x comes from the bar itself
     titles = s.screen().split("\n")[0]

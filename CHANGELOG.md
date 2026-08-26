@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.10.1 - 2026-08-26
+
+- **The key bar spans the terminal.** Its ten boxes were eight cells
+  each, stopping at column 80 on any wider terminal and leaving the
+  rest bare; they share the whole width now, as mc's do, and a click
+  maps through the same boundaries.
+
 ## 4.10.0 - 2026-08-26
 
 - **The git column is off by default.** It is a column on every row of

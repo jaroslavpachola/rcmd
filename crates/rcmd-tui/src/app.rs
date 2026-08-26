@@ -3879,8 +3879,11 @@ impl App {
             return;
         }
         if self.areas.keybar.contains(pos) {
-            // 10 buttons, 8 cells each ("nnLabel  ") → F1..F10
-            let n = ((x - self.areas.keybar.x) / 8 + 1).min(10) as u8;
+            // ten boxes across the width → F1..F10
+            let rel = x - self.areas.keybar.x;
+            let n = (1..=10)
+                .find(|&i| rel < crate::ui::keybar_box(self.areas.keybar.width, i))
+                .unwrap_or(10) as u8;
             self.on_key(KeyEvent::new(KeyCode::F(n), KeyModifiers::NONE));
             return;
         }
