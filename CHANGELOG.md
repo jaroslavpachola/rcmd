@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.1.0 - 2026-08-26
+
+- **`M-H` lists the panel's directory history** (4.x leftovers): the
+  same list that Alt+←/→ walk, newest first, with `*` on the stop the
+  panel is at now. Enter *moves the history cursor* there rather than
+  appending a new stop, so Alt+←/→ carry on from that point - which is
+  what mc's list does and what `cd -` deliberately does not. It is
+  F9 > Command > Directory history as well, `dir-history` in
+  `[keys.panel]`, and the mouse reaches it like the other list dialogs.
+- **Keys tell `alt+h` from `alt+H`**: a letter in a key spec keeps its
+  case, `shift+h` is the same key as `H` spelled the long way (a
+  terminal sends the capital and no shift bit), and Learn keys names
+  Alt+Shift+H as `alt+H`. Modifier names stay case-blind.
+- **`--import-mc` reads mc's `[panel]` History right**: in that section
+  `History` is the directory history (`M-H`), not the command line's,
+  and `HistoryNext`/`HistoryPrev` map to the back/forward actions.
+- MC-DIFF re-read against 4.0.0: S4's pruned editor rows are Keep with
+  the reason, undelete is a plain refusal, and PLAN4 carries a "Left
+  for 4.x" list - this entry closes its first row.
+
 ## 4.0.0 - 2026-08-26
 
 The parity release ([docs/PLAN4.md](docs/PLAN4.md), S0-S8 complete). 2.0

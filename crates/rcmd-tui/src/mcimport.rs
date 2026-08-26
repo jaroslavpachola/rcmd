@@ -513,7 +513,11 @@ fn mc_action(name: &str) -> Option<&'static str> {
         "Search" => "quick-search",
         "Filter" => "filter",
         "DirSize" => "dir-size",
-        "History" => "history-list",
+        // in mc's [panel] section History is the *directory* history
+        // (M-H); the command-line one lives in [main], which is not read
+        "History" => "dir-history",
+        "HistoryNext" => "history-forward",
+        "HistoryPrev" => "history-back",
         "Find" => "find-file",
         "CompareDirs" => "compare-dirs",
         "PanelListingSwitch" => "listing-cycle",

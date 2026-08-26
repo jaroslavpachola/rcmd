@@ -199,6 +199,7 @@ exactly where it was.
 | Ctrl+\ | Directory hotlist: Enter goes (or walks into a group), `a` adds this directory, `g` makes a group, `e` renames, `m` moves an entry into another group, `d` drops, Alt+↑/↓ reorders |
 | Alt+F7 | Find file (glob + optional content); results panelized |
 | Alt+← / Alt+→ | Directory history back / forward (per panel) |
+| Alt+Shift+H | Directory history as a list; Enter goes there |
 | Alt+↑ | Directory hotlist |
 | Ctrl+X d | Compare directories (marks differences in both panels) |
 | Ctrl+X ! | Panelize a command's output |
@@ -376,7 +377,9 @@ stays keyboard-reachable. Hold Shift to select terminal text as usual;
 
 **Panel history**: each panel remembers where it has been -
 Alt+←/Alt+→ walk back and forward browser-style (sftp:// locations
-reconnect through the connection cache), Alt+↑ opens the hotlist.
+reconnect through the connection cache), Alt+Shift+H lists the whole
+history with `*` on where the panel is now and Enter moving the cursor
+there, Alt+↑ opens the hotlist.
 
 **Quick view** (Ctrl+X q): the other panel becomes a live preview of
 the file under the cursor, updating as you move. It uses the viewer's

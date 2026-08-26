@@ -1478,6 +1478,17 @@ def test_history():
     )
     s.send(ALT_RIGHT)
     check("history: forward", play + "/one" in s.screen())
+    # M-H lists the history newest first, * on the current stop
+    s.send(b"\x1bH", wait=STEP)
+    scr = s.screen()
+    check("history: M-H opens the list", "Directory history" in scr)
+    check("history: M-H marks the current stop", "*" + play + "/one" in scr, scr)
+    s.send(b"\x1b[A", wait=STEP)        # Up: the newer stop, two
+    s.send(b"\r", wait=STEP)
+    check("history: M-H Enter goes there", play + "/two" in s.screen()
+          and "Directory history" not in s.screen())
+    s.send(ALT_LEFT)                     # the cursor moved: back is one again
+    check("history: M-H moved the cursor, back lands on one", play + "/one" in s.screen())
     s.send(ALT_UP)
     check("history: alt+up opens hotlist", "Directory hotlist" in s.screen())
     # recent directories (R3): visited dirs listed below the pinned ones

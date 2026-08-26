@@ -299,6 +299,21 @@ impl Panel {
         Some(self.history[pos].clone())
     }
 
+    /// The whole history, oldest first, and the index of where the
+    /// panel is now - what the M-H list shows.
+    pub fn history_entries(&self) -> (&[String], usize) {
+        (&self.history, self.hist_pos)
+    }
+
+    /// Jump to any history entry, the way the M-H list does: the cursor
+    /// moves there rather than a new stop being appended, so Alt+←/→
+    /// carry on from that point.
+    pub fn hist_goto(&mut self, pos: usize) -> Option<String> {
+        let loc = self.history.get(pos)?.clone();
+        self.hist_pending = Some(pos);
+        Some(loc)
+    }
+
     pub fn is_local(&self) -> bool {
         self.archive.is_none() && self.remote.is_none()
     }

@@ -922,6 +922,9 @@ pub enum Dialog {
     FindResults(Box<FindResults>),
     /// M-h: the command-line history; the payload is the selected row.
     History(usize),
+    /// M-H: the active panel's directory history, newest first; the
+    /// payload is the selected row.
+    DirHistory(usize),
     /// F9 > Command > Directory tree. Enter here changes the *current*
     /// panel and closes, which is mc's rule for the dialog - the tree
     /// listing mode moves the other panel instead.
@@ -2102,6 +2105,8 @@ pub enum Action {
     Jobs,
     /// M-h: the command-line history as a pick list.
     HistoryList,
+    /// M-H: the panel's directory history as a pick list.
+    DirHistory,
     /// Shift+F3: the internal viewer without any [[view]] filter.
     ViewRaw,
     /// M-`: the list of open editors and viewers.
@@ -2171,6 +2176,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Jobs...", "C-x j", Action::Jobs)),
             Some(("Acti&ve VFS list...", "C-x a", Action::VfsList)),
             Some(("Command histor&y...", "M-h", Action::HistoryList)),
+            Some(("Directory &history...", "M-H", Action::DirHistory)),
             // mc has three of these - extension file, menu file,
             // highlighting file. rcmd has one file, so it has one entry.
             // The `g`: `f` is spent on Find file, and a second entry
@@ -5023,6 +5029,16 @@ impl App {
                     self.dialog = Some(Dialog::History(0));
                 }
             }
+            Action::DirHistory => {
+                let (entries, pos) = self.panels[self.active].history_entries();
+                if entries.len() < 2 {
+                    self.status = Some(" directory history: nowhere else yet ".into());
+                } else {
+                    // newest first, the cursor on where the panel is now
+                    let row = entries.len() - 1 - pos.min(entries.len() - 1);
+                    self.dialog = Some(Dialog::DirHistory(row));
+                }
+            }
         }
     }
 
@@ -7117,6 +7133,12 @@ impl App {
                 }
                 true
             }
+            Some(Dialog::DirHistory(row)) => {
+                if let Some(at) = count(self.panels[self.active].history_entries().0.len()) {
+                    *row = at;
+                }
+                true
+            }
             Some(Dialog::Charset(row)) => {
                 if let Some(at) = count(CHARSET_ROWS.len()) {
                     *row = at;
@@ -7221,6 +7243,30 @@ impl App {
                         self.dialog = Some(Dialog::History(selected));
                     }
                     _ => self.dialog = Some(Dialog::History(selected)),
+                }
+            }
+            Dialog::DirHistory(mut selected) => {
+                // rows are newest first; Enter moves the history cursor
+                // there, so Alt+←/→ carry on from that stop
+                let len = self.panels[self.active].history_entries().0.len();
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => {
+                        let idx = len.saturating_sub(1).saturating_sub(selected);
+                        if let Some(loc) = self.panels[self.active].hist_goto(idx) {
+                            self.navigate(&loc);
+                        }
+                    }
+                    KeyCode::Up => {
+                        self.dialog = Some(Dialog::DirHistory(selected.saturating_sub(1)));
+                    }
+                    KeyCode::Down => {
+                        if selected + 1 < len {
+                            selected += 1;
+                        }
+                        self.dialog = Some(Dialog::DirHistory(selected));
+                    }
+                    _ => self.dialog = Some(Dialog::DirHistory(selected)),
                 }
             }
             Dialog::Vfs(mut d) => {

@@ -552,6 +552,7 @@ const HELP_TEXT: &[&str] = &[
     "                  Enter takes *this* panel there and closes; typing",
     "                  jumps to a directory, F2 rescans, F3 forgets a branch",
     "  Alt+Left/Right  walk the panel's directory history (back/forward)",
+    "  Alt+Shift+H     the same history as a list; Enter goes, * is here",
     "  F9 > Options    one options form, in sections: Layout (split",
     "                  direction and size, which bars are drawn), Panel (hidden",
     "                  files, lynx-like motion, mouse, auto-reload, git),",
@@ -1002,7 +1003,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Dialog::Jobs(selected) => dialog_rows = draw_jobs(frame, &app.jobs, *selected),
             Dialog::Vfs(d) => draw_vfs(frame, d),
             Dialog::History(selected) => {
-                dialog_rows = draw_history(frame, app.cmdline.history(), *selected)
+                dialog_rows = draw_history(
+                    frame,
+                    " Command history ",
+                    app.cmdline.history(),
+                    *selected,
+                    None,
+                )
+            }
+            Dialog::DirHistory(selected) => {
+                let (entries, pos) = app.panels[app.active].history_entries();
+                dialog_rows =
+                    draw_history(frame, " Directory history ", entries, *selected, Some(pos))
             }
         }
     }
@@ -4687,12 +4699,16 @@ fn draw_connect_ask(frame: &mut Frame, ask: &ConnectAsk) {
 
 /// The C-x j jobs list: every running job with its progress; Enter
 /// pulls one to the foreground, c cancels it.
-/// M-h: the command line's history, newest first. Enter puts the
-/// selected line back on the command line for editing.
+/// M-h and M-H: a history, newest first - the command line's, where
+/// Enter puts the selected line back for editing, or the panel's
+/// directories, where Enter goes there. `current` marks the entry the
+/// panel is on now, which the command line has no notion of.
 fn draw_history(
     frame: &mut Frame,
+    title: &str,
     history: &[String],
     selected: usize,
+    current: Option<usize>,
 ) -> Option<crate::app::DialogRows> {
     let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
@@ -4700,7 +4716,7 @@ fn draw_history(
     let area = centered(64, rows + 2, frame.area());
     frame.render_widget(Clear, area);
     let block = Block::bordered()
-        .title(" Command history ")
+        .title(title)
         .title_bottom(Line::from(" Enter picks · Esc cancels ").centered())
         .style(style);
     let inner = block.inner(area);
@@ -4723,8 +4739,13 @@ fn draw_history(
             width: inner.width,
             height: 1,
         };
+        let mark = if current == Some(history.len() - 1 - i) {
+            '*'
+        } else {
+            ' '
+        };
         let text = format!(
-            " {:<width$}",
+            "{mark}{:<width$}",
             tail(cmd, inner.width as usize - 1),
             width = inner.width as usize - 1
         );

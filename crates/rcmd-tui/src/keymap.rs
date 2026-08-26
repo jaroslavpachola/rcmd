@@ -43,6 +43,7 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("alt+?", "find-file"),    // MC: M-? find file
     ("alt+c", "quick-cd"),     // MC: M-c quick cd
     ("alt+h", "history-list"), // MC: M-h command-line history
+    ("alt+H", "dir-history"),  // MC: M-H the panel's directory history
     ("alt+a", "paste-path"),   // MC: M-a paste the panel directory
     ("ctrl+l", "repaint"),
     ("shift+f4", "edit-new"),
@@ -104,19 +105,19 @@ fn bind(map: &mut Keymap, key: &str, action: &str) -> Result<(), String> {
 
 /// "ctrl+shift+f8", "alt+.", "+", "ctrl++" - modifiers then one key.
 pub fn parse_key(spec: &str) -> Option<(KeyCode, KeyModifiers)> {
-    let spec = spec.trim().to_lowercase();
+    let spec = spec.trim();
     let (mods_part, key_part): (&str, &str) = if let Some(stripped) = spec.strip_suffix('+') {
         // the key itself is '+': "" for "+", "ctrl+" for "ctrl++"
         (stripped.strip_suffix('+').unwrap_or(stripped), "+")
     } else if let Some(i) = spec.rfind('+') {
         (&spec[..i], &spec[i + 1..])
     } else {
-        ("", spec.as_str())
+        ("", spec)
     };
 
     let mut mods = KeyModifiers::NONE;
     for part in mods_part.split('+').filter(|p| !p.is_empty()) {
-        mods |= match part {
+        mods |= match part.to_lowercase().as_str() {
             "ctrl" | "control" | "c" => KeyModifiers::CONTROL,
             "alt" | "meta" | "m" => KeyModifiers::ALT,
             "shift" | "s" => KeyModifiers::SHIFT,
@@ -124,7 +125,21 @@ pub fn parse_key(spec: &str) -> Option<(KeyCode, KeyModifiers)> {
         };
     }
 
-    let code = match key_part {
+    // a letter keeps its case - "alt+H" is Alt+Shift+H, a different key
+    // from "alt+h" - and "shift+h" is the same key spelled the long way,
+    // since a terminal sends the capital and no shift bit
+    let mut single = key_part.chars();
+    if let (Some(c), None) = (single.next(), single.next()) {
+        let c = if mods.contains(KeyModifiers::SHIFT) && c.is_alphabetic() {
+            mods.remove(KeyModifiers::SHIFT);
+            c.to_uppercase().next().unwrap_or(c)
+        } else {
+            c
+        };
+        return Some((KeyCode::Char(c), mods));
+    }
+
+    let code = match key_part.to_lowercase().as_str() {
         "enter" | "return" => KeyCode::Enter,
         "tab" => KeyCode::Tab,
         "esc" | "escape" => KeyCode::Esc,
@@ -189,7 +204,7 @@ pub fn key_name(code: KeyCode, mods: KeyModifiers) -> String {
         KeyCode::Left => "left".into(),
         KeyCode::Right => "right".into(),
         KeyCode::F(n) => format!("f{n}"),
-        KeyCode::Char(c) => c.to_lowercase().to_string(),
+        KeyCode::Char(c) => c.to_string(),
         other => format!("{other:?}").to_lowercase(),
     };
     out.push_str(&name);
@@ -261,6 +276,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "repaint" => Action::Repaint,
         "bulk-rename" => Action::BulkRename,
         "history-list" => Action::HistoryList,
+        "dir-history" => Action::DirHistory,
         "jobs" => Action::Jobs,
         "vfs-list" => Action::VfsList,
         _ => return None,
@@ -283,6 +299,8 @@ mod tests {
             "pgdn",
             "insert",
             "a",
+            "A",
+            "alt+H",
         ] {
             let (code, mods) = parse_key(spec).expect(spec);
             assert_eq!(key_name(code, mods), spec, "{spec}");
@@ -290,8 +308,19 @@ mod tests {
         // BackTab is one key crossterm reports as its own, and it is
         // spelled the way the config spells it
         assert_eq!(key_name(KeyCode::BackTab, KeyModifiers::NONE), "shift+tab");
-        // a shifted letter is the letter; its case is the shift
-        assert_eq!(key_name(KeyCode::Char('A'), KeyModifiers::SHIFT), "a");
+        // a shifted letter is the capital; its case is the shift
+        assert_eq!(key_name(KeyCode::Char('A'), KeyModifiers::SHIFT), "A");
+        assert_eq!(
+            parse_key("shift+h"),
+            Some((KeyCode::Char('H'), KeyModifiers::NONE))
+        );
+        assert_eq!(
+            parse_key("alt+shift+h"),
+            Some((KeyCode::Char('H'), KeyModifiers::ALT))
+        );
+        assert_ne!(parse_key("alt+h"), parse_key("alt+H"));
+        // modifier names are still case-blind
+        assert_eq!(parse_key("Ctrl+F5"), parse_key("ctrl+f5"));
     }
 
     #[test]

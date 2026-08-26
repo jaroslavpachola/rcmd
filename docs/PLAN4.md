@@ -201,7 +201,7 @@ which is how it slipped past every phase. In the order to do them:
 
 - **`M-H` directory history list** (§4): Alt+←/→ walk it, but there is
   no popup. Same list-dialog machinery as `M-h` over data the panel
-  already keeps.
+  already keeps. **Done** (4.1.0).
 - **"Filtered view" menu entry** (§7): F3 runs the `[[view]]` filter
   and `S-F3` skips it; the menu shows neither choice.
 - **Free space / marked totals toggle** (§3): promised as an options
