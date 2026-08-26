@@ -2025,7 +2025,28 @@ def test_extensibility():
     check("extensibility: M-! shows the command's output",
           "tnetnoc weiv deretlif" in s.screen())
     s.send(b"q")
+    # a file no rule claims goes to the desktop opener when there is a
+    # display - here a fake xdg-open on PATH that leaves a marker
+    bindir = os.path.join(root, "bin")
+    os.makedirs(bindir)
+    fake = os.path.join(bindir, "xdg-open")
+    open(fake, "w").write("#!/bin/sh\necho \"$1\" > %s\n" % os.path.join(play, "desktop.out"))
+    os.chmod(fake, 0o755)
+    open(os.path.join(play, "slides.pdf"), "w").write("%PDF\n")
+    saved = dict(os.environ)
+    os.environ["DISPLAY"] = os.environ.get("DISPLAY", ":0")
+    os.environ["PATH"] = bindir + ":" + os.environ["PATH"]
     s.quit()
+    s2 = Session(play, home)
+    os.environ.clear(); os.environ.update(saved)
+    s2.send(b"\x13slides\r", wait=STEP)
+    s2.send(b"\r", wait=STEP * 3)
+    out = os.path.join(play, "desktop.out")
+    wait_file(out, "slides.pdf")
+    check("extensibility: unclaimed file goes to xdg-open",
+          os.path.isfile(out) and "slides.pdf" in open(out).read())
+    check("extensibility: the status row says so", "opened with xdg-open" in s2.screen())
+    s2.quit()
     shutil.rmtree(root)
 
 

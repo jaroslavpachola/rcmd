@@ -414,6 +414,12 @@ Those are mc.ext's four matchers (`match`, `regex`, `type`,
 `directory`); every one a rule gives must hold. `file` is only asked
 when a rule has `type =`, and `[[view]]` rules take the same keys.
 
+A file no rule claims goes to the **desktop** - `xdg-open`, or `open`
+on macOS - as long as there is a display (`$DISPLAY` or
+`$WAYLAND_DISPLAY`) to open it on; over a bare ssh Enter stays quiet,
+since the browser would open on the wrong machine. `desktop_open =
+false` switches the fallback off; a `[[open]]` rule always wins.
+
 Openers run without a "press Enter" pause, so terminal programs (mpv,
 less) feel native and GUI programs just need a trailing `&`. With
 lynx-like motion on, Right still only enters directories - Enter opens.
@@ -724,6 +730,8 @@ edit_auto_indent = true    # Enter copies the line's leading whitespace
 edit_backspace_tabs = false  # in an indent, Backspace takes a whole stop
 edit_wrap_column = 0       # column the soft wrap folds at; 0 = the window
 find_window = true         # find file: matches in a window of their own
+desktop_open = true        # Enter on a file no [[open]] rule claims: xdg-open
+                           # (open on macOS) when there is a display
                            # (false = straight into the panel listing)
 edit_line_numbers = false  # the line-number gutter (Alt+N toggles it)
 edit_backups = false       # keep the previous contents as file~ on save

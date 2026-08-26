@@ -3897,6 +3897,29 @@ impl App {
         }
     }
 
+    /// Enter on a file no rule claims: the desktop's opener, detached,
+    /// with nothing of the terminal attached to it - the way a GUI
+    /// opener is meant to be run from a `[[open]]` rule, minus the rule.
+    fn desktop_open(&mut self, path: &Path) {
+        if !self.config.desktop_open {
+            return;
+        }
+        let Some(opener) = crate::config::desktop_opener() else {
+            return;
+        };
+        let spawned = std::process::Command::new(opener)
+            .arg(path)
+            .current_dir(self.panels[self.active].local_cwd())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        self.status = Some(match spawned {
+            Ok(_) => format!(" opened with {opener} "),
+            Err(err) => format!(" {opener}: {err} "),
+        });
+    }
+
     /// Whether panel `side` carries the framed row above its bottom
     /// edge: every panel with the mini status on, else the active one
     /// when the status line is - that row *is* the status line, drawn
@@ -5265,7 +5288,10 @@ impl App {
             .find(|rule| rule.matches(&name, &dir, &mut file_type))
         {
             Some(rule) => rule.run.clone(),
-            None => return,
+            None => {
+                self.desktop_open(&path);
+                return;
+            }
         };
         let cmd = self.expand_macros(&run);
         if self.config.confirm_execute {

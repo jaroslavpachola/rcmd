@@ -110,6 +110,10 @@ pub struct Config {
     /// where they stream straight into the panel as a panelized
     /// listing - which is one keystroke shorter and loses the list.
     pub find_window: bool,
+    /// Enter on a file no `[[open]]` rule claims hands it to the desktop
+    /// - `xdg-open`, or `open` on macOS - when there is a display to
+    /// open it on. Off: such an Enter does nothing, as before 4.9.
+    pub desktop_open: bool,
     /// Draw the line-number gutter (Alt+N toggles it).
     pub edit_line_numbers: bool,
     /// Keep the previous contents as `file~` on every save.
@@ -254,6 +258,23 @@ fn regex_matches(re: &str, text: &str) -> bool {
 
 /// What `file -b` says about a path, for `type =` rules; empty when
 /// there is no `file` to ask.
+/// The desktop's own opener, if this session has a desktop: `open` on
+/// macOS, `xdg-open` under X or Wayland. `None` over a bare ssh, where
+/// spawning a browser would happen on the wrong machine, if at all.
+pub fn desktop_opener() -> Option<&'static str> {
+    let candidate = if cfg!(target_os = "macos") {
+        "open"
+    } else if std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
+    {
+        "xdg-open"
+    } else {
+        return None;
+    };
+    let on_path = std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(candidate).is_file()));
+    on_path.then_some(candidate)
+}
+
 pub fn file_type_of(path: &Path) -> String {
     std::process::Command::new("file")
         .args(["-b", "--"])
@@ -421,6 +442,7 @@ impl Default for Config {
             edit_backspace_tabs: false,
             edit_wrap_column: 0,
             find_window: true,
+            desktop_open: true,
             edit_line_numbers: false,
             edit_backups: false,
             edit_clipboard: true,

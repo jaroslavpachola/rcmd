@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.9.0 - 2026-08-26
+
+- **Enter hands unclaimed files to the desktop.** A file no `[[open]]`
+  rule matches goes to `xdg-open` (`open` on macOS) when there is a
+  display to open it on - `$DISPLAY` or `$WAYLAND_DISPLAY` - detached,
+  with nothing of the terminal attached, and the status row says
+  `opened with xdg-open`. Over a bare ssh, with no display, Enter stays
+  quiet as before rather than starting a browser on the wrong machine.
+  `desktop_open = false` switches it off; a `[[open]]` rule always wins.
+
 ## 4.8.0 - 2026-08-26
 
 - **The status line lives inside the panel now.** It used to be a bare
