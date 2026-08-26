@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.7.0 - 2026-08-26
+
+The look-and-feel release: 4.6.0 and 4.6.1 below, plus one more rule
+about rows. Every screen was rendered in every built-in theme and in
+mc's own julia256 and gotar skins, and what did not read was fixed.
+
+- **The status line steps aside for the mini status.** They describe
+  the same thing - the active panel's cursor entry - and mc has no
+  separate line at all, so while the per-panel mini status is on the
+  status line is not drawn, whatever its own checkbox says. Turn the
+  mini status off and it is back.
+
 ## 4.6.1 - 2026-08-26
 
 - **The mini status is closed off with a rule**, `├───┤` across the

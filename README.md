@@ -707,7 +707,8 @@ split_ratio = 50           # percent for the left/top panel, 20..80
 show_menubar = false       # MC's permanent menu bar (F9 works either way)
 show_mini_status = false   # a status row inside each panel (MC's)
 show_free_space = true     # free space in each local panel's footer
-show_status = true         # the line describing the cursor entry
+show_status = true         # the line describing the cursor entry (not
+                           # drawn while the mini status is on)
 show_cmdline = true        # the command line
 show_keybar = true         # the F1..F10 bar along the bottom
 confirm_delete = true      # ask before F8 / Shift+F8

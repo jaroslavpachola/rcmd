@@ -888,10 +888,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // is built from whatever is switched on.
     let cfg = &app.config;
     let bar = |on: bool| Constraint::Length(u16::from(on));
+    // the status line describes the active panel's cursor entry, which
+    // is the mini status's job when that is on - mc has no separate
+    // line at all - so the two never both take a row
     let [menubar, main, status, cmdline, keybar] = Layout::vertical([
         bar(cfg.show_menubar),
         Constraint::Min(3),
-        bar(cfg.show_status),
+        bar(cfg.show_status && !cfg.show_mini_status),
         bar(cfg.show_cmdline),
         bar(cfg.show_keybar),
     ])
