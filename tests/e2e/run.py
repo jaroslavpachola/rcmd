@@ -3112,18 +3112,11 @@ def test_configstate():
     written = open(cfgpath).read()
     statepath = os.path.join(home, ".local", "state", "rcmd", "state.toml")
 
-    # migration: the state keys still in config.toml seed state.toml once
-    check("config/state: state file created at startup", os.path.isfile(statepath))
-    st = open(statepath).read() if os.path.isfile(statepath) else ""
-    check(
-        "config/state: state keys migrated out of the config",
-        'sort_key = "mtime"' in st and "show_hidden = false" in st,
-        st,
-    )
-    # ...and theme is not one of them: it stays the user's to set
-    check("config/state: non-state keys not migrated", "theme" not in st, st)
+    # nothing is written until something changes: the 4.0 migration
+    # that seeded state.toml from the config is gone (4.5.0)
+    check("config/state: no state file at startup", not os.path.isfile(statepath))
 
-    # the merged view still drives behaviour (hidden files stay hidden)
+    # the config still drives behaviour (hidden files stay hidden)
     scr = s.screen()
     check(
         "config/state: config still applies",

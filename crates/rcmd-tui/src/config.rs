@@ -458,11 +458,6 @@ pub fn config_path() -> Option<PathBuf> {
 /// The effective configuration: the user's file with [`crate::state`]
 /// overlaid on top. Missing file → defaults; unparsable file → defaults
 /// plus a warning (never refuse to start over a config typo).
-///
-/// The first run after the config/state split also migrates: state keys
-/// still sitting in `config.toml` seed `state.toml` once, so nobody
-/// loses their sort order or hotlist. That fallback goes away a release
-/// later.
 pub fn load() -> (Config, Option<String>) {
     let mut warnings: Vec<String> = Vec::new();
     let text = config_path().and_then(|path| std::fs::read_to_string(&path).ok());
@@ -483,18 +478,8 @@ pub fn load() -> (Config, Option<String>) {
         None => Config::default(),
     };
 
-    let (mut state, state_warning) = crate::state::load();
+    let (state, state_warning) = crate::state::load();
     warnings.extend(state_warning);
-    // Migration: no state file yet, but the config still carries the
-    // keys rcmd used to write there.
-    if crate::state::state_path().is_some_and(|path| !path.exists())
-        && let Some(text) = &text
-    {
-        state = crate::state::seed_from_config(text);
-        if let Err(err) = crate::state::save(&state) {
-            warnings.push(format!("state: {err}"));
-        }
-    }
     crate::state::apply(&state, &mut config);
 
     (config, (!warnings.is_empty()).then(|| warnings.join(" · ")))

@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.5.0 - 2026-08-26
+
+- **The 4.0 state migration is gone**, as promised for one release
+  later: a first start no longer copies `show_hidden`, `sort_key`,
+  `sort_reverse`, `listing` and `[[hotlist]]` out of `config.toml` into
+  `state.toml`. Nothing is lost by it - the config still supplies those
+  as defaults and the state file only ever held what the UI changed -
+  so the state file now appears the first time something does change,
+  not at startup. With this the "Left for 4.x" list in PLAN4 is empty.
+
 ## 4.4.0 - 2026-08-26
 
 - **`[[open]]` and `[[view]]` speak mc.ext** (4.x leftovers, the last

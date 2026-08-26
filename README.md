@@ -677,10 +677,10 @@ options-form toggle) goes to `$XDG_STATE_HOME/rcmd/state.toml`
 the config file. State is sparse - only keys you actually changed in the
 UI are stored, so a config edit keeps working for everything else - and
 writes merge into the on-disk file, so several rcmd instances never
-clobber each other. Upgrading from 3.x: state keys still in your
-`config.toml` (`show_hidden`, `sort_key`, `sort_reverse`, `listing`,
-`[[hotlist]]`) are migrated once on first start; they stay honoured for
-one release, then stop being read.
+clobber each other. The state keys (`show_hidden`, `sort_key`,
+`sort_reverse`, `listing`, `[[hotlist]]`) are still read from
+`config.toml` as your defaults; what the UI changes goes to the state
+file on top of them.
 
 The settings live in one sectioned checkbox form under **F9 → Options →
 Panel options**, applied live: *Layout* (split direction and size, the

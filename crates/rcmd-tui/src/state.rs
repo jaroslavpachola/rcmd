@@ -206,40 +206,6 @@ pub fn apply(state: &State, config: &mut Config) {
     }
 }
 
-/// One-release migration: the keys rcmd used to write into
-/// `config.toml`. Seeds an empty state from whichever of them are
-/// actually present in the user's file - absent keys stay `None` so
-/// they keep following the config/defaults. A later release drops this.
-pub fn seed_from_config(config_text: &str) -> State {
-    let mut state = State::default();
-    let Ok(value) = config_text.parse::<toml::Value>() else {
-        return state;
-    };
-    let Some(table) = value.as_table() else {
-        return state;
-    };
-    state.show_hidden = table.get("show_hidden").and_then(toml::Value::as_bool);
-    state.sort_reverse = table.get("sort_reverse").and_then(toml::Value::as_bool);
-    state.sort_key = table
-        .get("sort_key")
-        .and_then(toml::Value::as_str)
-        .map(str::to_string);
-    state.listing = table
-        .get("listing")
-        .and_then(toml::Value::as_str)
-        .map(str::to_string);
-    if let Some(entries) = table.get("hotlist").and_then(toml::Value::as_array) {
-        let hotlist: Vec<HotEntry> = entries
-            .iter()
-            .filter_map(|entry| entry.clone().try_into().ok())
-            .collect();
-        if !hotlist.is_empty() {
-            state.hotlist = Some(hotlist);
-        }
-    }
-    state
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,30 +249,5 @@ mod tests {
         let back: State = toml::from_str(&text).unwrap();
         assert_eq!(back.listing.as_deref(), Some("long"));
         assert_eq!(back.theme, None);
-    }
-
-    #[test]
-    fn migration_seeds_only_present_keys() {
-        let text = r#"
-theme = "dark"
-show_hidden = false
-sort_key = "mtime"
-
-[[hotlist]]
-label = "projects"
-path = "/home/you/git"
-"#;
-        let state = seed_from_config(text);
-        assert_eq!(state.show_hidden, Some(false));
-        assert_eq!(state.sort_key.as_deref(), Some("mtime"));
-        assert_eq!(state.hotlist.unwrap()[0].label, "projects");
-        // listing was absent, and theme is not a migrated key
-        assert_eq!(state.listing, None);
-        assert_eq!(state.theme, None);
-    }
-
-    #[test]
-    fn migration_ignores_a_broken_config() {
-        assert_eq!(seed_from_config("this is not toml =").listing, None);
     }
 }

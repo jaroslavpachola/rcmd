@@ -220,7 +220,9 @@ which is how it slipped past every phase. In the order to do them:
   about.
 - **Drop the S0 migration fallback**: state keys still read from
   `config.toml` when `state.toml` is absent were promised for one
-  release, and 4.0 was it.
+  release, and 4.0 was it. **Done** (4.5.0): a first start no longer
+  copies them into `state.toml`; the config still supplies them as
+  defaults, which is all the copy ever did.
 
 The S4 editor list (macros, insert file, sort block, pipe block, column
 blocks) stays pruned; MC-DIFF §8 now says Keep with the reason.
