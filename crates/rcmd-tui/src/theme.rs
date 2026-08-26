@@ -138,7 +138,9 @@ const MC_SKIN: &[(&str, &str, &str, &str)] = &[
     ("core", "selected", "select_fg", "select_bg"),
     ("core", "marked", "mark_fg", ""),
     ("core", "header", "header_fg", ""),
-    ("core", "input", "prompt_fg", ""),
+    // mc's `input` is a foreground for its cyan input box; rcmd draws
+    // the prompt on the bare terminal, where that colour is anyone's
+    // guess (julia256's is black), so the base theme's prompt stands
     ("dialog", "_default_", "dialog_fg", "dialog_bg"),
     ("dialog", "dhotnormal", "dialog_hot_fg", ""),
     ("menu", "_default_", "menu_fg", "menu_bg"),

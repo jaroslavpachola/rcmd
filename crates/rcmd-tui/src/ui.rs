@@ -940,7 +940,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let active_area = if app.active == 0 { left } else { right };
     let visible_rows = active_area
         .height
-        .saturating_sub(3 + u16::from(cfg.show_mini_status)) as usize;
+        .saturating_sub(3 + MINI_STATUS_ROWS * u16::from(cfg.show_mini_status))
+        as usize;
     // listings laid out in columns page by whole screens of names,
     // not by rows
     app.panel_rows = match app.panels[app.active].list_mode {
@@ -1232,7 +1233,9 @@ fn draw_panel(
         frame.render_widget(block, area);
         let Some(tree) = chrome.tree else { return };
         let body = Rect {
-            height: inner.height.saturating_sub(u16::from(mini)),
+            height: inner
+                .height
+                .saturating_sub(MINI_STATUS_ROWS * u16::from(mini)),
             ..inner
         };
         let base = Style::new().fg(th().panel_fg).bg(th().panel_bg);
@@ -1242,19 +1245,12 @@ fn draw_panel(
             base
         };
         draw_tree_rows(frame, body, tree, base, sel);
-        if mini && inner.height > 0 {
-            let row = Rect {
-                x: inner.x,
-                y: inner.y + inner.height - 1,
-                width: inner.width,
-                height: 1,
-            };
+        if mini {
             let text = tree
                 .selected()
                 .map(|r| abbrev_home(&r.path))
                 .unwrap_or_default();
-            let style = Style::new().fg(th().header_fg).bg(th().panel_bg);
-            frame.render_widget(Line::from(text).style(style), row);
+            draw_mini_status(frame, inner, text);
         }
         return;
     }
@@ -1320,21 +1316,16 @@ fn draw_panel(
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let listing = Rect {
-        height: inner.height.saturating_sub(u16::from(mini)),
+        height: inner
+            .height
+            .saturating_sub(MINI_STATUS_ROWS * u16::from(mini)),
         ..inner
     };
     state.select(Some(panel.cursor));
     frame.render_stateful_widget(table, listing, state);
 
-    if mini && inner.height > 0 {
-        let row = Rect {
-            x: inner.x,
-            y: inner.y + inner.height - 1,
-            width: inner.width,
-            height: 1,
-        };
-        let style = Style::new().fg(th().header_fg).bg(th().panel_bg);
-        frame.render_widget(Line::from(entry_summary(panel)).style(style), row);
+    if mini {
+        draw_mini_status(frame, inner, entry_summary(panel));
     }
 }
 
@@ -1412,7 +1403,9 @@ fn draw_user_columns(
 ) {
     let format = chrome.format;
     let sets = format.repeat.max(1);
-    let body_height = inner.height.saturating_sub(1 + u16::from(chrome.mini));
+    let body_height = inner
+        .height
+        .saturating_sub(1 + MINI_STATUS_ROWS * u16::from(chrome.mini));
     let rows = body_height.max(1) as usize;
     let per_page = rows * sets as usize;
     let set_width = (inner.width / sets).max(1);
@@ -1495,23 +1488,45 @@ fn draw_user_columns(
         );
     }
 
-    if chrome.mini && inner.height > 1 {
-        let row = Rect {
-            x: inner.x,
-            y: inner.y + inner.height - 1,
-            width: inner.width,
-            height: 1,
-        };
-        frame.render_widget(
-            Line::from(entry_summary(panel))
-                .style(Style::new().fg(th().header_fg).bg(th().panel_bg)),
-            row,
-        );
+    if chrome.mini {
+        draw_mini_status(frame, inner, entry_summary(panel));
     }
 }
 
 fn base_style() -> Style {
     Style::new().fg(th().panel_fg).bg(th().panel_bg)
+}
+
+/// How many rows of a panel the mini status takes: its separator line
+/// and the row itself, closed off from the listing the way mc does it.
+pub const MINI_STATUS_ROWS: u16 = 2;
+
+/// mc's mini status: a `├───┤` rule across the panel, then one line
+/// about the cursor entry, in the two rows above the bottom frame.
+fn draw_mini_status(frame: &mut Frame, inner: Rect, text: String) {
+    if inner.height < MINI_STATUS_ROWS + 1 {
+        return;
+    }
+    let rule = Rect {
+        x: inner.x.saturating_sub(1),
+        y: inner.y + inner.height - 2,
+        width: inner.width + 2,
+        height: 1,
+    };
+    frame.render_widget(
+        Line::from(format!("├{}┤", "─".repeat(inner.width as usize))).style(base_style()),
+        rule,
+    );
+    let row = Rect {
+        x: inner.x,
+        y: inner.y + inner.height - 1,
+        width: inner.width,
+        height: 1,
+    };
+    frame.render_widget(
+        Line::from(text).style(Style::new().fg(th().header_fg).bg(th().panel_bg)),
+        row,
+    );
 }
 
 /// Put the one-column gap the built-in listings have between fields -
@@ -1542,7 +1557,9 @@ fn draw_brief_columns(
     git: Option<&GitStatus>,
 ) {
     let cols = chrome.columns.max(1);
-    let body_height = inner.height.saturating_sub(1 + u16::from(chrome.mini));
+    let body_height = inner
+        .height
+        .saturating_sub(1 + MINI_STATUS_ROWS * u16::from(chrome.mini));
     let rows = body_height.max(1) as usize;
     let per_page = rows * cols as usize;
     let width = (inner.width / cols).max(1) as usize;
@@ -1610,18 +1627,8 @@ fn draw_brief_columns(
         );
     }
 
-    if chrome.mini && inner.height > 1 {
-        let row = Rect {
-            x: inner.x,
-            y: inner.y + inner.height - 1,
-            width: inner.width,
-            height: 1,
-        };
-        frame.render_widget(
-            Line::from(entry_summary(panel))
-                .style(Style::new().fg(th().header_fg).bg(th().panel_bg)),
-            row,
-        );
+    if chrome.mini {
+        draw_mini_status(frame, inner, entry_summary(panel));
     }
 }
 

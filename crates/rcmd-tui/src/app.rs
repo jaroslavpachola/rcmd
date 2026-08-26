@@ -3906,9 +3906,9 @@ impl App {
         // one maps through the figure's own visible window.
         if self.panels[side].list_mode == ListMode::Tree {
             let top = area.y + 1;
-            let height = area
-                .height
-                .saturating_sub(2 + u16::from(self.config.show_mini_status));
+            let height = area.height.saturating_sub(
+                2 + crate::ui::MINI_STATUS_ROWS * u16::from(self.config.show_mini_status),
+            );
             if y < top || y >= top + height {
                 return;
             }
@@ -3949,7 +3949,9 @@ impl App {
             let col = (x.saturating_sub(area.x + 1) / col_w).min(columns - 1) as usize;
             let rows = area
                 .height
-                .saturating_sub(3 + u16::from(self.config.show_mini_status))
+                .saturating_sub(
+                    3 + crate::ui::MINI_STATUS_ROWS * u16::from(self.config.show_mini_status),
+                )
                 .max(1) as usize;
             offset + col * rows + row
         } else {

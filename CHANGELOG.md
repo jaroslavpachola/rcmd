@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.6.1 - 2026-08-26
+
+- **The mini status is closed off with a rule**, `├───┤` across the
+  panel above it, the way mc draws it - it used to float on the last
+  row inside the frame with nothing between it and the listing. It
+  takes two rows now in every listing mode, and mouse hit-testing knows.
+- **mc skins no longer colour the prompt** from their `input` entry:
+  that is the foreground for mc's cyan input box, and on the bare
+  terminal where rcmd draws the prompt it was anyone's guess -
+  julia256's was black on black. The base theme's prompt colour stands.
+  (Found by rendering julia256 and gotar; the `[menu]` mapping from
+  4.6.0 holds up in both.)
+
 ## 4.6.0 - 2026-08-26
 
 Look and feel, after a pass over every screen in every built-in theme:
