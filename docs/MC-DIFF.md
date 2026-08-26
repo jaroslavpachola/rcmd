@@ -1,8 +1,9 @@
 # rcmd vs mc - every difference, and what we decided about it
 
-Baseline: rcmd 2.5.0 (3.0 feature set, tag pending) against GNU Midnight
-Commander 4.8.x. Everything below is from a *user's* seat: if it can't be
-noticed while using the program, it isn't here. Decided 2026-08-22.
+Baseline: rcmd 2.5.0 (the 3.0 feature set) against GNU Midnight
+Commander 4.8.x, decided 2026-08-22; re-read against 4.0.0 on
+2026-08-26. Everything below is from a *user's* seat: if it can't be
+noticed while using the program, it isn't here.
 
 ## Standing policies
 
@@ -114,7 +115,7 @@ stands, mc's variant added alongside · `Adopt`: parity work, PLAN4 ·
 | `mkdir` creates parents | Keep | rcmd-only convenience |
 | Bulk rename through the editor (numbered buffer, preview) | Keep | rcmd-only |
 | Cross-device move degrades to copy+delete with recalculated totals | Keep | |
-| No ext2 undelete | **Drop (proposed)** | obsolete on modern filesystems - the one gap I recommend not closing; say the word and it goes back in |
+| No ext2 undelete | **Refused** | obsolete on modern filesystems; §13 |
 
 ## 7. Viewer (F3)
 
@@ -134,8 +135,8 @@ stands, mc's variant added alongside · `Adopt`: parity work, PLAN4 ·
 |---|---|---|
 | No editor menu bar, no editor options (tab size, auto-indent, wrap column…) | **Adopt - first** | the chosen head of the editor milestone |
 | No goto line, no bookmarks | Adopt | |
-| No macros, insert-file, sort block, pipe-block-through-command | Adopt | later phase |
-| Stream marking only, no column/rectangular blocks | Adopt | later phase |
+| No macros, insert-file, sort block, pipe-block-through-command | **Keep** | pruned in 4.0 S4: a block is one shell command away through the panel's own tools, and macros are a feature to design rather than to port |
+| Stream marking only, no column/rectangular blocks | **Keep** | pruned in 4.0 S4, same reason |
 | No line numbers, no syntax picker, no user syntax files | Adopt | |
 | No backup file on save | Adopt | mc-style `~` backup, toggleable |
 | Clipboard is internal only | Adopt | system clipboard + mc clipboard file |
@@ -176,7 +177,8 @@ stands, mc's variant added alongside · `Adopt`: parity work, PLAN4 ·
 | Difference | Decision | Note |
 |---|---|---|
 | Menus are File/Command/Sort/View/Options; no per-panel Left/Right menus | Adopt | mc's Left/File/Command/Options/Right structure |
-| Missing entries: tree, compare files, command history, screen list, VFS list, edit extension/menu files, undelete, save setup | Adopt | each follows its feature |
+| Missing entries: tree, compare files, command history, screen list, VFS list, edit extension/menu files | Adopt | each follows its feature; rcmd has one config file, so one "Edit config file" entry |
+| No "Undelete files" / "Save setup" entries | Keep | undelete is refused (§13); options and hotlist save instantly (§1), so there is nothing to save |
 | Options is one 8-checkbox form; mc has five dialogs | **Adopt, one grouped dialog** | full mc setting coverage including confirmation toggles, but a single sectioned dialog instead of five |
 | F10 quits with no confirmation | Keep | exit-confirm toggle exists, default off |
 | Delete/overwrite always confirmed, not configurable | Keep+ | toggles exist, default on |
@@ -205,11 +207,19 @@ hotlist · merge-on-write config · a single static musl binary.
 | Lua / plugin system | **Refused** |
 | In-terminal image rendering | **Refused** |
 | Browser-style tabs | **Refused** |
+| ext2 undelete | **Refused** - obsolete on modern filesystems |
 
 ---
 
 Roadmap for everything marked Adopt/Change: [PLAN4.md](PLAN4.md).
-It is complete: every **Adopt** row above shipped in 4.0.0
-(2026-08-26). What is left in this document is the decisions - the
-`Keep`, `Keep+`, `Change` and `Refused` rows - which are where rcmd
-differs from mc on purpose.
+It is complete: every **Adopt** row above either shipped in 4.0.0
+(2026-08-26) or was re-decided as Keep with its reason next to it.
+What is left in this document is the decisions - the `Keep`, `Keep+`,
+`Change` and `Refused` rows - which are where rcmd differs from mc on
+purpose.
+
+Four **Keep+** rows promised mc's variant alongside rcmd's and 4.0 did
+not deliver that half; they are listed under "Left for 4.x" in PLAN4:
+the `M-H` directory history list (§4), the "Filtered view" menu entry
+(§7), the free-space/marked-totals toggle (§3), and `[[open]]` growing
+to mc.ext's matching power (§4).

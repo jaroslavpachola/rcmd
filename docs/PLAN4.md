@@ -189,7 +189,33 @@ their own tools alongside `rar` and `7z`.
 **So 4.0 is what it set out to be** - a drop-in where an mc user's
 hands, config files and expectations all land somewhere, with the
 deliberate divergences written down rather than quietly closed. Every
-**Adopt** row in MC-DIFF is closed.
+**Adopt** row in MC-DIFF is closed or re-decided as Keep with its
+reason (S4's pruned editor list is the only case).
+
+## Left for 4.x
+
+A re-read of MC-DIFF against 4.0.0 found four **Keep+** rows whose mc
+half never shipped, plus one piece of migration debt. None of it is
+parity in the Adopt sense - rcmd's own behaviour is already there -
+which is how it slipped past every phase. In the order to do them:
+
+- **`M-H` directory history list** (§4): Alt+←/→ walk it, but there is
+  no popup. Same list-dialog machinery as `M-h` over data the panel
+  already keeps.
+- **"Filtered view" menu entry** (§7): F3 runs the `[[view]]` filter
+  and `S-F3` skips it; the menu shows neither choice.
+- **Free space / marked totals toggle** (§3): promised as an options
+  checkbox, still always on.
+- **`[[open]]` at mc.ext's power** (§4): rules are `match` + `run`
+  only, so `--import-mc` can carry nothing a glob cannot express -
+  `type =` (as `[[highlight]]` already has) and a regex option. The
+  only one of the four with design in it; last.
+- **Drop the S0 migration fallback**: state keys still read from
+  `config.toml` when `state.toml` is absent were promised for one
+  release, and 4.0 was it.
+
+The S4 editor list (macros, insert file, sort block, pipe block, column
+blocks) stays pruned; MC-DIFF §8 now says Keep with the reason.
 
 ## Sequencing
 
