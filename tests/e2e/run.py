@@ -1210,7 +1210,7 @@ def test_viewfiles():
     scr = s.screen()
     check("viewfiles: F6 shows the raw file",
           "alpha content" in scr and "ALPHA CONTENT" not in scr, scr)
-    check("viewfiles: and offers to parse it again", "F6 Parse" in scr)
+    check("viewfiles: and offers to parse it again", "6Parse" in scr)
     s.send(F6, wait=STEP * 2)
     check("viewfiles: F6 puts the filter back", "ALPHA CONTENT" in s.screen())
 
@@ -1270,7 +1270,7 @@ def test_hexedit():
     s.send(F2, wait=STEP)
     scr = s.screen()
     check("hexedit: the cursor is on", "[edit @00000000]" in scr, scr)
-    check("hexedit: and the bar offers the way back", "F2 View" in scr)
+    check("hexedit: and the bar offers the way back", "2View" in scr)
 
     # a letter that is not a hex digit is refused, not obeyed: "q" here
     # is a byte that is not, and must not close the viewer
