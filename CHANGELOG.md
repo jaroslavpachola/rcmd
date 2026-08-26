@@ -1,5 +1,33 @@
 # Changelog
 
+## 4.6.0 - 2026-08-26
+
+Look and feel, after a pass over every screen in every built-in theme:
+
+- **Menus are mc's own surface**: `menu_fg`/`menu_bg`, `menu_hot_fg`
+  and `menu_sel_fg`/`menu_sel_bg` are theme fields now, mapped from an
+  mc skin's `[menu]` section, so the mc theme draws white on cyan with
+  yellow hotkeys and a white-on-black cursor the way mc does, instead
+  of borrowing the dialog's grey where a yellow hotkey could not be
+  read. Hotkey letters are underlined as well as coloured, which is what
+  keeps them visible in `bw`.
+- **Dialog headings and hotkeys have a colour of their own**:
+  `dialog_hot_fg` (mc's `dhotnormal`), bold, in place of the panel's
+  `header_fg` - which was chosen to read on the panel background and did
+  not read on a dialog's. "Layout" in Options, "Permissions" in chmod
+  and "Recent:" in the hotlist are legible again.
+- **The viewer, editor and diff viewer draw mc's numbered button bar**,
+  the same ten boxes the panels have, with the label for what the key
+  does *now* (Wrap/Unwrap, Parse/Raw, Edit/View) and an empty box where a
+  key does nothing. The run-on text bars are gone; the notes they
+  carried follow the title on the top line. The diff viewer takes F7/F8
+  for previous/next difference to have something in those boxes.
+- **Red means irreversible**: the F8-to-trash question is an ordinary
+  dialog now; the red dialog stays for permanent deletes and overwrites.
+- Both fields of the copy/move form look like fields whether or not the
+  cursor is in them, as in every other form; the hotlist is wide enough
+  for its own key legend.
+
 ## 4.5.0 - 2026-08-26
 
 - **The 4.0 state migration is gone**, as promised for one release

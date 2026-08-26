@@ -8834,8 +8834,8 @@ impl App {
             KeyCode::End => d.top = d.rows.len().saturating_sub(1),
             KeyCode::Left => d.col = d.col.saturating_sub(8),
             KeyCode::Right => d.col += 8,
-            KeyCode::Char('n') | KeyCode::Tab => d.jump(true),
-            KeyCode::Char('p') | KeyCode::BackTab => d.jump(false),
+            KeyCode::Char('n') | KeyCode::Tab | KeyCode::F(8) => d.jump(true),
+            KeyCode::Char('p') | KeyCode::BackTab | KeyCode::F(7) => d.jump(false),
             _ => {}
         }
     }

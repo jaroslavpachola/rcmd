@@ -3696,7 +3696,7 @@ def test_editmenu():
           "File" in scr and "Edit" in scr and "Search" in scr and "Options" in scr, scr)
     check("editmenu: and the File menu is open", "Save" in scr and "F2" in scr, scr)
     s.send(b"\x1b\x1b", wait=STEP)
-    # ("Save" is no test of that: the key bar underneath says F2 Save)
+    # ("Save" is no test of that: the key bar underneath says 2Save)
     check("editmenu: Esc closes it", "Options" not in s.screen(), s.screen())
 
     # the title letters pick a menu, the entry letters run an entry
@@ -3848,7 +3848,7 @@ def test_screens():
     # switch back to the editor, and it is where it was
     s.send(b"\x1b[A\r", wait=STEP * 2)      # Up -> the editor row
     scr = s.screen()
-    check("screens: the editor came back", "alpha content" in scr and "F2 Save" in scr, scr)
+    check("screens: the editor came back", "alpha content" in scr and "2Save" in scr, scr)
     s.send(F10, wait=STEP * 2)              # close it (nothing to save)
     check("screens: closing lands on the panels", "Modify time" in s.screen(), s.screen())
     s.send(b"\x1b`", wait=STEP)

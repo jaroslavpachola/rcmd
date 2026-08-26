@@ -45,6 +45,26 @@ pub struct Theme {
     pub key_bg: Color,
     pub label_fg: Color,
     pub label_bg: Color,
+    /// The menu bar and its dropdowns - mc's `[menu]`, which is its own
+    /// surface rather than a dialog: white on cyan in mc's skin.
+    pub menu_fg: Color,
+    pub menu_bg: Color,
+    /// The hotkey letter in a menu entry (mc's `menuhot`).
+    pub menu_hot_fg: Color,
+    pub menu_sel_fg: Color,
+    pub menu_sel_bg: Color,
+    /// Section headings and hotkey letters inside a dialog (mc's
+    /// `dhotnormal` / `dtitle`): a colour that reads on `dialog_bg`,
+    /// which the panel's `header_fg` was never chosen to do.
+    pub dialog_hot_fg: Color,
+}
+
+/// A dialog's section heading: the "Layout" over the layout rows.
+fn head_style() -> Style {
+    Style::new()
+        .fg(th().dialog_hot_fg)
+        .bg(th().dialog_bg)
+        .add_modifier(Modifier::BOLD)
 }
 
 fn mc_theme() -> Theme {
@@ -70,6 +90,12 @@ fn mc_theme() -> Theme {
         key_bg: Color::Black,
         label_fg: Color::Black,
         label_bg: Color::Cyan,
+        menu_fg: Color::White,
+        menu_bg: Color::Cyan,
+        menu_hot_fg: Color::Yellow,
+        menu_sel_fg: Color::White,
+        menu_sel_bg: Color::Black,
+        dialog_hot_fg: Color::Blue,
     }
 }
 
@@ -101,6 +127,12 @@ fn bw_theme() -> Theme {
         key_bg: Color::White,
         label_fg: Color::Reset,
         label_bg: Color::Reset,
+        menu_fg: Color::Reset,
+        menu_bg: Color::Reset,
+        menu_hot_fg: Color::Reset,
+        menu_sel_fg: Color::Black,
+        menu_sel_bg: Color::White,
+        dialog_hot_fg: Color::Reset,
     }
 }
 
@@ -128,6 +160,12 @@ fn dark_theme() -> Theme {
         key_bg: Color::Rgb(0x1e, 0x22, 0x2a),
         label_fg: Color::Rgb(0xc8, 0xcc, 0xd4),
         label_bg: Color::Rgb(0x3e, 0x44, 0x51),
+        menu_fg: Color::Rgb(0xc8, 0xcc, 0xd4),
+        menu_bg: Color::Rgb(0x2c, 0x31, 0x3a),
+        menu_hot_fg: Color::Rgb(0xe5, 0xc0, 0x7b),
+        menu_sel_fg: Color::Rgb(0xff, 0xff, 0xff),
+        menu_sel_bg: Color::Rgb(0x3e, 0x44, 0x51),
+        dialog_hot_fg: Color::Rgb(0x61, 0xaf, 0xef),
     }
 }
 
@@ -389,6 +427,12 @@ fn set_field(theme: &mut Theme, name: &str, color: Color) -> bool {
         "key_bg" => theme.key_bg = color,
         "label_fg" => theme.label_fg = color,
         "label_bg" => theme.label_bg = color,
+        "menu_fg" => theme.menu_fg = color,
+        "menu_bg" => theme.menu_bg = color,
+        "menu_hot_fg" => theme.menu_hot_fg = color,
+        "menu_sel_fg" => theme.menu_sel_fg = color,
+        "menu_sel_bg" => theme.menu_sel_bg = color,
+        "dialog_hot_fg" => theme.dialog_hot_fg = color,
         _ => return false,
     }
     true
@@ -2187,8 +2231,8 @@ const KEYBAR: [(&str, &str); 10] = [
 /// the always-visible row of titles, clickable like MC's.
 fn draw_menubar(frame: &mut Frame, area: Rect, open: Option<usize>) {
     use crate::app::MENUS;
-    let base = Style::new().fg(th().label_fg).bg(th().label_bg);
-    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let base = Style::new().fg(th().menu_fg).bg(th().menu_bg);
+    let sel = Style::new().fg(th().menu_sel_fg).bg(th().menu_sel_bg);
     // Same "  title  " spacing as the open menu's own title row, which
     // is what `menu_layout` hit-tests clicks against: drawn any other
     // way, a click on this bar lands on the neighbouring menu.
@@ -2196,17 +2240,26 @@ fn draw_menubar(frame: &mut Frame, area: Rect, open: Option<usize>) {
     for (i, (title, _)) in MENUS.iter().enumerate() {
         let style = if open == Some(i) { sel } else { base };
         spans.push(Span::styled("  ", style));
-        hot_spans(title, style, &mut spans);
+        hot_spans(title, style, th().menu_hot_fg, &mut spans);
         spans.push(Span::styled("  ", style));
     }
     frame.render_widget(Line::from(spans).style(base), area);
 }
 
 fn draw_keybar(frame: &mut Frame, area: Rect) {
-    let mut spans = Vec::with_capacity(KEYBAR.len() * 2);
-    for (num, label) in KEYBAR {
+    let labels: [&str; 10] = std::array::from_fn(|i| KEYBAR[i].1);
+    draw_keybar_labels(frame, area, &labels);
+}
+
+/// mc's button bar, for any screen: ten numbered boxes, a label of up
+/// to six letters in each, an empty one where the key does nothing.
+/// The viewer and the editor draw the same row as the panels do, so
+/// that F3 does not land you in what looks like another program.
+fn draw_keybar_labels(frame: &mut Frame, area: Rect, labels: &[&str; 10]) {
+    let mut spans = Vec::with_capacity(labels.len() * 2);
+    for (i, label) in labels.iter().enumerate() {
         spans.push(Span::styled(
-            format!("{num:>2}"),
+            format!("{:>2}", i + 1),
             Style::new().fg(th().key_fg).bg(th().key_bg),
         ));
         spans.push(Span::styled(
@@ -2312,11 +2365,20 @@ fn draw_diff(frame: &mut Frame, app: &mut App) {
     let changed = Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD);
     let missing = Style::new().fg(th().header_fg).bg(th().panel_bg);
     let plain = Style::new().fg(th().panel_fg).bg(th().panel_bg);
+    // a note (no more differences, ...) takes the end of the right
+    // title, which is the one part of the line nothing else needs
+    let note = d.note.clone().unwrap_or_default();
+    let right = if note.is_empty() {
+        tail(&d.right_title, half)
+    } else {
+        let room = half.saturating_sub(note.chars().count() + 1);
+        format!("{:<room$} {note}", tail(&d.right_title, room))
+    };
     frame.render_widget(
         Line::from(format!(
             "{:<half$} {:<half$}",
             tail(&d.left_title, half),
-            tail(&d.right_title, half)
+            right
         ))
         .style(bar),
         title_area,
@@ -2356,11 +2418,10 @@ fn draw_diff(frame: &mut Frame, app: &mut App) {
             },
         );
     }
-    let help = " q/F10 Quit  n/p Next/prev difference  ←→ Scroll ";
-    let note = d.note.clone().unwrap_or_default();
-    frame.render_widget(
-        bottom_bar(help, &note, bottom.width as usize).style(bar),
+    draw_keybar_labels(
+        frame,
         bottom,
+        &["", "", "Quit", "", "", "", "Prev", "Next", "", "Quit"],
     );
 }
 
@@ -2494,13 +2555,6 @@ fn draw_pick_list(
 /// note pushed to the right. The note is what the program just said, so
 /// it gets the room it needs and the key list is what gets cut - the
 /// other way round the message vanishes exactly when it matters.
-fn bottom_bar(help: &str, note: &str, width: usize) -> Line<'static> {
-    let note_w = note.chars().count();
-    let help: String = help.chars().take(width.saturating_sub(note_w)).collect();
-    let pad = width.saturating_sub(help.chars().count() + note_w);
-    Line::from(format!("{help}{:pad$}{note}", ""))
-}
-
 fn gutter_line(line: Option<usize>, marked: bool, width: usize) -> Line<'static> {
     let style = Style::new().fg(th().header_fg).bg(th().panel_bg);
     let mark = Style::new().fg(th().mark_fg).bg(th().panel_bg);
@@ -2591,7 +2645,9 @@ fn editor_line(
 /// The editor's key bar. A const rather than a literal in the middle
 /// of the drawing code: it is one line too long to sit there without
 /// being wrapped, and a wrapped string literal keeps its indentation.
-const EDITOR_HELP: &str = " F2 Save  F3 Mark  F4 Replace  F5/F6 CopyMove  F7 Search  F8 DelLine  F9 Menu  M-l Goto  F10 Quit ";
+const EDITOR_KEYBAR: [&str; 10] = [
+    "", "Save", "Mark", "Replac", "Copy", "Move", "Search", "DelLn", "PullDn", "Quit",
+];
 
 fn draw_editor(frame: &mut Frame, app: &mut App) {
     let Some(st) = app.editor_mut() else {
@@ -2632,7 +2688,12 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
         st.ed.cursor.col + 1,
         st.ed.line_count(),
     );
-    let title = format!(" {}{modified}", st.title);
+    // a note (saved, search wrapped, ...) follows the title, where the
+    // eye already is; the button bar below is mc's and stays put
+    let title = match &st.note {
+        Some(note) => format!(" {}{modified}  {}", st.title, note.trim()),
+        None => format!(" {}{modified}", st.title),
+    };
     frame.render_widget(
         Line::from(format!(
             "{title}{pos:>w$}",
@@ -2757,12 +2818,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
         }
     }
 
-    let help = EDITOR_HELP;
-    let note = st.note.clone().unwrap_or_default();
-    frame.render_widget(
-        bottom_bar(help, &note, bottom.width as usize).style(bar),
-        bottom,
-    );
+    draw_keybar_labels(frame, bottom, &EDITOR_KEYBAR);
 
     match &st.prompt {
         None => {}
@@ -2954,8 +3010,12 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
         String::new()
     };
     let filtered = if v.filtered { " [parsed]" } else { "" };
+    let note = match &v.note {
+        Some(note) => format!("  {}", note.trim()),
+        None => String::new(),
+    };
     let title = format!(
-        " {}  {} bytes  {percent}%  [{mode}]{editing}{nroff}{charset}{filtered}{follow}",
+        " {}  {} bytes  {percent}%  [{mode}]{editing}{nroff}{charset}{filtered}{follow}{note}",
         v.path.display(),
         v.file.size,
     );
@@ -3080,25 +3140,34 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
 
     // mc's button bar names what pressing the key does now, which for
     // half of these is the opposite of what it did a moment ago
-    let help = if v.hex {
-        format!(
-            " F3/q Quit  F2 {}  F4 Ascii  F6 Save  F7|/ Search  n Next  C-f/C-b File ",
+    let labels: [&str; 10] = if v.hex {
+        [
+            "",
             if v.hex_edit { "View" } else { "Edit" },
-        )
+            "Quit",
+            "Ascii",
+            "Goto",
+            "Save",
+            "Search",
+            "",
+            "",
+            "Quit",
+        ]
     } else {
-        format!(
-            " F3/q Quit  F2 {}  F4 Hex  F6 {}  F8 {}  F7|/ Search  n Next  C-f/C-b File ",
+        [
+            "",
             if v.wrap { "Unwrap" } else { "Wrap" },
+            "Quit",
+            "Hex",
+            "Goto",
             if v.filtered { "Raw" } else { "Parse" },
+            "Search",
             if v.nroff { "Unform" } else { "Format" },
-        )
+            "",
+            "Quit",
+        ]
     };
-    let note = v.note.clone().unwrap_or_default();
-    frame.render_widget(
-        bottom_bar(&help, &note, bottom.width as usize)
-            .style(Style::new().fg(th().select_fg).bg(th().select_bg)),
-        bottom,
-    );
+    draw_keybar_labels(frame, bottom, &labels);
 
     if let Some(dialog) = &v.prompt {
         draw_view_search(frame, dialog);
@@ -3413,14 +3482,18 @@ fn label_len(label: &str) -> usize {
     pre.chars().count() + usize::from(hot.is_some()) + post.chars().count()
 }
 
-/// The label as spans, hotkey letter highlighted MC-style.
-fn hot_spans(label: &str, style: Style, spans: &mut Vec<Span<'static>>) {
+/// The label as spans, hotkey letter highlighted MC-style: its own
+/// colour, and underlined so it survives a theme where that colour is
+/// the text's (bw).
+fn hot_spans(label: &str, style: Style, hot_fg: Color, spans: &mut Vec<Span<'static>>) {
     let (pre, hot, post) = menu_label(label);
     spans.push(Span::styled(pre.to_string(), style));
     if let Some(c) = hot {
         spans.push(Span::styled(
             c.to_string(),
-            style.fg(th().mark_fg).add_modifier(Modifier::BOLD),
+            style
+                .fg(hot_fg)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         ));
     }
     spans.push(Span::styled(post.to_string(), style));
@@ -3476,8 +3549,8 @@ fn draw_menu(frame: &mut Frame, ms: &MenuState) {
 /// editor ones, and neither of those is any of drawing's business.
 fn draw_menu_of<A>(frame: &mut Frame, ms: &MenuState, menus: crate::app::MenuBar<A>) {
     let area = frame.area();
-    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
-    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let base = Style::new().fg(th().menu_fg).bg(th().menu_bg);
+    let sel = Style::new().fg(th().menu_sel_fg).bg(th().menu_sel_bg);
     let (titles, dropdown) = menu_layout_of(menus, ms.menu, area);
 
     let bar = Rect { height: 1, ..area };
@@ -3486,7 +3559,7 @@ fn draw_menu_of<A>(frame: &mut Frame, ms: &MenuState, menus: crate::app::MenuBar
     for (i, (title, _)) in menus.iter().enumerate() {
         let style = if i == ms.menu { sel } else { base };
         spans.push(Span::styled("  ", style));
-        hot_spans(title, style, &mut spans);
+        hot_spans(title, style, th().menu_hot_fg, &mut spans);
         spans.push(Span::styled("  ", style));
     }
     let used = titles.last().map(|(x, w)| x + w).unwrap_or(0);
@@ -3530,7 +3603,7 @@ fn draw_menu_of<A>(frame: &mut Frame, ms: &MenuState, menus: crate::app::MenuBar
             Some((label, keys, _)) => {
                 let style = if i == ms.item { sel } else { base };
                 let mut spans = vec![Span::styled(" ", style)];
-                hot_spans(label, style, &mut spans);
+                hot_spans(label, style, th().menu_hot_fg, &mut spans);
                 let pad = label_w.saturating_sub(label_len(label));
                 spans.push(Span::styled(format!("{:pad$} {keys:>keys_w$} ", ""), style));
                 frame.render_widget(Line::from(spans), row);
@@ -3641,7 +3714,7 @@ fn draw_options(frame: &mut Frame, d: &OptionsDialog) {
     use crate::app::{OPTION_ROWS, OptRow};
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
-    let head = Style::new().fg(th().header_fg).bg(th().dialog_bg);
+    let head = head_style();
     // rows + a blank line + the button row, inside the border
     let area = centered(46, OPTION_ROWS.len() as u16 + 4, frame.area());
     let inner = popup(frame, area, " Options ", base);
@@ -4153,7 +4226,7 @@ fn draw_chown(frame: &mut Frame, d: &crate::app::ChownDialog) {
         .fg(th().dialog_fg)
         .bg(th().dialog_bg)
         .add_modifier(Modifier::REVERSED);
-    let head = Style::new().fg(th().header_fg).bg(th().dialog_bg);
+    let head = head_style();
     let area = centered(62, CHOWN_ROWS as u16 + 5, frame.area());
     let inner = popup(frame, area, " Chown ", base);
     let (col_w, gap) = (16u16, 1u16);
@@ -4250,7 +4323,7 @@ fn draw_chmod(frame: &mut Frame, d: &crate::app::ChmodDialog) {
     use crate::app::{CHMOD_BITS, CHMOD_BUTTONS, CHMOD_OCTAL_ROW, CHMOD_RECURSE_ROW, CHMOD_ROWS};
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
-    let head = Style::new().fg(th().header_fg).bg(th().dialog_bg);
+    let head = head_style();
     // a heading row, the bits, the octal, recurse, a blank, the buttons
     let area = centered(58, CHMOD_BITS.len() as u16 + 7, frame.area());
     let inner = popup(frame, area, " Chmod ", base);
@@ -4360,22 +4433,17 @@ fn draw_transfer(frame: &mut Frame, d: &crate::app::TransferDialog) {
     let width = inner.width.saturating_sub(2) as usize;
 
     // MC asks for the source mask first, then where it all goes
+    // both are input fields and both look like one, focused or not -
+    // the cursor says which is being typed into, as in every other form
     let field = |text: &str, label: &str| {
         let room = width.saturating_sub(label.len());
-        format!("{label}{:<room$}", tail(text, room))
+        Line::from(vec![
+            Span::styled(label.to_string(), base),
+            Span::styled(format!("{:<room$}", tail(text, room)), sel),
+        ])
     };
-    frame.render_widget(
-        Line::from(field(&d.mask, " mask ")).style(if d.row == 0 { sel } else { base }),
-        row_at(0),
-    );
-    frame.render_widget(
-        Line::from(field(&d.dest, " to   ")).style(if d.row == TRANSFER_DEST_ROW {
-            sel
-        } else {
-            base
-        }),
-        row_at(TRANSFER_DEST_ROW as u16),
-    );
+    frame.render_widget(field(&d.mask, " mask "), row_at(0));
+    frame.render_widget(field(&d.dest, " to   "), row_at(TRANSFER_DEST_ROW as u16));
     for (i, (label, _)) in TRANSFER_OPTS.iter().enumerate() {
         let mark = if d.checked(i) { "[x]" } else { "[ ]" };
         let text = format!(" {mark} {label}");
@@ -4435,7 +4503,7 @@ fn draw_hotlist(
     use crate::app::HotRow;
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
-    let head = Style::new().fg(th().header_fg).bg(th().dialog_bg);
+    let head = head_style();
 
     let group = app.hot_group(&d.group);
     let label_w = group
@@ -4475,7 +4543,9 @@ fn draw_hotlist(
     }
 
     let rows = lines.len().max(1) as u16;
-    let area = centered(56, (rows + 2).min(20), frame.area());
+    // wide enough for the key legend along the bottom edge, which is
+    // the one line in here that must not be cut short
+    let area = centered(62, (rows + 2).min(20), frame.area());
     frame.render_widget(Clear, area);
     // the title says where in the tree this is, and what is in hand
     let where_ = match d.group.is_empty() {
@@ -4608,8 +4678,19 @@ fn draw_rename_preview(frame: &mut Frame, d: &crate::app::RenamePreview) {
 }
 
 fn draw_confirm(frame: &mut Frame, d: &ConfirmDialog) {
-    let style = Style::new().fg(th().error_fg).bg(th().error_bg);
-    let sel = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    // red is for what cannot be taken back: a permanent delete, an
+    // overwrite. The trash and a question are ordinary dialogs.
+    let (style, sel) = if d.permanent {
+        (
+            Style::new().fg(th().error_fg).bg(th().error_bg),
+            Style::new().fg(th().dialog_fg).bg(th().dialog_bg),
+        )
+    } else {
+        (
+            Style::new().fg(th().dialog_fg).bg(th().dialog_bg),
+            Style::new().fg(th().select_fg).bg(th().select_bg),
+        )
+    };
     let area = centered(52, 6, frame.area());
     let inner = popup(frame, area, &d.title, style);
 

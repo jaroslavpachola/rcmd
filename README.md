@@ -821,7 +821,9 @@ header_fg = "color214"
 The fields are `panel_fg` `panel_bg` `dir_fg` `exec_fg` `broken_fg`
 `header_fg` `mark_fg` `select_fg` `select_bg` `dialog_fg` `dialog_bg`
 `error_fg` `error_bg` `help_fg` `help_bg` `help_header_fg` `prompt_fg`
-`key_fg` `key_bg` `label_fg` `label_bg`. A colour is one of mc's names
+`key_fg` `key_bg` `label_fg` `label_bg` `menu_fg` `menu_bg`
+`menu_hot_fg` `menu_sel_fg` `menu_sel_bg` `dialog_hot_fg`. A colour is
+one of mc's names
 (`black`, `brightgreen`, `brown`, `lightgray`, ...), `#rrggbb`,
 `colorN` (0-255), `rgbRGB` (three digits 0-5), `grayN` (0-23), or
 `default` for the terminal's own.

@@ -130,8 +130,8 @@ fn from_toml(text: &str) -> Loaded {
 
 /// Which mc skin entries land on which rcmd field. Everything mc has
 /// that rcmd has nowhere to put (its line-drawing characters, the
-/// editor's own palette, the menu) is simply not here: a skin is read
-/// for its colours, and rcmd draws its own frames.
+/// editor's own palette) is simply not here: a skin is read for its
+/// colours, and rcmd draws its own frames.
 const MC_SKIN: &[(&str, &str, &str, &str)] = &[
     // section, key, foreground field, background field ("" = none)
     ("core", "_default_", "panel_fg", "panel_bg"),
@@ -140,6 +140,10 @@ const MC_SKIN: &[(&str, &str, &str, &str)] = &[
     ("core", "header", "header_fg", ""),
     ("core", "input", "prompt_fg", ""),
     ("dialog", "_default_", "dialog_fg", "dialog_bg"),
+    ("dialog", "dhotnormal", "dialog_hot_fg", ""),
+    ("menu", "_default_", "menu_fg", "menu_bg"),
+    ("menu", "menuhot", "menu_hot_fg", ""),
+    ("menu", "menusel", "menu_sel_fg", "menu_sel_bg"),
     ("error", "_default_", "error_fg", "error_bg"),
     ("help", "_default_", "help_fg", "help_bg"),
     ("help", "helpbold", "help_header_fg", ""),
