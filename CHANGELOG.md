@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.8.0 - 2026-08-26
+
+- **The status line lives inside the panel now.** It used to be a bare
+  row under both panels, outside every frame, describing the active
+  panel's cursor entry; mc has no such row - that description is its
+  mini status, inside the panel above the bottom edge. So that is where
+  rcmd draws it: the active panel gets the framed `├───┤` row, and
+  messages ("cannot view a directory") and background-job progress show
+  in that row too, in their own colours. With the per-panel mini status
+  on, both panels have the row and the active one's doubles as the
+  status line. `show_status` keeps its name; the Layout checkbox says
+  where it goes. Mouse hit-testing and page sizes follow the panel that
+  has the row.
+
 ## 4.7.1 - 2026-08-26
 
 - **One key notation on screen**: the F1 help now spells keys the way

@@ -1127,7 +1127,7 @@ pub const OPTION_ROWS: &[OptRow] = &[
     OptRow::Radio(Opt::HorizontalSplit, "Split ", "vertical", "horizontal"),
     OptRow::Ratio("Panel size"),
     OptRow::Check(Opt::MenuBar, "Menu bar"),
-    OptRow::Check(Opt::StatusLine, "Status line"),
+    OptRow::Check(Opt::StatusLine, "Status line (in the active panel)"),
     OptRow::Check(Opt::MiniStatus, "Mini status (per panel)"),
     OptRow::Check(Opt::FreeSpace, "Free space in the panel footer"),
     OptRow::Check(Opt::CommandLine, "Command line"),
@@ -3897,6 +3897,15 @@ impl App {
         }
     }
 
+    /// Whether panel `side` carries the framed row above its bottom
+    /// edge: every panel with the mini status on, else the active one
+    /// when the status line is - that row *is* the status line, drawn
+    /// where mc draws its mini status rather than loose under the
+    /// panels.
+    pub fn panel_mini(&self, side: usize) -> bool {
+        self.config.show_mini_status || (self.config.show_status && self.active == side)
+    }
+
     fn panel_click(&mut self, side: usize, area: Rect, x: u16, y: u16, double: bool) {
         self.active = side;
         if self.quick_view.as_ref().is_some_and(|q| q.side == side) || self.info == Some(side) {
@@ -3906,9 +3915,9 @@ impl App {
         // one maps through the figure's own visible window.
         if self.panels[side].list_mode == ListMode::Tree {
             let top = area.y + 1;
-            let height = area.height.saturating_sub(
-                2 + crate::ui::MINI_STATUS_ROWS * u16::from(self.config.show_mini_status),
-            );
+            let height = area
+                .height
+                .saturating_sub(2 + crate::ui::MINI_STATUS_ROWS * u16::from(self.panel_mini(side)));
             if y < top || y >= top + height {
                 return;
             }
@@ -3949,9 +3958,7 @@ impl App {
             let col = (x.saturating_sub(area.x + 1) / col_w).min(columns - 1) as usize;
             let rows = area
                 .height
-                .saturating_sub(
-                    3 + crate::ui::MINI_STATUS_ROWS * u16::from(self.config.show_mini_status),
-                )
+                .saturating_sub(3 + crate::ui::MINI_STATUS_ROWS * u16::from(self.panel_mini(side)))
                 .max(1) as usize;
             offset + col * rows + row
         } else {

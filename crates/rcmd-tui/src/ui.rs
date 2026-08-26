@@ -888,13 +888,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // is built from whatever is switched on.
     let cfg = &app.config;
     let bar = |on: bool| Constraint::Length(u16::from(on));
-    // the status line describes the active panel's cursor entry, which
-    // is the mini status's job when that is on - mc has no separate
-    // line at all - so the two never both take a row
-    let [menubar, main, status, cmdline, keybar] = Layout::vertical([
+    // the status line is drawn inside the active panel's frame (see
+    // `App::panel_mini`), so it takes no row of its own here
+    let [menubar, main, cmdline, keybar] = Layout::vertical([
         bar(cfg.show_menubar),
         Constraint::Min(3),
-        bar(cfg.show_status && !cfg.show_mini_status),
         bar(cfg.show_cmdline),
         bar(cfg.show_keybar),
     ])
@@ -943,7 +941,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let active_area = if app.active == 0 { left } else { right };
     let visible_rows = active_area
         .height
-        .saturating_sub(3 + MINI_STATUS_ROWS * u16::from(cfg.show_mini_status))
+        .saturating_sub(3 + MINI_STATUS_ROWS * u16::from(app.panel_mini(app.active)))
         as usize;
     // listings laid out in columns page by whole screens of names,
     // not by rows
@@ -980,6 +978,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 .and_then(|(_, _, space)| *space);
             draw_info(frame, area, browse, browse_disk, app.active == i);
         } else {
+            let mini = mini_line(app, i);
             draw_panel(
                 frame,
                 area,
@@ -989,7 +988,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     active: app.active == i,
                     git: app.git_info[i].as_ref().map(|(_, s)| s),
                     disk,
-                    mini: app.config.show_mini_status,
+                    mini,
                     columns: app.config.columns(),
                     tree: app.trees[i].as_ref(),
                     format: &app.listing_format,
@@ -1000,9 +999,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_quick_search(frame, active_area, app);
     if menubar.height > 0 {
         draw_menubar(frame, menubar, app.menu.as_ref().map(|m| m.menu));
-    }
-    if status.height > 0 {
-        draw_status(frame, status, app);
     }
     if cmdline.height > 0 {
         draw_cmdline(frame, cmdline, app);
@@ -1129,7 +1125,8 @@ struct Chrome<'a> {
     active: bool,
     git: Option<&'a GitStatus>,
     disk: Option<(u64, u64)>,
-    mini: bool,
+    /// The framed row above the bottom edge, when this panel has one.
+    mini: Option<Line<'static>>,
     /// Name columns in a brief listing (MC shows two).
     columns: u16,
     /// The figure to draw instead of the listing, in tree mode.
@@ -1149,7 +1146,7 @@ fn draw_panel(
         active,
         git,
         disk,
-        mini,
+        ref mini,
         ..
     } = chrome;
     let title_style = if active {
@@ -1238,7 +1235,7 @@ fn draw_panel(
         let body = Rect {
             height: inner
                 .height
-                .saturating_sub(MINI_STATUS_ROWS * u16::from(mini)),
+                .saturating_sub(MINI_STATUS_ROWS * u16::from(mini.is_some())),
             ..inner
         };
         let base = Style::new().fg(th().panel_fg).bg(th().panel_bg);
@@ -1248,12 +1245,8 @@ fn draw_panel(
             base
         };
         draw_tree_rows(frame, body, tree, base, sel);
-        if mini {
-            let text = tree
-                .selected()
-                .map(|r| abbrev_home(&r.path))
-                .unwrap_or_default();
-            draw_mini_status(frame, inner, text);
+        if let Some(line) = mini.clone() {
+            draw_mini_status(frame, inner, line);
         }
         return;
     }
@@ -1321,14 +1314,14 @@ fn draw_panel(
     let listing = Rect {
         height: inner
             .height
-            .saturating_sub(MINI_STATUS_ROWS * u16::from(mini)),
+            .saturating_sub(MINI_STATUS_ROWS * u16::from(mini.is_some())),
         ..inner
     };
     state.select(Some(panel.cursor));
     frame.render_stateful_widget(table, listing, state);
 
-    if mini {
-        draw_mini_status(frame, inner, entry_summary(panel));
+    if let Some(line) = mini.clone() {
+        draw_mini_status(frame, inner, line);
     }
 }
 
@@ -1408,7 +1401,7 @@ fn draw_user_columns(
     let sets = format.repeat.max(1);
     let body_height = inner
         .height
-        .saturating_sub(1 + MINI_STATUS_ROWS * u16::from(chrome.mini));
+        .saturating_sub(1 + MINI_STATUS_ROWS * u16::from(chrome.mini.is_some()));
     let rows = body_height.max(1) as usize;
     let per_page = rows * sets as usize;
     let set_width = (inner.width / sets).max(1);
@@ -1491,8 +1484,8 @@ fn draw_user_columns(
         );
     }
 
-    if chrome.mini {
-        draw_mini_status(frame, inner, entry_summary(panel));
+    if let Some(line) = chrome.mini.clone() {
+        draw_mini_status(frame, inner, line);
     }
 }
 
@@ -1505,8 +1498,9 @@ fn base_style() -> Style {
 pub const MINI_STATUS_ROWS: u16 = 2;
 
 /// mc's mini status: a `├───┤` rule across the panel, then one line
-/// about the cursor entry, in the two rows above the bottom frame.
-fn draw_mini_status(frame: &mut Frame, inner: Rect, text: String) {
+/// about the cursor entry (or, in the active panel, whatever the status
+/// line has to say), in the two rows above the bottom frame.
+fn draw_mini_status(frame: &mut Frame, inner: Rect, line: Line<'static>) {
     if inner.height < MINI_STATUS_ROWS + 1 {
         return;
     }
@@ -1526,10 +1520,7 @@ fn draw_mini_status(frame: &mut Frame, inner: Rect, text: String) {
         width: inner.width,
         height: 1,
     };
-    frame.render_widget(
-        Line::from(text).style(Style::new().fg(th().header_fg).bg(th().panel_bg)),
-        row,
-    );
+    frame.render_widget(line, row);
 }
 
 /// Put the one-column gap the built-in listings have between fields -
@@ -1562,7 +1553,7 @@ fn draw_brief_columns(
     let cols = chrome.columns.max(1);
     let body_height = inner
         .height
-        .saturating_sub(1 + MINI_STATUS_ROWS * u16::from(chrome.mini));
+        .saturating_sub(1 + MINI_STATUS_ROWS * u16::from(chrome.mini.is_some()));
     let rows = body_height.max(1) as usize;
     let per_page = rows * cols as usize;
     let width = (inner.width / cols).max(1) as usize;
@@ -1630,8 +1621,8 @@ fn draw_brief_columns(
         );
     }
 
-    if chrome.mini {
-        draw_mini_status(frame, inner, entry_summary(panel));
+    if let Some(line) = chrome.mini.clone() {
+        draw_mini_status(frame, inner, line);
     }
 }
 
@@ -2157,9 +2148,31 @@ fn draw_quick_search(frame: &mut Frame, panel: Rect, app: &App) {
     frame.render_widget(Line::from(label).style(style), area);
 }
 
-fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
+/// The framed row of panel `side`, if it has one: the active panel's
+/// is the status line - a message, background progress, or the cursor
+/// entry - and the other panel's describes its own cursor entry.
+fn mini_line(app: &App, side: usize) -> Option<Line<'static>> {
+    if !app.panel_mini(side) {
+        return None;
+    }
+    let plain = Style::new().fg(th().header_fg).bg(th().panel_bg);
+    let tree_path = |side: usize| {
+        app.trees[side]
+            .as_ref()
+            .and_then(|tree| tree.selected())
+            .map(|row| abbrev_home(&row.path))
+            .unwrap_or_default()
+    };
+    if side != app.active {
+        let text = if app.panels[side].list_mode == ListMode::Tree {
+            tree_path(side)
+        } else {
+            entry_summary(&app.panels[side])
+        };
+        return Some(Line::from(text).style(plain));
+    }
     let line = if let Some(msg) = &app.status {
-        Line::from(msg.as_str()).style(Style::new().fg(th().error_fg).bg(th().error_bg))
+        Line::from(msg.clone()).style(Style::new().fg(th().error_fg).bg(th().error_bg))
     } else if !app.jobs.is_empty() && app.fg_job().is_none() {
         // background jobs: aggregate progress, C-x j for the list
         let (done, total) = app.jobs.iter().fold((0u64, 0u64), |(d, t), j| {
@@ -2171,19 +2184,14 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
             app.jobs.len()
         ))
         .style(Style::new().fg(th().select_fg).bg(th().select_bg))
-    } else if app.panels[app.active].list_mode == ListMode::Tree {
+    } else if app.panels[side].list_mode == ListMode::Tree {
         // the listing is hidden, so its cursor entry would be a lie -
         // the tree's own selection is what the user is looking at
-        let path = app.trees[app.active]
-            .as_ref()
-            .and_then(|tree| tree.selected())
-            .map(|row| abbrev_home(&row.path))
-            .unwrap_or_default();
-        Line::from(path).style(Style::new().fg(th().panel_fg))
+        Line::from(tree_path(side)).style(plain)
     } else {
-        Line::from(entry_summary(&app.panels[app.active])).style(Style::new().fg(th().panel_fg))
+        Line::from(entry_summary(&app.panels[side])).style(plain)
     };
-    frame.render_widget(line, area);
+    Some(line)
 }
 
 fn draw_cmdline(frame: &mut Frame, area: Rect, app: &App) {

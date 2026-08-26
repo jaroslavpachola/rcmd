@@ -1608,7 +1608,11 @@ def option_downs(scr, label):
 
 
 def status_line(s):
-    return s.screen().split("\n")[-3]
+    """The active panel's status row: inside its frame, just above the
+    bottom border (4.8.0) - where mc draws its mini status."""
+    lines = s.screen().split("\n")
+    bottoms = [i for i, l in enumerate(lines) if l.lstrip().startswith("└")]
+    return lines[bottoms[-1] - 1] if bottoms else lines[-3]
 
 
 def header_line(s):
