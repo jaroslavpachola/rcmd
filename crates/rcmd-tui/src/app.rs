@@ -8492,6 +8492,7 @@ impl App {
     /// OK in the options form: apply every change live and write it
     /// through to the state file right away.
     fn apply_options(&mut self, d: &OptionsDialog) {
+        let before = self.config.clone();
         let show_hidden = d.get(Opt::Hidden);
         for i in 0..2 {
             if self.panels[i].show_hidden != show_hidden
@@ -8563,42 +8564,43 @@ impl App {
         // Write through immediately - waiting for exit would let any
         // other running instance clobber these on its own exit. Goes to
         // the state file: the user's config.toml is read-only for us.
-        let cfg = &self.config;
-        let (lynx, mouse, watch, git, subshell) =
-            (cfg.lynx, cfg.mouse, cfg.watch, cfg.git, cfg.subshell);
-        let (show_hidden, editor, theme) = (cfg.show_hidden, cfg.editor.clone(), cfg.theme.clone());
-        let (del, over, exit) = (cfg.confirm_delete, cfg.confirm_overwrite, cfg.confirm_exit);
-        let (hot, exec) = (cfg.confirm_hotlist_delete, cfg.confirm_execute);
-        let (split, ratio) = (cfg.split.clone(), cfg.split_ratio);
-        let (mini_status, free_space) = (cfg.show_mini_status, cfg.show_free_space);
-        let (menubar, status_bar, cmdline, keybar) = (
-            cfg.show_menubar,
-            cfg.show_status,
-            cfg.show_cmdline,
-            cfg.show_keybar,
-        );
+        // Only what the form changed is written: a key the state file
+        // does not hold keeps following the config, so an edit there
+        // is not shadowed by a value nobody chose in the UI.
+        let after = self.config.clone();
         if let Err(err) = state::update(move |s| {
-            s.show_hidden = Some(show_hidden);
-            s.lynx = lynx;
-            s.mouse = Some(mouse);
-            s.watch = Some(watch);
-            s.git = Some(git);
-            s.subshell = Some(subshell);
-            s.editor = Some(editor);
-            s.theme = Some(theme);
-            s.confirm_delete = Some(del);
-            s.confirm_overwrite = Some(over);
-            s.confirm_exit = Some(exit);
-            s.confirm_hotlist_delete = Some(hot);
-            s.confirm_execute = Some(exec);
-            s.split = Some(split);
-            s.split_ratio = Some(ratio);
-            s.show_menubar = Some(menubar);
-            s.show_status = Some(status_bar);
-            s.show_mini_status = Some(mini_status);
-            s.show_free_space = Some(free_space);
-            s.show_cmdline = Some(cmdline);
-            s.show_keybar = Some(keybar);
+            macro_rules! changed {
+                ($($field:ident),+ $(,)?) => {$(
+                    if before.$field != after.$field {
+                        s.$field = Some(after.$field.clone());
+                    }
+                )+};
+            }
+            changed!(
+                show_hidden,
+                mouse,
+                watch,
+                git,
+                subshell,
+                editor,
+                confirm_delete,
+                confirm_overwrite,
+                confirm_exit,
+                confirm_hotlist_delete,
+                confirm_execute,
+                split,
+                split_ratio,
+                show_menubar,
+                show_status,
+                show_mini_status,
+                show_free_space,
+                show_cmdline,
+                show_keybar,
+            );
+            // `lynx` is Option in the config too: unset means "follow the preset"
+            if before.lynx != after.lynx {
+                s.lynx = after.lynx;
+            }
         }) {
             self.status = Some(format!(" could not save state: {err} "));
         }

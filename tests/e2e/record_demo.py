@@ -3,7 +3,7 @@
 binary in a pty - the same trick as the e2e harness, plus timestamps.
 
 Usage:  python3 tests/e2e/record_demo.py [binary] > docs/demo.cast
-        agg --font-size 16 docs/demo.cast docs/demo.gif
+        agg --theme asciinema --font-size 16 docs/demo.cast docs/demo.gif
 
 The session runs in a throwaway sandbox; the recording is what a human
 would plausibly type, with human-ish pauses.
@@ -53,6 +53,10 @@ class Recorder:
             os.environ.pop("XDG_CONFIG_HOME", None)
             os.environ["SHELL"] = "/bin/bash"
             os.environ["TERM"] = "xterm-256color"
+            # no desktop: a stray Enter must not open a window on the
+            # machine doing the recording (the xdg-open fallback, 4.9)
+            os.environ.pop("DISPLAY", None)
+            os.environ.pop("WAYLAND_DISPLAY", None)
             os.execv(BIN, [BIN, *args])
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
         self.drain(1.2)
@@ -110,6 +114,10 @@ def main():
     os.makedirs(os.path.join(play, "src"))
     os.makedirs(home)
     os.makedirs(dest)
+    # a plain prompt in the subshell and no sudo hint: the recording
+    # machine's system bashrc is not part of the demo
+    open(os.path.join(home, ".bashrc"), "w").write("PS1='$ '\n")
+    open(os.path.join(home, ".sudo_as_admin_successful"), "w").close()
     open(os.path.join(play, "src", "main.rs"), "w").write(MAIN_RS)
     open(os.path.join(play, "src", "lib.rs"), "w").write("pub fn demo() {}\n")
     open(os.path.join(play, "README.md"), "w").write("# demo project\n")
@@ -123,16 +131,19 @@ def main():
 
     r.key(DOWN, 0.5)                     # browse a little
     r.key(DOWN, 0.5)
-    r.key(b"\r", 0.8)                    # enter src/
-    r.key(DOWN, 0.6)                     # -> main.rs (after ..)
+    r.key(b"\x13src\r", 0.5)             # quick search -> src, ...
+    r.key(b"\r", 0.8)                    # ... and enter it
+    r.key(b"\x13main\r", 0.6)            # -> main.rs
     r.key(F3, 1.8)                       # syntax-colored viewer
     r.key(b"/", 0.4)
     r.type("hello", 0.3)
     r.key(b"\r", 1.6)                    # search hit, highlighted
     r.key(b"q", 0.7)                     # close the viewer
     r.key(b"\x7f", 0.7)                  # backspace: up to the project
+    r.key(b"\x13Cargo\r", 0.4)           # -> Cargo.toml
     r.key(b"\x1b[2~", 0.35)              # mark Cargo.toml…
-    r.key(b"\x1b[2~", 0.35)              # …and README.md (Insert advances)
+    r.key(b"\x13README\r", 0.4)          # -> README.md
+    r.key(b"\x1b[2~", 0.35)              # …and README.md
     r.key(F5, 0.9)                       # copy dialog (dest prefilled)
     r.key(b"\r", 1.4)                    # copy to the right panel
     r.key(b"\x0f", 1.8)                  # Ctrl+O: the persistent subshell
@@ -142,8 +153,10 @@ def main():
     r.key(F9, 0.8)                       # the menu, briefly
     r.key(b"\x1b[C", 0.7)
     r.key(b"\x1b", 0.3)
-    r.key(b"\x1b", 0.8)
-    r.key(F10, 0.6)                      # quit
+    r.key(b"\x1b", 1.5)                  # ...and rest on the panels: quitting
+    # would leave the primary screen (the subshell's scrollback) as the
+    # frame the gif loops on
+    os.kill(r.pid, 9)
     try:
         os.waitpid(r.pid, 0)
     except ChildProcessError:

@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.10.2 - 2026-08-26
+
+- **The options form writes only what it changed.** Every OK used to
+  copy the whole form into `state.toml` - `show_hidden`, `sort_key`,
+  `mouse`, `subshell`, all of it - so that a later edit to any of those
+  in `config.toml` was silently shadowed by a value nobody chose in the
+  UI. Now a key reaches the state file only when the form flipped it;
+  the rest keep following the config.
+- **The README demo is re-recorded** on the current program: the
+  status row inside the panel, the full-width key bar, the framed mini
+  status. The recording no longer quits at the end (the gif's last
+  frame was the subshell's scrollback), runs in a sandbox `.bashrc`
+  with a plain prompt, and has no display to hand a stray Enter to.
+
 ## 4.10.1 - 2026-08-26
 
 - **The key bar spans the terminal.** Its ten boxes were eight cells

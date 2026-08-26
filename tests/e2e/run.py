@@ -2991,7 +2991,12 @@ def test_options():
     s.send(b"\r", wait=STEP)                # OK applies and writes through
 
     statepath = os.path.join(home, ".local", "state", "rcmd", "state.toml")
-    check("options: written to state", "confirm_delete = false" in open(statepath).read())
+    st = open(statepath).read()
+    check("options: written to state", "confirm_delete = false" in st)
+    # only what the form changed: an untouched key stays the config's,
+    # so an edit there later is not shadowed (4.10.2)
+    check("options: untouched keys stay out of the state",
+          "show_hidden" not in st and "mouse" not in st and "subshell" not in st, st)
 
     # the free-space figure in the footer is a Layout checkbox
     check("options: free space shown by default", " free " in s.screen())
