@@ -66,7 +66,7 @@ stands, mc's variant added alongside · `Adopt`: parity work, PLAN4 ·
 | No tree listing mode | Adopt | with §4's tree dialog |
 | Active long listing auto-forces the one-panel view | Keep | automatic where mc is manual |
 | Panel title shows the full path | Keep | |
-| Free space / marked totals live in the panel frame | Keep+ | becomes toggleable in the options dialog |
+| Free space / marked totals live in the panel frame | Keep+ | `show_free_space` in the options dialog (4.3.0); the marked total is not a toggle, it is only there while something is marked |
 | Fixed type colours (`/ ~ @ ! *`), no per-extension highlighting | Adopt | filehighlight-equivalent rules in TOML |
 | No codepage/encoding anywhere; lossy non-UTF-8 filenames | Adopt | **full parity**: per-panel codepage + viewer/editor recoding + correct filename round-trip |
 | Git branch + status column, ignored entries dimmed | Keep | rcmd-only |

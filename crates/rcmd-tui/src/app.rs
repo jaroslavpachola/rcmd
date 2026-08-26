@@ -1085,6 +1085,7 @@ pub enum Opt {
     HorizontalSplit,
     MenuBar,
     MiniStatus,
+    FreeSpace,
     StatusLine,
     CommandLine,
     KeyBar,
@@ -1129,6 +1130,7 @@ pub const OPTION_ROWS: &[OptRow] = &[
     OptRow::Check(Opt::MenuBar, "Menu bar"),
     OptRow::Check(Opt::StatusLine, "Status line"),
     OptRow::Check(Opt::MiniStatus, "Mini status (per panel)"),
+    OptRow::Check(Opt::FreeSpace, "Free space in the panel footer"),
     OptRow::Check(Opt::CommandLine, "Command line"),
     OptRow::Check(Opt::KeyBar, "Key bar"),
     OptRow::Head("Panel"),
@@ -4997,6 +4999,7 @@ impl App {
                 values[Opt::MenuBar as usize] = cfg.show_menubar;
                 values[Opt::StatusLine as usize] = cfg.show_status;
                 values[Opt::MiniStatus as usize] = cfg.show_mini_status;
+                values[Opt::FreeSpace as usize] = cfg.show_free_space;
                 values[Opt::CommandLine as usize] = cfg.show_cmdline;
                 values[Opt::KeyBar as usize] = cfg.show_keybar;
                 let ratio = cfg.ratio();
@@ -8479,6 +8482,7 @@ impl App {
         self.config.show_menubar = d.get(Opt::MenuBar);
         self.config.show_status = d.get(Opt::StatusLine);
         self.config.show_mini_status = d.get(Opt::MiniStatus);
+        self.config.show_free_space = d.get(Opt::FreeSpace);
         self.config.show_cmdline = d.get(Opt::CommandLine);
         self.config.show_keybar = d.get(Opt::KeyBar);
         self.config.confirm_delete = d.get(Opt::ConfirmDelete);
@@ -8512,7 +8516,7 @@ impl App {
         let (del, over, exit) = (cfg.confirm_delete, cfg.confirm_overwrite, cfg.confirm_exit);
         let (hot, exec) = (cfg.confirm_hotlist_delete, cfg.confirm_execute);
         let (split, ratio) = (cfg.split.clone(), cfg.split_ratio);
-        let mini_status = cfg.show_mini_status;
+        let (mini_status, free_space) = (cfg.show_mini_status, cfg.show_free_space);
         let (menubar, status_bar, cmdline, keybar) = (
             cfg.show_menubar,
             cfg.show_status,
@@ -8538,6 +8542,7 @@ impl App {
             s.show_menubar = Some(menubar);
             s.show_status = Some(status_bar);
             s.show_mini_status = Some(mini_status);
+            s.show_free_space = Some(free_space);
             s.show_cmdline = Some(cmdline);
             s.show_keybar = Some(keybar);
         }) {

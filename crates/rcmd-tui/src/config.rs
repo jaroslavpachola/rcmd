@@ -63,6 +63,10 @@ pub struct Config {
     /// status line already covers the active panel, so this earns its
     /// row mainly by showing the *other* panel's entry too.
     pub show_mini_status: bool,
+    /// Draw the filesystem's free space in a local panel's footer and
+    /// the info panel (MC's `free_space`). The marked-files total stays
+    /// either way: it is only there while something is marked.
+    pub show_free_space: bool,
     /// Draw the status line showing the cursor entry.
     pub show_status: bool,
     /// Draw the command line. With it hidden, plain characters only
@@ -328,6 +332,7 @@ impl Default for Config {
             split_ratio: 50,
             show_menubar: false,
             show_mini_status: false,
+            show_free_space: true,
             show_status: true,
             show_cmdline: true,
             show_keybar: true,

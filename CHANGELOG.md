@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.3.0 - 2026-08-26
+
+- **`show_free_space`** (4.x leftovers): the free-space figure in a
+  local panel's footer is a checkbox now - F9 > Options > Layout >
+  "Free space in the panel footer", `show_free_space = false` in the
+  config, saved to the state file like the other layout switches. The
+  info panel keeps its Space line, and the marked-files total is not a
+  toggle: it is only there while something is marked.
+
 ## 4.2.0 - 2026-08-26
 
 - **`M-!` filtered view** (4.x leftovers): mc's dialog, not just a menu

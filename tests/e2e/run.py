@@ -2956,6 +2956,18 @@ def test_options():
     statepath = os.path.join(home, ".local", "state", "rcmd", "state.toml")
     check("options: written to state", "confirm_delete = false" in open(statepath).read())
 
+    # the free-space figure in the footer is a Layout checkbox
+    check("options: free space shown by default", " free " in s.screen())
+    s.keys(b"\x1b[20~", b"o", b"p", wait=STEP)
+    for _ in range(option_downs(s.screen(), "Free space")):
+        s.send(DOWN)
+    check("options: free space row", "[x] Free space" in s.screen(), s.screen())
+    s.send(b" ", wait=STEP)
+    s.send(b"\r", wait=STEP)
+    check("options: free space off leaves the footer", " free " not in s.screen())
+    check("options: free space written to state",
+          "show_free_space = false" in open(statepath).read())
+
     # with the question off, F8 deletes straight away (no dialog)
     s.keys(
         HOME_K + DOWN,                   # cursor -> gone.txt

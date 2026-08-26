@@ -595,7 +595,7 @@ const HELP_TEXT: &[&str] = &[
     "  Ctrl+X Ctrl+S   change where an existing symlink points",
     "  F9 > Left/Right   listing format: brief (names), full, long (ls -l,",
     "                  full-width), user defined, tree; the panel footer",
-    "                  shows free space",
+    "                  shows free space (F9 > Options > Layout turns it off)",
     "  Inside a git work tree the title shows [branch] and entries get a",
     "  status column: M modified, A added, ? untracked, ! ignored (dim).",
     "",
@@ -918,6 +918,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
         let disk = app.disk[i]
             .as_ref()
+            .filter(|_| app.config.show_free_space)
             .filter(|(dir, ..)| dir == &app.panels[i].cwd)
             .and_then(|(_, _, space)| *space);
         if qv_side == Some(i) {

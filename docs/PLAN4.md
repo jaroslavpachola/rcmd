@@ -207,7 +207,9 @@ which is how it slipped past every phase. In the order to do them:
   - and as mc's actual feature, `M-!`, rather than a menu row over
   `S-F3`: a command typed now, its output in the viewer.
 - **Free space / marked totals toggle** (§3): promised as an options
-  checkbox, still always on.
+  checkbox, still always on. **Done** (4.3.0) as `show_free_space`;
+  the marked total stays, since it is only there while something is
+  marked and goes with the marking.
 - **`[[open]]` at mc.ext's power** (§4): rules are `match` + `run`
   only, so `--import-mc` can carry nothing a glob cannot express -
   `type =` (as `[[highlight]]` already has) and a regex option. The
