@@ -209,3 +209,7 @@ hotlist · merge-on-write config · a single static musl binary.
 ---
 
 Roadmap for everything marked Adopt/Change: [PLAN4.md](PLAN4.md).
+It is complete: every **Adopt** row above shipped in 4.0.0
+(2026-08-26). What is left in this document is the decisions - the
+`Keep`, `Keep+`, `Change` and `Refused` rows - which are where rcmd
+differs from mc on purpose.

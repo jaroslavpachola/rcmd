@@ -1,5 +1,82 @@
 # Changelog
 
+## 4.0.0 - 2026-08-26
+
+The parity release ([docs/PLAN4.md](docs/PLAN4.md), S0-S8 complete). 2.0
+made rcmd complete and 3.0 made it alive; 4.0 makes it a *drop-in*, so
+that an mc user's hands, config files and expectations all land
+somewhere. Every row marked **Adopt** in
+[docs/MC-DIFF.md](docs/MC-DIFF.md) is closed, and the divergences that
+stayed are written down there rather than quietly settled.
+
+What that added up to, phase by phase:
+
+- **S0 - foundations**: `config.toml` became the user's file, read-only
+  from rcmd's side, with panel state, sort, hotlist, history and
+  panelize presets moved to an rcmd-owned `state.toml`; one grouped
+  options dialog covering mc's five; `rcmd --import-mc` for `menu`,
+  `mc.ext`/`mc.ext.ini` and `mc.keymap`; per-context keymaps; and the
+  small keys batch (Esc timeout, `M-p`/`M-n`/`M-h`, `M-a`, `cd -` and
+  CDPATH, `C-x !`, command-line macros, persisted history).
+- **S1 - panel & layout**: the layout dialog (split direction, unequal
+  split, hiding the menubar, keybar, command line and hint bar),
+  per-panel mini-status, the directory tree as both a listing mode and
+  a dialog, multi-column brief listing, user-defined listing formats,
+  per-extension highlighting rules, and mc's per-panel Left/Right
+  menus.
+- **S2 - file operations**: source masks, preserve attributes, dive
+  into subdirs, follow links, stable symlinks and a Background button
+  on copy/move; an overwrite prompt with Update, Size differs, Append
+  and Reget and both files' size and date; ETA, throughput and a
+  per-file bar on progress; the chmod bit matrix, chown pick lists and
+  advanced chown; `C-x l`, `C-x C-s` and relative symlinks. The
+  attribute defaults are the safest ones rather than mc's.
+- **S3 - VFS breadth**: `fish://` and `ftp://` (the 3.0 refusal
+  overturned), the extfs-class formats (deb, rpm, iso9660, cpio,
+  lha/arj/cab, patchfs, mailfs), writable archives where the format
+  allows it, zip member *replace* instead of shadowing, and the active
+  VFS list and settings.
+- **S4 - viewer & editor depth**: goto, regex search, raw/parsed,
+  format/unformat, ruler, next/previous file, bookmarks, `%` jump and
+  writable hex in the viewer; an F9 menu bar and options dialog, goto
+  line, bookmarks, line numbers, `~` backups, the system clipboard and
+  `C-u` in the editor; and mc's screens (`` M-` ``), so several editors
+  and viewers are open at once, each carrying its own follow-up.
+- **S5 - encoding**: full parity on all three surfaces - per-panel
+  codepage (`M-e`), recoding on read and write in the viewer and the
+  editor, and non-UTF-8 filenames that round-trip instead of being
+  displayed lossily. The list is `encoding_rs`, every row of which
+  actually decodes.
+- **S6 - search, compare, panelize**: the select, unselect and filter
+  dialogs with mc's option set; a find dialog with regex content, case,
+  whole words, hidden files, symlinks, start directory and charsets;
+  the find *results window* as the default, with the old
+  stream-into-the-panel behaviour behind `find_window = false`; saved
+  async panelize presets; quick, size-only and thorough directory
+  compare; and an internal diff viewer with "Compare files".
+- **S7 - packaging & the wider world**: `-e FILE` / `-v FILE`, argv0
+  dispatch through `rcedit`/`rcview`/`rcdiff` and mc's own names, the
+  missing mc flags (`-b -c -C -S -d -u/-U -l`), the shipped
+  `contrib/rc.sh` and `contrib/rc.fish` wrappers, skins as TOML themes
+  *and* mc's own skin files read where they lie, and macOS builds back
+  in CI and in the releases for both architectures.
+- **S8 - the leftovers**: the Adopt rows that fell between two
+  milestones - mc-style quick search with its own input field, Learn
+  keys, `[keys.dialog]`, hotlist groups and editing, user-menu
+  conditions and submenus and per-directory `.mc.menu`, mc's full macro
+  set, dialog input history and mouse and underlined hotkeys, the mc
+  clipboard file, and user syntax files.
+
+Two divergences from S8 are worth repeating here: a `.mc.menu` in a
+directory **adds** to your `[[commands]]` where mc's local menu shadows
+them, a project's menu being an addition to yours; and the mouse in
+dialogs reaches the list-shaped ones, while dialogs with fields and
+checkboxes stay keyboard-only, which is where mc's own mouse support
+effectively lands too.
+
+Still refused, and still on purpose: Windows, Lua and plugin systems,
+in-terminal image rendering, browser-style tabs, and ext2 undelete.
+
 ## 3.58.1 - 2026-08-26
 
 - **F9 > Command > Edit config file**, the last of MC-DIFF §11's

@@ -1,9 +1,10 @@
 # rcmd 4.0 - the parity release
 
-**Status:** drafted 2026-08-22 from the decisions in
-[MC-DIFF.md](MC-DIFF.md). **Prerequisite:** the 3.0.0 tag (R1 dogfooding
-window). Baseline: 2.5.0 - subshell, SFTP, built-in editor, job queue,
-archive browsing, git awareness.
+**Status:** COMPLETE - drafted 2026-08-22 from the decisions in
+[MC-DIFF.md](MC-DIFF.md), every phase done and shipped as 4.0.0 on
+2026-08-26. **Prerequisite:** the 3.0.0 tag (R1 dogfooding window).
+Baseline: 2.5.0 - subshell, SFTP, built-in editor, job queue, archive
+browsing, git awareness.
 
 ## Vision
 

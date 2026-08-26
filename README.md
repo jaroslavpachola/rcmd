@@ -1,14 +1,15 @@
 # rcmd
 
 A Midnight Commander replacement in Rust: orthodox dual-pane file manager
-with MC keybindings, built on ratatui. The 1.0
-([docs/PLAN.md](docs/PLAN.md)), 2.0 ([docs/PLAN2.md](docs/PLAN2.md)) and
-3.0 ([docs/PLAN3.md](docs/PLAN3.md)) roadmaps are complete - 3.0's
-flagship is the **persistent subshell** behind Ctrl+O. 4.0, the parity
-release ([docs/PLAN4.md](docs/PLAN4.md)), is under way: its scope comes
-from a decision-by-decision comparison against mc
-([docs/MC-DIFF.md](docs/MC-DIFF.md)); its foundations phase shipped in
-3.8 and the panel work has been landing since.
+with MC keybindings, built on ratatui. All four roadmaps are complete -
+1.0 ([docs/PLAN.md](docs/PLAN.md)), 2.0
+([docs/PLAN2.md](docs/PLAN2.md)), 3.0
+([docs/PLAN3.md](docs/PLAN3.md)) and now **4.0, the parity release**
+([docs/PLAN4.md](docs/PLAN4.md)), whose scope came from a
+decision-by-decision comparison against mc
+([docs/MC-DIFF.md](docs/MC-DIFF.md)). Every row that comparison marked
+**Adopt** is closed, and the places where rcmd still differs on purpose
+are written down there rather than left to be discovered.
 
 ![rcmd demo: browsing, the syntax-highlighted viewer, marking and
 copying, the persistent subshell](docs/demo.gif)
@@ -67,11 +68,22 @@ by kind, which is mc's filehighlight without the second file.
 **3.12** - mc's menu bar: **Left, File, Command, Options, Right**, where
 the two panel menus act on their own panel whichever one has the focus.
 
-**3.51** - the wider world (4.0 S7, and the last of the plan): `-e` and
-`-v` and the **rcedit / rcview / rcdiff** aliases, mc's startup flags
+**3.51** - the wider world (4.0 S7): `-e` and `-v` and the
+**rcedit / rcview / rcdiff** aliases, mc's startup flags
 (`-b -c -C -S -d -u -U -l`), the shipped shell wrappers, **skins** -
 rcmd's own theme files and mc's skin files read where they lie - and
 **macOS builds back** in CI and in the releases.
+
+**4.0** - the parity release, and the leftovers that finished it: mc's
+**quick search** with an input field of its own, **Learn keys**,
+`[keys.dialog]`, a **hotlist with groups** and a label prompt and
+editing, **user-menu conditions and submenus** plus the per-directory
+`.mc.menu`, mc's full **macro set**, dialog **input history**, **mouse**
+and **underlined hotkeys**, the mc **clipboard file**, and **user syntax
+files**. What is left in [docs/MC-DIFF.md](docs/MC-DIFF.md) is the
+divergences - Tab completing rather than switching panels, F8 to the
+trash, one grouped options dialog instead of five - each of them a
+decision with a reason next to it.
 
 ## Install & run
 
