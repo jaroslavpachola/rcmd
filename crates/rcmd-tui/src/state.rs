@@ -103,6 +103,14 @@ pub struct State {
     /// M-n walk them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub field_history: BTreeMap<String, Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restore_other_dir: Option<bool>,
+    /// Where the *other* panel was when rcmd last closed. The active
+    /// panel starts where the shell is, as mc's does; this is the one
+    /// mc keeps in panels.ini, and it is what makes the second panel
+    /// worth something on the first keystroke.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub other_dir: Option<String>,
     /// Where rcmd has been, and how often and how recently. The
     /// hotlist's recent half is ranked by this instead of by arrival
     /// order, so the directory you actually work in rises to the top
@@ -233,6 +241,7 @@ pub fn apply(state: &State, config: &mut Config) {
         listing,
         mouse,
         watch,
+        restore_other_dir,
         git,
         subshell,
         editor,

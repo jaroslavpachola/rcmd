@@ -80,7 +80,7 @@ behind the Adopt rows · `Keep`: rcmd already answers this its own way ·
 |---|---|---|---|
 | **Panel tabs** | TC, Krusader, DC, nnn's contexts | **Open** | refused in MC-DIFF §13; argued in §9 |
 | **Frecency-ranked fuzzy directory jump** | zoxide, fzf | Adopt | done in 4.15.0, inside the hotlist rather than on a key of its own: its recent half is a persistent visit log ranked by frecency, and `C-s` narrows the whole list. Until then, recent directories sat in the hotlist in visit order and died with the session. Ranking them by frequency-and-recency and matching fragments turns `C-\` from a list you browse into one key and three letters. Cheap, and it changes the feel of ordinary navigation more than anything else here |
-| **Session persistence**: both panels' directory and listing mode, and the open screens, restored on start | DN's saved desktop | Adopt | `state.rs` carries thirty-odd keys and not one of them is where the panels were |
+| **Session persistence**: both panels' directory and listing mode, and the open screens, restored on start | DN's saved desktop | Adopt | half done in 4.17.0: the *other* panel's directory is kept, which is mc's panels.ini rule and the part that costs nothing to be wrong about. The active panel deliberately still starts where the shell is. The open screens are the half still open |
 | Drive and mount menu: mount points with free space, and the open VFS sessions in the same list | Far (`A-F1`/`A-F2`), DN | Adopt | `C-x a` already lists the VFS half. Nothing in the tree reads `/proc/mounts` |
 | Folder shortcuts on ten numbered slots | Far (`C-0`..`C-9`) | Adopt | the hotlist is a list you browse; shortcuts are muscle memory, and the two do not replace each other. Ctrl with a digit mostly does not reach a terminal program (§10), so the slots need a prefix - `C-x 0`..`C-x 9` is free and already the shape of rcmd's other chords |
 | A history of viewed and edited *files* | Far (`A-F11`) | Adopt | rcmd keeps per-panel directory history and command history. This is the one you want right after closing an editor screen. F11 is often eaten by the terminal emulator (§10), so it belongs on the `A-h` family of keys or in the F9 menu |
@@ -218,8 +218,7 @@ part of the record:
    them.
 
 What is next, and now the live list: panel tabs if §9 reopens them, the
-remote socket and script plugins (§7), session persistence and the
-mount menu (§3), the named filter sets and richer select criteria (§2),
+remote socket and script plugins (§7), the mount menu (§3), the named filter sets and richer select criteria (§2),
 and the sort keys (§4, done in 4.16.0). The socket is the one that
 unlocks the most, since every row that wants a key rcmd cannot spare
 (§10) is answered by letting a script have one.

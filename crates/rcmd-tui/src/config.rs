@@ -35,6 +35,11 @@ pub struct Config {
     pub listing_format: String,
     /// Auto-reload panels when their directory changes on disk.
     pub watch: bool,
+    /// Start the *other* panel where it was when rcmd last closed, as
+    /// mc does from panels.ini. The active panel always starts where
+    /// the shell is, and a directory given on the command line always
+    /// wins.
+    pub restore_other_dir: bool,
     /// Mouse support (click, double-click, wheel). Additive only -
     /// hold Shift to select terminal text while it is on.
     pub mouse: bool,
@@ -417,6 +422,7 @@ impl Default for Config {
             listing: "full".into(),
             listing_format: crate::format::DEFAULT.into(),
             watch: true,
+            restore_other_dir: true,
             mouse: true,
             git: false,
             editor: "internal".into(),

@@ -769,6 +769,7 @@ theme = "mc"        # "dark", "bw", or the name of a theme file
 keymap = "mc"       # or "modern" (= lynx-like motion on by default)
 lynx = false        # Left/Right = parent/enter; in the options form
 watch = true        # auto-reload panels on external changes
+restore_other_dir = true  # the other panel starts where it was left
 mouse = true        # click/double-click/wheel support
 git = false         # git status column + branch in panel titles (off by
                     # default since 4.10: it is a column on every row)

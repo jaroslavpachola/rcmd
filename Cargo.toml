@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/rcmd-core", "crates/rcmd-edit", "crates/rcmd-tui"]
 
 [workspace.package]
-version = "4.16.0"
+version = "4.17.0"
 edition = "2024"
 license = "MIT"
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.17.0 - 2026-08-27
+
+- **The other panel starts where it was left.** rcmd opened both panels
+  on the shell's directory and forgot everything else about where you
+  were; mc has kept the second panel's directory in panels.ini since
+  forever, and now rcmd keeps it in the state file. The *active* panel
+  still starts where the shell is - that convention is not worth
+  breaking - a directory named on the command line always wins, and a
+  saved directory that has gone away is ignored rather than fatal.
+  `restore_other_dir = false`, or the new Options checkbox, turns it
+  off. Only a local directory is saved: reconnecting an sftp:// panel
+  unasked at startup is not a favour.
+
 ## 4.16.0 - 2026-08-27
 
 - **Five more sort orders**, in each panel's own F9 menu and bindable

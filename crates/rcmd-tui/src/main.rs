@@ -117,6 +117,12 @@ fn run(
     // the visit log is merged rather than written: another instance has
     // been going places too, and its counts are as real as ours
     let visits: Vec<state::Visit> = app.visit_log().to_vec();
+    // where the panel that is not active ended up, for the next start.
+    // Only a local directory: reconnecting an sftp:// panel unasked, at
+    // startup, is not a favour
+    let other = &app.panels[app.active ^ 1];
+    let other_dir = (other.is_local() && other.archive.is_none())
+        .then(|| other.local_cwd().display().to_string());
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -127,6 +133,9 @@ fn run(
         s.sort_reverse = Some(sort_reverse);
         s.listing = Some(listing);
         s.cmd_history = history;
+        if let Some(dir) = other_dir {
+            s.other_dir = Some(dir);
+        }
         for visit in &visits {
             match s.visits.iter().any(|v| v.path == visit.path) {
                 // ours already includes what was on disk when we

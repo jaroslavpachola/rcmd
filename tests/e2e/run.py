@@ -964,6 +964,35 @@ def test_visits():
     shutil.rmtree(root)
 
 
+def test_restore_other_dir():
+    """The other panel starts where it was left, as mc's does; the
+    active one starts where the shell is."""
+    root, play, home = sandbox()
+    away = os.path.join(play, "away")
+    os.makedirs(away)
+
+    s = Session(play, home, args=(play, play))
+    s.send(b"\t", wait=STEP)                   # to the right panel
+    s.send(b"\x13away\r", wait=STEP)
+    s.send(b"\r", wait=STEP)                   # into away
+    s.send(b"\t", wait=STEP)                   # back to the left panel
+    s.quit()
+
+    # no directories on the command line: the left panel is the cwd and
+    # the right one is where it was
+    s = Session(play, home)
+    screen = s.screen()
+    check("restore: the other panel came back", away in screen, screen)
+    s.quit()
+
+    # a second directory on the command line still wins
+    s = Session(play, home, args=(play, play))
+    check("restore: an argument beats the saved directory",
+          away not in s.screen(), s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_sync():
     """F9 > Command > Synchronize: compare, then a plan that says which
     way each difference goes, and copies it."""
@@ -5287,6 +5316,7 @@ def main():
         test_undo,
         test_sync,
         test_visits,
+        test_restore_other_dir,
         test_ftp,
         test_find,
         test_compare,

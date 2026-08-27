@@ -1131,6 +1131,7 @@ pub enum Opt {
     Lynx,
     Mouse,
     Watch,
+    RestoreOtherDir,
     Git,
     ConfirmDelete,
     ConfirmOverwrite,
@@ -1176,6 +1177,7 @@ pub const OPTION_ROWS: &[OptRow] = &[
     OptRow::Check(Opt::Lynx, "Lynx-like motion"),
     OptRow::Check(Opt::Mouse, "Mouse support"),
     OptRow::Check(Opt::Watch, "Auto-reload panels"),
+    OptRow::Check(Opt::RestoreOtherDir, "Other panel starts where it was left"),
     OptRow::Check(Opt::Git, "Git status"),
     OptRow::Head("Confirmation"),
     OptRow::Check(Opt::ConfirmDelete, "Ask before deleting"),
@@ -2737,10 +2739,19 @@ impl App {
             }
         };
         let left_dir = dir_at(0)?;
+        // With no second directory named, the right panel picks up
+        // where it was left - mc's panels.ini rule. A directory that
+        // has since gone away is no reason to refuse to start.
         let right_dir = if dirs.len() > 1 {
             dir_at(1)?
         } else {
-            left_dir.clone()
+            config
+                .restore_other_dir
+                .then(|| state::load().0.other_dir)
+                .flatten()
+                .map(PathBuf::from)
+                .filter(|dir| dir.is_dir())
+                .unwrap_or_else(|| left_dir.clone())
         };
         let mut left = Panel::new(left_dir.clone())
             .with_context(|| format!("cannot read directory {}", left_dir.display()))?;
@@ -5116,6 +5127,7 @@ impl App {
                 values[Opt::Lynx as usize] = cfg.lynx_on();
                 values[Opt::Mouse as usize] = cfg.mouse;
                 values[Opt::Watch as usize] = cfg.watch;
+                values[Opt::RestoreOtherDir as usize] = cfg.restore_other_dir;
                 values[Opt::Git as usize] = cfg.git;
                 values[Opt::ConfirmDelete as usize] = cfg.confirm_delete;
                 values[Opt::ConfirmOverwrite as usize] = cfg.confirm_overwrite;
@@ -8790,6 +8802,7 @@ impl App {
         self.config.show_free_space = d.get(Opt::FreeSpace);
         self.config.show_cmdline = d.get(Opt::CommandLine);
         self.config.show_keybar = d.get(Opt::KeyBar);
+        self.config.restore_other_dir = d.get(Opt::RestoreOtherDir);
         self.config.confirm_delete = d.get(Opt::ConfirmDelete);
         self.config.confirm_overwrite = d.get(Opt::ConfirmOverwrite);
         self.config.confirm_exit = d.get(Opt::ConfirmExit);
@@ -8830,6 +8843,7 @@ impl App {
                 show_hidden,
                 mouse,
                 watch,
+                restore_other_dir,
                 git,
                 subshell,
                 editor,
