@@ -15,6 +15,8 @@ ruzstd.workspace = true
 regex.workspace = true
 encoding_rs.workspace = true
 ssh2.workspace = true
+# getpwuid_r / getgrgid_r: who a uid belongs to, through NSS
+libc.workspace = true
 
 [features]
 # Static builds (musl): compile OpenSSL from source instead of linking

@@ -532,6 +532,11 @@ pub fn sort_key_from_name(name: &str) -> SortKey {
         "ext" => SortKey::Ext,
         "size" => SortKey::Size,
         "mtime" => SortKey::Mtime,
+        "atime" => SortKey::Atime,
+        "ctime" => SortKey::Ctime,
+        "owner" => SortKey::Owner,
+        "group" => SortKey::Group,
+        "unsorted" => SortKey::Unsorted,
         _ => SortKey::Name,
     }
 }
@@ -542,6 +547,11 @@ pub fn sort_key_name(key: SortKey) -> &'static str {
         SortKey::Ext => "ext",
         SortKey::Size => "size",
         SortKey::Mtime => "mtime",
+        SortKey::Atime => "atime",
+        SortKey::Ctime => "ctime",
+        SortKey::Owner => "owner",
+        SortKey::Group => "group",
+        SortKey::Unsorted => "unsorted",
     }
 }
 
@@ -699,7 +709,17 @@ run = "du -sh %t | less"
 
     #[test]
     fn sort_key_names_round_trip() {
-        for key in [SortKey::Name, SortKey::Ext, SortKey::Size, SortKey::Mtime] {
+        for key in [
+            SortKey::Name,
+            SortKey::Ext,
+            SortKey::Size,
+            SortKey::Mtime,
+            SortKey::Atime,
+            SortKey::Ctime,
+            SortKey::Owner,
+            SortKey::Group,
+            SortKey::Unsorted,
+        ] {
             assert_eq!(sort_key_from_name(sort_key_name(key)), key);
         }
         assert_eq!(sort_key_from_name("garbage"), SortKey::Name);

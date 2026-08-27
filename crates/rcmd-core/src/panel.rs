@@ -38,6 +38,20 @@ pub enum SortKey {
     Ext,
     Size,
     Mtime,
+    /// Last read. Cheap to have and the only way to answer "what have I
+    /// actually been using in here".
+    Atime,
+    /// Last inode change - a rename or a chmod moves it and a write to
+    /// the contents does not.
+    Ctime,
+    /// By the name the panel shows, not the number behind it, so the
+    /// order and the column agree.
+    Owner,
+    Group,
+    /// No order at all: whatever the listing arrived in. On a panelized
+    /// listing that order *is* the answer - `git ls-files -m` says what
+    /// changed and in which order - and sorting it throws that away.
+    Unsorted,
 }
 
 /// Panel listing format: name-only, the classic three columns, an
@@ -893,6 +907,16 @@ fn sort_entries(
     reverse: bool,
     charset: Option<&'static crate::charset::Encoding>,
 ) {
+    // Unsorted means what it says, down to not grouping the directories
+    // first: the order the listing arrived in is the whole of it. The
+    // parent entry is put in front by the loader, and stays there.
+    if key == SortKey::Unsorted {
+        if reverse {
+            let parent = usize::from(entries.first().is_some_and(Entry::is_parent));
+            entries[parent..].reverse();
+        }
+        return;
+    }
     let mut decorated: Vec<(bool, String, Entry)> = std::mem::take(entries)
         .into_iter()
         .map(|e| {
@@ -906,14 +930,51 @@ fn sort_entries(
             return dirs_first;
         }
         let ord = match key {
-            SortKey::Name => name_cmp(a, b),
+            SortKey::Name | SortKey::Unsorted => name_cmp(a, b),
             SortKey::Ext => a.2.ext().cmp(&b.2.ext()).then_with(|| name_cmp(a, b)),
             SortKey::Size => a.2.size.cmp(&b.2.size).then_with(|| name_cmp(a, b)),
             SortKey::Mtime => a.2.mtime.cmp(&b.2.mtime).then_with(|| name_cmp(a, b)),
+            SortKey::Atime => {
+                a.2.extra
+                    .atime
+                    .cmp(&b.2.extra.atime)
+                    .then_with(|| name_cmp(a, b))
+            }
+            SortKey::Ctime => {
+                a.2.extra
+                    .ctime
+                    .cmp(&b.2.extra.ctime)
+                    .then_with(|| name_cmp(a, b))
+            }
+            SortKey::Owner => owner_of(&a.2)
+                .cmp(&owner_of(&b.2))
+                .then_with(|| name_cmp(a, b)),
+            SortKey::Group => group_of(&a.2)
+                .cmp(&group_of(&b.2))
+                .then_with(|| name_cmp(a, b)),
         };
         if reverse { ord.reverse() } else { ord }
     });
     *entries = decorated.into_iter().map(|(_, _, e)| e).collect();
+}
+
+/// The owner as the panel writes it: the name where there is one, the
+/// number where there is not, and an empty string where the provider
+/// never said - which sorts first, being the least information.
+fn owner_of(entry: &Entry) -> String {
+    entry
+        .extra
+        .uid
+        .map(crate::users::user_name)
+        .unwrap_or_default()
+}
+
+fn group_of(entry: &Entry) -> String {
+    entry
+        .extra
+        .gid
+        .map(crate::users::group_name)
+        .unwrap_or_default()
 }
 
 fn name_cmp(a: &(bool, String, Entry), b: &(bool, String, Entry)) -> Ordering {
@@ -977,6 +1038,73 @@ mod tests {
             names(&panel),
             ["..", "Docs", "src", ".hidden", "cargo.lock", "README.md"]
         );
+    }
+
+    #[test]
+    fn unsorted_keeps_the_order_the_listing_arrived_in() {
+        let tree = make_tree();
+        let mut panel = Panel::new(tree.path().to_path_buf()).unwrap();
+        // a panelized listing is where this matters: the order the
+        // command printed is the answer
+        panel.entries = vec![
+            Entry::parent(),
+            Entry {
+                name: "third".into(),
+                ..Entry::parent()
+            },
+            Entry {
+                name: "first".into(),
+                ..Entry::parent()
+            },
+        ];
+        let before = names(&panel);
+        sort_entries(&mut panel.entries, SortKey::Unsorted, false, None);
+        assert_eq!(names(&panel), before, "nothing moved");
+        // reversed, everything but the parent turns round
+        sort_entries(&mut panel.entries, SortKey::Unsorted, true, None);
+        assert_eq!(names(&panel), ["..", "first", "third"]);
+    }
+
+    #[test]
+    fn sorting_by_time_and_owner_reads_the_stat_the_listing_carries() {
+        use std::time::{Duration, SystemTime};
+        let mut entries = vec![
+            Entry {
+                name: "old".into(),
+                extra: crate::entry::EntryStat {
+                    atime: Some(SystemTime::UNIX_EPOCH),
+                    ctime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(100)),
+                    uid: Some(0),
+                    ..Default::default()
+                },
+                ..Entry::parent()
+            },
+            Entry {
+                name: "new".into(),
+                extra: crate::entry::EntryStat {
+                    atime: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(100)),
+                    ctime: Some(SystemTime::UNIX_EPOCH),
+                    uid: Some(u32::MAX), // no such user: sorts as its number
+                    ..Default::default()
+                },
+                ..Entry::parent()
+            },
+        ];
+        // these are files, not the parent directory
+        for entry in &mut entries {
+            entry.kind = crate::entry::EntryKind::File;
+        }
+        let order = |key: SortKey, entries: &[Entry]| {
+            let mut copy = entries.to_vec();
+            sort_entries(&mut copy, key, false, None);
+            copy.iter()
+                .map(|e| e.name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(SortKey::Atime, &entries), ["old", "new"]);
+        assert_eq!(order(SortKey::Ctime, &entries), ["new", "old"]);
+        // "root" against "4294967295": the name, not the number
+        assert_eq!(order(SortKey::Owner, &entries), ["new", "old"]);
     }
 
     #[test]

@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.16.0 - 2026-08-27
+
+- **Five more sort orders**, in each panel's own F9 menu and bindable
+  by name (`sort-atime`, `sort-ctime`, `sort-owner`, `sort-group`,
+  `sort-unsorted`): **access time**, **change time**, **owner**,
+  **group** and **Unsorted**. The listing already carried all of it -
+  the user-defined format has drawn those columns since 3.10 - and now
+  the panel can be ordered by them. Owner and group sort by the name
+  the panel shows rather than the number behind it, which meant moving
+  the uid lookup into rcmd-core where the sort can see it. Unsorted is
+  the order the listing arrived in, down to not grouping directories
+  first: on a panelized listing that order is the answer the command
+  gave, and sorting it away loses it.
+- **A click on the access-time, change-time, owner or group column
+  header** sorts by it, instead of by modify time or not at all.
+
 ## 4.15.0 - 2026-08-27
 
 - **The hotlist remembers where you go, and ranks it.** Its recent half

@@ -191,7 +191,7 @@ exactly where it was.
 | F8 | Delete to trash |
 | Shift+F8 | Delete permanently |
 | Ctrl+X u | Undo the last move (asks first; a second time is the redo) |
-| Alt+N | Sort by name (again = reverse; other orders in the panel's own F9 → Left/Right menu) |
+| Alt+N | Sort by name (again = reverse; extension, size, the three times, owner, group and *unsorted* live in the panel's own F9 → Left/Right menu) |
 | Alt+T | Cycle listing format: brief (names in columns) / full / long (active long panel = full-width one-panel view) |
 | Ctrl+U | Swap panels |
 | Alt+. | Toggle hidden files |
@@ -804,7 +804,8 @@ edit_line_numbers = false  # the line-number gutter (Alt+N toggles it)
 edit_backups = false       # keep the previous contents as file~ on save
 edit_clipboard = true      # share the desktop clipboard (wl-copy/xclip/...)
 show_hidden = true
-sort_key = "name"   # name | ext | size | mtime
+sort_key = "name"   # name | ext | size | mtime | atime | ctime
+                    # | owner | group | unsorted
 sort_reverse = false
 listing = "full"    # brief | full | long | tree | user
 # "user" draws listing_format: a panel size (half/full), an optional

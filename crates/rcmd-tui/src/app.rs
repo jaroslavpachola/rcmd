@@ -2285,6 +2285,14 @@ const PANEL_MENU: &[MenuEntry] = &[
     Some(("Sort by &extension", "", Action::Sort(SortKey::Ext))),
     Some(("Sort by si&ze", "", Action::Sort(SortKey::Size))),
     Some(("Sort by &modify time", "", Action::Sort(SortKey::Mtime))),
+    Some(("Sort by &access time", "", Action::Sort(SortKey::Atime))),
+    Some(("Sort by c&hange time", "", Action::Sort(SortKey::Ctime))),
+    Some(("Sort by o&wner", "", Action::Sort(SortKey::Owner))),
+    // no letter for group: the ones in the word are the menu titles' or
+    // already spoken for above, and shadowing Right to save an arrow
+    // key would be a bad trade
+    Some(("Sort by group", "", Action::Sort(SortKey::Group))),
+    Some(("&Unsorted (as listed)", "", Action::Sort(SortKey::Unsorted))),
     Some(("Re&verse sort", "", Action::SortReverse)),
     None,
     // "Filter" cannot take a letter of its own here: f, i, l, t, e and
@@ -4100,9 +4108,11 @@ impl App {
                     key = match item {
                         Item::Field(Field::Name, _) => Some(SortKey::Name),
                         Item::Field(Field::Size | Field::BSize, _) => Some(SortKey::Size),
-                        Item::Field(Field::Mtime | Field::Atime | Field::Ctime, _) => {
-                            Some(SortKey::Mtime)
-                        }
+                        Item::Field(Field::Mtime, _) => Some(SortKey::Mtime),
+                        Item::Field(Field::Atime, _) => Some(SortKey::Atime),
+                        Item::Field(Field::Ctime, _) => Some(SortKey::Ctime),
+                        Item::Field(Field::Owner, _) => Some(SortKey::Owner),
+                        Item::Field(Field::Group, _) => Some(SortKey::Group),
                         _ => None,
                     };
                     break;

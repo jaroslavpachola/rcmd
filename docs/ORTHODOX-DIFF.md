@@ -98,7 +98,7 @@ behind the Adopt rows · `Keep`: rcmd already answers this its own way ·
 
 | Feature | From | Decision | Note |
 |---|---|---|---|
-| More sort keys: atime, ctime, owner, group, and **unsorted** (on-disk order) | Far, DN | Adopt | `SortKey` is Name/Ext/Size/Mtime (`panel.rs:36`) while `format.rs:33` already parses atime, ctime, owner and group as *columns*. Unsorted matters most on a panelized listing, where the command's own order was the information and sorting throws it away |
+| More sort keys: atime, ctime, owner, group, and **unsorted** (on-disk order) | Far, DN | Adopt | done in 4.16.0. | `SortKey` is Name/Ext/Size/Mtime (`panel.rs:36`) while `format.rs:33` already parses atime, ctime, owner and group as *columns*. Unsorted matters most on a panelized listing, where the command's own order was the information and sorting throws it away |
 | **Sort groups**: masks that pin classes of file to the top whatever the sort key | Far | Adopt-later | shares its configuration with file highlighting, which rcmd already has as `[[highlight]]`, so half the data model exists |
 | Ten numbered listing formats | Far, TC (`C-1`..`C-0`) | Adopt-later | one `listing_format` generalized to a numbered set; mostly config plumbing over `format.rs`. Same key problem as the folder shortcuts (§10), and the same answer |
 | **Content columns**: fields computed from inside the file (EXIF date, media duration, line count, hash), sortable like any other | TC's WDX plugins, vifm's viewcolumns | Adopt-later | one more field kind in `format.rs`, computed by a provider and cached. The plugin ABI behind TC's version is not needed to get the feature |
@@ -220,10 +220,9 @@ part of the record:
 What is next, and now the live list: panel tabs if §9 reopens them, the
 remote socket and script plugins (§7), session persistence and the
 mount menu (§3), the named filter sets and richer select criteria (§2),
-and the sort keys (§4). Of those, the sort keys are the cheapest - the
-columns are already parsed - and the socket is the one that unlocks the
-most, since every row that wants a key rcmd cannot spare (§10) is
-answered by letting a script have one.
+and the sort keys (§4, done in 4.16.0). The socket is the one that
+unlocks the most, since every row that wants a key rcmd cannot spare
+(§10) is answered by letting a script have one.
 
 ---
 

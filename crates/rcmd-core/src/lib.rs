@@ -23,6 +23,7 @@ pub mod rpm;
 pub mod sftp;
 pub mod tree;
 pub mod usermenu;
+pub mod users;
 pub mod vfs;
 pub mod vfslog;
 pub mod view;
