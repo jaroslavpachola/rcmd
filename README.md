@@ -293,7 +293,8 @@ Ctrl+C are as they always are. A `%{question}` is refused here rather
 than asked two hundred times.
 
 **Ctrl+X u undoes the last move.** Every move F6 makes onto a name that
-was free is recorded as it happens, and `Ctrl+X u` asks before putting
+was free is recorded as it happens - and so is every rename a **bulk
+rename** made, which used to be final the moment it finished - and `Ctrl+X u` asks before putting
 the items back where they came from. It is an ordinary job - the same
 progress, the same error prompts, the same Esc - and because the undo
 is itself a move, a second `Ctrl+X u` is the redo. A move that landed

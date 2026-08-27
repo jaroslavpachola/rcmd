@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.27.0 - 2026-08-27
+
+- **A bulk rename can be undone.** It leaves the same `(from, to)`
+  record every move leaves, so `C-x u` puts it back; `rename.rs` had
+  only ever rolled back a batch that failed halfway, and a batch that
+  succeeded was final.
+
 ## 4.26.0 - 2026-08-27
 
 - **`cd rclone://<remote>[/path]`** puts a panel on anything rclone

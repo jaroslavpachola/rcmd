@@ -6489,6 +6489,16 @@ impl App {
             match rcmd_core::rename::apply(&preview.dir, &preview.renames) {
                 Ok(()) => {
                     self.status = Some(format!(" renamed {} item(s) ", preview.renames.len()));
+                    // a batch that succeeded was final before; it is
+                    // the same (from, to) record every move leaves, so
+                    // C-x u puts a bulk rename back too
+                    self.undo = Some(
+                        preview
+                            .renames
+                            .iter()
+                            .map(|(old, new)| (preview.dir.join(old), preview.dir.join(new)))
+                            .collect(),
+                    );
                 }
                 Err(err) => self.status = Some(format!(" bulk rename: {err} ")),
             }

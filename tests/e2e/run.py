@@ -938,6 +938,47 @@ def test_archive_write():
     shutil.rmtree(root)
 
 
+def test_bulkundo():
+    """A bulk rename that finished can be put back: it leaves the same
+    record a move does."""
+    root, play, home = sandbox()
+    for name in ("one.txt", "two.txt"):
+        open(os.path.join(play, name), "w").write(name + "\n")
+
+    s = Session(play, home)
+    env = dict(os.environ, HOME=home, XDG_RUNTIME_DIR=home)
+    env.pop("XDG_CONFIG_HOME", None)
+    subprocess.run([BIN, "--remote", "select *.txt"], env=env,
+                   capture_output=True, text=True, timeout=10)
+    subprocess.run([BIN, "--remote", "action bulk-rename"], env=env,
+                   capture_output=True, text=True, timeout=10)
+    check("bulkundo: the editor opened on the names", wait_for(s, "one.txt"), s.screen())
+    # the buffer is "index<tab>name" per line: append to each name
+    s.send(b"\x1b[H", wait=STEP)
+    for _ in range(2):
+        s.send(END, wait=STEP)
+        s.send(b".bak", wait=STEP)
+        s.send(b"\x1b[B", wait=STEP)
+    s.send(b"\x1b[21~", wait=STEP)           # F10 out of the editor
+    s.send(b"\r", wait=STEP * 2)             # Save
+    check("bulkundo: it shows what it would do",
+          wait_for(s, "one.txt.bak"), s.screen())
+    s.send(b"y", wait=STEP * 3)              # the preview defaults to No
+    check("bulkundo: the rename ran", wait_for(s, "renamed"), s.screen())
+    check("bulkundo: the names changed",
+          os.path.exists(os.path.join(play, "one.txt.bak")),
+          str(sorted(os.listdir(play))))
+
+    s.send(b"\x18u", wait=STEP)
+    s.send(b"\r", wait=STEP * 3)
+    check("bulkundo: and C-x u put them back",
+          os.path.exists(os.path.join(play, "one.txt"))
+          and not os.path.exists(os.path.join(play, "one.txt.bak")),
+          str(sorted(os.listdir(play))))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_rclone():
     """A panel on an rclone remote. rclone itself is not needed: what is
     under test is rcmd's half of the contract - lsf's output read as a
@@ -5725,6 +5766,7 @@ def main():
         test_pack,
         test_undo,
         test_sync,
+        test_bulkundo,
         test_rclone,
         test_shortcutsandfiles,
         test_checksums,

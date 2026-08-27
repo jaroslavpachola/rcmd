@@ -1122,7 +1122,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-core"
-version = "4.26.0"
+version = "4.27.0"
 dependencies = [
  "bzip2",
  "encoding_rs",
@@ -1141,7 +1141,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-edit"
-version = "4.26.0"
+version = "4.27.0"
 dependencies = [
  "encoding_rs",
  "regex",
@@ -1152,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-tui"
-version = "4.26.0"
+version = "4.27.0"
 dependencies = [
  "anyhow",
  "chrono",

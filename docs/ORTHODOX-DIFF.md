@@ -81,7 +81,7 @@ behind the Adopt rows · `Keep`: rcmd already answers this its own way ·
 | **Panel tabs** | TC, Krusader, DC, nnn's contexts | **Open** | refused in MC-DIFF §13; argued in §9 |
 | **Frecency-ranked fuzzy directory jump** | zoxide, fzf | Adopt | done in 4.15.0, inside the hotlist rather than on a key of its own: its recent half is a persistent visit log ranked by frecency, and `C-s` narrows the whole list. Until then, recent directories sat in the hotlist in visit order and died with the session. Ranking them by frequency-and-recency and matching fragments turns `C-\` from a list you browse into one key and three letters. Cheap, and it changes the feel of ordinary navigation more than anything else here |
 | **Session persistence**: both panels' directory and listing mode, and the open screens, restored on start | DN's saved desktop | Adopt | half done in 4.17.0: the *other* panel's directory is kept, which is mc's panels.ini rule and the part that costs nothing to be wrong about. The active panel deliberately still starts where the shell is. The open screens are the half still open |
-| Drive and mount menu: mount points with free space, and the open VFS sessions in the same list | Far (`A-F1`/`A-F2`), DN | Adopt | `C-x a` already lists the VFS half. Nothing in the tree reads `/proc/mounts` |
+| Drive and mount menu: mount points with free space, and the open VFS sessions in the same list | Far (`A-F1`/`A-F2`), DN | Adopt | done in 4.18.0, in `C-x a`'s list and on Far's own two keys. `df -P` answers on both platforms, where `/proc/mounts` answers on one |
 | Folder shortcuts on ten numbered slots | Far (`C-0`..`C-9`) | Adopt | done in 4.25.0 on `C-x 0`..`C-x 9`, as predicted in §10, and spelled as hotlist entries labelled with the digit rather than as a second list |
 | A history of viewed and edited *files* | Far (`A-F11`) | Adopt | done in 4.25.0, in the F9 File menu and bindable as `file-history`; F11 is eaten by terminals (§10) |
 | Copy the selected names, and full paths, to the clipboard | Far (`C-Ins`, `C-A-Ins`) | Adopt | done in 4.22.0, on Far's own keys |
@@ -116,7 +116,7 @@ behind the Adopt rows · `Keep`: rcmd already answers this its own way ·
 
 | Feature | From | Decision | Note |
 |---|---|---|---|
-| Undo for a *completed* bulk rename | TC's multi-rename | Adopt | `rename.rs:111` rolls back a batch that failed halfway; a batch that succeeded is final. Pairs with the operation-undo row in §1 and should share its log |
+| Undo for a *completed* bulk rename | TC's multi-rename | Adopt | done in 4.27.0: it leaves the same `(from, to)` record a move does, so `C-x u` puts it back. `rename.rs:111` had only ever rolled back a batch that failed halfway |
 | Column / rectangular blocks in the editor | Far, DN, TC | **Open** | pruned as `Keep` in MC-DIFF §8; argued in §9 |
 | Keyboard macro recording | Far (`C-.`, which no terminal sends - §10) | **Open** | MC-DIFF §8 kept "no macros" as a decision, calling it a feature to design rather than port. Far is the design worth copying if any is; argued in §9 |
 | Image preview in quick view and the viewer | ranger, yazi | **Open** | refused in MC-DIFF §13; argued in §9 |
