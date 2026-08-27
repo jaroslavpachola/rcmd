@@ -833,9 +833,14 @@ def test_vfslist():
         t.add(os.path.join(src, "inside.txt"), arcname="inside.txt")
 
     s = Session(play, home, args=(play, os.path.join(play, "out")))
-    s.send(b"\x18a", wait=STEP)          # C-x a with nothing open
-    check("vfslist: says when nothing is open",
-          "no archives or connections open" in s.screen())
+    s.send(b"\x18a", wait=STEP)          # C-x a with no archive open
+    scr = s.screen()
+    check("vfslist: what is mounted is always there",
+          "disk" in scr and "free" in scr, scr)
+    s.send(b"f", wait=STEP)
+    check("vfslist: a mount point is not ours to free",
+          "not rcmd's to free" in s.screen(), s.screen())
+    s.send(b"\x1b", wait=STEP)
 
     s.send(b"\x13b.tar\r", wait=STEP)   # quick search -> b.tar.gz
     s.send(b"\r", wait=STEP * 2)        # enter the archive
@@ -849,10 +854,16 @@ def test_vfslist():
 
     s.send(b"f", wait=STEP * 2)         # free it
     check("vfslist: freeing says so", "freed" in s.screen())
-    s.send(b"\x1b", wait=STEP)          # the list is empty now: Esc out
+    s.send(b"\x1b", wait=STEP)          # only the mounts are left: Esc out
     scr = s.screen()
     check("vfslist: the panel left the archive", "b.tar.gz://" not in scr)
     check("vfslist: and is local again", play in scr)
+
+    # Far's M-F1 names a side rather than taking the active panel
+    s.send(b"\x1b[11;3~", wait=STEP)
+    check("vfslist: M-F1 opens the same list",
+          "Active VFS and mounts" in s.screen(), s.screen())
+    s.send(b"\x1b", wait=STEP)
     s.quit()
     shutil.rmtree(root)
 

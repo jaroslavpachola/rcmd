@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.18.0 - 2026-08-27
+
+- **What is mounted is in the list too.** `C-x a` listed the archives
+  and connections rcmd had open and nothing else, which is half the
+  question a panel asks - the other half is where the machine's
+  filesystems are. Every mount point `df` knows is now under them, with
+  what is mounted and how much room is left, Enter goes there, and `f`
+  says a mount point is not rcmd's to free. **Alt+F1** and **Alt+F2**
+  open the same list for the **left** and the **right** panel by name
+  rather than for the active one, which is where Far keeps its drive
+  menu. `df -P` rather than `/proc/mounts` or `getmntinfo`: it is the
+  one answer that is the same on Linux and macOS, and it carries the
+  free space without a second call.
+
 ## 4.17.0 - 2026-08-27
 
 - **The other panel starts where it was left.** rcmd opened both panels

@@ -582,11 +582,16 @@ ownership, so those report that rather than pretending. Every transfer
 needs a connection of its own, so a small pool of logged-in ones is kept
 and reused: one login covers a whole session of listing and copying.
 
-**Ctrl+X A** lists what the panels are sitting on that is not the local
-filesystem - open archives and live SFTP connections, with the panel
-each one belongs to. Enter goes there (a connection is reused, so no
-second login), `f` frees one: the panel returns to a local directory and
-an idle connection is forgotten.
+**Ctrl+X A** lists everywhere a panel can go: the open archives and
+live SFTP connections, with the panel each one belongs to, and under
+them **what the machine has mounted** - every mount point `df` knows,
+with what it is and how much room is left. Enter goes there (a
+connection is reused, so no second login), `f` frees a connection or an
+archive - the panel returns to a local directory and an idle connection
+is forgotten - and a mount point says it is not rcmd's to free.
+**Alt+F1** and **Alt+F2** open the same list for the **left** and
+**right** panel by name rather than for the active one, which is where
+Far keeps its drive menu.
 
 **rar, 7z, lha/lzh, arj and cab** browse through an installed `7z`
 (p7zip - rar needs its nonfree codec) or `unrar`, read-only and streamed

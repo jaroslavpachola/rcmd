@@ -722,10 +722,14 @@ const HELP_TEXT: &[&str] = &[
     "  C-x !           panelize a command's output (F9 > Command too)",
     "  C-x j           jobs list: Enter foregrounds, c cancels; the",
     "                  status line shows aggregate background progress",
-    "  C-x a           active VFS list: the archives and connections the",
-    "                  panels are on. Enter goes there, f frees it - the",
-    "                  panel goes back to a local directory, and an idle",
-    "                  connection (no panel on it) is forgotten",
+    "  C-x a           everywhere a panel can go: the archives and",
+    "                  connections the panels are on, and under them",
+    "                  what the machine has mounted, with the room left",
+    "                  on each. Enter goes there, f frees an archive or",
+    "                  a connection - the panel goes back to a local",
+    "                  directory, and an idle connection is forgotten;",
+    "                  a mount point is not rcmd's to free. M-F1 / M-F2",
+    "                  open the list for the left / right panel by name",
     "  Overwrite prompt: both files' size and date, then MC's answers -",
     "                  this file: Overwrite / Append / Reget (resume);",
     "                  all files: All / Update (only where the source is",
@@ -2030,7 +2034,7 @@ fn draw_info(
 }
 
 /// "58.2G"-style human size (1024-based), one decimal below 100.
-fn human_size(bytes: u64) -> String {
+pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["K", "M", "G", "T"];
     if bytes < 1000 {
         return format!("{bytes}B");
@@ -4894,7 +4898,7 @@ fn draw_vfs(frame: &mut Frame, dialog: &VfsDialog) {
     let area = centered(72, (rows + 2).min(16), frame.area());
     frame.render_widget(Clear, area);
     let block = Block::bordered()
-        .title(" Active VFS ")
+        .title(" Active VFS and mounts ")
         .title_bottom(Line::from(" Enter go there · f free · Esc close ").centered())
         .style(base);
     let inner = block.inner(area);
@@ -4919,7 +4923,11 @@ fn draw_vfs(frame: &mut Frame, dialog: &VfsDialog) {
             [1] => "right".to_string(),
             _ => "both".to_string(),
         };
-        let kind = if row.remote { "sftp" } else { "arch" };
+        let kind = match row.kind {
+            crate::app::VfsKind::Remote => "sftp",
+            crate::app::VfsKind::Archive => "arch",
+            crate::app::VfsKind::Mount => "disk",
+        };
         let width = inner.width as usize;
         let label = tail(&row.label, width.saturating_sub(13));
         let text = format!(" {kind} {used:>5}  {label}");

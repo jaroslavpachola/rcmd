@@ -987,18 +987,33 @@ pub enum Dialog {
 pub struct VfsRow {
     /// What the row says.
     pub label: String,
-    /// Where Enter goes: the `sftp://` prefix, or the archive's path.
+    /// Where Enter goes: the `sftp://` prefix, the archive's path, or
+    /// the mount point.
     pub target: String,
     /// Which panels are on it right now - 0 left, 1 right.
     pub used_by: Vec<usize>,
-    /// An SFTP connection can outlive the panel that opened it; an
-    /// archive cannot, so only the first kind is ever idle.
-    pub remote: bool,
+    pub kind: VfsKind,
+}
+
+/// What a row of the list is. The first two are rcmd's own doing and
+/// can be freed; the third is the machine's, and Enter is all it
+/// answers to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum VfsKind {
+    /// An SFTP or FTP connection, which can outlive the panel that
+    /// opened it - the only kind that is ever idle.
+    Remote,
+    Archive,
+    /// A mounted filesystem, from `df`.
+    Mount,
 }
 
 pub struct VfsDialog {
     pub rows: Vec<VfsRow>,
     pub selected: usize,
+    /// Which panel Enter moves. `C-x a` targets the active one; Far's
+    /// M-F1 and M-F2 name a side outright.
+    pub panel: usize,
 }
 
 /// The confirmation step of a bulk rename - nothing has touched the
@@ -2109,6 +2124,9 @@ pub enum Action {
     Undo,
     /// F9 > Command > Synchronize: compare, then copy the differences.
     Sync,
+    /// Far's M-F1 / M-F2: the list of everywhere this *named* panel can
+    /// go - the open connections and archives, and what is mounted.
+    Drives(usize),
     Delete,
     DeletePerm,
     SelectGroup,
@@ -3233,7 +3251,7 @@ impl App {
                 label: prefix.clone(),
                 target: prefix.clone(),
                 used_by,
-                remote: true,
+                kind: VfsKind::Remote,
             });
         }
         for (index, panel) in self.panels.iter().enumerate() {
@@ -3243,7 +3261,7 @@ impl App {
             let target = archive.display().to_string();
             if let Some(row) = rows
                 .iter_mut()
-                .find(|row| !row.remote && row.target == target)
+                .find(|row| row.kind == VfsKind::Archive && row.target == target)
             {
                 row.used_by.push(index);
                 continue;
@@ -3252,7 +3270,34 @@ impl App {
                 label: format!("{target}://"),
                 target,
                 used_by: vec![index],
-                remote: false,
+                kind: VfsKind::Archive,
+            });
+        }
+        // ...and under rcmd's own doing, the machine's: what is
+        // mounted, and how much room is left on it. Far keeps this on
+        // M-F1 / M-F2 and calls it the drive menu; on a unix the drives
+        // are mount points, and the archives and connections are the
+        // rest of the same question - where can this panel go
+        for mount in rcmd_core::mounts::mounts() {
+            let room = match mount.total {
+                0 => String::new(),
+                total => format!(
+                    "  {} / {} free",
+                    crate::ui::human_size(mount.free),
+                    crate::ui::human_size(total)
+                ),
+            };
+            let used_by = (0..self.panels.len())
+                .filter(|i| {
+                    self.panels[*i].is_local()
+                        && self.panels[*i].local_cwd().starts_with(&mount.point)
+                })
+                .collect();
+            rows.push(VfsRow {
+                label: format!("{:<24} {}{room}", mount.point, mount.source),
+                target: mount.point,
+                used_by,
+                kind: VfsKind::Mount,
             });
         }
         rows
@@ -3269,7 +3314,7 @@ impl App {
                 return;
             }
         }
-        if row.remote {
+        if row.kind == VfsKind::Remote {
             self.connections.retain(|(prefix, _)| prefix != &row.target);
         }
         self.status = Some(format!(" freed {} ", row.label));
@@ -5177,14 +5222,8 @@ impl App {
             }
             Action::Repaint => self.repaint = true,
             Action::BulkRename => self.open_bulk_rename(),
-            Action::VfsList => {
-                let rows = self.vfs_rows();
-                if rows.is_empty() {
-                    self.status = Some(" no archives or connections open ".into());
-                } else {
-                    self.dialog = Some(Dialog::Vfs(VfsDialog { rows, selected: 0 }));
-                }
-            }
+            Action::VfsList => self.open_vfs_list(self.active),
+            Action::Drives(side) => self.open_vfs_list(side),
             Action::Jobs => {
                 if self.jobs.is_empty() {
                     self.status = Some(" no jobs running ".into());
@@ -5706,12 +5745,32 @@ impl App {
     /// Send the active panel to a history location: a local path or a
     /// full sftp:// or ftp:// URL (routed through the connection cache).
     fn navigate(&mut self, target: &str) {
+        self.navigate_panel(self.active, target);
+    }
+
+    /// The list of everywhere this panel could go: the connections and
+    /// archives rcmd has open, and what the machine has mounted. Far
+    /// calls the second half the drive menu and keeps it on M-F1/M-F2,
+    /// which is why those name a side rather than taking the active
+    /// one.
+    fn open_vfs_list(&mut self, panel: usize) {
+        let rows = self.vfs_rows();
+        self.dialog = Some(Dialog::Vfs(VfsDialog {
+            rows,
+            selected: 0,
+            panel,
+        }));
+    }
+
+    /// Move one named panel, which is not always the active one.
+    fn navigate_panel(&mut self, at: usize, target: &str) {
         if is_remote_url(target) {
+            self.active = at;
             self.connect_remote(target);
             return;
         }
         let path = PathBuf::from(target);
-        let panel = &mut self.panels[self.active];
+        let panel = &mut self.panels[at];
         let result = if panel.is_local() {
             panel.cd(path)
         } else {
@@ -7478,32 +7537,54 @@ impl App {
                     KeyCode::Esc => {}
                     KeyCode::Enter => {
                         if let Some(row) = d.rows.get(d.selected) {
-                            let (target, remote) = (row.target.clone(), row.remote);
-                            if remote {
+                            let (target, kind) = (row.target.clone(), row.kind);
+                            let at = d.panel;
+                            match kind {
                                 // through the cache: no second login
-                                self.connect_remote(&target);
-                            } else if let Err(err) =
-                                self.panels[self.active].open_archive(PathBuf::from(&target))
-                            {
-                                self.status = Some(format!(" {err} "));
+                                VfsKind::Remote => {
+                                    self.active = at;
+                                    self.connect_remote(&target);
+                                }
+                                VfsKind::Archive => {
+                                    if let Err(err) =
+                                        self.panels[at].open_archive(PathBuf::from(&target))
+                                    {
+                                        self.status = Some(format!(" {err} "));
+                                    }
+                                }
+                                VfsKind::Mount => self.navigate_panel(at, &target),
                             }
                         }
                     }
                     KeyCode::F(8) | KeyCode::Delete | KeyCode::Char('f' | 'F') => {
-                        if let Some(row) = d.rows.get(d.selected) {
-                            let row = VfsRow {
-                                label: row.label.clone(),
-                                target: row.target.clone(),
-                                used_by: row.used_by.clone(),
-                                remote: row.remote,
-                            };
-                            self.free_vfs(&row);
+                        let panel = d.panel;
+                        match d.rows.get(d.selected) {
+                            // a mount point is the machine's, not ours
+                            Some(row) if row.kind == VfsKind::Mount => {
+                                self.status = Some(" a mount point is not rcmd's to free ".into());
+                                self.dialog = Some(Dialog::Vfs(d));
+                                return;
+                            }
+                            Some(row) => {
+                                let row = VfsRow {
+                                    label: row.label.clone(),
+                                    target: row.target.clone(),
+                                    used_by: row.used_by.clone(),
+                                    kind: row.kind,
+                                };
+                                self.free_vfs(&row);
+                            }
+                            None => {}
                         }
                         // freeing changes the list under the cursor
                         let rows = self.vfs_rows();
                         if !rows.is_empty() {
                             let selected = d.selected.min(rows.len() - 1);
-                            self.dialog = Some(Dialog::Vfs(VfsDialog { rows, selected }));
+                            self.dialog = Some(Dialog::Vfs(VfsDialog {
+                                rows,
+                                selected,
+                                panel,
+                            }));
                         }
                     }
                     KeyCode::Up => {

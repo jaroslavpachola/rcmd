@@ -218,10 +218,11 @@ part of the record:
    them.
 
 What is next, and now the live list: panel tabs if §9 reopens them, the
-remote socket and script plugins (§7), the mount menu (§3), the named filter sets and richer select criteria (§2),
-and the sort keys (§4, done in 4.16.0). The socket is the one that
-unlocks the most, since every row that wants a key rcmd cannot spare
-(§10) is answered by letting a script have one.
+remote socket and script plugins (§7), and the named filter sets and
+richer select criteria (§2). The sort keys (§4), the mount menu (§3)
+and session persistence (§3) went in 4.16.0 to 4.18.0. The socket is
+the one that unlocks the most, since every row that wants a key rcmd
+cannot spare (§10) is answered by letting a script have one.
 
 ---
 

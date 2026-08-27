@@ -21,7 +21,9 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("f5", "copy"),
     ("f6", "move"),
     ("f7", "mkdir"),
-    ("alt+f5", "pack"), // NC/VC: pack the marked files into an archive
+    ("alt+f5", "pack"),        // NC/VC: pack the marked files into an archive
+    ("alt+f1", "drives-left"), // Far: what this panel can go to
+    ("alt+f2", "drives-right"),
     ("f8", "delete"),
     ("shift+f8", "delete-perm"),
     ("f20", "delete-perm"), // Shift+F8 on legacy terminals
@@ -225,6 +227,8 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "pack" => Action::Pack,
         "undo" => Action::Undo,
         "synchronize" => Action::Sync,
+        "drives-left" => Action::Drives(0),
+        "drives-right" => Action::Drives(1),
         "mkdir" => Action::Mkdir,
         "delete" => Action::Delete,
         "delete-perm" => Action::DeletePerm,
