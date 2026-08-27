@@ -210,6 +210,7 @@ exactly where it was.
 | Ctrl+X d | Compare directories (marks differences in both panels) |
 | Ctrl+X m | Put back the marks the last operation spent |
 | Ctrl+X Space | Size every directory in the panel, one after the other |
+| Ctrl+X 0…9 | The ten numbered places: go there, or set an empty one here |
 | Ctrl+Ins / Ctrl+Alt+Ins | Copy the marked names / full paths to the clipboard |
 | Ctrl+F1 / Ctrl+F2 | Hide the left / right panel, and give the other the screen |
 | Ctrl+X ! | Panelize a command's output |
@@ -494,6 +495,18 @@ Alt+←/Alt+→ walk back and forward browser-style (sftp:// locations
 reconnect through the connection cache), Alt+Shift+H lists the whole
 history with `*` on where the panel is now and Enter moving the cursor
 there, Alt+↑ opens the hotlist.
+
+**Ctrl+X 0…9 are Far's folder shortcuts**, and they are hotlist
+entries whose label is that digit: `Ctrl+X 3` goes to the one labelled
+`3`, and if there is no such entry it makes one here and says so. There
+is nothing new to store or forget - the hotlist already persists,
+reorders and renames, and a shortcut is a hotlist entry with a very
+short name.
+
+**Recent files** (F9 → File) is what the viewer and the editor have
+opened, newest first, kept between sessions - the one history you want
+right after closing a screen. Enter puts the panel on the file, cursor
+and all.
 
 **The hotlist remembers where you go.** Under your own entries it lists
 everywhere rcmd has been, ranked the way zoxide ranks directories -

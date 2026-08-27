@@ -938,6 +938,54 @@ def test_archive_write():
     shutil.rmtree(root)
 
 
+def test_shortcutsandfiles():
+    """C-x <digit> is a numbered place, and the viewed/edited files are
+    a list that survives the session."""
+    root, play, home = sandbox()
+    away = os.path.join(play, "away")
+    os.makedirs(away)
+    open(os.path.join(play, "seen.txt"), "w").write("read me\n")
+
+    s = Session(play, home)
+    env = dict(os.environ, HOME=home, XDG_RUNTIME_DIR=home)
+    env.pop("XDG_CONFIG_HOME", None)
+
+    def remote(line):
+        return subprocess.run([BIN, "--remote", line], env=env,
+                              capture_output=True, text=True, timeout=10)
+
+    # an empty slot takes this directory
+    s.send(b"\x181", wait=STEP)
+    check("shortcuts: an empty slot is set here",
+          wait_for(s, "shortcut 1 is now " + play), s.screen())
+    s.send(b"\x13away\r", wait=STEP)
+    s.send(b"\r", wait=STEP)
+    check("shortcuts: we walked away", wait_for(s, away))
+    s.send(b"\x181", wait=STEP)
+    out = remote("pwd")
+    check("shortcuts: and the slot brought us back", out.stdout.strip() == play,
+          out.stdout + out.stderr)
+
+    # F3 on a file puts it in the viewed/edited list
+    s.send(b"\x13seen.txt\r", wait=STEP)
+    s.send(F3, wait=STEP * 2)
+    s.send(b"q", wait=STEP)
+    remote("action file-history")
+    check("shortcuts: the file is in the list",
+          wait_for(s, "Viewed and edited") and "seen.txt" in s.screen(), s.screen())
+    s.send(b"\x1b", wait=STEP)
+    s.quit()
+
+    # ...and it is still there next session
+    s = Session(play, home)
+    remote("action file-history")
+    check("shortcuts: the list survived the session",
+          wait_for(s, "seen.txt"), s.screen())
+    s.send(b"\x1b", wait=STEP)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_checksums():
     """A sha256sum file written from the panel, and checked back."""
     root, play, home = sandbox()
@@ -5615,6 +5663,7 @@ def main():
         test_pack,
         test_undo,
         test_sync,
+        test_shortcutsandfiles,
         test_checksums,
         test_wipeapply,
         test_panelconveniences,

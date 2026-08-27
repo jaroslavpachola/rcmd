@@ -584,6 +584,9 @@ const HELP_TEXT: &[&str] = &[
     "                  C-x spc does every directory in the panel, one",
     "                  after another",
     "  C-x m           put back the marks the last operation spent",
+    "  C-x 0-9         the ten numbered places: go to the hotlist entry",
+    "                  labelled with that digit, or set an empty slot",
+    "                  to this directory",
     "  C-Ins           the marked names on the clipboard; C-A-Ins their",
     "                  whole paths (the clipboard file always, a desktop",
     "                  clipboard where a tool for one is installed)",
@@ -1158,6 +1161,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     frame,
                     " Command history ",
                     app.cmdline.history(),
+                    *selected,
+                    None,
+                )
+            }
+            Dialog::FileHistory(selected) => {
+                dialog_rows = draw_history(
+                    frame,
+                    " Viewed and edited ",
+                    app.file_history(),
                     *selected,
                     None,
                 )

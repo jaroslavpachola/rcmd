@@ -240,6 +240,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "dir-size-all" => Action::DirSizeAll,
         "wipe" => Action::Wipe,
         "apply" => Action::Apply,
+        "file-history" => Action::FileHistory,
         "checksum" => Action::Checksum,
         "verify-checksum" => Action::VerifyChecksum,
         "hide-left" => Action::HidePanel(0),

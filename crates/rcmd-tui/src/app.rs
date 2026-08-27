@@ -907,6 +907,9 @@ fn focus_button(dialog: &mut Dialog, c: char) -> bool {
 /// How many answers a dialog field remembers.
 const FIELD_HISTORY: usize = 30;
 
+/// How many viewed/edited files are remembered.
+const FILE_HISTORY: usize = 60;
+
 /// One drawn row of the hotlist: the way back up, a group to walk into,
 /// a place to go, or one of rcmd's own recent directories.
 pub enum HotRow {
@@ -964,6 +967,8 @@ pub enum Dialog {
     Learn(Box<LearnDialog>),
     /// C-x d: how to compare the two listings, with the row it is on.
     Compare(usize),
+    /// The viewed/edited file history; the payload is the selected row.
+    FileHistory(usize),
     /// F9 > Command > Synchronize: the plan the comparison produced.
     Sync(Box<SyncDialog>),
     /// `C-x f`: the named filter sets and which are on.
@@ -2188,6 +2193,11 @@ pub enum Action {
     Wipe,
     /// C-g: run one command per marked file.
     Apply,
+    /// `C-x <digit>`: the ten numbered places, which are hotlist
+    /// entries whose label is that digit.
+    Shortcut(u8),
+    /// The files opened in the viewer or the editor, newest first.
+    FileHistory,
     /// Write a sha256sum file for what is marked.
     Checksum,
     /// Check the sha256sum file under the cursor.
@@ -2295,10 +2305,14 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Ma&ke directory...", "F7", Action::Mkdir)),
             Some(("&Delete (trash)", "F8", Action::Delete)),
             Some(("Delete &permanently", "S-F8", Action::DeletePerm)),
-            Some(("&Wipe (overwrite, then delete)", "M-Del", Action::Wipe)),
+            // no letters left in either label that some entry above or
+            // a menu title has not already taken
+            Some(("Wipe (overwrite, then delete)", "M-Del", Action::Wipe)),
             Some(("App&ly a command to each...", "C-g", Action::Apply)),
             Some(("Checksum file (sha256)...", "", Action::Checksum)),
             Some(("Check the checksum file", "", Action::VerifyChecksum)),
+            None,
+            Some(("Recent files (viewed, edited)", "", Action::FileHistory)),
             None,
             Some(("&Select group...", "+", Action::SelectGroup)),
             Some(("&Unselect group...", "-", Action::UnselectGroup)),
@@ -2760,6 +2774,8 @@ pub struct App {
     compare: Option<CompareState>,
     /// Which `[[filter]]` sets each panel is under, in config order.
     filter_sets_on: [Vec<bool>; 2],
+    /// Files the viewer and the editor have opened, newest last.
+    file_history: Vec<String>,
     /// Directories still waiting to be sized, when a whole listing was
     /// asked for.
     du_queue: Vec<std::ffi::OsString>,
@@ -2934,6 +2950,7 @@ impl App {
             jobs: Vec::new(),
             undo: None,
             filter_sets_on: [Vec::new(), Vec::new()],
+            file_history: state::load().0.file_history,
             du_queue: Vec::new(),
             hidden: None,
             marks_before: [None, None],
@@ -5181,6 +5198,8 @@ impl App {
             Action::HidePanel(at) => self.hide_panel(at),
             Action::Wipe => self.open_wipe(),
             Action::Apply => self.open_apply(),
+            Action::Shortcut(digit) => self.shortcut(digit),
+            Action::FileHistory => self.open_file_history(),
             Action::Checksum => self.open_checksum(),
             Action::VerifyChecksum => self.verify_checksum(),
             Action::Delete => self.open_delete(false),
@@ -5924,6 +5943,10 @@ impl App {
             return;
         }
         let name = entry.name.clone();
+        if self.panels[self.active].is_local() {
+            let path = self.panels[self.active].local_cwd().join(&name);
+            self.note_file(&path);
+        }
         let Some((source, source_title, mut temps)) = self.fetch_view_source(&name) else {
             return;
         };
@@ -6253,6 +6276,14 @@ impl App {
         let editor = std::env::var("VISUAL")
             .or_else(|_| std::env::var("EDITOR"))
             .unwrap_or_else(|_| "vi".to_string());
+        if panel.is_local() {
+            let path = panel.local_cwd().join(&entry.name);
+            self.note_file(&path);
+        }
+        let panel = &self.panels[self.active];
+        let Some(entry) = panel.selected() else {
+            return;
+        };
         if panel.is_remote() {
             // edit a scratch copy; upload it back if the editor saved
             let name = entry.name.clone();
@@ -7990,6 +8021,31 @@ impl App {
                     _ => self.dialog = Some(Dialog::Sync(d)),
                 }
             }
+            Dialog::FileHistory(mut row) => {
+                let files = self.file_history.clone();
+                let last = files.len().saturating_sub(1);
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => {
+                        // newest first on screen, newest last in the list
+                        if let Some(path) = files.get(last.saturating_sub(row)) {
+                            let path = PathBuf::from(path);
+                            self.go_to_file(&path);
+                        }
+                    }
+                    KeyCode::Up => {
+                        row = row.saturating_sub(1);
+                        self.dialog = Some(Dialog::FileHistory(row));
+                    }
+                    KeyCode::Down => {
+                        row = (row + 1).min(last);
+                        self.dialog = Some(Dialog::FileHistory(row));
+                    }
+                    KeyCode::Home => self.dialog = Some(Dialog::FileHistory(0)),
+                    KeyCode::End => self.dialog = Some(Dialog::FileHistory(last)),
+                    _ => self.dialog = Some(Dialog::FileHistory(row)),
+                }
+            }
             Dialog::Filters(mut d) => {
                 let last = d.on.len().saturating_sub(1);
                 match key.code {
@@ -9348,6 +9404,86 @@ impl App {
             action: InputAction::Apply,
             hist: None,
         }));
+    }
+
+    /// The viewed/edited list, for the dialog to draw.
+    pub fn file_history(&self) -> &[String] {
+        &self.file_history
+    }
+
+    /// Remember a file the viewer or the editor opened. The list is
+    /// the state file's, so it is still there next session.
+    fn note_file(&mut self, path: &Path) {
+        let path = path.display().to_string();
+        self.file_history.retain(|old| old != &path);
+        self.file_history.push(path.clone());
+        let over = self.file_history.len().saturating_sub(FILE_HISTORY);
+        self.file_history.drain(..over);
+        let keep = self.file_history.clone();
+        let _ = state::update(move |s| s.file_history = keep);
+    }
+
+    /// Far's M-F11: what has been viewed and edited, newest first.
+    /// Enter puts the panel on it, with the cursor on the file.
+    fn open_file_history(&mut self) {
+        if self.file_history.is_empty() {
+            self.status = Some(" nothing viewed or edited yet ".into());
+            return;
+        }
+        self.dialog = Some(Dialog::FileHistory(0));
+    }
+
+    /// Enter on one of those rows: go to the file, wherever it is.
+    fn go_to_file(&mut self, path: &Path) {
+        let Some(dir) = path.parent() else { return };
+        let panel = &mut self.panels[self.active];
+        let moved = match panel.is_remote() {
+            true => panel.to_local(dir.to_path_buf()),
+            false => panel.cd(dir.to_path_buf()),
+        };
+        if let Err(err) = moved {
+            self.status = Some(format!(" {err} "));
+            return;
+        }
+        if let Some(name) = path.file_name() {
+            let panel = &mut self.panels[self.active];
+            if let Some(at) = panel.entries.iter().position(|e| e.name == name) {
+                panel.cursor = at;
+            }
+        }
+    }
+
+    /// Far's folder shortcuts, as hotlist entries: `C-x 3` goes to the
+    /// one labelled `3`, and where there is none it makes one here.
+    /// Ten numbered places you never have to look at a list for, and
+    /// nothing new to store - the hotlist already persists, reorders
+    /// and renames, and a shortcut is a hotlist entry with a short
+    /// name.
+    fn shortcut(&mut self, digit: u8) {
+        let label = digit.to_string();
+        let found = self
+            .config
+            .hotlist
+            .iter()
+            .find(|entry| !entry.is_group() && entry.label == label)
+            .map(|entry| entry.path.clone());
+        match found {
+            Some(path) => self.hotlist_go(&path),
+            None => {
+                let panel = &self.panels[self.active];
+                let path = match panel.is_remote() {
+                    true => panel.display_path(),
+                    false => panel.local_cwd().display().to_string(),
+                };
+                self.config.hotlist.push(HotEntry {
+                    label,
+                    path: path.clone(),
+                    entries: Vec::new(),
+                });
+                self.save_hotlist();
+                self.status = Some(format!(" shortcut {digit} is now {path} "));
+            }
+        }
     }
 
     /// Write a `sha256sum`-format file for what is marked - the
@@ -10829,6 +10965,9 @@ impl App {
                 KeyCode::Char('f' | 'F') => self.run_action(Action::Filters),
                 KeyCode::Char('m' | 'M') => self.run_action(Action::RestoreMarks),
                 KeyCode::Char(' ') => self.run_action(Action::DirSizeAll),
+                KeyCode::Char(digit @ '0'..='9') => {
+                    self.run_action(Action::Shortcut(digit as u8 - b'0'))
+                }
                 KeyCode::Char('a' | 'A') => self.run_action(Action::VfsList),
                 KeyCode::Char('!') => self.run_action(Action::Panelize),
                 _ => {}
@@ -10841,8 +10980,8 @@ impl App {
                 " C-x  (d = compare, q = quick view, i = info, c = chmod, \
                  o = chown, s = symlink, j = jobs, a = active VFS, \
                  u = undo, f = filter sets, m = restore marks, \
-                 space = size every directory, ! = panelize, \
-                 t/p = paste tags/path) "
+                 space = size every directory, 0-9 = the numbered \
+                 places, ! = panelize, t/p = paste tags/path) "
                     .into(),
             );
             return;

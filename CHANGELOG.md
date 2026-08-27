@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.25.0 - 2026-08-27
+
+- **`C-x 0`..`C-x 9` are Far's folder shortcuts**, spelled as hotlist
+  entries whose label is that digit: `C-x 3` goes to the one labelled
+  `3`, and where there is none it makes one here and says so. Nothing
+  new to store, because the hotlist already persists, reorders and
+  renames - a shortcut is a hotlist entry with a very short name. (Far
+  keeps these on Ctrl with a digit, which no terminal sends.)
+- **Recent files** (F9 > File): what the viewer and the editor have
+  opened, newest first, kept in the state file so it survives the
+  session. Enter puts the panel on the file with the cursor on it. Far
+  keeps it on Alt+F11, which terminals eat.
+
 ## 4.24.0 - 2026-08-27
 
 - **Verify on the copy form.** A new checkbox reads every copy back and

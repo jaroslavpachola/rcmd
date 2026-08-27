@@ -111,6 +111,11 @@ pub struct State {
     /// worth something on the first keystroke.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub other_dir: Option<String>,
+    /// Files opened in the viewer or the editor, newest last. Far
+    /// keeps this on Alt+F11 and it is the one history you want right
+    /// after closing a screen.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub file_history: Vec<String>,
     /// Where rcmd has been, and how often and how recently. The
     /// hotlist's recent half is ranked by this instead of by arrival
     /// order, so the directory you actually work in rises to the top
