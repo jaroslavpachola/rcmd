@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.15.0 - 2026-08-27
+
+- **The hotlist remembers where you go, and ranks it.** Its recent half
+  was the two panels' in-session history in arrival order, which was
+  gone the moment rcmd closed. It is now a visit log kept in the state
+  file and ranked by frecency, the way zoxide ranks directories: how
+  often, weighted by how recently, so three visits this morning beat
+  ten last year and neither is forgotten. The log is merged rather than
+  overwritten on the way out, so two instances both keep their counts,
+  and it is capped at 200 directories - the lowest-scoring go first.
+- **Ctrl+S narrows the hotlist** by what you type, over your own
+  entries and the visited ones alike. Backspace edits, Esc drops the
+  filter and leaves the list up. While it is open the letters are the
+  search rather than the commands, which is the bargain the panel's own
+  quick search makes.
+
 ## 4.14.0 - 2026-08-27
 
 - **Synchronize directories** (F9 > Command). rcmd could compare two

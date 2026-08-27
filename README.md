@@ -198,7 +198,7 @@ exactly where it was.
 | Ctrl+S, Alt+S | Quick search: matches anywhere in the name, `*`/`?` glob, smartcase; Ctrl+S or ↓/↑ walks the matches |
 | Ctrl+F | Filter shown files by glob (`*` or empty clears) |
 | Alt+letter | In a dialog: press the button whose underlined letter it is |
-| Ctrl+\ | Directory hotlist: Enter goes (or walks into a group), `a` adds this directory, `g` makes a group, `e` renames, `m` moves an entry into another group, `d` drops, Alt+↑/↓ reorders |
+| Ctrl+\ | Directory hotlist: Enter goes (or walks into a group), `Ctrl+S` narrows the list by what you type, `a` adds this directory, `g` makes a group, `e` renames, `m` moves an entry into another group, `d` drops, Alt+↑/↓ reorders |
 | Alt+F7 | Find file (glob + optional content); results panelized |
 | Alt+← / Alt+→ | Directory history back / forward (per panel) |
 | Alt+Shift+H | Directory history as a list; Enter goes there |
@@ -430,6 +430,15 @@ Alt+←/Alt+→ walk back and forward browser-style (sftp:// locations
 reconnect through the connection cache), Alt+Shift+H lists the whole
 history with `*` on where the panel is now and Enter moving the cursor
 there, Alt+↑ opens the hotlist.
+
+**The hotlist remembers where you go.** Under your own entries it lists
+everywhere rcmd has been, ranked the way zoxide ranks directories -
+how often you went there, weighted by how recently, so three visits
+this morning beat ten last year and neither is forgotten - and the log
+is kept in the state file, so it is still there next session. **Ctrl+S**
+narrows the whole list by what you type (Backspace edits it, Esc drops
+it), which on a list already sorted by where you actually work is one
+key and three letters to anywhere.
 
 **Quick view** (Ctrl+X q): the other panel becomes a live preview of
 the file under the cursor, updating as you move. It uses the viewer's

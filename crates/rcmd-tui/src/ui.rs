@@ -539,7 +539,11 @@ const HELP_TEXT: &[&str] = &[
     "                  (a shell pattern is a list: '*.c,*.h' is either",
     "                  of them, and '*.c,*.h|*_test.*' takes the second",
     "                  list back out again)",
-    "  C-\\             directory hotlist (Enter cd, a add, d delete)",
+    "  C-\\             directory hotlist (Enter cd, a add, d delete).",
+    "                  Under your own entries is everywhere rcmd has",
+    "                  been, ranked by how often you go there weighted",
+    "                  by how recently - and kept between sessions.",
+    "                  C-s narrows the list by what you type",
     "  M-F7            find file: where to start, the name, and the text",
     "                  to look for inside - with whole words, case, a",
     "                  regular expression, every codepage, skip hidden,",
@@ -4636,9 +4640,14 @@ fn draw_hotlist(
         true => " Directory hotlist ".to_string(),
         false => format!(" Hotlist: {} ", app.hotlist_group_path(d)),
     };
-    let hint = match &d.moving {
-        Some(entry) => format!(" moving \"{}\" - m puts it here ", entry.label),
-        None => " Enter go · a add · g group · e rename · m move · d drop ".into(),
+    let hint = match (&d.moving, &d.filter) {
+        (Some(entry), _) => format!(" moving \"{}\" - m puts it here ", entry.label),
+        // while the filter is open it is what the bottom edge is for:
+        // the letters are going into it, not into the commands
+        (None, Some(needle)) => format!(" search: {needle}_  (Esc clears) "),
+        (None, None) => {
+            " Enter go · C-s search · a add · g group · e rename · m move · d drop ".into()
+        }
     };
     let block = Block::bordered()
         .title(where_)

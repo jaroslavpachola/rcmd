@@ -114,12 +114,33 @@ fn run(
     let sort_key = config::sort_key_name(panel.sort_key).to_string();
     let listing = config::list_mode_name(panel.list_mode).to_string();
     let history: Vec<String> = app.cmdline.history().to_vec();
+    // the visit log is merged rather than written: another instance has
+    // been going places too, and its counts are as real as ours
+    let visits: Vec<state::Visit> = app.visit_log().to_vec();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     if let Err(err) = state::update(|s| {
         s.show_hidden = Some(show_hidden);
         s.sort_key = Some(sort_key);
         s.sort_reverse = Some(sort_reverse);
         s.listing = Some(listing);
         s.cmd_history = history;
+        for visit in &visits {
+            match s.visits.iter().any(|v| v.path == visit.path) {
+                // ours already includes what was on disk when we
+                // started, so a path we know is ours to state outright
+                true => {
+                    if let Some(theirs) = s.visits.iter_mut().find(|v| v.path == visit.path) {
+                        theirs.count = theirs.count.max(visit.count);
+                        theirs.last = theirs.last.max(visit.last);
+                    }
+                }
+                false => state::merge_visit(&mut s.visits, &visit.path, visit.count, visit.last),
+            }
+        }
+        state::trim_visits(&mut s.visits, now);
     }) {
         eprintln!("rcmd: could not save state: {err}");
     }

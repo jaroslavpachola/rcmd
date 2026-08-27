@@ -79,7 +79,7 @@ behind the Adopt rows · `Keep`: rcmd already answers this its own way ·
 | Feature | From | Decision | Note |
 |---|---|---|---|
 | **Panel tabs** | TC, Krusader, DC, nnn's contexts | **Open** | refused in MC-DIFF §13; argued in §9 |
-| **Frecency-ranked fuzzy directory jump** | zoxide, fzf | Adopt | recent directories sit in the hotlist in visit order. Ranking them by frequency-and-recency and matching fragments turns `C-\` from a list you browse into one key and three letters. Cheap, and it changes the feel of ordinary navigation more than anything else here |
+| **Frecency-ranked fuzzy directory jump** | zoxide, fzf | Adopt | done in 4.15.0, inside the hotlist rather than on a key of its own: its recent half is a persistent visit log ranked by frecency, and `C-s` narrows the whole list. Until then, recent directories sat in the hotlist in visit order and died with the session. Ranking them by frequency-and-recency and matching fragments turns `C-\` from a list you browse into one key and three letters. Cheap, and it changes the feel of ordinary navigation more than anything else here |
 | **Session persistence**: both panels' directory and listing mode, and the open screens, restored on start | DN's saved desktop | Adopt | `state.rs` carries thirty-odd keys and not one of them is where the panels were |
 | Drive and mount menu: mount points with free space, and the open VFS sessions in the same list | Far (`A-F1`/`A-F2`), DN | Adopt | `C-x a` already lists the VFS half. Nothing in the tree reads `/proc/mounts` |
 | Folder shortcuts on ten numbered slots | Far (`C-0`..`C-9`) | Adopt | the hotlist is a list you browse; shortcuts are muscle memory, and the two do not replace each other. Ctrl with a digit mostly does not reach a terminal program (§10), so the slots need a prefix - `C-x 0`..`C-x 9` is free and already the shape of rcmd's other chords |
@@ -197,8 +197,11 @@ that did it.
 
 ## 12. Suggested order
 
-The first five, in this order, on the argument that each is either a
-hole in the existing feature set or disproportionately cheap:
+The first five, in this order, on the argument that each was either a
+hole in the existing feature set or disproportionately cheap. All five
+shipped, between 4.11.0 and 4.15.0 on 2026-08-27, and are struck
+through here rather than deleted - the order they were picked in is
+part of the record:
 
 1. ~~**Directory synchronize**~~ - shipped in 4.14.0. Half of it was
    already computed by `compare.rs`; the other half was the plan, and
@@ -210,13 +213,17 @@ hole in the existing feature set or disproportionately cheap:
 4. ~~**Undo for file operations**~~ - shipped in 4.13.0 for moves and
    renames, which is the reversible half; restoring a trashed file from
    inside rcmd is the rest of the row and is still open.
-5. **Frecency jump** (§3) - the cheapest thing here that changes how the
-   program feels every day.
+5. ~~**Frecency jump**~~ - shipped in 4.15.0. broot's fuzzy *tree* is
+   the half still open: this narrows a list of places, not a tree of
+   them.
 
-Then, in a second pass: panel tabs if §9 reopens them, the remote socket
-and script plugins (§7), session persistence and the mount menu (§3),
-the named filter sets and richer select criteria (§2), and the sort keys
-(§4).
+What is next, and now the live list: panel tabs if §9 reopens them, the
+remote socket and script plugins (§7), session persistence and the
+mount menu (§3), the named filter sets and richer select criteria (§2),
+and the sort keys (§4). Of those, the sort keys are the cheapest - the
+columns are already parsed - and the socket is the one that unlocks the
+most, since every row that wants a key rcmd cannot spare (§10) is
+answered by letting a script have one.
 
 ---
 

@@ -914,6 +914,10 @@ pub struct HotlistDialog {
     /// mc calls this cut-and-insert; it is the only way to move an
     /// entry that is already somewhere else.
     pub moving: Option<HotEntry>,
+    /// `C-s`: what has been typed to narrow the list. `None` is not
+    /// filtering at all, which is what leaves the letter commands
+    /// (a, g, e, m, d) meaning what they mean.
+    pub filter: Option<String>,
 }
 
 impl HotlistDialog {
@@ -922,6 +926,7 @@ impl HotlistDialog {
             group,
             row,
             moving: None,
+            filter: None,
         })
     }
 }
@@ -2649,6 +2654,13 @@ pub struct App {
     remote_edit: Option<RemoteEdit>,
     du: Option<DuJob>,
     compare: Option<CompareState>,
+    /// Where the panels have been, this session and every one before:
+    /// the hotlist's recent half is ranked by it. Merged back into the
+    /// state file on the way out.
+    visits: Vec<state::Visit>,
+    /// What each panel was showing when its last visit was counted, so
+    /// one cd counts once however many redraws follow it.
+    visited: [String; 2],
     /// The comparison now running was asked for by Synchronize, so its
     /// result opens the plan instead of only marking the panels.
     compare_then_sync: bool,
@@ -2795,6 +2807,8 @@ impl App {
             dialog: None,
             jobs: Vec::new(),
             undo: None,
+            visits: state::load().0.visits,
+            visited: [String::new(), String::new()],
             compare_then_sync: false,
             screens: Vec::new(),
             current: None,
@@ -2874,6 +2888,7 @@ impl App {
             if self.standalone && self.screens.is_empty() {
                 break;
             }
+            self.note_visits();
             self.drain_job();
             self.drain_find();
             self.drain_connect();
@@ -7842,9 +7857,55 @@ impl App {
             Dialog::Hotlist(mut d) => {
                 let rows = self.hotlist_rows(&d);
                 let alt = key.modifiers.contains(KeyModifiers::ALT);
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                 let last = rows.len().saturating_sub(1);
+                // while a filter is being typed the letters are the
+                // filter, not the commands: the same bargain the panel's
+                // own quick search makes
+                if d.filter.is_some() {
+                    match key.code {
+                        KeyCode::Char(c) if !ctrl && !alt => {
+                            if let Some(f) = d.filter.as_mut() {
+                                f.push(c);
+                            }
+                            d.row = 0;
+                            self.dialog = Some(Dialog::Hotlist(d));
+                            return;
+                        }
+                        KeyCode::Backspace => {
+                            match d.filter.as_mut() {
+                                Some(f) if !f.is_empty() => {
+                                    f.pop();
+                                }
+                                // backspacing past the start leaves the
+                                // field rather than closing the dialog
+                                _ => d.filter = None,
+                            }
+                            d.row = 0;
+                            self.dialog = Some(Dialog::Hotlist(d));
+                            return;
+                        }
+                        // the first Esc drops the filter, a second one
+                        // closes the hotlist
+                        KeyCode::Esc => {
+                            d.filter = None;
+                            d.row = 0;
+                            self.dialog = Some(Dialog::Hotlist(d));
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
                 match key.code {
                     KeyCode::Esc => {}
+                    // C-s: narrow the list by what you type, which on a
+                    // list ranked by where you actually go is the whole
+                    // of "take me there"
+                    KeyCode::Char('s') if ctrl => {
+                        d.filter = Some(String::new());
+                        d.row = 0;
+                        self.dialog = Some(Dialog::Hotlist(d));
+                    }
                     KeyCode::Up if alt => {
                         self.hotlist_reorder(&mut d, &rows, false);
                         self.dialog = Some(Dialog::Hotlist(d));
@@ -8435,28 +8496,61 @@ impl App {
         }
     }
 
-    /// Recent directories for the hotlist dialog: both panels'
-    /// histories merged (active panel first), deduped, pinned entries
-    /// and the place we're standing excluded, capped.
-    pub fn hotlist_recent(&self) -> Vec<String> {
-        let here = self.panels[self.active].display_path();
-        let mut out: Vec<String> = Vec::new();
-        let locations = self.panels[self.active]
-            .recent_locations()
-            .chain(self.panels[self.active ^ 1].recent_locations());
-        for loc in locations {
-            if loc == here
-                || out.iter().any(|x| x == loc)
-                || HotEntry::holds(&self.config.hotlist, loc)
-            {
+    /// Note where the panels are now. A directory counts once per
+    /// arrival, not once per redraw, which is what `visited` is for.
+    fn note_visits(&mut self) {
+        let now = Self::unix_now();
+        for at in 0..2 {
+            let here = self.panels[at].display_path();
+            if here == self.visited[at] || self.panels[at].is_loading() {
                 continue;
             }
-            out.push(loc.to_string());
-            if out.len() == 15 {
-                break;
-            }
+            self.visited[at] = here.clone();
+            state::merge_visit(&mut self.visits, &here, 1, now);
+            state::trim_visits(&mut self.visits, now);
         }
-        out
+    }
+
+    /// Seconds since the epoch; 0 if the clock is before it, which no
+    /// ranking has to survive gracefully.
+    fn unix_now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    }
+
+    /// This session's visit log, for the exit-time merge into the state
+    /// file.
+    pub fn visit_log(&self) -> &[state::Visit] {
+        &self.visits
+    }
+
+    /// Recent directories for the hotlist dialog: everywhere rcmd has
+    /// been, ranked by frecency - how often, weighted by how recently -
+    /// rather than by arrival order, so the directory that is actually
+    /// yours is at the top and is still there next session. Pinned
+    /// entries and the place we are standing are left out, and the list
+    /// is capped.
+    pub fn hotlist_recent(&self) -> Vec<String> {
+        let here = self.panels[self.active].display_path();
+        let now = Self::unix_now();
+        let mut ranked: Vec<(f64, &str)> = self
+            .visits
+            .iter()
+            .filter(|v| v.path != here && !HotEntry::holds(&self.config.hotlist, &v.path))
+            .map(|v| (state::frecency(v, now), v.path.as_str()))
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.cmp(b.1))
+        });
+        ranked
+            .into_iter()
+            .take(15)
+            .map(|(_, path)| path.to_string())
+            .collect()
     }
 
     /// Hotlist edits write through to the state file like the options
@@ -8516,6 +8610,20 @@ impl App {
         }
         if d.group.is_empty() {
             rows.extend(self.hotlist_recent().into_iter().map(HotRow::Recent));
+        }
+        // C-s narrows what is on screen. The Up row stays: it is how
+        // you get out of a group, not a place to go
+        if let Some(needle) = d.filter.as_ref().filter(|n| !n.is_empty()) {
+            let needle = needle.to_lowercase();
+            let group = self.hot_group(&d.group);
+            rows.retain(|row| match row {
+                HotRow::Up => true,
+                HotRow::Recent(loc) => loc.to_lowercase().contains(&needle),
+                HotRow::Entry(at) | HotRow::Group(at) => group.get(*at).is_some_and(|e| {
+                    e.label.to_lowercase().contains(&needle)
+                        || e.path.to_lowercase().contains(&needle)
+                }),
+            });
         }
         rows
     }

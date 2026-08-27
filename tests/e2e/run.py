@@ -923,6 +923,47 @@ def test_archive_write():
     shutil.rmtree(root)
 
 
+def test_visits():
+    """Where rcmd has been is remembered between sessions, and the
+    hotlist's recent half is ranked by how often you go there."""
+    root, play, home = sandbox()
+    for name in ("often", "once"):
+        os.makedirs(os.path.join(play, name))
+
+    s = Session(play, home, args=(play, play))
+    s.send(b"\x13once\r", wait=STEP)
+    s.send(b"\r", wait=STEP)                   # into once
+    s.send(BACKSPACE, wait=STEP)
+    for _ in range(2):                         # and twice into often
+        s.send(b"\x13often\r", wait=STEP)
+        s.send(b"\r", wait=STEP)
+        s.send(BACKSPACE, wait=STEP)
+    s.quit()
+
+    # a new session, which has only the state file to go on
+    s = Session(play, home, args=(play, play))
+    s.send(ALT_UP, wait=STEP * 2)
+    screen = s.screen()
+    check("visits: the hotlist offers where we have been",
+          "/often" in screen and "/once" in screen, screen)
+    lines = screen.splitlines()
+    often = next(i for i, l in enumerate(lines) if "/often" in l)
+    once = next(i for i, l in enumerate(lines) if "/once" in l)
+    check("visits: the busier one is higher", often < once,
+          f"often at {often}, once at {once}")
+
+    # C-s narrows the list by what you type, and Enter goes there
+    s.send(b"\x13", wait=STEP)
+    s.send(b"onc", wait=STEP)
+    check("visits: the search field shows what was typed",
+          "search: onc" in s.screen(), s.screen())
+    s.send(b"\r", wait=STEP * 2)
+    check("visits: Enter went to the one row left",
+          wait_for(s, os.path.join(play, "once")))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_sync():
     """F9 > Command > Synchronize: compare, then a plan that says which
     way each difference goes, and copies it."""
@@ -1645,7 +1686,10 @@ def test_history():
     # recent directories (R3): visited dirs listed below the pinned ones
     check("history: hotlist lists recent dirs", "Recent:" in s.screen()
           and play + "/two" in s.screen())
-    s.send(b"\r", wait=STEP)           # first recent row = most recent: two
+    # the recent half is ranked by frecency now, not by arrival, so the
+    # way to a particular one is C-s and its name
+    s.send(b"\x13two", wait=STEP)
+    s.send(b"\r", wait=STEP)
     check("history: recent entry cds", play + "/two" in s.screen()
           and "Directory hotlist" not in s.screen())
     s.quit()
@@ -5242,6 +5286,7 @@ def main():
         test_pack,
         test_undo,
         test_sync,
+        test_visits,
         test_ftp,
         test_find,
         test_compare,

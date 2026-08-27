@@ -103,6 +103,72 @@ pub struct State {
     /// M-n walk them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub field_history: BTreeMap<String, Vec<String>>,
+    /// Where rcmd has been, and how often and how recently. The
+    /// hotlist's recent half is ranked by this instead of by arrival
+    /// order, so the directory you actually work in rises to the top
+    /// and is still there next session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub visits: Vec<Visit>,
+}
+
+/// One directory in the visit log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Visit {
+    pub path: String,
+    pub count: u32,
+    /// Unix seconds of the last visit.
+    pub last: i64,
+}
+
+/// How many directories the log keeps. Beyond this the lowest-scoring
+/// go, which is the point of scoring them.
+pub const VISITS: usize = 200;
+
+/// zoxide's frecency, on the same four steps: a visit is worth more the
+/// more recently it happened, so ten visits last year lose to three
+/// this morning without either being forgotten.
+pub fn frecency(visit: &Visit, now: i64) -> f64 {
+    let age = (now - visit.last).max(0);
+    let weight = if age < 3_600 {
+        4.0
+    } else if age < 86_400 {
+        2.0
+    } else if age < 604_800 {
+        0.5
+    } else {
+        0.25
+    };
+    f64::from(visit.count) * weight
+}
+
+/// Fold one visit into a log: same path, one more visit; new path, a
+/// new row. Used both while running and when merging this session's
+/// log into whatever is on disk, which is why it takes a count.
+pub fn merge_visit(log: &mut Vec<Visit>, path: &str, count: u32, last: i64) {
+    match log.iter_mut().find(|v| v.path == path) {
+        Some(visit) => {
+            visit.count = visit.count.saturating_add(count);
+            visit.last = visit.last.max(last);
+        }
+        None => log.push(Visit {
+            path: path.to_string(),
+            count,
+            last,
+        }),
+    }
+}
+
+/// Drop the lowest-scoring rows once the log is over its cap.
+pub fn trim_visits(log: &mut Vec<Visit>, now: i64) {
+    if log.len() <= VISITS {
+        return;
+    }
+    log.sort_by(|a, b| {
+        frecency(b, now)
+            .partial_cmp(&frecency(a, now))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    log.truncate(VISITS);
 }
 
 /// `$XDG_STATE_HOME/rcmd/state.toml`, falling back to
@@ -235,6 +301,56 @@ mod tests {
         assert!(!config.show_hidden);
         // untouched keys still come from the config
         assert_eq!(config.editor, "internal");
+    }
+
+    #[test]
+    fn frecency_prefers_the_recent_over_the_merely_frequent() {
+        let now = 1_000_000i64;
+        let today = Visit {
+            path: "/today".into(),
+            count: 3,
+            last: now - 60,
+        };
+        let last_year = Visit {
+            path: "/old".into(),
+            count: 40,
+            last: now - 400 * 86_400,
+        };
+        assert!(frecency(&today, now) > frecency(&last_year, now));
+        // and neither is forgotten: forty visits still outrank one
+        let once_last_year = Visit {
+            path: "/once".into(),
+            count: 1,
+            last: now - 400 * 86_400,
+        };
+        assert!(frecency(&last_year, now) > frecency(&once_last_year, now));
+        // a clock that went backwards is not a negative age
+        let future = Visit {
+            path: "/future".into(),
+            count: 1,
+            last: now + 10_000,
+        };
+        assert_eq!(frecency(&future, now), 4.0);
+    }
+
+    #[test]
+    fn a_visit_folds_into_the_log_and_the_log_is_capped() {
+        let now = 1_000_000i64;
+        let mut log = Vec::new();
+        merge_visit(&mut log, "/a", 1, now - 10);
+        merge_visit(&mut log, "/a", 1, now);
+        merge_visit(&mut log, "/b", 1, now);
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[0].count, 2);
+        assert_eq!(log[0].last, now, "the newer visit wins the timestamp");
+
+        // over the cap, the lowest-scoring rows go
+        for i in 0..VISITS {
+            merge_visit(&mut log, &format!("/filler{i}"), 1, now - 400 * 86_400);
+        }
+        trim_visits(&mut log, now);
+        assert_eq!(log.len(), VISITS);
+        assert!(log.iter().any(|v| v.path == "/a"), "the busy one stayed");
     }
 
     #[test]
