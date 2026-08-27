@@ -710,7 +710,7 @@ impl Panel {
             .iter()
             .filter(|entry| !entry.is_parent())
             .filter(|entry| !(pattern.files_only && entry.is_dir()))
-            .filter(|entry| matcher.matches(&self.name_of(entry)))
+            .filter(|entry| matcher.accepts(entry, &self.name_of(entry)))
             .map(|entry| entry.name.clone())
             .collect();
         for name in hits {
@@ -891,7 +891,7 @@ fn shape_listing(
     {
         entries.retain(|e| {
             (pattern.files_only && e.is_dir())
-                || matcher.matches(&crate::charset::decode_name(&e.name, charset))
+                || matcher.accepts(e, &crate::charset::decode_name(&e.name, charset))
         });
     }
     sort_entries(&mut entries, key, reverse, charset);

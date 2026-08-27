@@ -355,6 +355,15 @@ instead of a glob. A regex that will not compile is quoted back at you
 rather than silently matching nothing. The panel names the filter it is
 under along its bottom edge, options included.
 
+Beside the pattern the same dialog asks DN's other two questions:
+**Size** (`>1M`, `<=100k`, `1M-2G` - k/M/G/T, 1024-based as the panel
+counts) and **Newer than** (`30m`, `24h`, `7d`, `2w`). Both are empty
+by default and ask nothing; filled in, an entry has to satisfy all
+three. Directories are never held to a size or an age - the number
+beside a directory is not its own - so `+` with a size still leaves the
+tree navigable. "Everything over a hundred megabytes" and "everything I
+touched this week" were a trip through find and panelize before.
+
 A shell pattern is a **list**, which is Far Manager's mask language and
 what mc's single glob grows into: `*.c,*.h` is either of them, and a
 `|` takes a second list back out again, so `*.c,*.h|*_test.*` is the

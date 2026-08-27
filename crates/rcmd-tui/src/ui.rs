@@ -676,6 +676,9 @@ const HELP_TEXT: &[&str] = &[
     "",
     "# Marking",
     "  Insert, C-t     toggle mark and advance",
+    "  (the same dialog also asks Size (>1M, <=100k, 1M-2G) and Newer",
+    "   than (30m, 24h, 7d, 2w); empty asks nothing, and a directory is",
+    "   never held to either)",
     "  +               select by pattern: a glob list or (with Shell",
     "                  patterns unticked) a regular expression, plus",
     "                  Files only and Case sensitive - Tab walks,",
@@ -3871,10 +3874,11 @@ fn draw_panelize(
 /// MC's select / unselect / filter form: the pattern, then the three
 /// answers that change what it means.
 fn draw_pattern(frame: &mut Frame, d: &crate::app::PatternDialog) {
-    use crate::app::PATTERN_ROWS;
+    use crate::app::{PATTERN_FIELDS, PATTERN_ROWS};
     let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
-    let inner = popup(frame, centered(56, 9, frame.area()), &d.title, style);
+    let label = Style::new().fg(th().dialog_hot_fg).bg(th().dialog_bg);
+    let inner = popup(frame, centered(56, 13, frame.area()), &d.title, style);
     let row = |offset: u16| Rect {
         x: inner.x + 1,
         y: inner.y + offset,
@@ -3882,6 +3886,18 @@ fn draw_pattern(frame: &mut Frame, d: &crate::app::PatternDialog) {
         height: 1,
     };
     field_row(frame, row(0), &d.value, (d.row == 0).then_some(d.cursor));
+    // the two questions mc never asks, so they say what they take
+    for (i, (text, cursor, hint)) in [
+        (&d.size, d.size_cursor, "Size    (>1M, <=100k, 1M-2G)"),
+        (&d.newer, d.newer_cursor, "Newer than  (30m, 24h, 7d, 2w)"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let at = i as u16 * 2 + 2;
+        frame.render_widget(Line::from(format!(" {hint}")).style(label), row(at));
+        field_row(frame, row(at + 1), text, (d.row == i + 1).then_some(cursor));
+    }
     let check = |on: bool| if on { "[x]" } else { "[ ]" };
     for (i, (on, label)) in [
         (d.files_only, "Files only"),
@@ -3891,10 +3907,10 @@ fn draw_pattern(frame: &mut Frame, d: &crate::app::PatternDialog) {
     .iter()
     .enumerate()
     {
-        let focused = d.row == i + 1;
+        let focused = d.row == i + PATTERN_FIELDS;
         frame.render_widget(
             Line::from(format!(" {} {label}", check(*on))).style(if focused { sel } else { style }),
-            row(i as u16 + 2),
+            row(i as u16 + 6),
         );
     }
     frame.render_widget(
@@ -3910,7 +3926,7 @@ fn draw_pattern(frame: &mut Frame, d: &crate::app::PatternDialog) {
         ),
         Rect {
             x: inner.x,
-            y: inner.y + 6,
+            y: inner.y + 10,
             width: inner.width,
             height: 1,
         },

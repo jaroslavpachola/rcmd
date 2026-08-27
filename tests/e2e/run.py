@@ -934,6 +934,37 @@ def test_archive_write():
     shutil.rmtree(root)
 
 
+def test_selectsize():
+    """The select dialog asks DN's other two questions: how big, and how
+    recently touched."""
+    root, play, home = sandbox()
+    open(os.path.join(play, "big.bin"), "w").write("x" * 200_000)
+    open(os.path.join(play, "small.txt"), "w").write("tiny\n")
+    old = os.path.join(play, "old.bin")
+    open(old, "w").write("y" * 200_000)
+    long_ago = time.time() - 40 * 86_400
+    os.utime(old, (long_ago, long_ago))
+
+    s = Session(play, home)
+    s.send(b"+", wait=STEP)                    # select group
+    screen = s.screen()
+    check("selectsize: the dialog offers size and age",
+          "Size" in screen and "Newer than" in screen, screen)
+    s.send(b"\t", wait=STEP)                   # to the size field
+    s.send(b">100k", wait=STEP)
+    s.send(b"\t", wait=STEP)                   # to the age field
+    s.send(b"7d", wait=STEP)
+    s.send(b"\r", wait=STEP * 2)
+    check("selectsize: one entry matched both limits",
+          wait_for(s, "1 selected"), s.screen())
+    # the marked total names the file that was marked: the big one that
+    # is not forty days old
+    check("selectsize: and it is the big recent one",
+          "200000" in s.screen().replace(",", ""), s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_visits():
     """Where rcmd has been is remembered between sessions, and the
     hotlist's recent half is ranked by how often you go there."""
@@ -4276,7 +4307,8 @@ def test_selectdialog():
     s.send(b"\x15*\r", wait=STEP * 2)
     s.send(b"+", wait=STEP)
     s.send(b"\x15*.txt", wait=STEP)
-    s.send(b"\t\t ", wait=STEP)             # -> Case sensitive, off
+    # pattern, Size, Newer than, Files only, Case sensitive
+    s.send(b"\t\t\t\t ", wait=STEP)           # -> Case sensitive, off
     check("selectdialog: the box unticked", "[ ] Case sensitive" in s.screen(), s.screen())
     s.send(b"\r", wait=STEP * 2)
     check("selectdialog: now it is both", wait_for(s, "2 selected"))
@@ -4286,14 +4318,14 @@ def test_selectdialog():
     s.send(b"\x15*\r", wait=STEP * 2)
     s.send(b"+", wait=STEP)
     s.send(b"\x15^beta", wait=STEP)
-    s.send(b"\t\t\t ", wait=STEP)           # -> Shell patterns, off = regex
+    s.send(b"\t\t\t\t\t ", wait=STEP)         # -> Shell patterns, off = regex
     s.send(b"\r", wait=STEP * 2)
     check("selectdialog: the regex matched one", wait_for(s, "1 selected"))
 
     # a broken one is reported rather than swallowed
     s.send(b"+", wait=STEP)
     s.send(b"\x15(", wait=STEP)
-    s.send(b"\t\t\t ", wait=STEP)
+    s.send(b"\t\t\t\t\t ", wait=STEP)
     s.send(b"\r", wait=STEP * 2)
     check("selectdialog: a broken regex says so", wait_for(s, "regex parse error"))
     s.send(b"\x1b\x1b", wait=STEP)
@@ -5326,6 +5358,7 @@ def main():
         test_pack,
         test_undo,
         test_sync,
+        test_selectsize,
         test_visits,
         test_restore_other_dir,
         test_ftp,

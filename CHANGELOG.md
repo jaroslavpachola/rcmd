@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.19.0 - 2026-08-27
+
+- **Select and filter by size and age.** The dialog behind `+`, `-`
+  and `C-f` was a pattern and three switches, which is all mc has;
+  DOS Navigator's asks how big and how recently touched as well, and
+  now so does rcmd's. **Size** takes `>1M`, `>=1M`, `<100k`, `<=100k`
+  or `1M-2G` (k/M/G/T, 1024-based, as the panel counts) and **Newer
+  than** takes an age: `30m`, `24h`, `7d`, `2w`. Both are empty by
+  default and ask nothing; filled in, an entry has to satisfy all
+  three. A directory is never held to either - the number beside one is
+  not its own - so a filter with a size still leaves the tree
+  navigable, and typing nonsense into either field is quoted back the
+  way a broken regex already was.
+
 ## 4.18.0 - 2026-08-27
 
 - **What is mounted is in the list too.** `C-x a` listed the archives

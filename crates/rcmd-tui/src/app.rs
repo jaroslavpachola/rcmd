@@ -1063,11 +1063,17 @@ pub struct PatternDialog {
     pub title: String,
     pub value: String,
     pub cursor: usize,
+    /// DN's other two questions: how big, and how recently touched.
+    /// Empty asks nothing, which is what they both start as.
+    pub size: String,
+    pub size_cursor: usize,
+    pub newer: String,
+    pub newer_cursor: usize,
     pub shell: bool,
     pub case_sensitive: bool,
     pub files_only: bool,
-    /// Focused row: 0 is the pattern, then one per switch, then
-    /// [`PATTERN_ROWS`] for the button row.
+    /// Focused row: 0 is the pattern, 1 the size, 2 the age, then one
+    /// per switch, then [`PATTERN_ROWS`] for the button row.
     pub row: usize,
     pub ok: bool,
     /// What OK does: mark, unmark, or filter the listing.
@@ -1080,8 +1086,10 @@ pub enum PatternKind {
     Filter,
 }
 
-/// The pattern field plus the three switches.
-pub const PATTERN_ROWS: usize = 4;
+/// The three fields plus the three switches.
+pub const PATTERN_ROWS: usize = 6;
+/// Rows 0..FIELDS are typed into; the rest are ticked.
+pub const PATTERN_FIELDS: usize = 3;
 
 impl PatternDialog {
     /// The core's shape of the same question.
@@ -1091,14 +1099,26 @@ impl PatternDialog {
             shell: self.shell,
             case_sensitive: self.case_sensitive,
             files_only: self.files_only,
+            size: self.size.trim().to_string(),
+            newer: self.newer.trim().to_string(),
+        }
+    }
+
+    /// The field the cursor is in, if it is in one.
+    fn field_mut(&mut self) -> Option<(&mut String, &mut usize)> {
+        match self.row {
+            0 => Some((&mut self.value, &mut self.cursor)),
+            1 => Some((&mut self.size, &mut self.size_cursor)),
+            2 => Some((&mut self.newer, &mut self.newer_cursor)),
+            _ => None,
         }
     }
 
     fn toggle(&mut self) {
         match self.row {
-            1 => self.files_only = !self.files_only,
-            2 => self.case_sensitive = !self.case_sensitive,
-            3 => self.shell = !self.shell,
+            3 => self.files_only = !self.files_only,
+            4 => self.case_sensitive = !self.case_sensitive,
+            5 => self.shell = !self.shell,
             _ => {}
         }
     }
@@ -7671,7 +7691,7 @@ impl App {
                     d.step(1);
                     self.dialog = Some(Dialog::Pattern(d));
                 }
-                KeyCode::Char(' ') if d.row != 0 => {
+                KeyCode::Char(' ') if d.row >= PATTERN_FIELDS => {
                     if d.row == PATTERN_ROWS {
                         d.ok = !d.ok;
                     } else {
@@ -7683,9 +7703,10 @@ impl App {
                     d.ok = !d.ok;
                     self.dialog = Some(Dialog::Pattern(d));
                 }
-                code if d.row == 0 => {
-                    let (value, cursor) = (&mut d.value, &mut d.cursor);
-                    edit_line(value, cursor, code, key.modifiers);
+                code if d.row < PATTERN_FIELDS => {
+                    if let Some((value, cursor)) = d.field_mut() {
+                        edit_line(value, cursor, code, key.modifiers);
+                    }
                     self.dialog = Some(Dialog::Pattern(d));
                 }
                 _ => self.dialog = Some(Dialog::Pattern(d)),
@@ -8958,6 +8979,7 @@ impl App {
             shell: dialog.shell,
             case_sensitive: dialog.case_sensitive,
             files_only: false,
+            ..Default::default()
         };
         let content = {
             let text = dialog.content.trim();
@@ -9978,6 +10000,10 @@ impl App {
             title: " Filter (show files matching) ".into(),
             cursor: current.text.chars().count(),
             value: current.text,
+            size_cursor: current.size.chars().count(),
+            size: current.size,
+            newer_cursor: current.newer.chars().count(),
+            newer: current.newer,
             shell: current.shell,
             case_sensitive: current.case_sensitive,
             files_only: current.files_only,
@@ -11133,6 +11159,10 @@ impl App {
             },
             value: "*".into(),
             cursor: 1,
+            size: String::new(),
+            size_cursor: 0,
+            newer: String::new(),
+            newer_cursor: 0,
             shell: true,
             case_sensitive: true,
             files_only: true,
