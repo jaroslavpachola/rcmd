@@ -2158,6 +2158,18 @@ pub enum Action {
     Sync,
     /// `C-x f`: the named filter sets.
     Filters,
+    /// Copy the marked names to the clipboard; with paths, the whole
+    /// path of each.
+    CopyNames {
+        paths: bool,
+    },
+    /// Put back the marks the last operation or reload cleared.
+    RestoreMarks,
+    /// Size every directory in the panel, not only the cursor one.
+    DirSizeAll,
+    /// Give one panel the whole screen by hiding the other; again
+    /// brings it back. The index is the panel to hide.
+    HidePanel(usize),
     /// Far's M-F1 / M-F2: the list of everywhere this *named* panel can
     /// go - the open connections and archives, and what is mounted.
     Drives(usize),
@@ -2267,6 +2279,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Invert selection", "*", Action::InvertSelection)),
             None,
             Some(("Directory si&ze", "C-spc", Action::DirSize)),
+            Some(("Size every directory", "C-x spc", Action::DirSizeAll)),
             None,
             Some(("&Quit", "F10", Action::Quit)),
         ],
@@ -2721,6 +2734,14 @@ pub struct App {
     compare: Option<CompareState>,
     /// Which `[[filter]]` sets each panel is under, in config order.
     filter_sets_on: [Vec<bool>; 2],
+    /// Directories still waiting to be sized, when a whole listing was
+    /// asked for.
+    du_queue: Vec<std::ffi::OsString>,
+    /// A panel hidden outright with C-F1 / C-F2.
+    hidden: Option<usize>,
+    /// The marks each panel had before the last thing that cleared
+    /// them, for `C-x m`.
+    marks_before: [Option<std::collections::HashSet<std::ffi::OsString>>; 2],
     /// The socket other processes drive this instance through; None
     /// when it could not be opened, which is not fatal.
     remote: Option<crate::remote::Server>,
@@ -2887,6 +2908,9 @@ impl App {
             jobs: Vec::new(),
             undo: None,
             filter_sets_on: [Vec::new(), Vec::new()],
+            du_queue: Vec::new(),
+            hidden: None,
+            marks_before: [None, None],
             remote: None,
             visits: state::load().0.visits,
             visited: [String::new(), String::new()],
@@ -3100,10 +3124,22 @@ impl App {
                 {
                     entry.size = bytes;
                 }
-                self.status = Some(format!(
-                    " {}: {bytes} bytes in {files} file(s) ",
-                    du.name.to_string_lossy()
-                ));
+                self.status = Some(match self.du_queue.len() {
+                    0 => format!(
+                        " {}: {bytes} bytes in {files} file(s) ",
+                        du.name.to_string_lossy()
+                    ),
+                    left => format!(" sizing… {left} to go "),
+                });
+                // ...and on to the next one, where a whole listing was
+                // asked for
+                if !self.du_queue.is_empty() {
+                    let next = self.du_queue.remove(0);
+                    let was = self.active;
+                    self.active = du.panel;
+                    self.start_du(next);
+                    self.active = was;
+                }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 self.status = Some(" sizing… ".into());
@@ -3882,6 +3918,7 @@ impl App {
                 let _ = thread.join();
             }
             if !aborted {
+                self.remember_marks(job.src_panel);
                 self.panels[job.src_panel].marked.clear();
             }
             // the newest move is the one C-x u answers for; a job that
@@ -5106,6 +5143,10 @@ impl App {
             Action::Undo => self.open_undo(),
             Action::Sync => self.open_sync(),
             Action::Filters => self.open_filters(),
+            Action::CopyNames { paths } => self.copy_names(paths),
+            Action::RestoreMarks => self.restore_marks(),
+            Action::DirSizeAll => self.dir_size_all(),
+            Action::HidePanel(at) => self.hide_panel(at),
             Action::Delete => self.open_delete(false),
             Action::DeletePerm => self.open_delete(true),
             Action::SelectGroup => self.open_select(true),
@@ -5554,9 +5595,10 @@ impl App {
     /// `%u` / `%U`: the marks go once the command has them, which is
     /// mc's rule and the difference between those and `%t` / `%T`.
     fn spend_marks(&mut self, untag: [bool; 2]) {
-        for (panel, want) in self.panels.iter_mut().zip(untag) {
+        for (at, want) in untag.into_iter().enumerate() {
             if want {
-                panel.marked.clear();
+                self.remember_marks(at);
+                self.panels[at].marked.clear();
             }
         }
     }
@@ -9219,6 +9261,110 @@ impl App {
             return;
         }
         let name = entry.name.clone();
+        self.start_du(name);
+        self.panel().move_down();
+    }
+
+    /// C-F1 / C-F2: hide a panel, and give the screen to the other.
+    /// The hidden one keeps its directory, its marks and its listing -
+    /// it is not showing, which is not the same as not being there.
+    fn hide_panel(&mut self, at: usize) {
+        self.hidden = match self.hidden {
+            Some(was) if was == at => None,
+            _ => Some(at),
+        };
+        // never leave the focus on a panel nobody can see
+        if self.hidden == Some(self.active) {
+            self.active ^= 1;
+        }
+        self.dirty = true;
+    }
+
+    /// Which panel is hidden, if any.
+    pub fn hidden_panel(&self) -> Option<usize> {
+        self.hidden
+    }
+
+    /// The marked names, or the cursor one, on the clipboard. Far
+    /// keeps this on C-Ins and C-A-Ins; the editor has talked to the
+    /// desktop clipboard since 4.0 and the panel never did.
+    fn copy_names(&mut self, paths: bool) {
+        let panel = &self.panels[self.active];
+        let names: Vec<String> = match paths {
+            true => panel
+                .targets()
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            false => panel
+                .targets()
+                .iter()
+                .filter_map(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect(),
+        };
+        if names.is_empty() {
+            self.status = Some(" nothing selected ".into());
+            return;
+        }
+        let count = names.len();
+        let text = names.join("\n");
+        let what = if paths { "path" } else { "name" };
+        self.status = Some(match clipboard_set(&text) {
+            true => format!(" {count} {what}(s) copied "),
+            // the clipboard file still has it, which is what %q reads
+            false => format!(" {count} {what}(s) copied to the clipboard file "),
+        });
+    }
+
+    /// Put back the marks that the last operation, reload or select
+    /// cleared. Far calls it restore selection, and it is the answer to
+    /// having pressed the wrong key after marking forty files.
+    fn restore_marks(&mut self) {
+        match self.marks_before[self.active].take() {
+            Some(marks) => {
+                let count = marks.len();
+                self.panels[self.active].marked = marks;
+                self.status = Some(format!(" {count} mark(s) restored "));
+            }
+            None => self.status = Some(" no marks to restore ".into()),
+        }
+    }
+
+    /// Remember what is marked before something clears it.
+    fn remember_marks(&mut self, at: usize) {
+        let marked = &self.panels[at].marked;
+        if !marked.is_empty() {
+            self.marks_before[at] = Some(marked.clone());
+        }
+    }
+
+    /// Every directory in the panel, one after the other. Total
+    /// Commander does the whole listing in one keystroke; the scans are
+    /// still one at a time, which is what the disk wants anyway.
+    fn dir_size_all(&mut self) {
+        if self.du.is_some() {
+            self.status = Some(" a size scan is already running ".into());
+            return;
+        }
+        let mut names: Vec<std::ffi::OsString> = self.panels[self.active]
+            .entries
+            .iter()
+            .filter(|entry| entry.is_dir() && !entry.is_parent())
+            .map(|entry| entry.name.clone())
+            .collect();
+        if names.is_empty() {
+            self.status = Some(" no directories here ".into());
+            return;
+        }
+        let first = names.remove(0);
+        self.du_queue = names;
+        self.start_du(first);
+    }
+
+    /// Start one scan, wherever it came from.
+    fn start_du(&mut self, name: std::ffi::OsString) {
+        let panel = &self.panels[self.active];
         let cwd = panel.cwd.clone();
         let rx = if panel.is_local() {
             fsops::spawn_dir_size(cwd.join(&name))
@@ -9232,7 +9378,6 @@ impl App {
             cwd,
             name,
         });
-        self.panel().move_down();
     }
 
     fn open_find(&mut self) {
@@ -9571,6 +9716,8 @@ impl App {
         }
         let diff =
             compare::compare_listings(&self.panels[0].entries, &self.panels[1].entries, mode);
+        self.remember_marks(0);
+        self.remember_marks(1);
         self.panels[0].marked.clear();
         self.panels[1].marked.clear();
         for name in &diff.left {
@@ -10485,6 +10632,8 @@ impl App {
                 KeyCode::Char('j' | 'J') => self.run_action(Action::Jobs),
                 KeyCode::Char('u' | 'U') => self.run_action(Action::Undo),
                 KeyCode::Char('f' | 'F') => self.run_action(Action::Filters),
+                KeyCode::Char('m' | 'M') => self.run_action(Action::RestoreMarks),
+                KeyCode::Char(' ') => self.run_action(Action::DirSizeAll),
                 KeyCode::Char('a' | 'A') => self.run_action(Action::VfsList),
                 KeyCode::Char('!') => self.run_action(Action::Panelize),
                 _ => {}
@@ -10496,7 +10645,8 @@ impl App {
             self.status = Some(
                 " C-x  (d = compare, q = quick view, i = info, c = chmod, \
                  o = chown, s = symlink, j = jobs, a = active VFS, \
-                 u = undo, f = filter sets, ! = panelize, \
+                 u = undo, f = filter sets, m = restore marks, \
+                 space = size every directory, ! = panelize, \
                  t/p = paste tags/path) "
                     .into(),
             );

@@ -580,7 +580,15 @@ const HELP_TEXT: &[&str] = &[
     "     C-s saves what you typed under a name, F8 drops one. The",
     "     output streams in as it arrives; Esc stops a slow one.",
     "  (C-r restores a normal listing after find/panelize)",
-    "  C-spc           directory size (background scan, fills Size column)",
+    "  C-spc           directory size (background scan, fills Size column);",
+    "                  C-x spc does every directory in the panel, one",
+    "                  after another",
+    "  C-x m           put back the marks the last operation spent",
+    "  C-Ins           the marked names on the clipboard; C-A-Ins their",
+    "                  whole paths (the clipboard file always, a desktop",
+    "                  clipboard where a tool for one is installed)",
+    "  C-F1 / C-F2     hide the left / right panel: the other takes the",
+    "                  screen, and the hidden one keeps everything it had",
     "  C-r             reload both panels",
     "  Panels auto-reload when their directory changes on disk",
     "  (watch = false in config disables). Slow directories load in the",
@@ -967,24 +975,29 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 _ => false,
             }
     };
-    let [left, right] = if listing_long(app.active) {
-        let hidden = Rect::new(main.x, main.y, 0, 0);
-        if app.active == 0 {
-            [main, hidden]
+    // ...and the same shape when a panel is hidden outright (C-F1 /
+    // C-F2), which is Volkov Commander's way of giving one panel the
+    // screen without changing what it is showing
+    let showing_one = app.hidden_panel().map(|at| at ^ 1);
+    let [left, right] =
+        if let Some(at) = showing_one.or(listing_long(app.active).then_some(app.active)) {
+            let hidden = Rect::new(main.x, main.y, 0, 0);
+            if at == 0 {
+                [main, hidden]
+            } else {
+                [hidden, main]
+            }
         } else {
-            [hidden, main]
-        }
-    } else {
-        let split = [
-            Constraint::Percentage(app.config.ratio()),
-            Constraint::Percentage(100 - app.config.ratio()),
-        ];
-        if app.config.horizontal_split() {
-            Layout::vertical(split).areas(main)
-        } else {
-            Layout::horizontal(split).areas(main)
-        }
-    };
+            let split = [
+                Constraint::Percentage(app.config.ratio()),
+                Constraint::Percentage(100 - app.config.ratio()),
+            ];
+            if app.config.horizontal_split() {
+                Layout::vertical(split).areas(main)
+            } else {
+                Layout::horizontal(split).areas(main)
+            }
+        };
 
     // 2 border rows + 1 column-header row, in the ACTIVE panel: with a
     // horizontal split the two panels can differ in height.

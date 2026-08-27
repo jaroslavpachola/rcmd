@@ -206,6 +206,10 @@ exactly where it was.
 | Alt+Shift+H | Directory history as a list; Enter goes there |
 | Alt+↑ | Directory hotlist |
 | Ctrl+X d | Compare directories (marks differences in both panels) |
+| Ctrl+X m | Put back the marks the last operation spent |
+| Ctrl+X Space | Size every directory in the panel, one after the other |
+| Ctrl+Ins / Ctrl+Alt+Ins | Copy the marked names / full paths to the clipboard |
+| Ctrl+F1 / Ctrl+F2 | Hide the left / right panel, and give the other the screen |
 | Ctrl+X ! | Panelize a command's output |
 | Alt+H | Command history (kept across sessions); Alt+P / Alt+N walk it |
 | Alt+A | Insert the panel's path on the command line |

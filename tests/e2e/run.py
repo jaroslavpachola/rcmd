@@ -937,6 +937,59 @@ def test_archive_write():
     shutil.rmtree(root)
 
 
+def test_panelconveniences():
+    """C-x m puts the marks back, C-x space sizes every directory, and
+    C-F1 / C-F2 give one panel the screen."""
+    root, play, home = sandbox()
+    for name in ("one", "two"):
+        os.makedirs(os.path.join(play, name))
+        open(os.path.join(play, name, "f.txt"), "w").write("x" * 100)
+    open(os.path.join(play, "a.txt"), "w").write("a\n")
+    open(os.path.join(play, "b.txt"), "w").write("b\n")
+    os.makedirs(os.path.join(play, "out"))
+
+    s = Session(play, home, args=(play, os.path.join(play, "out")))
+    s.send(b"\x13a.txt\r", wait=STEP)
+    s.send(INSERT, wait=STEP)
+    s.send(b"\x13b.txt\r", wait=STEP)
+    s.send(INSERT, wait=STEP)
+    check("conveniences: two marked", wait_for(s, "2 file(s)"))
+
+    # F5 spends the marks, C-x m puts them back
+    s.send(F5, wait=STEP)
+    s.send(b"\r", wait=STEP * 3)
+    check("conveniences: the copy ran", wait_for(s, "done -"))
+    check("conveniences: and the marks are gone", "2 file(s)" not in s.screen())
+    s.send(b"\x18m", wait=STEP)
+    check("conveniences: C-x m restores them", wait_for(s, "2 mark(s) restored"))
+
+    # every directory sized in one keystroke
+    s.send(b"\x18 ", wait=STEP * 4)
+    scr = s.screen()
+    sized = [l for l in scr.splitlines() if l.startswith("│/one") or l.startswith("│/two")]
+    check("conveniences: every directory got a size",
+          len(sized) == 2 and all("100" in l for l in sized), scr)
+
+    # the names on the clipboard: the file half of it works with no
+    # desktop tool installed, and is what %q reads
+    s.send(b"\x1b[2;5~", wait=STEP)          # C-Ins
+    check("conveniences: the names were copied", wait_for(s, "name(s) copied"))
+    clip = os.path.join(home, ".cache", "mc", "mcedit", "mcedit.clip")
+    check("conveniences: and landed in the clipboard file",
+          os.path.exists(clip) and open(clip).read().split() == ["a.txt", "b.txt"],
+          open(clip).read() if os.path.exists(clip) else "no file")
+
+    # and one panel takes the screen
+    s.send(b"\x1b[1;5Q", wait=STEP)          # C-F2 hides the right panel
+    check("conveniences: the other panel is hidden",
+          s.screen().count("Modify time") == 1, s.screen())
+    s.send(b"\x1b[1;5Q", wait=STEP)
+    check("conveniences: and comes back",
+          s.screen().count("Modify time") == 2, s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_remote():
     """rcmd --remote drives a running instance: cd, select, any action
     by name, and the queries that let a script see where it is."""
@@ -5472,6 +5525,7 @@ def main():
         test_pack,
         test_undo,
         test_sync,
+        test_panelconveniences,
         test_remote,
         test_filtersets,
         test_selectsize,

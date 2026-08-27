@@ -21,7 +21,11 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("f5", "copy"),
     ("f6", "move"),
     ("f7", "mkdir"),
-    ("alt+f5", "pack"),        // NC/VC: pack the marked files into an archive
+    ("alt+f5", "pack"),            // NC/VC: pack the marked files into an archive
+    ("ctrl+insert", "copy-names"), // Far: the names on the clipboard
+    ("ctrl+alt+insert", "copy-paths"),
+    ("ctrl+f1", "hide-left"), // VC: give one panel the screen
+    ("ctrl+f2", "hide-right"),
     ("alt+f1", "drives-left"), // Far: what this panel can go to
     ("alt+f2", "drives-right"),
     ("f8", "delete"),
@@ -228,6 +232,12 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "undo" => Action::Undo,
         "synchronize" => Action::Sync,
         "filter-sets" => Action::Filters,
+        "copy-names" => Action::CopyNames { paths: false },
+        "copy-paths" => Action::CopyNames { paths: true },
+        "restore-marks" => Action::RestoreMarks,
+        "dir-size-all" => Action::DirSizeAll,
+        "hide-left" => Action::HidePanel(0),
+        "hide-right" => Action::HidePanel(1),
         "drives-left" => Action::Drives(0),
         "drives-right" => Action::Drives(1),
         "mkdir" => Action::Mkdir,
