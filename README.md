@@ -394,6 +394,22 @@ in the background, marks each pair as it finds it, and Esc stops it.
 Size only is for a tree whose timestamps were never going to survive
 the trip.
 
+**Synchronize directories** (F9 → Command) is what a comparison is for.
+It asks the same Quick / Size only / Thorough question, runs the same
+comparison, and then shows the **plan** instead of stopping at marks:
+one row per difference, an arrow saying which way it would be copied -
+the newer side wins, and a file only one side has crosses over - and a
+note saying why the row is there. **Space** skips a row, **←/→** turn
+one round, **a** switches them all off and on, **Enter** runs it as
+ordinary copy jobs, one per direction. What it copies replaces what it
+lands on *without* asking, because that is the question the plan
+answered; a row left switched off is not copied at all. Marking the
+differences and leaving F5 to guess the direction is where mc stops,
+and that guess is wrong exactly when the differences run both ways.
+Both sides have to be local, and directories are left alone - the
+comparison has always been about the files in one directory, not the
+tree under it.
+
 **Compare files** (F9 → Command) puts the cursor file of each panel
 side by side, lined up by a Myers diff: changed lines are highlighted
 on both sides, a line only one file has shows opposite a `~~~` gap, and

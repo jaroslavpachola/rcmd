@@ -923,6 +923,67 @@ def test_archive_write():
     shutil.rmtree(root)
 
 
+def test_sync():
+    """F9 > Command > Synchronize: compare, then a plan that says which
+    way each difference goes, and copies it."""
+    root, play, home = sandbox()
+    left, right = os.path.join(play, "left"), os.path.join(play, "right")
+    os.makedirs(left)
+    os.makedirs(right)
+    open(os.path.join(left, "only_left.txt"), "w").write("left\n")
+    open(os.path.join(right, "only_right.txt"), "w").write("right\n")
+    open(os.path.join(left, "both.txt"), "w").write("old\n")
+    open(os.path.join(right, "both.txt"), "w").write("newer here\n")
+    # make the right-hand copy the newer one beyond the 2 s slack
+    old_time = time.time() - 60
+    os.utime(os.path.join(left, "both.txt"), (old_time, old_time))
+    open(os.path.join(left, "same.txt"), "w").write("identical\n")
+    open(os.path.join(right, "same.txt"), "w").write("identical\n")
+
+    s = Session(left, home, args=(left, right))
+    s.send(b"\x1b[20~", wait=STEP)  # F9
+    s.send(b"c", wait=STEP)                   # Command menu
+    s.send(b"y", wait=STEP)                   # S&ynchronize
+    check("sync: it asks how to compare", "compare how" in s.screen().lower(), s.screen())
+    s.send(b"q", wait=STEP * 2)               # Quick
+    screen = s.screen()
+    check("sync: the plan lists the differences", "Synchronize directories" in screen, screen)
+    check("sync: only-on-one-side rows are there",
+          "only_left.txt" in screen and "only_right.txt" in screen, screen)
+    check("sync: the newer side wins", "newer on the right" in screen, screen)
+    # same.txt is in both listings behind the dialog, so the proof it
+    # is not in the plan is the count: three rows, not four
+    check("sync: an identical file is not in the plan", "3 of 3 on" in screen, screen)
+
+    s.send(b"\r", wait=STEP * 4)
+    check("sync: it ran", wait_for(s, "done -"))
+    s.quit()
+    check("sync: the left-only file went right",
+          os.path.exists(os.path.join(right, "only_left.txt")))
+    check("sync: the right-only file went left",
+          os.path.exists(os.path.join(left, "only_right.txt")))
+    check("sync: the newer copy won without asking",
+          open(os.path.join(left, "both.txt")).read() == "newer here\n")
+
+    # and a row switched off with Space is not copied at all
+    open(os.path.join(left, "both.txt"), "w").write("mine again, and longer\n")
+    s = Session(left, home, args=(left, right))
+    s.send(b"\x1b[20~", wait=STEP)             # F9
+    s.send(b"cy", wait=STEP)
+    s.send(b"q", wait=STEP * 2)
+    check("sync: the second plan has the one difference",
+          "1 of 1 on" in s.screen(), s.screen())
+    s.send(b" ", wait=STEP)                    # skip it
+    check("sync: Space switches the row off", "0 of 1 on" in s.screen(), s.screen())
+    s.send(b"\r", wait=STEP * 2)
+    check("sync: nothing to do is said, not done",
+          wait_for(s, "nothing left switched on"))
+    s.quit()
+    check("sync: and the file was left alone",
+          open(os.path.join(left, "both.txt")).read() == "mine again, and longer\n")
+    shutil.rmtree(root)
+
+
 def test_undo():
     """F6 puts a file somewhere else; C-x u puts it back, and a second
     C-x u is the redo."""
@@ -5180,6 +5241,7 @@ def main():
         test_archive_write,
         test_pack,
         test_undo,
+        test_sync,
         test_ftp,
         test_find,
         test_compare,

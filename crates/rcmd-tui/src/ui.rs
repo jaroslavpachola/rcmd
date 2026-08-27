@@ -554,8 +554,16 @@ const HELP_TEXT: &[&str] = &[
     "                  and date), Size only, or Thorough - which reads",
     "                  the files and is the only one that can tell two",
     "                  files with the same size and date apart. Marks",
-    "                  what differs on both sides (F5 syncs); Esc stops",
-    "                  a thorough run part way.",
+    "                  what differs on both sides; Esc stops a thorough",
+    "                  run part way.",
+    "  F9>Cmd>Synchronize: the same comparison, and then what it means -",
+    "                  a plan with one row per difference, an arrow",
+    "                  saying which way it goes (the newer side wins, a",
+    "                  file only one side has crosses over), Space",
+    "                  skipping a row, ←/→ turning one round, a for all",
+    "                  of them, Enter running it. What it copies",
+    "                  replaces what it lands on without asking: that is",
+    "                  the question the plan already answered.",
     "  F9>Left/Right>Panelize: a command's output becomes the listing.",
     "     Saved commands sit above the field - Tab moves between them,",
     "     C-s saves what you typed under a name, F8 drops one. The",
@@ -1070,8 +1078,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     .iter()
                     .map(|(label, _)| *label)
                     .collect();
-                dialog_rows = draw_pick_list(frame, " Compare directories ", &rows, *row, 0)
+                // the same question either way; the title says which of
+                // the two answers it is being asked for
+                let title = match app.comparing_to_sync() {
+                    true => " Synchronize: compare how? ",
+                    false => " Compare directories ",
+                };
+                dialog_rows = draw_pick_list(frame, title, &rows, *row, 0)
             }
+            Dialog::Sync(d) => dialog_rows = draw_sync(frame, d),
             Dialog::Charset(row) => {
                 dialog_rows =
                     draw_pick_list(frame, " Character set ", &crate::app::CHARSET_ROWS, *row, 0)
@@ -4961,6 +4976,92 @@ fn draw_vfs(frame: &mut Frame, dialog: &VfsDialog) {
             area,
         );
     }
+}
+
+/// The synchronize plan: one row per difference, the arrow saying
+/// which way it would be copied and the note saying why it is here.
+fn draw_sync(frame: &mut Frame, d: &crate::app::SyncDialog) -> Option<crate::app::DialogRows> {
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    // a row switched off is still readable, just not shouting
+    let off = Style::new()
+        .fg(th().dialog_fg)
+        .bg(th().dialog_bg)
+        .add_modifier(Modifier::DIM);
+    let width = frame.area().width.saturating_sub(6).clamp(40, 90);
+    let shown = d
+        .rows
+        .len()
+        .min(frame.area().height.saturating_sub(8) as usize)
+        .max(1);
+    let area = centered(width, shown as u16 + 4, frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .title(" Synchronize directories ")
+        .title_bottom(
+            Line::from(" Space skip · ←/→ direction · a all · Enter run · Esc cancel ").centered(),
+        )
+        .style(base);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let on = d.rows.iter().filter(|r| r.on).count();
+    // the two directories and how much of the plan is switched on, in
+    // the room that is left after the counts
+    let room = (inner.width as usize).saturating_sub(24) / 2;
+    frame.render_widget(
+        Line::from(format!(
+            " {on} of {} on   {} --> <-- {}",
+            d.rows.len(),
+            fit(&d.left, room, false).trim_end(),
+            fit(&d.right, room, false).trim_end(),
+        ))
+        .style(base),
+        Rect { height: 1, ..inner },
+    );
+    // keep the cursor row inside the window whatever `top` says
+    let top = d
+        .top
+        .min(d.cursor)
+        .max((d.cursor + 1).saturating_sub(shown));
+    let name_width = (inner.width as usize).saturating_sub(28);
+    for i in 0..shown {
+        let Some(row) = d.rows.get(top + i) else {
+            break;
+        };
+        let line = Rect {
+            y: inner.y + 2 + i as u16,
+            height: 1,
+            ..inner
+        };
+        let style = match (top + i == d.cursor, row.on) {
+            (true, _) => sel,
+            (false, true) => base,
+            (false, false) => off,
+        };
+        let text = format!(
+            " [{}] {} {} {}",
+            if row.on { "x" } else { " " },
+            fit(&row.name.to_string_lossy(), name_width, false),
+            if row.to_right { "-->" } else { "<--" },
+            row.note,
+        );
+        frame.render_widget(
+            Line::from(format!(
+                "{text:<w$}",
+                w = (inner.width as usize).saturating_sub(1)
+            ))
+            .style(style),
+            line,
+        );
+    }
+    Some(crate::app::DialogRows {
+        area: Rect {
+            y: inner.y + 2,
+            height: shown as u16,
+            ..inner
+        },
+        rows: (0..shown).map(|i| Some(top + i)).collect(),
+    })
 }
 
 fn draw_jobs(frame: &mut Frame, jobs: &[Job], selected: usize) -> Option<crate::app::DialogRows> {

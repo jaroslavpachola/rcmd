@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.14.0 - 2026-08-27
+
+- **Synchronize directories** (F9 > Command). rcmd could compare two
+  directories three ways and then left you with two sets of marks and
+  an F5 that guesses the direction - which is wrong exactly when the
+  differences run both ways. The comparison now leads to a **plan**:
+  one row per difference, an arrow saying which way it goes (the newer
+  side wins; a file only one side has crosses over), a note saying why
+  the row is there, Space to skip a row, left/right to turn one round,
+  `a` for all of them, Enter to run it as ordinary copy jobs, one per
+  direction. What it copies replaces what it lands on without asking,
+  since that is the question the plan answered. Both panels have to be
+  local, and directories are left alone, as the comparison always has.
+
 ## 4.13.0 - 2026-08-27
 
 - **Ctrl+X u undoes the last move.** Neither mc nor Far offers this.

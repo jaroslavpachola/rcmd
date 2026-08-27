@@ -224,6 +224,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "move" => Action::Move,
         "pack" => Action::Pack,
         "undo" => Action::Undo,
+        "synchronize" => Action::Sync,
         "mkdir" => Action::Mkdir,
         "delete" => Action::Delete,
         "delete-perm" => Action::DeletePerm,

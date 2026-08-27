@@ -408,9 +408,34 @@ enum PanelizeEvent {
 /// apart, being read on a worker thread.
 struct CompareState {
     handle: rcmd_core::compare::CompareHandle,
+    /// Open the synchronize plan when this finishes.
+    sync: bool,
     /// How many pairs it was given, for the progress line.
     total: usize,
     done: usize,
+}
+
+/// One row of the synchronize plan: a file the comparison called a
+/// difference, and which way copying it would settle that.
+pub struct SyncRow {
+    pub name: std::ffi::OsString,
+    /// Copy from the left panel to the right; false is the other way.
+    pub to_right: bool,
+    /// Off with Space: the row stays visible and is not copied.
+    pub on: bool,
+    /// Why the row is here, in the words the list shows.
+    pub note: &'static str,
+}
+
+/// F9 > Command > Synchronize: what the comparison found, as a plan
+/// that can be read, flipped row by row and run.
+pub struct SyncDialog {
+    pub rows: Vec<SyncRow>,
+    pub cursor: usize,
+    /// First row drawn, so a long plan scrolls.
+    pub top: usize,
+    pub left: String,
+    pub right: String,
 }
 
 /// A running Ctrl+Space directory-size scan.
@@ -923,6 +948,8 @@ pub enum Dialog {
     Learn(Box<LearnDialog>),
     /// C-x d: how to compare the two listings, with the row it is on.
     Compare(usize),
+    /// F9 > Command > Synchronize: the plan the comparison produced.
+    Sync(Box<SyncDialog>),
     /// External panelize: the saved commands and the one being typed.
     Panelize(Box<PanelizeDialog>),
     /// Select / unselect group, and the panel filter.
@@ -2073,6 +2100,8 @@ pub enum Action {
     Pack,
     /// C-x u: put the last move back.
     Undo,
+    /// F9 > Command > Synchronize: compare, then copy the differences.
+    Sync,
     Delete,
     DeletePerm,
     SelectGroup,
@@ -2193,6 +2222,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Directory tr&ee...", "", Action::DirTree)),
             Some(("&Find file...", "M-F7", Action::FindFile)),
             Some(("&Compare directories", "C-x d", Action::CompareDirs)),
+            Some(("S&ynchronize directories...", "", Action::Sync)),
             Some(("Compare fi&les", "", Action::CompareFiles)),
             Some(("&Open shell", "C-o", Action::Shell)),
             Some(("S&wap panels", "C-u", Action::SwapPanels)),
@@ -2619,6 +2649,9 @@ pub struct App {
     remote_edit: Option<RemoteEdit>,
     du: Option<DuJob>,
     compare: Option<CompareState>,
+    /// The comparison now running was asked for by Synchronize, so its
+    /// result opens the plan instead of only marking the panels.
+    compare_then_sync: bool,
     panelize: Option<PanelizeJob>,
     watch: Option<WatchState>,
     /// Something on screen has changed since the last frame. The loop
@@ -2762,6 +2795,7 @@ impl App {
             dialog: None,
             jobs: Vec::new(),
             undo: None,
+            compare_then_sync: false,
             screens: Vec::new(),
             current: None,
             screen_list: None,
@@ -4941,6 +4975,7 @@ impl App {
             Action::Mkdir => self.open_mkdir(),
             Action::Pack => self.open_pack(),
             Action::Undo => self.open_undo(),
+            Action::Sync => self.open_sync(),
             Action::Delete => self.open_delete(false),
             Action::DeletePerm => self.open_delete(true),
             Action::SelectGroup => self.open_select(true),
@@ -7282,6 +7317,12 @@ impl App {
                 }
                 true
             }
+            Some(Dialog::Sync(d)) => {
+                if let Some(at) = count(d.rows.len()) {
+                    d.cursor = at;
+                }
+                true
+            }
             _ => false,
         }
     }
@@ -7639,6 +7680,62 @@ impl App {
                         }
                     }
                     _ => self.dialog = Some(Dialog::Compare(row)),
+                }
+            }
+            Dialog::Sync(mut d) => {
+                let last = d.rows.len().saturating_sub(1);
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => self.start_sync(&d),
+                    KeyCode::Up => {
+                        d.cursor = d.cursor.saturating_sub(1);
+                        self.dialog = Some(Dialog::Sync(d));
+                    }
+                    KeyCode::Down => {
+                        d.cursor = (d.cursor + 1).min(last);
+                        self.dialog = Some(Dialog::Sync(d));
+                    }
+                    KeyCode::PageUp => {
+                        d.cursor = d.cursor.saturating_sub(10);
+                        self.dialog = Some(Dialog::Sync(d));
+                    }
+                    KeyCode::PageDown => {
+                        d.cursor = (d.cursor + 10).min(last);
+                        self.dialog = Some(Dialog::Sync(d));
+                    }
+                    KeyCode::Home => {
+                        d.cursor = 0;
+                        self.dialog = Some(Dialog::Sync(d));
+                    }
+                    KeyCode::End => {
+                        d.cursor = last;
+                        self.dialog = Some(Dialog::Sync(d));
+                    }
+                    // Space skips a row, the arrows say which way it
+                    // goes: a plan you cannot argue with is a plan you
+                    // have to accept whole
+                    KeyCode::Char(' ') => {
+                        if let Some(row) = d.rows.get_mut(d.cursor) {
+                            row.on = !row.on;
+                        }
+                        d.cursor = (d.cursor + 1).min(last);
+                        self.dialog = Some(Dialog::Sync(d));
+                    }
+                    KeyCode::Left | KeyCode::Right => {
+                        if let Some(row) = d.rows.get_mut(d.cursor) {
+                            row.to_right = key.code == KeyCode::Right;
+                            row.on = true;
+                        }
+                        self.dialog = Some(Dialog::Sync(d));
+                    }
+                    KeyCode::Char('a' | 'A') => {
+                        let all_on = d.rows.iter().all(|r| r.on);
+                        for row in &mut d.rows {
+                            row.on = !all_on;
+                        }
+                        self.dialog = Some(Dialog::Sync(d));
+                    }
+                    _ => self.dialog = Some(Dialog::Sync(d)),
                 }
             }
             Dialog::Learn(mut d) => {
@@ -8932,7 +9029,151 @@ impl App {
             self.status = Some(" cannot compare inside an archive ".into());
             return;
         }
+        self.compare_then_sync = false;
         self.dialog = Some(Dialog::Compare(0));
+    }
+
+    /// F9 > Command > Synchronize: the same comparison C-x d runs, and
+    /// then the plan it implies. Marking the differences and leaving F5
+    /// to guess the direction is what mc stops at, and it is wrong
+    /// exactly when the differences run both ways.
+    fn open_sync(&mut self) {
+        if self.panels[0].archive.is_some() || self.panels[1].archive.is_some() {
+            self.status = Some(" cannot synchronize inside an archive ".into());
+            return;
+        }
+        if self.panels[0].is_remote() || self.panels[1].is_remote() {
+            self.status = Some(" synchronize is between two local directories ".into());
+            return;
+        }
+        self.compare_then_sync = true;
+        self.dialog = Some(Dialog::Compare(0));
+    }
+
+    /// Whether the comparison dialog on screen was opened by
+    /// Synchronize, which is all the drawing needs to know.
+    pub fn comparing_to_sync(&self) -> bool {
+        self.compare_then_sync
+    }
+
+    /// What the comparison marked, as a plan: which way each difference
+    /// would be copied, and why it is a difference at all.
+    fn sync_plan(&self) -> Vec<SyncRow> {
+        let mut names: Vec<std::ffi::OsString> = self.panels[0]
+            .marked
+            .iter()
+            .chain(self.panels[1].marked.iter())
+            .cloned()
+            .collect();
+        names.sort();
+        names.dedup();
+        let side = |at: usize, name: &std::ffi::OsString| {
+            self.panels[at]
+                .entries
+                .iter()
+                .find(|e| &e.name == name && !e.is_dir())
+        };
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let (to_right, note) = match (side(0, &name), side(1, &name)) {
+                    (Some(_), None) => (true, "only on the left"),
+                    (None, Some(_)) => (false, "only on the right"),
+                    // both have it and it differs: the newer one is the
+                    // one to keep, and a tie is left pointing right
+                    // rather than guessed at
+                    (Some(l), Some(r)) => match (l.mtime, r.mtime) {
+                        (Some(a), Some(b)) if a > b => (true, "newer on the left"),
+                        (Some(a), Some(b)) if b > a => (false, "newer on the right"),
+                        _ => (true, "differs"),
+                    },
+                    (None, None) => return None,
+                };
+                Some(SyncRow {
+                    name,
+                    to_right,
+                    on: true,
+                    note,
+                })
+            })
+            .collect()
+    }
+
+    /// Open the plan, or say there is nothing to do.
+    fn open_sync_plan(&mut self) {
+        self.compare_then_sync = false;
+        let rows = self.sync_plan();
+        if rows.is_empty() {
+            self.status = Some(" the two directories agree ".into());
+            return;
+        }
+        self.dialog = Some(Dialog::Sync(Box::new(SyncDialog {
+            rows,
+            cursor: 0,
+            top: 0,
+            left: self.panels[0].local_cwd().display().to_string(),
+            right: self.panels[1].local_cwd().display().to_string(),
+        })));
+    }
+
+    /// Run the plan: one copy job per direction, each told to replace
+    /// what it lands on - that question was answered by opening this
+    /// dialog and leaving the row on.
+    fn start_sync(&mut self, d: &SyncDialog) {
+        let (mut rightward, mut leftward) = (Vec::new(), Vec::new());
+        for row in d.rows.iter().filter(|r| r.on) {
+            match row.to_right {
+                true => rightward.push(self.panels[0].local_cwd().join(&row.name)),
+                false => leftward.push(self.panels[1].local_cwd().join(&row.name)),
+            }
+        }
+        if rightward.is_empty() && leftward.is_empty() {
+            self.status = Some(" nothing left switched on ".into());
+            return;
+        }
+        let opts = TransferOpts {
+            overwrite: true,
+            ..TransferOpts::default()
+        };
+        for (sources, dest) in [
+            (rightward, self.panels[1].local_cwd()),
+            (leftward, self.panels[0].local_cwd()),
+        ] {
+            if sources.is_empty() {
+                continue;
+            }
+            let title = format!(
+                " synchronize {} item(s) to {} ",
+                sources.len(),
+                dest.display()
+            );
+            let handle = fsops::spawn_copy(sources, dest, opts, None);
+            self.push_job(title, handle);
+        }
+    }
+
+    /// A job with nothing special about it: the fields every one of them
+    /// starts with, in one place.
+    fn push_job(&mut self, title: String, handle: fsops::JobHandle) {
+        self.jobs.push(Job {
+            title,
+            handle,
+            total_files: 0,
+            total_bytes: 0,
+            files_done: 0,
+            bytes_done: 0,
+            current: PathBuf::new(),
+            file_done: 0,
+            file_total: 0,
+            rate: 0.0,
+            rate_mark: (Instant::now(), 0),
+            started: Instant::now(),
+            ask: None,
+            button: 0,
+            src_panel: self.active,
+            background: false,
+            moved: Vec::new(),
+        });
     }
 
     fn compare_dirs(&mut self, mode: rcmd_core::compare::Mode) {
@@ -8952,6 +9193,10 @@ impl App {
         }
         let known = diff.count();
         if diff.undecided.is_empty() {
+            if self.compare_then_sync {
+                self.open_sync_plan();
+                return;
+            }
             self.status = Some(format!(" {known} difference(s) marked "));
             return;
         }
@@ -8968,6 +9213,7 @@ impl App {
             handle,
             total,
             done: 0,
+            sync: std::mem::take(&mut self.compare_then_sync),
         });
     }
 
@@ -8998,10 +9244,14 @@ impl App {
             .map(|c| (c.total, c.done))
             .unwrap_or((0, 0));
         if finished {
-            self.compare = None;
+            let sync = self.compare.take().is_some_and(|c| c.sync);
             let marked = self.panels[0].marked.len().max(self.panels[1].marked.len());
             self.status = Some(format!(" {marked} difference(s) marked ({total} read) "));
             self.dirty = true;
+            if sync {
+                self.compare_then_sync = true;
+                self.open_sync_plan();
+            }
         } else {
             self.status = Some(format!(" comparing… {done} differ so far - Esc cancels "));
         }
@@ -9592,25 +9842,7 @@ impl App {
         };
         let count = pairs.len();
         let handle = fsops::spawn_undo_move(pairs);
-        self.jobs.push(Job {
-            title: format!(" put {count} item(s) back "),
-            handle,
-            total_files: 0,
-            total_bytes: 0,
-            files_done: 0,
-            bytes_done: 0,
-            current: PathBuf::new(),
-            file_done: 0,
-            file_total: 0,
-            rate: 0.0,
-            rate_mark: (Instant::now(), 0),
-            started: Instant::now(),
-            ask: None,
-            button: 0,
-            src_panel: self.active,
-            background: false,
-            moved: Vec::new(),
-        });
+        self.push_job(format!(" put {count} item(s) back "), handle);
     }
 
     /// Copy INTO an archive: zip appends in place, tar (plain or

@@ -137,6 +137,10 @@ pub struct TransferOpts {
     /// Recompute relative symlinks so they resolve to the same file
     /// from wherever they land.
     pub stable_symlinks: bool,
+    /// Replace an existing target without asking. Off everywhere the
+    /// user has not already answered that question - which is what a
+    /// synchronize is, and nothing else is.
+    pub overwrite: bool,
 }
 
 impl Default for TransferOpts {
@@ -146,6 +150,7 @@ impl Default for TransferOpts {
             follow_links: false,
             dive: true,
             stable_symlinks: true,
+            overwrite: false,
         }
     }
 }
@@ -937,6 +942,9 @@ impl Ctx {
         dst: &Path,
         can_append: bool,
     ) -> Result<Overwrite, Aborted> {
+        if self.opts.overwrite {
+            return Ok(Overwrite::Replace);
+        }
         match self.policy {
             Policy::All => return Ok(Overwrite::Replace),
             Policy::None => return Ok(self.skip()),
