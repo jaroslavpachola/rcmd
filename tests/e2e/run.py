@@ -937,6 +937,44 @@ def test_archive_write():
     shutil.rmtree(root)
 
 
+def test_wipeapply():
+    """M-Del overwrites before it deletes; C-g runs one command per
+    marked file."""
+    root, play, home = sandbox()
+    open(os.path.join(play, "secret.txt"), "w").write("the password is hunter2\n")
+    for name in ("one.txt", "two.txt"):
+        open(os.path.join(play, name), "w").write(name + "\n")
+
+    s = Session(play, home)
+    s.send(b"\x13secret\r", wait=STEP)
+    s.send(b"\x1b[3;3~", wait=STEP)            # M-Del
+    scr = s.screen()
+    check("wipe: it asks, and says what it is worth",
+          "Wipe" in scr and "snapshot" in scr, scr)
+    s.send(b"\t\r", wait=STEP * 3)             # -> Yes
+    check("wipe: it ran", wait_for(s, "done -"))
+    check("wipe: the file is gone",
+          not os.path.exists(os.path.join(play, "secret.txt")))
+
+    # one command per marked file
+    s.send(b"\x13one.txt\r", wait=STEP)
+    s.send(INSERT, wait=STEP)
+    s.send(b"\x13two.txt\r", wait=STEP)
+    s.send(INSERT, wait=STEP)
+    s.send(b"\x07", wait=STEP)                 # C-g
+    check("apply: it asks for the command",
+          "Apply to each" in s.screen(), s.screen())
+    s.send(b"cp %f copy-of-%f\r", wait=STEP * 4)
+    s.send(b"\r", wait=STEP * 2)               # past the "press Enter"
+    s.send(b"\x12", wait=STEP * 2)             # C-r reload
+    check("apply: it ran once per file",
+          os.path.exists(os.path.join(play, "copy-of-one.txt"))
+          and os.path.exists(os.path.join(play, "copy-of-two.txt")),
+          str(sorted(os.listdir(play))))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_panelconveniences():
     """C-x m puts the marks back, C-x space sizes every directory, and
     C-F1 / C-F2 give one panel the screen."""
@@ -5525,6 +5563,7 @@ def main():
         test_pack,
         test_undo,
         test_sync,
+        test_wipeapply,
         test_panelconveniences,
         test_remote,
         test_filtersets,

@@ -430,6 +430,82 @@ pub fn spawn_delete(paths: Vec<PathBuf>, permanent: bool) -> JobHandle {
     })
 }
 
+/// Overwrite every byte of each file, then unlink it. Far calls this
+/// wipe and keeps it on Alt+Del.
+///
+/// What it promises is what it does: the bytes that were in those
+/// blocks are written over once, and `fsync` is asked to put that on
+/// the device. What it cannot promise is that no copy survives - a
+/// copy-on-write filesystem writes the zeroes somewhere else, an SSD's
+/// controller may do the same, and a snapshot or a backup was never
+/// this file's to overwrite. It is a better delete, not an erasure.
+pub fn spawn_wipe(paths: Vec<PathBuf>) -> JobHandle {
+    spawn(move |ctx| {
+        let (files, bytes) = scan(&paths);
+        let _ = ctx.tx.send(JobEvent::Total { files, bytes });
+        for path in &paths {
+            wipe_tree(ctx, path)?;
+        }
+        Ok(())
+    })
+}
+
+fn wipe_tree(ctx: &mut Ctx, path: &Path) -> Result<(), Aborted> {
+    if ctx.cancelled() {
+        return Err(Aborted);
+    }
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) => return ctx.error(path, &err.to_string()),
+    };
+    // a symlink has no bytes of its own worth overwriting; the file it
+    // points at is not the one that was asked for
+    if meta.is_dir() {
+        let entries = match fs::read_dir(path) {
+            Ok(entries) => entries,
+            Err(err) => return ctx.error(path, &err.to_string()),
+        };
+        for entry in entries.flatten() {
+            wipe_tree(ctx, &entry.path())?;
+        }
+        return match fs::remove_dir(path) {
+            Ok(()) => {
+                ctx.files_done += 1;
+                ctx.progress(path);
+                Ok(())
+            }
+            Err(err) => ctx.error(path, &err.to_string()),
+        };
+    }
+    if meta.is_file()
+        && let Err(err) = overwrite(path, meta.len())
+    {
+        return ctx.error(path, &err.to_string());
+    }
+    match fs::remove_file(path) {
+        Ok(()) => {
+            ctx.files_done += 1;
+            ctx.bytes_done += meta.len();
+            ctx.progress(path);
+            Ok(())
+        }
+        Err(err) => ctx.error(path, &err.to_string()),
+    }
+}
+
+/// One pass of zeroes over the whole file, flushed to the device.
+fn overwrite(path: &Path, len: u64) -> io::Result<()> {
+    let mut file = fs::OpenOptions::new().write(true).open(path)?;
+    let zeros = vec![0u8; 64 * 1024];
+    let mut left = len;
+    while left > 0 {
+        let take = left.min(zeros.len() as u64) as usize;
+        file.write_all(&zeros[..take])?;
+        left -= take as u64;
+    }
+    file.sync_all()
+}
+
 /// Copy out of a read-only [`FsProvider`] (an archive) onto the local
 /// filesystem, with the same progress/overwrite/error protocol as copy.
 pub fn spawn_extract(fs: Arc<dyn FsProvider>, sources: Vec<PathBuf>, dest: PathBuf) -> JobHandle {
@@ -3160,6 +3236,47 @@ mod tests {
     /// A name that is not there yet is packed into rather than
     /// appended to: this is what Alt+F5 does, and the only difference
     /// from appending is that there is nothing to carry across.
+    #[test]
+    fn wipe_overwrites_before_it_unlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tree = tmp.path().join("tree");
+        fs::create_dir_all(tree.join("deep")).unwrap();
+        fs::write(tree.join("secret.txt"), b"the password is hunter2").unwrap();
+        fs::write(tree.join("deep/also.txt"), b"and here too").unwrap();
+        std::os::unix::fs::symlink("secret.txt", tree.join("link")).unwrap();
+
+        let out = run(spawn_wipe(vec![tree.clone()]), vec![]);
+        assert!(!out.aborted && out.asks.is_empty(), "{:?}", out.asks);
+        assert!(!tree.exists(), "the tree went");
+
+        // the bytes are gone from the filesystem as far as reading it
+        // can tell - which is all this promises
+        let mut found = false;
+        for entry in walkdir(tmp.path()) {
+            if let Ok(text) = fs::read(&entry) {
+                found |= String::from_utf8_lossy(&text).contains("hunter2");
+            }
+        }
+        assert!(!found, "the words are still somewhere in the tempdir");
+    }
+
+    /// Every file under a directory, for the test above.
+    fn walkdir(root: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let Ok(entries) = fs::read_dir(root) else {
+            return out;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(walkdir(&path));
+            } else {
+                out.push(path);
+            }
+        }
+        out
+    }
+
     #[test]
     fn packing_into_a_name_that_is_not_there_yet_creates_it() {
         for name in ["new.zip", "new.tar", "new.tar.gz", "new.tar.bz2"] {

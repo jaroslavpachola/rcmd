@@ -192,6 +192,8 @@ exactly where it was.
 | Alt+F5 | Pack the marked entries into a new archive (the name says the format) |
 | F8 | Delete to trash |
 | Shift+F8 | Delete permanently |
+| Alt+Del | Wipe: overwrite every byte, then delete |
+| Ctrl+G | Apply a command to each marked file, one at a time |
 | Ctrl+X u | Undo the last move (asks first; a second time is the redo) |
 | Alt+N | Sort by name (again = reverse; extension, size, the three times, owner, group and *unsorted* live in the panel's own F9 → Left/Right menu) |
 | Alt+T | Cycle listing format: brief (names in columns) / full / long (active long panel = full-width one-panel view) |
@@ -262,6 +264,22 @@ The overwrite prompt is MC's: both files' size and date on screen, then
 **Overwrite / Append / Reget** for this file and **All / Update / Size
 differs / None** for every remaining one (Up/Down switch rows). Append
 and Reget - MC's resume - need a local file on both sides.
+
+**Alt+Del wipes**: every byte of each file is overwritten once and
+flushed to the device before it is unlinked. What that is worth is on
+the confirm dialog, because the difference matters: the bytes that were
+in those blocks are written over, but a copy-on-write filesystem writes
+the zeroes somewhere else, an SSD's controller may do the same, and a
+snapshot or a backup was never this file's to overwrite. It is a better
+delete, not an erasure.
+
+**Ctrl+G applies a command to each marked file**, one at a time:
+`[[commands]]` hands every marked file to a single invocation, which is
+the right shape for `tar` and the wrong one for `convert`. The command
+is a template like any other (`%f` is the file, `%d` the directory) and
+what runs is one line per file, in the terminal, where the output and
+Ctrl+C are as they always are. A `%{question}` is refused here rather
+than asked two hundred times.
 
 **Ctrl+X u undoes the last move.** Every move F6 makes onto a name that
 was free is recorded as it happens, and `Ctrl+X u` asks before putting

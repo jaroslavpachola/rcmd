@@ -134,6 +134,7 @@ impl InputAction {
         Some(match self {
             InputAction::CopyTo { .. } | InputAction::MoveTo { .. } => "destination",
             InputAction::Mkdir => "mkdir",
+            InputAction::Apply => "apply",
             InputAction::Pack { .. } => "pack",
             InputAction::SftpConnect => "connect",
             InputAction::EditNew => "edit",
@@ -174,6 +175,8 @@ pub enum InputAction {
         sources: Vec<PathBuf>,
     },
     Mkdir,
+    /// C-g: the value is a command run once per marked file.
+    Apply,
     /// M-F5: the value is the archive to pack the marked files into.
     Pack {
         sources: Vec<PathBuf>,
@@ -708,6 +711,8 @@ pub enum ConfirmKind {
     Execute,
     /// `C-x u` about to put the last move back.
     Undo,
+    /// `M-Del` about to overwrite and delete.
+    Wipe,
 }
 
 /// mc's Learn keys: the keys a terminal is supposed to send, and which
@@ -2170,6 +2175,10 @@ pub enum Action {
     /// Give one panel the whole screen by hiding the other; again
     /// brings it back. The index is the panel to hide.
     HidePanel(usize),
+    /// M-Del: overwrite, then delete.
+    Wipe,
+    /// C-g: run one command per marked file.
+    Apply,
     /// Far's M-F1 / M-F2: the list of everywhere this *named* panel can
     /// go - the open connections and archives, and what is mounted.
     Drives(usize),
@@ -2273,6 +2282,8 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Ma&ke directory...", "F7", Action::Mkdir)),
             Some(("&Delete (trash)", "F8", Action::Delete)),
             Some(("Delete &permanently", "S-F8", Action::DeletePerm)),
+            Some(("&Wipe (overwrite, then delete)", "M-Del", Action::Wipe)),
+            Some(("App&ly a command to each...", "C-g", Action::Apply)),
             None,
             Some(("&Select group...", "+", Action::SelectGroup)),
             Some(("&Unselect group...", "-", Action::UnselectGroup)),
@@ -5147,6 +5158,8 @@ impl App {
             Action::RestoreMarks => self.restore_marks(),
             Action::DirSizeAll => self.dir_size_all(),
             Action::HidePanel(at) => self.hide_panel(at),
+            Action::Wipe => self.open_wipe(),
+            Action::Apply => self.open_apply(),
             Action::Delete => self.open_delete(false),
             Action::DeletePerm => self.open_delete(true),
             Action::SelectGroup => self.open_select(true),
@@ -9265,6 +9278,97 @@ impl App {
         self.panel().move_down();
     }
 
+    /// M-Del: overwrite what is marked and then delete it. The confirm
+    /// dialog says what that is and is not worth, since the difference
+    /// matters more here than anywhere else in the program.
+    fn open_wipe(&mut self) {
+        if !self.require_local() {
+            return;
+        }
+        let paths = self.panels[self.active].targets();
+        if paths.is_empty() {
+            self.status = Some(" nothing selected ".into());
+            return;
+        }
+        let what = self.describe(&paths);
+        self.dialog = Some(Dialog::Confirm(ConfirmDialog {
+            title: " Wipe ".into(),
+            message: format!(
+                "Overwrite {what} and delete? (no undo, and no promise against a snapshot)"
+            ),
+            yes: false,
+            paths,
+            permanent: true,
+            kind: ConfirmKind::Wipe,
+            command: None,
+        }));
+    }
+
+    fn start_wipe(&mut self, paths: Vec<PathBuf>) {
+        let count = paths.len();
+        let handle = fsops::spawn_wipe(paths);
+        self.push_job(format!(" wipe {count} item(s) "), handle);
+    }
+
+    /// C-g: one command per marked file. `[[commands]]` hands every
+    /// marked file to one invocation, which is the right shape for
+    /// `tar` and the wrong one for `convert`.
+    fn open_apply(&mut self) {
+        if self.panels[self.active].targets().is_empty() {
+            self.status = Some(" nothing selected ".into());
+            return;
+        }
+        self.dialog = Some(Dialog::Input(InputDialog {
+            title: " Apply to each marked file ".into(),
+            value: String::new(),
+            cursor: 0,
+            action: InputAction::Apply,
+            hist: None,
+        }));
+    }
+
+    /// The answer to C-g: the template, expanded once per marked file
+    /// and run as one script, so the output, the ordering and the
+    /// Ctrl+C are the terminal's, as they are for every other command.
+    fn run_apply(&mut self, template: &str) {
+        let template = template.trim();
+        if template.is_empty() {
+            return;
+        }
+        if template.contains("%{") {
+            self.status = Some(" a %{question} cannot be asked once per file ".into());
+            return;
+        }
+        let panel = &self.panels[self.active];
+        let names: Vec<String> = panel
+            .targets()
+            .iter()
+            .filter_map(|path| path.file_name())
+            .map(|name| shell_quote(&name.to_string_lossy()))
+            .collect();
+        if names.is_empty() {
+            self.status = Some(" nothing selected ".into());
+            return;
+        }
+        let dir = shell_quote(&panel.local_cwd().to_string_lossy());
+        let there = self.macro_side(self.active ^ 1);
+        let clip = clip_file_read().unwrap_or_default();
+        let mut lines = Vec::with_capacity(names.len());
+        for name in names {
+            let material = Macros {
+                // one file is the cursor file, the marked set and the
+                // selection, all three: this command is about it alone
+                here: (name.clone(), name.clone(), dir.clone()),
+                there: there.clone(),
+                clip: clip.clone(),
+            };
+            if let (Expanded::Done(cmd), _) = expand_template(template, &material) {
+                lines.push(cmd);
+            }
+        }
+        self.pending_exec = Some(Exec::Command(lines.join("\n")));
+    }
+
     /// C-F1 / C-F2: hide a panel, and give the screen to the other.
     /// The hidden one keeps its directory, its marks and its listing -
     /// it is not showing, which is not the same as not being there.
@@ -9887,6 +9991,7 @@ impl App {
                 }
                 self.start_pack(sources, archive, PathBuf::new());
             }
+            InputAction::Apply => self.run_apply(&value),
             InputAction::SftpConnect => self.connect_remote(&value),
             InputAction::EditNew => {
                 let name = value.trim();
@@ -11568,6 +11673,7 @@ impl App {
         match d.kind {
             ConfirmKind::Delete => self.start_delete(d.paths, d.permanent),
             ConfirmKind::Undo => self.start_undo(),
+            ConfirmKind::Wipe => self.start_wipe(d.paths),
             ConfirmKind::Quit => self.quit_now(),
             ConfirmKind::HotlistDelete { group, index } => {
                 self.hotlist_drop(&group, index);

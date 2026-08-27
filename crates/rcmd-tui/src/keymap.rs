@@ -22,6 +22,8 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("f6", "move"),
     ("f7", "mkdir"),
     ("alt+f5", "pack"),            // NC/VC: pack the marked files into an archive
+    ("alt+delete", "wipe"),        // Far: overwrite, then delete
+    ("ctrl+g", "apply"),           // Far: one command per marked file
     ("ctrl+insert", "copy-names"), // Far: the names on the clipboard
     ("ctrl+alt+insert", "copy-paths"),
     ("ctrl+f1", "hide-left"), // VC: give one panel the screen
@@ -236,6 +238,8 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "copy-paths" => Action::CopyNames { paths: true },
         "restore-marks" => Action::RestoreMarks,
         "dir-size-all" => Action::DirSizeAll,
+        "wipe" => Action::Wipe,
+        "apply" => Action::Apply,
         "hide-left" => Action::HidePanel(0),
         "hide-right" => Action::HidePanel(1),
         "drives-left" => Action::Drives(0),

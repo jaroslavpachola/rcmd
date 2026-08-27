@@ -1,5 +1,46 @@
 # Changelog
 
+## 4.23.0 - 2026-08-27
+
+- **Alt+Del wipes**: every byte of a file overwritten once and flushed
+  to the device before it is unlinked, Far's key and Far's verb. The
+  confirm dialog says what that is worth and what it is not - a
+  copy-on-write filesystem writes the zeroes elsewhere, an SSD's
+  controller may too, and a snapshot was never this file's to
+  overwrite. It is a better delete, not an erasure, and saying so is
+  part of the feature.
+- **Ctrl+G applies a command to each marked file.** `[[commands]]`
+  hands every marked file to one invocation, which is right for `tar`
+  and wrong for `convert`; this expands the template once per file and
+  runs the lot as one script, so the output and the Ctrl+C are the
+  terminal's as usual. A `%{question}` is refused rather than asked
+  once per file.
+
+## 4.22.0 - 2026-08-27
+
+(The code shipped in the commit that named this version; the version
+bump and these notes did not, and arrive with 4.23.0.)
+
+Four small things the other orthodox managers have and rcmd did not:
+
+- **`C-x m` puts the marks back.** Marks die to an operation, to `%u`
+  and to a compare; Far has had a key that restores the last set since
+  forever, and now so does rcmd.
+- **`C-x Space` sizes every directory in the panel**, one after
+  another, where `C-Space` does the one under the cursor. Total
+  Commander does the whole listing in a keystroke; the scans stay one
+  at a time, which is what the disk wants anyway.
+- **`C-Ins` and `C-A-Ins` copy the marked names and their whole paths
+  to the clipboard** (Far's keys). The editor has talked to the desktop
+  clipboard since 4.0 and the panel never did; with no clipboard tool
+  installed the names still reach the clipboard file, which is what
+  `%q` reads.
+- **`C-F1` and `C-F2` hide a panel** and give the other the screen,
+  which is Volkov Commander's way of getting one panel's worth of room
+  without changing what it is showing. The hidden panel keeps its
+  directory, its marks and its listing, and the focus never stays on
+  something nobody can see.
+
 ## 4.21.0 - 2026-08-27
 
 - **`rcmd --remote` drives a running instance.** Every instance listens
