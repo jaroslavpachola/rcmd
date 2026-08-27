@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.12.0 - 2026-08-27
+
+- **Alt+F5 packs into a new archive.** rcmd could browse ten formats,
+  extract from them and copy *into* an existing zip or tar, and had no
+  way to make one - the verb NC, Volkov Commander and Total Commander
+  have all had on that key. The marked entries (or the cursor one) go
+  into an archive whose **name says the container** (`.zip`, `.tar`,
+  `.tar.gz`/`.tgz`, `.tar.xz`/`.txz`, `.tar.bz2`/`.tbz2`), offered in
+  the other panel's directory and named after the single entry or the
+  directory holding several. A name that is already an archive is added
+  to, which is what F5 into an open one does; anything rcmd cannot
+  write itself says so rather than leaving an empty file behind.
+
 ## 4.11.1 - 2026-08-27
 
 - **The rules speak the mask list too.** `[[highlight]]`'s `match` and

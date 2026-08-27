@@ -187,6 +187,7 @@ exactly where it was.
 | F5 | Copy marked (or cursor) entry - opens MC's form: source mask, destination, preserve attributes / follow links / dive into subdirs / stable symlinks, and OK / Background / Cancel |
 | F6 | Move / rename |
 | F7 | Make directory |
+| Alt+F5 | Pack the marked entries into a new archive (the name says the format) |
 | F8 | Delete to trash |
 | Shift+F8 | Delete permanently |
 | Alt+N | Sort by name (again = reverse; other orders in the panel's own F9 → Left/Right menu) |
@@ -583,6 +584,16 @@ destination panel inside one, or any destination written as
 `path/to/archive.zip://dir`. A member with the same name is **replaced**,
 not shadowed by a second copy of the name. The archive index loads once
 at open; each member read decodes only that member.
+
+**Alt+F5 packs**: the marked entries (or the one under the cursor) go
+into an archive of their own. The **name decides the container** -
+`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.xz`/`.txz`, `.tar.bz2`/`.tbz2` -
+and it is offered in the other panel's directory, named after the single
+entry or after the directory holding several, the way either would have
+been named by hand. One entry or a whole tree goes in; a name that is
+already an archive is added to rather than replaced, which is the same
+thing F5 into an open one does. Anything rcmd cannot write itself says
+so rather than producing an empty file.
 
 Inside a `.zip` or `.tar`, **F8 deletes**, **F6 renames** (type a bare
 name - an absolute one would mean leaving the archive, which is a copy)

@@ -1564,6 +1564,12 @@ pub fn spawn_pack_zip(sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) 
         // stream the members that survive across, uncompressed-copied
         // so nothing is decoded and re-encoded on the way
         let carried = (|| -> io::Result<()> {
+            if !archive.exists() {
+                // nothing to carry across: a name that is not there yet
+                // is how packing creates an archive instead of adding
+                // to one
+                return Ok(());
+            }
             let file = fs::File::open(&archive)?;
             let mut old = zip::ZipArchive::new(file)
                 .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
@@ -1977,6 +1983,9 @@ fn rewrite_tar(
     // stream the existing entries across unchanged (append_data /
     // append_link re-handle long names, so GNU/PAX entries survive)
     let copied = (|| -> io::Result<()> {
+        if !archive.exists() {
+            return Ok(()); // a new archive, as in the zip above
+        }
         let mut old = tar::Archive::new(tar_source(archive, &name)?);
         for entry in old.entries()? {
             let mut entry = entry?;
@@ -2967,6 +2976,43 @@ mod tests {
             .read_to_string(&mut content)
             .unwrap();
         assert_eq!(content, "was here");
+    }
+
+    /// A name that is not there yet is packed into rather than
+    /// appended to: this is what Alt+F5 does, and the only difference
+    /// from appending is that there is nothing to carry across.
+    #[test]
+    fn packing_into_a_name_that_is_not_there_yet_creates_it() {
+        for name in ["new.zip", "new.tar", "new.tar.gz", "new.tar.bz2"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let archive = tmp.path().join(name);
+            let payload = tmp.path().join("payload");
+            fs::create_dir(&payload).unwrap();
+            fs::write(payload.join("one.txt"), b"first").unwrap();
+            fs::create_dir(payload.join("deep")).unwrap();
+            fs::write(payload.join("deep/two.txt"), b"second").unwrap();
+
+            let handle = match name.ends_with(".zip") {
+                true => spawn_pack_zip(vec![payload.clone()], archive.clone(), PathBuf::new()),
+                false => spawn_pack_tar(vec![payload.clone()], archive.clone(), PathBuf::new()),
+            };
+            let result = run(handle, vec![]);
+            assert!(!result.aborted, "{name}");
+            assert_eq!(result.files_done, 2, "{name}");
+
+            let afs = crate::archive::ArchiveFs::open(&archive).unwrap();
+            for (member, want) in [
+                ("payload/one.txt", "first"),
+                ("payload/deep/two.txt", "second"),
+            ] {
+                let mut content = String::new();
+                afs.open_read(Path::new(member))
+                    .unwrap()
+                    .read_to_string(&mut content)
+                    .unwrap();
+                assert_eq!(content, want, "{name}: {member}");
+            }
+        }
     }
 
     /// An archive with a small tree in it, in whichever container.

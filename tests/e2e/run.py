@@ -222,6 +222,7 @@ def sandbox():
 
 # Key escape sequences
 F3, F5, F7, F8 = b"\x1b[13~", b"\x1b[15~", b"\x1b[18~", b"\x1b[19~"
+ALT_F5 = b"\x1b[15;3~"
 SF8 = b"\x1b[19;2~"
 DOWN, END, HOME_K, INSERT = b"\x1b[B", b"\x1b[F", b"\x1b[H", b"\x1b[2~"
 UP = b"\x1b[A"
@@ -919,6 +920,54 @@ def test_archive_write():
         body = z.read("renamed.txt").decode()
     check("archwrite: replaced, not shadowed",
           names.count("renamed.txt") == 1 and body == "replaced\n")
+    shutil.rmtree(root)
+
+
+def test_pack():
+    """M-F5 packs into an archive that is not there yet: the name says
+    the container, and the other panel's directory is where it lands."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "out"))
+    os.makedirs(os.path.join(play, "src"))
+    open(os.path.join(play, "src", "one.txt"), "w").write("first\n")
+    open(os.path.join(play, "src", "two.txt"), "w").write("second\n")
+    open(os.path.join(play, "loose.txt"), "w").write("alone\n")
+
+    s = Session(play, home, args=(play, os.path.join(play, "out")))
+    s.send(b"\x13src\r", wait=STEP)          # quick search -> src
+    s.send(ALT_F5, wait=STEP)
+    screen = s.screen()
+    check("pack: the dialog names what it is packing", "Pack" in screen, screen)
+    check("pack: it offers the other panel and a tarball name",
+          "out/src.tar.gz" in screen.replace(" ", ""), screen)
+
+    # take the offer of the directory but ask for a zip instead
+    s.send(b"\x15" + os.path.join(play, "out", "box.zip").encode() + b"\r",
+           wait=STEP * 3)
+    check("pack: the job ran", wait_for(s, "done -"))
+    with zipfile.ZipFile(os.path.join(play, "out", "box.zip")) as z:
+        names = sorted(z.namelist())
+        body = z.read("src/one.txt").decode()
+    check("pack: the tree went in",
+          names == ["src/", "src/one.txt", "src/two.txt"], names)
+    check("pack: with its contents", body == "first\n")
+
+    # two marked entries, and the default container this time
+    s.send(HOME_K, wait=STEP)
+    s.send(b"\x13loose\r", wait=STEP)
+    s.send(INSERT, wait=STEP)                # mark loose.txt
+    s.send(b"\x13src\r", wait=STEP)
+    s.send(INSERT, wait=STEP)                # and src
+    s.send(ALT_F5, wait=STEP)
+    check("pack: two marked entries are named as two", "2 items" in s.screen())
+    s.send(b"\x15" + os.path.join(play, "out", "both.tar.gz").encode() + b"\r",
+           wait=STEP * 3)
+    check("pack: the second job ran", wait_for(s, "done -"))
+    s.quit()
+    with tarfile.open(os.path.join(play, "out", "both.tar.gz")) as t:
+        names = sorted(m.name for m in t.getmembers() if m.isfile())
+    check("pack: both entries went in",
+          names == ["loose.txt", "src/one.txt", "src/two.txt"], names)
     shutil.rmtree(root)
 
 
@@ -5088,6 +5137,7 @@ def main():
         test_mbox,
         test_vfslist,
         test_archive_write,
+        test_pack,
         test_ftp,
         test_find,
         test_compare,

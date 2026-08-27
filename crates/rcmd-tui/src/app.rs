@@ -134,6 +134,7 @@ impl InputAction {
         Some(match self {
             InputAction::CopyTo { .. } | InputAction::MoveTo { .. } => "destination",
             InputAction::Mkdir => "mkdir",
+            InputAction::Pack { .. } => "pack",
             InputAction::SftpConnect => "connect",
             InputAction::EditNew => "edit",
             InputAction::QuickCd => "cd",
@@ -173,6 +174,10 @@ pub enum InputAction {
         sources: Vec<PathBuf>,
     },
     Mkdir,
+    /// M-F5: the value is the archive to pack the marked files into.
+    Pack {
+        sources: Vec<PathBuf>,
+    },
     /// F9 → Command → Remote link: the value is an sftp:// or ftp:// URL.
     SftpConnect,
     /// S-F4: the value is the file to edit (created on first save).
@@ -2057,6 +2062,8 @@ pub enum Action {
     Copy,
     Move,
     Mkdir,
+    /// M-F5: pack what is marked into an archive of its own.
+    Pack,
     Delete,
     DeletePerm,
     SelectGroup,
@@ -2152,6 +2159,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Copy...", "F5", Action::Copy)),
             Some(("&Move/rename...", "F6", Action::Move)),
             Some(("&Bulk rename (editor)...", "", Action::BulkRename)),
+            Some(("&Pack into archive...", "M-F5", Action::Pack)),
             Some(("Ma&ke directory...", "F7", Action::Mkdir)),
             Some(("&Delete (trash)", "F8", Action::Delete)),
             Some(("Delete &permanently", "S-F8", Action::DeletePerm)),
@@ -4796,6 +4804,7 @@ impl App {
                 | Action::Copy
                 | Action::Move
                 | Action::Mkdir
+                | Action::Pack
                 | Action::Delete
                 | Action::DeletePerm
                 | Action::Mark
@@ -4906,6 +4915,7 @@ impl App {
             Action::Copy => self.open_transfer(false),
             Action::Move => self.open_transfer(true),
             Action::Mkdir => self.open_mkdir(),
+            Action::Pack => self.open_pack(),
             Action::Delete => self.open_delete(false),
             Action::DeletePerm => self.open_delete(true),
             Action::SelectGroup => self.open_select(true),
@@ -9059,6 +9069,14 @@ impl App {
                 }
             }
 
+            InputAction::Pack { sources } => {
+                let archive = self.resolve(value.trim());
+                if archive.is_dir() {
+                    self.status = Some(" that is a directory, not an archive name ".into());
+                    return;
+                }
+                self.start_pack(sources, archive, PathBuf::new());
+            }
             InputAction::SftpConnect => self.connect_remote(&value),
             InputAction::EditNew => {
                 let name = value.trim();
@@ -9554,7 +9572,7 @@ impl App {
         } else if is_tar {
             fsops::spawn_pack_tar(sources.clone(), archive.clone(), inside)
         } else {
-            self.status = Some(" can only copy into .zip or .tar[.gz/xz/bz2] archives ".into());
+            self.status = Some(" only .zip and .tar[.gz/.xz/.bz2] archives can be written ".into());
             return;
         };
         self.jobs.push(Job {
@@ -10529,6 +10547,44 @@ impl App {
             value: String::new(),
             cursor: 0,
             action: InputAction::Mkdir,
+            hist: None,
+        }));
+    }
+
+    /// M-F5: pack what is marked into an archive of its own. The name
+    /// decides the container, which is how NC and VC have always asked
+    /// the question, and the other panel's directory is where it lands,
+    /// as with F5. An archive already at that name is added to rather
+    /// than replaced, which is what F5 into an open one does too.
+    fn open_pack(&mut self) {
+        if !self.require_local() {
+            return;
+        }
+        let sources = self.panels[self.active].targets();
+        if sources.is_empty() {
+            self.status = Some(" nothing selected ".into());
+            return;
+        }
+        // one entry names the archive after itself, several after the
+        // directory holding them - which is what either would have been
+        // called by hand
+        let stem = match sources.len() {
+            1 => sources[0].file_name(),
+            _ => self.panels[self.active].cwd.file_name(),
+        }
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "archive".into());
+        let other = &self.panels[self.active ^ 1];
+        let dir = match other.is_local() {
+            true => other.local_cwd(),
+            false => self.panels[self.active].local_cwd(),
+        };
+        let value = dir.join(format!("{stem}.tar.gz")).display().to_string();
+        self.dialog = Some(Dialog::Input(InputDialog {
+            title: format!(" Pack {} to: ", self.describe(&sources)),
+            cursor: value.chars().count(),
+            value,
+            action: InputAction::Pack { sources },
             hist: None,
         }));
     }
