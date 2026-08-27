@@ -339,6 +339,16 @@ instead of a glob. A regex that will not compile is quoted back at you
 rather than silently matching nothing. The panel names the filter it is
 under along its bottom edge, options included.
 
+A shell pattern is a **list**, which is Far Manager's mask language and
+what mc's single glob grows into: `*.c,*.h` is either of them, and a
+`|` takes a second list back out again, so `*.c,*.h|*_test.*` is the
+sources without the tests and `|*.o` is everything except objects.
+Whitespace around a mask is not part of it, one mask is still one mask,
+and the same list works in the find dialog's filename field. It is the
+shell-pattern switch's language alone: with the switch unticked the
+pattern is a regular expression, where `|` is the alternation it has
+always been.
+
 **Power tools**: Alt+F7 opens **find file** - where to start, a
 filename pattern, and the text to look for inside the files, with mc's
 answers beside them: **whole words**, **case sensitive**, **regular

@@ -1,6 +1,12 @@
 //! What mc's select, unselect and filter dialogs ask for: a pattern and
 //! the three answers that change what it means. One type for all three,
 //! because in mc they are the same dialog with a different title.
+//!
+//! A shell pattern is Far's *mask list* rather than mc's single glob:
+//! `*.c,*.h` is either of them and `*.c,*.h|*_test.*` is either of them
+//! with a second list taken back out. mc's plain `*.rs` is the one-mask
+//! case of it and keeps meaning what it meant. A regular expression is
+//! left alone, where `|` is the alternation it has always been.
 
 use crate::glob::glob_match;
 
@@ -48,9 +54,38 @@ impl std::fmt::Display for Pattern {
 
 /// A compiled [`Pattern`], ready to run against a name.
 pub enum Matcher {
-    /// The glob, lowercased already when the match is case-insensitive.
-    Glob(String, bool),
+    /// A mask list: a name is in when any of `include` matches it and
+    /// none of `exclude` does. Both sides are lowercased already when
+    /// the match is case-insensitive, and `fold` says so.
+    Masks {
+        /// Empty means everything, which is what `|*.o` asks for.
+        include: Vec<String>,
+        exclude: Vec<String>,
+        fold: bool,
+    },
     Regex(regex::Regex),
+}
+
+/// Split a mask list into its two halves. The first `|` is the one that
+/// divides them; commas separate the masks on each side, whitespace
+/// around a mask is not part of it, and an empty mask is dropped rather
+/// than left to match nothing.
+fn parse_masks(text: &str, fold: bool) -> (Vec<String>, Vec<String>) {
+    let (included, excluded) = match text.split_once('|') {
+        Some((left, right)) => (left, right),
+        None => (text, ""),
+    };
+    let list = |part: &str| -> Vec<String> {
+        part.split(',')
+            .map(str::trim)
+            .filter(|mask| !mask.is_empty())
+            .map(|mask| match fold {
+                true => mask.to_lowercase(),
+                false => mask.to_string(),
+            })
+            .collect()
+    };
+    (list(included), list(excluded))
 }
 
 impl Pattern {
@@ -58,9 +93,12 @@ impl Pattern {
     /// the user's regular expression, so it is worth showing.
     pub fn compile(&self) -> Result<Matcher, String> {
         if self.shell {
-            return Ok(match self.case_sensitive {
-                true => Matcher::Glob(self.text.clone(), true),
-                false => Matcher::Glob(self.text.to_lowercase(), false),
+            let fold = !self.case_sensitive;
+            let (include, exclude) = parse_masks(&self.text, fold);
+            return Ok(Matcher::Masks {
+                include,
+                exclude,
+                fold,
             });
         }
         regex::RegexBuilder::new(&self.text)
@@ -73,17 +111,38 @@ impl Pattern {
     /// Whether this pattern lets everything through, which is how a
     /// filter is cleared.
     pub fn is_open(&self) -> bool {
-        self.text.is_empty() || (self.shell && self.text.chars().all(|c| c == '*'))
+        if self.text.is_empty() {
+            return true;
+        }
+        if !self.shell {
+            return false;
+        }
+        // every mask lets everything through, and nothing is taken back
+        // out again
+        let (include, exclude) = parse_masks(&self.text, false);
+        exclude.is_empty() && include.iter().all(|mask| mask.chars().all(|c| c == '*'))
     }
 }
 
 impl Matcher {
     pub fn matches(&self, name: &str) -> bool {
         match self {
-            Matcher::Glob(pattern, true) => glob_match(pattern, name),
-            // the pattern was lowercased at compile time; the name has
-            // to be lowered here, there being nowhere earlier to do it
-            Matcher::Glob(pattern, false) => glob_match(pattern, &name.to_lowercase()),
+            Matcher::Masks {
+                include,
+                exclude,
+                fold,
+            } => {
+                // the masks were lowercased at compile time; the name
+                // has to be lowered here, there being nowhere earlier
+                // to do it
+                let name = match fold {
+                    true => std::borrow::Cow::Owned(name.to_lowercase()),
+                    false => std::borrow::Cow::Borrowed(name),
+                };
+                let matched =
+                    include.is_empty() || include.iter().any(|mask| glob_match(mask, &name));
+                matched && !exclude.iter().any(|mask| glob_match(mask, &name))
+            }
             Matcher::Regex(re) => re.is_match(name),
         }
     }
@@ -110,6 +169,57 @@ mod tests {
         assert!(!shell("*.RS", true).matches("main.rs"));
         assert!(shell("*.RS", false).matches("main.rs"));
         assert!(shell("*.rs", false).matches("MAIN.RS"));
+    }
+
+    #[test]
+    fn a_mask_list_is_any_of_its_masks() {
+        let m = shell("*.c,*.h", true);
+        assert!(m.matches("main.c"));
+        assert!(m.matches("main.h"));
+        assert!(!m.matches("main.rs"));
+        // the space after a comma belongs to the typing, not the mask
+        let spaced = shell("*.c, *.h", true);
+        assert!(spaced.matches("main.h"));
+        // and one mask is still one mask, which is what mc asks for
+        assert!(shell("*.rs", true).matches("main.rs"));
+    }
+
+    #[test]
+    fn what_follows_the_bar_is_taken_back_out() {
+        let m = shell("*.c,*.h|*_test.*", true);
+        assert!(m.matches("parser.c"));
+        assert!(!m.matches("parser_test.c"));
+        // nothing on the left is everything on the left
+        let all_but = shell("|*.o,*.d", true);
+        assert!(all_but.matches("main.c"));
+        assert!(!all_but.matches("main.o"));
+        // an exclusion beats an include that also matched
+        assert!(!shell("*|*", true).matches("anything"));
+    }
+
+    #[test]
+    fn masks_fold_case_on_both_sides() {
+        let m = shell("*.C,*.H|*_TEST.*", false);
+        assert!(m.matches("main.c"));
+        assert!(!m.matches("main_test.c"));
+        assert!(!shell("*.C", true).matches("main.c"));
+    }
+
+    #[test]
+    fn a_regular_expression_keeps_its_alternation() {
+        // the mask list's `|` is the shell switch's alone: in a regex
+        // it is the alternation it has always been, and reading it as
+        // an exclusion would quietly invert what the user asked for
+        let re = Pattern {
+            text: "foo|bar".into(),
+            shell: false,
+            case_sensitive: true,
+            files_only: true,
+        }
+        .compile()
+        .unwrap();
+        assert!(re.matches("foo"));
+        assert!(re.matches("bar"));
     }
 
     #[test]
@@ -150,6 +260,22 @@ mod tests {
         assert!(
             !Pattern {
                 text: "*.rs".into(),
+                ..Pattern::default()
+            }
+            .is_open()
+        );
+        // every mask lets everything through
+        assert!(
+            Pattern {
+                text: "*,*".into(),
+                ..Pattern::default()
+            }
+            .is_open()
+        );
+        // but an exclusion is a filter however open the other side is
+        assert!(
+            !Pattern {
+                text: "|*.o".into(),
                 ..Pattern::default()
             }
             .is_open()

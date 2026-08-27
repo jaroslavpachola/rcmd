@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.11.0 - 2026-08-27
+
+- **A shell pattern is a mask list.** Far Manager's mask language, in
+  the select, unselect, filter and find dialogs: `*.c,*.h` is either of
+  them, and what follows a `|` is taken back out, so `*.c,*.h|*_test.*`
+  is the sources without the tests and `|*.o` is everything except
+  objects. One mask is still one mask, so every pattern that worked
+  yesterday means the same thing today, unless it contained a comma or
+  a bar meant literally. A regular expression is untouched: there `|`
+  is the alternation it has always been.
+
 ## 4.10.3 - 2026-08-27
 
 - **A file that never says how long it is is read for its length.**
