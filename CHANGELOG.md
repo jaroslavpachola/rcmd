@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.11.1 - 2026-08-27
+
+- **The rules speak the mask list too.** `[[highlight]]`'s `match` and
+  `[[open]]`/`[[view]]`'s take what 4.11.0 gave the dialogs, so
+  `match = "*.jpg,*.png|thumb_*"` is one rule rather than two and an
+  exception. Case works as it did on each: a highlight mask is
+  case-sensitive, an opener's is not.
+
 ## 4.11.0 - 2026-08-27
 
 - **A shell pattern is a mask list.** Far Manager's mask language, in

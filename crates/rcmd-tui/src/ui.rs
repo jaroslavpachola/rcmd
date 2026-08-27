@@ -6,7 +6,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Clear, Gauge, Row, Table, TableState};
 use rcmd_core::entry::{Entry, EntryKind};
 use rcmd_core::fsops::FileFacts;
-use rcmd_core::glob::glob_match;
 use rcmd_core::panel::{ListMode, Panel};
 use rcmd_core::tree::Tree;
 
@@ -172,7 +171,9 @@ fn dark_theme() -> Theme {
 /// What a `[[highlight]]` rule looks at: what the entry is called, or
 /// what it is.
 enum Matcher {
-    Glob(String),
+    /// The same mask list the select and filter dialogs take, so
+    /// `match = "*.c,*.h|*_test.*"` says here what it says there.
+    Masks(rcmd_core::pattern::Masks),
     Kind(HighlightKind),
 }
 
@@ -199,7 +200,7 @@ impl Rule {
     // pattern, and those are ASCII whatever the rest of the name is
     fn matches(&self, entry: &Entry) -> bool {
         match &self.matcher {
-            Matcher::Glob(pattern) => glob_match(pattern, &entry.name.to_string_lossy()),
+            Matcher::Masks(masks) => masks.matches(&entry.name.to_string_lossy()),
             Matcher::Kind(kind) => *kind == entry_kind(entry),
         }
     }
@@ -236,7 +237,9 @@ fn compile_highlight(rules: &[crate::config::HighlightRule]) -> (Vec<Rule>, Vec<
                 warnings.push("highlight: rule has both match and type".into());
                 continue;
             }
-            (Some(pattern), None) => Matcher::Glob(pattern.clone()),
+            (Some(pattern), None) => {
+                Matcher::Masks(rcmd_core::pattern::Masks::parse(pattern, false))
+            }
             (None, Some(kind)) => match parse_kind(kind) {
                 Some(kind) => Matcher::Kind(kind),
                 None => {
@@ -5217,6 +5220,19 @@ mod tests {
         assert!(!rules[0].matches(&script));
         assert!(rules[1].matches(&script));
         assert!(!rules[1].matches(&tarball));
+    }
+
+    #[test]
+    fn a_highlight_rule_takes_the_dialogs_mask_list() {
+        let (rules, warnings) =
+            compile_highlight(&[rule(Some("*.c,*.h|*_test.*"), None, "brightgreen")]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(rules[0].matches(&entry("parser.c", EntryKind::File, 0o644)));
+        assert!(rules[0].matches(&entry("parser.h", EntryKind::File, 0o644)));
+        assert!(!rules[0].matches(&entry("parser_test.c", EntryKind::File, 0o644)));
+        assert!(!rules[0].matches(&entry("parser.rs", EntryKind::File, 0o644)));
+        // a rule's mask is case-sensitive, as it was when it was one glob
+        assert!(!rules[0].matches(&entry("PARSER.C", EntryKind::File, 0o644)));
     }
 
     #[test]

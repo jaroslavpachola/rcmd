@@ -409,7 +409,7 @@ open files by type - the first matching rule wins:
 
 ```toml
 [[open]]
-match = "*.pdf"              # a glob on the name, case-insensitive
+match = "*.pdf"              # a mask list, case-insensitive
 run = "zathura %f >/dev/null 2>&1 &"
 
 [[open]]
@@ -423,7 +423,10 @@ run = "less %f"
 ```
 
 Those are mc.ext's four matchers (`match`, `regex`, `type`,
-`directory`); every one a rule gives must hold. `file` is only asked
+`directory`); every one a rule gives must hold. `match` takes the same
+**mask list** the select and filter dialogs do, so
+`match = "*.jpg,*.png|thumb_*"` is one rule rather than two and an
+exception; so does `[[highlight]]`'s. `file` is only asked
 when a rule has `type =`, and `[[view]]` rules take the same keys.
 
 A file no rule claims goes to the **desktop** - `xdg-open`, or `open`
@@ -785,7 +788,7 @@ listing_format = "half type name | size | mtime"
 #   compare-dirs dir-size dir-tree appearance learn-keys edit-config
 
 [[highlight]]          # MC's filehighlight, as rules: first match wins
-match = "*.tar.gz"     # a glob on the name...
+match = "*.tar.gz"     # a mask list on the name (*.c,*.h|*_test.*)...
 color = "brightred"    # ...mc's colour names, #rrggbb or "default"
 
 [[highlight]]

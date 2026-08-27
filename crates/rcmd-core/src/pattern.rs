@@ -54,38 +54,70 @@ impl std::fmt::Display for Pattern {
 
 /// A compiled [`Pattern`], ready to run against a name.
 pub enum Matcher {
-    /// A mask list: a name is in when any of `include` matches it and
-    /// none of `exclude` does. Both sides are lowercased already when
-    /// the match is case-insensitive, and `fold` says so.
-    Masks {
-        /// Empty means everything, which is what `|*.o` asks for.
-        include: Vec<String>,
-        exclude: Vec<String>,
-        fold: bool,
-    },
+    Masks(Masks),
     Regex(regex::Regex),
 }
 
-/// Split a mask list into its two halves. The first `|` is the one that
-/// divides them; commas separate the masks on each side, whitespace
-/// around a mask is not part of it, and an empty mask is dropped rather
-/// than left to match nothing.
-fn parse_masks(text: &str, fold: bool) -> (Vec<String>, Vec<String>) {
-    let (included, excluded) = match text.split_once('|') {
-        Some((left, right)) => (left, right),
-        None => (text, ""),
-    };
-    let list = |part: &str| -> Vec<String> {
-        part.split(',')
-            .map(str::trim)
-            .filter(|mask| !mask.is_empty())
-            .map(|mask| match fold {
-                true => mask.to_lowercase(),
-                false => mask.to_string(),
-            })
-            .collect()
-    };
-    (list(included), list(excluded))
+/// A compiled mask list: a name is in when any of `include` matches it
+/// and none of `exclude` does. Far's language, and the one every glob
+/// rcmd is given by hand is read in - the select and filter dialogs,
+/// the find dialog's name, `[[highlight]]` and `[[open]]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Masks {
+    /// Empty means everything, which is what `|*.o` asks for.
+    include: Vec<String>,
+    exclude: Vec<String>,
+    /// The masks are lowercased already; the name has to be lowered on
+    /// the way in.
+    fold: bool,
+}
+
+impl Masks {
+    /// Split a mask list into its two halves. The first `|` is the one
+    /// that divides them; commas separate the masks on each side,
+    /// whitespace around a mask is not part of it, and an empty mask is
+    /// dropped rather than left to match nothing.
+    pub fn parse(text: &str, fold: bool) -> Self {
+        let (included, excluded) = match text.split_once('|') {
+            Some((left, right)) => (left, right),
+            None => (text, ""),
+        };
+        let list = |part: &str| -> Vec<String> {
+            part.split(',')
+                .map(str::trim)
+                .filter(|mask| !mask.is_empty())
+                .map(|mask| match fold {
+                    true => mask.to_lowercase(),
+                    false => mask.to_string(),
+                })
+                .collect()
+        };
+        Masks {
+            include: list(included),
+            exclude: list(excluded),
+            fold,
+        }
+    }
+
+    pub fn matches(&self, name: &str) -> bool {
+        let name = match self.fold {
+            true => std::borrow::Cow::Owned(name.to_lowercase()),
+            false => std::borrow::Cow::Borrowed(name),
+        };
+        let matched =
+            self.include.is_empty() || self.include.iter().any(|mask| glob_match(mask, &name));
+        matched && !self.exclude.iter().any(|mask| glob_match(mask, &name))
+    }
+
+    /// Everything is in and nothing is taken back out, which is how a
+    /// filter is cleared.
+    pub fn is_open(&self) -> bool {
+        self.exclude.is_empty()
+            && self
+                .include
+                .iter()
+                .all(|mask| mask.chars().all(|c| c == '*'))
+    }
 }
 
 impl Pattern {
@@ -93,13 +125,10 @@ impl Pattern {
     /// the user's regular expression, so it is worth showing.
     pub fn compile(&self) -> Result<Matcher, String> {
         if self.shell {
-            let fold = !self.case_sensitive;
-            let (include, exclude) = parse_masks(&self.text, fold);
-            return Ok(Matcher::Masks {
-                include,
-                exclude,
-                fold,
-            });
+            return Ok(Matcher::Masks(Masks::parse(
+                &self.text,
+                !self.case_sensitive,
+            )));
         }
         regex::RegexBuilder::new(&self.text)
             .case_insensitive(!self.case_sensitive)
@@ -117,32 +146,14 @@ impl Pattern {
         if !self.shell {
             return false;
         }
-        // every mask lets everything through, and nothing is taken back
-        // out again
-        let (include, exclude) = parse_masks(&self.text, false);
-        exclude.is_empty() && include.iter().all(|mask| mask.chars().all(|c| c == '*'))
+        Masks::parse(&self.text, false).is_open()
     }
 }
 
 impl Matcher {
     pub fn matches(&self, name: &str) -> bool {
         match self {
-            Matcher::Masks {
-                include,
-                exclude,
-                fold,
-            } => {
-                // the masks were lowercased at compile time; the name
-                // has to be lowered here, there being nowhere earlier
-                // to do it
-                let name = match fold {
-                    true => std::borrow::Cow::Owned(name.to_lowercase()),
-                    false => std::borrow::Cow::Borrowed(name),
-                };
-                let matched =
-                    include.is_empty() || include.iter().any(|mask| glob_match(mask, &name));
-                matched && !exclude.iter().any(|mask| glob_match(mask, &name))
-            }
+            Matcher::Masks(masks) => masks.matches(name),
             Matcher::Regex(re) => re.is_match(name),
         }
     }

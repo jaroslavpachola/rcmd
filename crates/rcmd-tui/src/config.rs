@@ -7,7 +7,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use rcmd_core::glob::glob_match;
 use rcmd_core::panel::{ListMode, SortKey};
 use serde::{Deserialize, Serialize};
 
@@ -214,8 +213,9 @@ impl OpenRule {
         }
     }
 
-    /// Whether the rule applies to `name` in `dir`. The glob is
-    /// case-insensitive, the regexes are what they say (`(?i)` is
+    /// Whether the rule applies to `name` in `dir`. The glob is a
+    /// case-insensitive mask list (`*.jpg,*.png|thumb_*`), the regexes
+    /// are what they say (`(?i)` is
     /// there). `file_type` is asked for `file -b`'s line only when a
     /// rule wants it, so the usual rules cost no process.
     pub fn matches(&self, name: &str, dir: &Path, file_type: &mut dyn FnMut() -> String) -> bool {
@@ -227,7 +227,7 @@ impl OpenRule {
             return false;
         }
         if let Some(glob) = &self.pattern
-            && !glob_match(&glob.to_lowercase(), &name.to_lowercase())
+            && !rcmd_core::pattern::Masks::parse(glob, true).matches(name)
         {
             return false;
         }
@@ -559,6 +559,12 @@ mod tests {
         };
         let glob = OpenRule::by_glob("*.LOG", "");
         assert!(glob.matches("today.log", dir, &mut probe));
+        // and the glob is the dialogs' mask list, case folded as it
+        // always was here
+        let masks = OpenRule::by_glob("*.jpg,*.png|thumb_*", "");
+        assert!(masks.matches("cat.PNG", dir, &mut probe));
+        assert!(!masks.matches("thumb_cat.png", dir, &mut probe));
+        assert!(!masks.matches("cat.gif", dir, &mut probe));
         let re = OpenRule {
             regex: Some("^[a-z]+[0-9]+\\.log$".into()),
             ..OpenRule::default()
