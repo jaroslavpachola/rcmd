@@ -227,6 +227,24 @@ and session persistence (§3) went in 4.16.0 to 4.18.0. The socket is
 the one that unlocks the most, since every row that wants a key rcmd
 cannot spare (§10) is answered by letting a script have one.
 
+## 13. What shipped
+
+Between 4.11.0 and 4.27.0, on 2026-08-27: the mask language (4.11.0,
+4.11.1), archive creation (4.12.0), undo for a move (4.13.0) and for a
+bulk rename (4.27.0), directory synchronize (4.14.0), the frecency
+hotlist (4.15.0), five sort orders (4.16.0), the restored other panel
+(4.17.0), the mount list (4.18.0), select by size and age (4.19.0),
+named filter sets (4.20.0), the remote-control socket and script
+plugins (4.21.0), four small keys the others always had (4.22.0), wipe
+and apply-per-file (4.23.0), copy verification and checksum files
+(4.24.0), the numbered places and recent files (4.25.0), and rclone
+panels (4.26.0).
+
+Every row above marked plain `Adopt` is now closed. What is left is the
+`Adopt-later` rows, the `Skip` rows, and §9's five `Open` ones - which
+are open because policy 4 says a decision recorded in MC-DIFF is not
+overturned in passing, and those five would overturn one.
+
 ---
 
 This document is decisions, in the shape MC-DIFF settled on. A roadmap

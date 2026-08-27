@@ -11,6 +11,13 @@ decision-by-decision comparison against mc
 **Adopt** is closed, and the places where rcmd still differs on purpose
 are written down there rather than left to be discovered.
 
+**4.11 onwards** is a second comparison, against the rest of the
+orthodox family - Far Manager, DOS Navigator, Volkov Commander, Total
+Commander, and the modern TUI managers - written down the same way in
+[docs/ORTHODOX-DIFF.md](docs/ORTHODOX-DIFF.md). Those rows are not
+parity work and nothing is owed to anybody, which is why `Skip` appears
+there as often as `Adopt`.
+
 ![rcmd demo: browsing, the syntax-highlighted viewer, marking and
 copying, the persistent subshell](docs/demo.gif)
 
@@ -73,6 +80,21 @@ the two panel menus act on their own panel whichever one has the focus.
 (`-b -c -C -S -d -u -U -l`), the shipped shell wrappers, **skins** -
 rcmd's own theme files and mc's skin files read where they lie - and
 **macOS builds back** in CI and in the releases.
+
+**4.11-4.27** - the orthodox pass, from
+[docs/ORTHODOX-DIFF.md](docs/ORTHODOX-DIFF.md): **directory
+synchronize** (compare, then a plan that says which way each difference
+goes), **Alt+F5 packs** into a new archive, **Ctrl+X u undoes** a move
+or a bulk rename, mask lists (`*.c,*.h|*_test.*`) everywhere a glob is
+typed, **named filter sets**, select and filter **by size and age**,
+five more **sort orders** including *unsorted*, the hotlist ranked by
+**frecency** and searchable, `rcmd --remote` **driving a running
+instance** (and with it a plugin story that needs no runtime), **rclone
+panels**, what is **mounted** in the `C-x a` list, **checksum files**
+and a **Verify** box on the copy form, **wipe**, **apply a command per
+file**, the **numbered places**, **recent files**, and the small keys
+the others always had - restore marks, size every directory, names to
+the clipboard, hide a panel.
 
 **4.0** - the parity release, and the leftovers that finished it: mc's
 **quick search** with an input field of its own, **Learn keys**,
