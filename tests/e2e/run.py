@@ -938,6 +938,68 @@ def test_archive_write():
     shutil.rmtree(root)
 
 
+def test_rclone():
+    """A panel on an rclone remote. rclone itself is not needed: what is
+    under test is rcmd's half of the contract - lsf's output read as a
+    listing, and cat's as a file - so the test puts a small one on the
+    PATH and checks rcmd against it."""
+    root, play, home = sandbox()
+    bindir = os.path.join(root, "bin")
+    os.makedirs(bindir)
+    fake = os.path.join(bindir, "rclone")
+    open(fake, "w").write("""#!/bin/sh
+# a tiny remote: a file and a folder at the root, one file inside
+if [ "$1" = "lsf" ]; then
+    case "$6" in
+    demo:)
+        printf 'photos/|-1|2026-08-26 09:00:00\\n'
+        printf 'notes.txt|12|2026-08-27 10:11:12\\n'
+        ;;
+    demo:photos) printf 'cat.jpg|4|2026-08-25 08:00:00\\n' ;;
+    *) exit 1 ;;
+    esac
+elif [ "$1 $2" = "cat demo:notes.txt" ]; then
+    printf 'hello cloud'
+else
+    exit 1
+fi
+""")
+    os.chmod(fake, 0o755)
+
+    saved = dict(os.environ)
+    os.environ["PATH"] = bindir + ":" + os.environ["PATH"]
+    s = Session(play, home, args=(play,))
+    os.environ.clear(); os.environ.update(saved)
+    s.send(b"cd rclone://demo\r", wait=STEP * 4)
+    check("rclone: the panel is on the remote", wait_for(s, "rclone://demo"), s.screen())
+    scr = s.screen()
+    check("rclone: the listing came through",
+          "notes.txt" in scr and "photos" in scr, scr)
+    check("rclone: with sizes and times", "12" in scr and "Aug 27" in scr, scr)
+
+    s.send(b"\x13photos\r", wait=STEP)
+    s.send(b"\r", wait=STEP * 3)
+    check("rclone: and folders open", wait_for(s, "cat.jpg"), s.screen())
+    s.send(BACKSPACE, wait=STEP * 2)
+
+    # F3 reads it through rclone cat
+    s.send(b"\x13notes\r", wait=STEP)
+    s.send(F3, wait=STEP * 3)
+    check("rclone: F3 reads the file", wait_for(s, "hello cloud"), s.screen())
+    s.send(b"q", wait=STEP)
+
+    # ...and F5 brings it down, which is what a remote panel is for
+    s.send(F5, wait=STEP)
+    s.send(b"\x15" + play.encode() + b"/\r", wait=STEP * 4)
+    check("rclone: the copy ran", wait_for(s, "done -"))
+    local = os.path.join(play, "notes.txt")
+    check("rclone: and the file arrived whole",
+          os.path.exists(local) and open(local).read() == "hello cloud",
+          open(local).read() if os.path.exists(local) else "no file")
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_shortcutsandfiles():
     """C-x <digit> is a numbered place, and the viewed/edited files are
     a list that survives the session."""
@@ -5663,6 +5725,7 @@ def main():
         test_pack,
         test_undo,
         test_sync,
+        test_rclone,
         test_shortcutsandfiles,
         test_checksums,
         test_wipeapply,

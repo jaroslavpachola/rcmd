@@ -1,5 +1,20 @@
 # Changelog
 
+## 4.26.0 - 2026-08-27
+
+- **`cd rclone://<remote>[/path]`** puts a panel on anything rclone
+  reaches: S3, Google Drive, Dropbox, B2, WebDAV, Swift and the rest,
+  through the config rclone already has on that machine. Listing, F3
+  and F5 **out** of it work; the panel is read-only for now, because
+  writing back is `rclone copyto` and belongs with the progress
+  reporting rather than with the listing. One integration instead of
+  forty protocols: `rclone lsf` and `rclone cat` are a smaller thing to
+  depend on than forty backends, and a much smaller thing to get wrong.
+  There is no login and no host key - rclone's config did that - so the
+  connection is simply the first listing, and the panel joins the `C-x
+  a` list like any other. Without rclone installed, opening one says
+  exactly that.
+
 ## 4.25.0 - 2026-08-27
 
 - **`C-x 0`..`C-x 9` are Far's folder shortcuts**, spelled as hotlist

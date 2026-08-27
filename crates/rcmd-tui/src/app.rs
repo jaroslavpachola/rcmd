@@ -3329,7 +3329,19 @@ impl App {
             self.status = Some(" a connection attempt is already running ".into());
             return;
         }
-        let handle = if input.starts_with("ftp://") {
+        let handle = if input.starts_with("rclone://") {
+            let Some(url) = rcmd_core::rclone::RcloneUrl::parse(input) else {
+                self.status = Some(" bad URL - rclone://remote[/path] ".into());
+                return;
+            };
+            // no login and no host key: rclone's own config did that
+            // already, so the connection is the first listing
+            let fs = match self.connection(&url.prefix()) {
+                Some(fs) => fs,
+                None => std::sync::Arc::new(rcmd_core::rclone::RcloneFs::new(&url.remote)),
+            };
+            remote::spawn_reuse(fs, url.path, url.remote)
+        } else if input.starts_with("ftp://") {
             let Some(url) = FtpUrl::parse(input) else {
                 self.status = Some(" bad URL - ftp://[user[:password]@]host[:port][/path] ".into());
                 return;
@@ -12455,7 +12467,9 @@ fn edit_line(value: &mut String, cursor: &mut usize, code: KeyCode, mods: KeyMod
 /// paths return None.
 /// A location that lives on a server rather than on this machine.
 fn is_remote_url(target: &str) -> bool {
-    target.starts_with("sftp://") || target.starts_with("ftp://") || target.starts_with("fish://")
+    ["sftp://", "ftp://", "fish://", "rclone://"]
+        .iter()
+        .any(|scheme| target.starts_with(scheme))
 }
 
 fn split_vfs_dest(input: &str) -> Option<(PathBuf, PathBuf)> {

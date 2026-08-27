@@ -108,7 +108,7 @@ behind the Adopt rows · `Keep`: rcmd already answers this its own way ·
 
 | Feature | From | Decision | Note |
 |---|---|---|---|
-| **rclone as one provider** | rclone | Adopt | one integration reaches S3, Drive, Dropbox, B2, WebDAV and forty more, through the config the user already has, over `rclone lsjson` and friends. `vfs.rs` defines the shape already |
+| **rclone as one provider** | rclone | Adopt | done in 4.26.0 over `rclone lsf` and `rclone cat` (`lsjson` would have wanted a JSON parser rcmd does not carry), read-only: listing, F3 and F5 out |
 | WebDAV and S3 implemented natively | Far's NetBox | Skip | superseded by the row above at a fraction of the surface |
 | Saved connection manager: host, user, key, start directory, under a name | Far's NetBox sessions, DN's phone book | Adopt-later | today an `sftp://` target lives in the hotlist as a bare URL |
 

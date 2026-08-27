@@ -659,6 +659,16 @@ ownership, so those report that rather than pretending. Every transfer
 needs a connection of its own, so a small pool of logged-in ones is kept
 and reused: one login covers a whole session of listing and copying.
 
+**rclone**: `cd rclone://<remote>[/path]` puts a panel on anything
+rclone reaches - S3, Google Drive, Dropbox, B2, WebDAV, Swift and the
+forty-odd others - using the config rclone already has on that machine.
+Listing, F3 and F5 **out** work; the panel is read-only, because
+writing back is rclone's `copyto` and belongs with the progress
+reporting rather than with the listing. One integration instead of
+forty protocols is the whole argument: `rclone lsf` and `rclone cat`
+are a smaller thing to depend on, and a much smaller thing to get
+wrong. Without rclone installed, opening one says so.
+
 **Ctrl+X A** lists everywhere a panel can go: the open archives and
 live SFTP connections, with the panel each one belongs to, and under
 them **what the machine has mounted** - every mount point `df` knows,
