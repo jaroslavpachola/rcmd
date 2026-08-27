@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.10.3 - 2026-08-27
+
+- **A file that never says how long it is is read for its length.**
+  Everything under `/proc` and `/sys` reports a size of zero and hands
+  over its contents only when read, and a block device reports zero and
+  answers a seek to its end. The viewer believed the zero, so F3 on
+  `/proc/cpuinfo` was an empty file, and so was a quick view of one.
+  The length now comes from the seek where there is one and from the
+  reading where there is not, and the lazy index ends at a short read
+  instead of at a declared length.
+
 ## 4.10.2 - 2026-08-26
 
 - **The options form writes only what it changed.** Every OK used to

@@ -263,7 +263,9 @@ Escape; an unanswered Esc acts as one after a second.
 **Viewer** (F3): arrows/PgUp/PgDn/Home/End scroll, ←→ horizontal scroll,
 F2 toggles soft-wrap, F4 toggles hex mode, F3/F10/Esc/q quit. Lines are
 indexed lazily, so huge files open instantly; very long lines are broken
-at 4096 columns. The bottom bar names what each key does *now*, as mc's
+at 4096 columns. A file that never declares its length - anything under
+`/proc` or `/sys`, or a block device - is read for it rather than shown
+as empty. The bottom bar names what each key does *now*, as mc's
 does: F2 says Unwrap once wrapping is on.
 
 **F5**, `Alt+L` or `:` opens **goto**, which takes all three of mc's

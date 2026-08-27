@@ -121,7 +121,7 @@ behind the Adopt rows · `Keep`: rcmd already answers this its own way ·
 | Keyboard macro recording | Far (`C-.`, which no terminal sends - §10) | **Open** | MC-DIFF §8 kept "no macros" as a decision, calling it a feature to design rather than port. Far is the design worth copying if any is; argued in §9 |
 | Image preview in quick view and the viewer | ranger, yazi | **Open** | refused in MC-DIFF §13; argued in §9 |
 | An expression evaluator on the command line (a `=` prefix) | DN's calculators | Adopt-later | the habit behind DN's built-in tools, without the tools |
-| Raw device editing | DN's disk editor | Keep | a block device is a file on Linux, so the chunked viewer and the F2 hex editor may already open `/dev/sdX` unchanged. Test it: if it works this is a README line, not a feature, and if it does not the fix is small |
+| Raw device editing | DN's disk editor | Keep | tested while writing this row, and it found a bug rather than a feature: a block device reports a length of zero, so the viewer showed it empty, and so it showed every `/proc` and `/sys` file. Fixed in 4.10.3. A device is a file on Linux and the F2 hex editor writes bytes in place, so what is left is a README line and whatever permissions the device itself wants |
 | Spreadsheet, terminal, modem dialer, print manager, screen saver | DN | Skip | period pieces. The dialer's live descendant is the connection manager in §5 |
 
 ## 7. Extensibility

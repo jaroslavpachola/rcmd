@@ -4,6 +4,7 @@
 
 use std::fs::File;
 use std::io;
+use std::io::{Seek, SeekFrom};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 
@@ -269,12 +270,29 @@ pub struct FileView {
     /// Length of the still-unterminated line at the scan frontier.
     cur_len: usize,
     fully_indexed: bool,
+    /// The file did not say how long it is, so `size` is only what has
+    /// been read so far and the scan ends at a short read instead of at
+    /// a known length. `/proc` and `/sys` are the files that do this.
+    size_unknown: bool,
 }
 
 impl FileView {
     pub fn open(path: &Path) -> io::Result<Self> {
         let file = File::open(path)?;
-        let size = file.metadata()?.len();
+        let mut size = file.metadata()?.len();
+        // Two kinds of file report zero and are not empty. A block
+        // device answers a seek to its end, and a `/proc` or `/sys`
+        // file answers nothing at all - its length is whatever comes
+        // back from reading it. Believing the zero showed both of them
+        // as an empty file.
+        let mut size_unknown = false;
+        if size == 0 {
+            size = (&file).seek(SeekFrom::End(0)).unwrap_or(0);
+            if size == 0 {
+                let mut probe = [0u8; 1];
+                size_unknown = file.read_at(&mut probe, 0).unwrap_or(0) > 0;
+            }
+        }
         Ok(FileView {
             file,
             charset: None,
@@ -282,7 +300,8 @@ impl FileView {
             offsets: vec![0],
             indexed_to: 0,
             cur_len: 0,
-            fully_indexed: size == 0,
+            fully_indexed: size == 0 && !size_unknown,
+            size_unknown,
         })
     }
 
@@ -315,6 +334,19 @@ impl FileView {
                 self.fully_indexed = true;
                 return Ok(());
             }
+            if self.size_unknown {
+                // Each chunk is this file's EOF as far as anything
+                // knows, so a break on its last byte was held back the
+                // way `refresh` holds one back at a growing file's end.
+                // Now that more bytes are here, register it.
+                if self.cur_len == 0
+                    && self.indexed_to > 0
+                    && self.offsets.last() != Some(&self.indexed_to)
+                {
+                    self.offsets.push(self.indexed_to);
+                }
+                self.size = self.indexed_to + n as u64;
+            }
             for (i, &byte) in buf[..n].iter().enumerate() {
                 let next = self.indexed_to + i as u64 + 1;
                 let break_here = if byte == b'\n' {
@@ -334,7 +366,7 @@ impl FileView {
                 }
             }
             self.indexed_to += n as u64;
-            if self.indexed_to >= self.size {
+            if !self.size_unknown && self.indexed_to >= self.size {
                 self.fully_indexed = true;
             }
         }
@@ -345,6 +377,11 @@ impl FileView {
     /// when the size changed. Growth resumes indexing at the frontier;
     /// shrinking (truncate/rotate) rebuilds the index from scratch.
     pub fn refresh(&mut self) -> io::Result<bool> {
+        if self.size_unknown {
+            // Nothing to compare against: this file's length is only
+            // ever what the last read returned.
+            return Ok(false);
+        }
         let size = self.file.metadata()?.len();
         if size == self.size {
             return Ok(false);
@@ -516,6 +553,67 @@ impl FileView {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// A `/proc` file reports a length of zero and hands over its
+    /// content only when read: believing the zero showed every one of
+    /// them as an empty file, which is what F3 on `/proc/cpuinfo` used
+    /// to be.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_file_that_does_not_declare_its_length_still_reads() {
+        let path = Path::new("/proc/meminfo");
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return; // no /proc (a container built without one)
+        };
+        let expected: Vec<&str> = text.lines().collect();
+        assert!(expected.len() > 1, "/proc/meminfo is not one line");
+
+        let mut view = FileView::open(path).unwrap();
+        assert_eq!(view.total_lines().unwrap(), expected.len());
+        assert_eq!(view.size, text.len() as u64);
+        assert_eq!(view.line(0).unwrap().as_deref(), Some(expected[0]));
+        let last = expected.len() - 1;
+        assert_eq!(view.line(last).unwrap().as_deref(), Some(expected[last]));
+        assert_eq!(view.line(expected.len()).unwrap(), None);
+        // follow mode has nothing to compare against on such a file
+        assert!(!view.refresh().unwrap());
+    }
+
+    /// The same file, four scan chunks long, with a line break landing
+    /// exactly on the last byte of each one. Without a declared length
+    /// every chunk end looks like EOF, and a break there has to be held
+    /// back and registered by the next read or the line starts drift.
+    #[test]
+    fn an_undeclared_length_survives_a_break_on_the_chunk_boundary() {
+        let line = "x".repeat(63);
+        let content = format!("{line}\n").repeat(SCAN_CHUNK / 64 * 4);
+        assert_eq!(content.as_bytes()[SCAN_CHUNK - 1], b'\n');
+        let expected = content.lines().count();
+
+        let (_dir, mut view) = view_of(content.as_bytes());
+        // what `open` sees on a file that does not declare its length
+        view.size = 0;
+        view.size_unknown = true;
+        view.fully_indexed = false;
+
+        assert_eq!(view.total_lines().unwrap(), expected);
+        assert_eq!(view.size, content.len() as u64);
+        assert_eq!(view.line(0).unwrap().as_deref(), Some(line.as_str()));
+        assert_eq!(
+            view.line(expected - 1).unwrap().as_deref(),
+            Some(line.as_str())
+        );
+        assert_eq!(view.line(expected).unwrap(), None);
+    }
+
+    #[test]
+    fn an_empty_file_is_still_empty() {
+        let (_dir, mut view) = view_of(b"");
+        assert_eq!(view.size, 0);
+        assert!(view.is_fully_indexed());
+        assert_eq!(view.total_lines().unwrap(), 1);
+        assert_eq!(view.line(0).unwrap().as_deref(), Some(""));
+    }
 
     fn view_of(content: &[u8]) -> (tempfile::TempDir, FileView) {
         let dir = tempfile::tempdir().unwrap();
