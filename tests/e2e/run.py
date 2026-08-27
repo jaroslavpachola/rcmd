@@ -2997,16 +2997,16 @@ def test_copyform():
     scr = s.screen()
     check("copyform: the form opens", "Copy" in scr and "/other" in scr, scr[:200])
     for label in ("Preserve attributes", "Follow links", "Dive into subdirs",
-                  "Stable symlinks"):
+                  "Stable symlinks", "Verify"):
         check("copyform: %s offered" % label.split()[0].lower(), label in scr, scr[:400])
     check("copyform: rcmd's defaults are the careful ones",
           "[x] Preserve attributes" in scr and "[ ] Follow links" in scr, scr[:400])
     check("copyform: OK/Background/Cancel", "[ Background ]" in scr, scr[:400])
 
     # Cancel really cancels: down to the buttons, along to Cancel, Enter
-    # (the form opens on the destination, with four boxes below it)
+    # (the form opens on the destination, with five boxes below it)
     s.keys(
-        DOWN * 5,
+        DOWN * 6,
         b"\x1b[C" * 2,
         b"\r",
         wait=STEP * 2,
