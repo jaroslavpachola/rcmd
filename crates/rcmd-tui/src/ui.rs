@@ -686,6 +686,8 @@ const HELP_TEXT: &[&str] = &[
     "                  directory is where it goes. An archive already",
     "                  there is added to rather than replaced",
     "  F8              delete to trash",
+    "  C-x u           undo the last move: put back what F6 moved, on",
+    "                  a yes/no question, and a second C-x u is the redo",
     "  S-F8            delete permanently",
     "  S-F4            edit a new file (created on first save)",
     "  S-F5/F6         copy / rename the cursor file in place",

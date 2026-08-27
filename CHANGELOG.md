@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.13.0 - 2026-08-27
+
+- **Ctrl+X u undoes the last move.** Neither mc nor Far offers this.
+  Every move onto a name that was free is recorded as it happens, and
+  `C-x u` asks before putting the items back; it runs as an ordinary
+  job, and since the undo is itself a move, a second `C-x u` is the
+  redo. A move that landed on a taken name is not recorded, because
+  putting the source back would not bring back what it overwrote. A
+  pair whose file has moved on, or whose old name is occupied again, is
+  skipped rather than forced. A copy leaves no record - undoing one is
+  a deletion and should be asked for as one - and F8 already goes to
+  the trash.
+
 ## 4.12.0 - 2026-08-27
 
 - **Alt+F5 packs into a new archive.** rcmd could browse ten formats,

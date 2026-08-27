@@ -681,6 +681,8 @@ pub enum ConfirmKind {
     },
     /// Enter about to run an `[[open]]` command.
     Execute,
+    /// `C-x u` about to put the last move back.
+    Undo,
 }
 
 /// mc's Learn keys: the keys a terminal is supposed to send, and which
@@ -1405,6 +1407,11 @@ pub struct Job {
     /// Running detached ('b' in the progress dialog): the dialog is
     /// hidden, the panels stay interactive, asks pull it back up.
     pub background: bool,
+    /// Every clean move this job made, in the order it made them: the
+    /// record `C-x u` puts back. Empty for everything that is not a
+    /// move, which is what makes those operations un-undoable rather
+    /// than wrongly undoable.
+    moved: Vec<(PathBuf, PathBuf)>,
 }
 
 enum Exec {
@@ -2064,6 +2071,8 @@ pub enum Action {
     Mkdir,
     /// M-F5: pack what is marked into an archive of its own.
     Pack,
+    /// C-x u: put the last move back.
+    Undo,
     Delete,
     DeletePerm,
     SelectGroup,
@@ -2160,6 +2169,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Move/rename...", "F6", Action::Move)),
             Some(("&Bulk rename (editor)...", "", Action::BulkRename)),
             Some(("&Pack into archive...", "M-F5", Action::Pack)),
+            Some(("&Undo last move", "C-x u", Action::Undo)),
             Some(("Ma&ke directory...", "F7", Action::Mkdir)),
             Some(("&Delete (trash)", "F8", Action::Delete)),
             Some(("Delete &permanently", "S-F8", Action::DeletePerm)),
@@ -2568,6 +2578,12 @@ pub struct App {
     pub dialog: Option<Dialog>,
     /// Running jobs; at most one is foreground (its dialog is modal).
     pub jobs: Vec<Job>,
+    /// What the last move actually did, as `(from, to)` pairs, and what
+    /// `C-x u` puts back. One operation deep on purpose: an undo is for
+    /// the move you regret the moment you made it, and a stack of them
+    /// would be a history of a filesystem that other programs are also
+    /// writing to.
+    undo: Option<Vec<(PathBuf, PathBuf)>>,
     /// The full-screen things open besides the panels - mc's screens,
     /// listed behind M-`. The panels are what is underneath them all
     /// rather than one of them, which is why this can be empty.
@@ -2745,6 +2761,7 @@ impl App {
             panel_rows: 1,
             dialog: None,
             jobs: Vec::new(),
+            undo: None,
             screens: Vec::new(),
             current: None,
             screen_list: None,
@@ -3682,6 +3699,7 @@ impl App {
                         // a question pulls a background job back up
                         job.background = false;
                     }
+                    JobEvent::Moved { from, to } => job.moved.push((from, to)),
                     JobEvent::AskError { path, message } => {
                         job.ask = Some(Ask::Error { path, message });
                         job.button = 0;
@@ -3704,6 +3722,12 @@ impl App {
             }
             if !aborted {
                 self.panels[job.src_panel].marked.clear();
+            }
+            // the newest move is the one C-x u answers for; a job that
+            // moved nothing leaves the last one standing rather than
+            // clearing it, so an intervening copy does not lose it
+            if !job.moved.is_empty() {
+                self.undo = Some(std::mem::take(&mut job.moved));
             }
             any_done = true;
             self.status = Some(match (aborted, skipped) {
@@ -4916,6 +4940,7 @@ impl App {
             Action::Move => self.open_transfer(true),
             Action::Mkdir => self.open_mkdir(),
             Action::Pack => self.open_pack(),
+            Action::Undo => self.open_undo(),
             Action::Delete => self.open_delete(false),
             Action::DeletePerm => self.open_delete(true),
             Action::SelectGroup => self.open_select(true),
@@ -9188,6 +9213,7 @@ impl App {
             button: 0,
             src_panel: self.active,
             background: false,
+            moved: Vec::new(),
         });
     }
 
@@ -9341,6 +9367,7 @@ impl App {
             button: 0,
             src_panel: self.active,
             background: false,
+            moved: Vec::new(),
         });
     }
 
@@ -9551,6 +9578,38 @@ impl App {
             button: 0,
             src_panel: self.active,
             background: false,
+            moved: Vec::new(),
+        });
+    }
+
+    /// Run the undo as an ordinary job, so it has the same progress,
+    /// the same error prompts and the same Esc. The moves it makes are
+    /// themselves reported, so the log ends up describing the undo -
+    /// and a second `C-x u` is a redo.
+    fn start_undo(&mut self) {
+        let Some(pairs) = self.undo.take() else {
+            return;
+        };
+        let count = pairs.len();
+        let handle = fsops::spawn_undo_move(pairs);
+        self.jobs.push(Job {
+            title: format!(" put {count} item(s) back "),
+            handle,
+            total_files: 0,
+            total_bytes: 0,
+            files_done: 0,
+            bytes_done: 0,
+            current: PathBuf::new(),
+            file_done: 0,
+            file_total: 0,
+            rate: 0.0,
+            rate_mark: (Instant::now(), 0),
+            started: Instant::now(),
+            ask: None,
+            button: 0,
+            src_panel: self.active,
+            background: false,
+            moved: Vec::new(),
         });
     }
 
@@ -9596,6 +9655,7 @@ impl App {
             button: 0,
             src_panel: self.active,
             background: false,
+            moved: Vec::new(),
         });
     }
 
@@ -9619,6 +9679,7 @@ impl App {
             button: 0,
             src_panel: self.active,
             background: false,
+            moved: Vec::new(),
         });
     }
 
@@ -9688,6 +9749,7 @@ impl App {
             button: 0,
             src_panel: self.active,
             background: false,
+            moved: Vec::new(),
         });
     }
 
@@ -9721,6 +9783,7 @@ impl App {
             button: 0,
             src_panel: self.active,
             background: false,
+            moved: Vec::new(),
         });
     }
 
@@ -9792,6 +9855,7 @@ impl App {
                 KeyCode::Char('v' | 'V') => self.open_link(LinkKind::Symbolic, true),
                 KeyCode::Char('l' | 'L') => self.open_link(LinkKind::Hard, false),
                 KeyCode::Char('j' | 'J') => self.run_action(Action::Jobs),
+                KeyCode::Char('u' | 'U') => self.run_action(Action::Undo),
                 KeyCode::Char('a' | 'A') => self.run_action(Action::VfsList),
                 KeyCode::Char('!') => self.run_action(Action::Panelize),
                 _ => {}
@@ -9803,7 +9867,7 @@ impl App {
             self.status = Some(
                 " C-x  (d = compare, q = quick view, i = info, c = chmod, \
                  o = chown, s = symlink, j = jobs, a = active VFS, \
-                 ! = panelize, t/p = paste tags/path) "
+                 u = undo the last move, ! = panelize, t/p = paste tags/path) "
                     .into(),
             );
             return;
@@ -10551,6 +10615,33 @@ impl App {
         }));
     }
 
+    /// C-x u: put back what the last move moved. Only a move leaves a
+    /// record - a copy is undone by deleting what it wrote, which is a
+    /// deletion and should be asked for as one, and a delete already
+    /// went to the trash.
+    fn open_undo(&mut self) {
+        let Some(pairs) = self.undo.clone() else {
+            self.status = Some(" nothing to undo ".into());
+            return;
+        };
+        let message = match pairs.len() {
+            1 => format!(
+                "Put \"{}\" back where it was?",
+                pairs[0].0.file_name().unwrap_or_default().to_string_lossy()
+            ),
+            n => format!("Put {n} moved items back where they were?"),
+        };
+        self.dialog = Some(Dialog::Confirm(ConfirmDialog {
+            title: " Undo ".into(),
+            message,
+            yes: true,
+            paths: Vec::new(),
+            permanent: false,
+            kind: ConfirmKind::Undo,
+            command: None,
+        }));
+    }
+
     /// M-F5: pack what is marked into an archive of its own. The name
     /// decides the container, which is how NC and VC have always asked
     /// the question, and the other panel's directory is where it lands,
@@ -10645,6 +10736,7 @@ impl App {
     fn confirm_yes(&mut self, d: ConfirmDialog) {
         match d.kind {
             ConfirmKind::Delete => self.start_delete(d.paths, d.permanent),
+            ConfirmKind::Undo => self.start_undo(),
             ConfirmKind::Quit => self.quit_now(),
             ConfirmKind::HotlistDelete { group, index } => {
                 self.hotlist_drop(&group, index);

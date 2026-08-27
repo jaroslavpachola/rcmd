@@ -50,7 +50,7 @@ behind the Adopt rows · `Keep`: rcmd already answers this its own way ·
 |---|---|---|---|
 | **Directory synchronize**: compare two trees, then copy the differences from a per-row preview, either direction or newer-wins | DN, Krusader, TC | **Adopt - first** | the biggest hole in an otherwise complete feature set. `compare.rs` already computes the comparison in mc's three modes; what is missing is the dialog that *acts* on it. Today `C-x d` marks both sides and stops, and a plain F5 quietly does the wrong thing whenever the differences run both ways |
 | **Pack the marked files into a new archive** (`A-F5`), unpack (`A-F6`) | VC, NC, TC, DN | **Adopt - first** | done in 4.12.0 on `M-F5`. The one missing basic verb: rcmd browses ten formats, extracts from them and copies *into* an existing zip or tar, but nothing anywhere creates one. The zip and tar writers are already linked and only tests call them (`archive.rs:1148`); an external `7z`/`rar` covers what rcmd cannot write itself, which is VC's own design |
-| **Undo the last file operation** (move, rename, delete) | Dolphin, Krusader | **Adopt** | an operation log hung on the job queue. F8 already trashes, so an undelete is a restore; move and rename reverse exactly; a copy reverses to deleting what was written. Neither mc nor Far offers this, so it is one of the few rows that would put rcmd *ahead* rather than level |
+| **Undo the last file operation** (move, rename, delete) | Dolphin, Krusader | **Adopt** | done in 4.13.0 for moves and renames, on `C-x u`: the job reports each clean move as it makes it, and the undo is itself a move, so a second `C-x u` is the redo. Deletes are still undone by the trash rather than by this, and a copy is deliberately not undoable - see the row's reasoning below. An operation log hung on the job queue: F8 already trashes, so an undelete is a restore; move and rename reverse exactly; a copy reverses to deleting what was written. Neither mc nor Far offers this, so it is one of the few rows that would put rcmd *ahead* rather than level |
 | Verify after copy: read the destination back and compare | DN, TC | Adopt | a checkbox on the copy form. Nothing in the tree hashes anything but sftp host keys, and this is what makes a copy to a failing stick or a remote target trustworthy |
 | Create and verify `.sha256` / `.md5` files for the marked entries | TC | Adopt | a different job from the row above: this is the checksum you hand to someone else |
 | **Apply a command once per marked file**, with progress and collected output | Far (`C-g`) | Adopt | `[[commands]]` expands `%s` to every marked file in one invocation. The per-file loop is a different tool, and it is the one you want at two hundred files |
@@ -206,8 +206,9 @@ hole in the existing feature set or disproportionately cheap:
    were already linked; what was missing was letting a name that is not
    there yet be packed into rather than added to.
 3. ~~**Include-exclude masks**~~ - shipped in 4.11.0 and 4.11.1.
-4. **Undo for file operations** (§1) - the row that puts rcmd ahead of
-   both mc and Far rather than level with them.
+4. ~~**Undo for file operations**~~ - shipped in 4.13.0 for moves and
+   renames, which is the reversible half; restoring a trashed file from
+   inside rcmd is the rest of the row and is still open.
 5. **Frecency jump** (§3) - the cheapest thing here that changes how the
    program feels every day.
 

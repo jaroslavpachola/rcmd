@@ -48,6 +48,11 @@ pub enum JobEvent {
     },
     /// Operation failed; answer with Retry/Skip/SkipAll/Abort.
     AskError { path: PathBuf, message: String },
+    /// One item moved, and where from - the record an undo is built
+    /// from. Only sent where the move was a clean one: a move onto a
+    /// name that was already taken is not reported, since putting the
+    /// source back would not bring back what it landed on.
+    Moved { from: PathBuf, to: PathBuf },
     Done {
         files_done: u64,
         skipped: u64,
@@ -263,6 +268,44 @@ pub fn spawn_move(
             }
             let target = renamed_target(src, &dest, multiple, into_dir, ctx.opts, rename.as_ref());
             move_one(ctx, src, &target, &mut totals)?;
+        }
+        Ok(())
+    })
+}
+
+/// Put moved items back: every pair is `(from, to)` as it was reported
+/// by [`JobEvent::Moved`], walked newest first so a move that displaced
+/// another is undone in the order it happened. A pair whose item is no
+/// longer at `to`, or whose `from` is occupied again, is left alone and
+/// counted as skipped - an undo that overwrote something would be a
+/// second accident rather than the end of the first.
+pub fn spawn_undo_move(pairs: Vec<(PathBuf, PathBuf)>) -> JobHandle {
+    spawn(move |ctx| {
+        let _ = ctx.tx.send(JobEvent::Total {
+            files: pairs.len() as u64,
+            bytes: 0,
+        });
+        let mut totals = (pairs.len() as u64, 0u64);
+        for (from, to) in pairs.iter().rev() {
+            if ctx.cancelled() {
+                return Err(Aborted);
+            }
+            if !to.exists() {
+                ctx.skipped += 1;
+                continue;
+            }
+            if from.exists() {
+                ctx.skipped += 1;
+                continue;
+            }
+            if let Some(parent) = from.parent()
+                && !parent.exists()
+                && fs::create_dir_all(parent).is_err()
+            {
+                ctx.skipped += 1;
+                continue;
+            }
+            move_one(ctx, to, from, &mut totals)?;
         }
         Ok(())
     })
@@ -757,6 +800,18 @@ struct Ctx {
 impl Ctx {
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// Report a move that can be undone. `clean` is false where the
+    /// destination was already taken, which is the one case putting the
+    /// source back would not restore.
+    fn moved(&self, clean: bool, from: &Path, to: &Path) {
+        if clean {
+            let _ = self.tx.send(JobEvent::Moved {
+                from: from.to_path_buf(),
+                to: to.to_path_buf(),
+            });
+        }
     }
 
     fn progress(&self, current: &Path) {
@@ -1330,6 +1385,9 @@ fn move_one(ctx: &mut Ctx, src: &Path, dst: &Path, totals: &mut (u64, u64)) -> R
     if ctx.may_overwrite(FileFacts::of_path(src), dst, false)? == Overwrite::Skip {
         return Ok(());
     }
+    // whether this move can be taken back afterwards: only if nothing
+    // was standing where it landed
+    let clean = !dst.exists();
     loop {
         if ctx.cancelled() {
             return Err(Aborted);
@@ -1337,6 +1395,7 @@ fn move_one(ctx: &mut Ctx, src: &Path, dst: &Path, totals: &mut (u64, u64)) -> R
         match fs::rename(src, dst) {
             Ok(()) => {
                 ctx.files_done += 1;
+                ctx.moved(clean, src, dst);
                 ctx.progress(src);
                 return Ok(());
             }
@@ -1352,6 +1411,7 @@ fn move_one(ctx: &mut Ctx, src: &Path, dst: &Path, totals: &mut (u64, u64)) -> R
                 });
                 copy_tree(ctx, src, dst)?;
                 delete_tree(ctx, src)?;
+                ctx.moved(clean, src, dst);
                 ctx.progress(src);
                 return Ok(());
             }
@@ -2207,6 +2267,117 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    /// Collect what a job moved, which is what the undo log is made of.
+    fn run_moves(handle: JobHandle, mut replies: Vec<Reply>) -> (Outcome, Vec<(PathBuf, PathBuf)>) {
+        let mut moved = Vec::new();
+        loop {
+            match handle.events.recv().expect("job died without Done") {
+                JobEvent::Moved { from, to } => moved.push((from, to)),
+                JobEvent::AskOverwrite { .. } | JobEvent::AskError { .. } => {
+                    handle.replies.send(replies.remove(0)).unwrap();
+                }
+                JobEvent::Done {
+                    files_done,
+                    skipped,
+                    aborted,
+                } => {
+                    return (
+                        Outcome {
+                            files_done,
+                            skipped,
+                            aborted,
+                            asks: Vec::new(),
+                        },
+                        moved,
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn a_move_reports_what_it_moved_and_the_undo_puts_it_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("from");
+        let to = tmp.path().join("to");
+        fs::create_dir_all(from.join("tree/deep")).unwrap();
+        fs::create_dir(&to).unwrap();
+        fs::write(from.join("one.txt"), b"first").unwrap();
+        fs::write(from.join("tree/deep/two.txt"), b"second").unwrap();
+
+        let sources = vec![from.join("one.txt"), from.join("tree")];
+        let (out, moved) = run_moves(
+            spawn_move(sources, to.clone(), TransferOpts::default(), None),
+            vec![],
+        );
+        assert!(!out.aborted && out.skipped == 0);
+        assert_eq!(moved.len(), 2, "one pair per item moved: {moved:?}");
+        assert!(to.join("one.txt").exists() && to.join("tree/deep/two.txt").exists());
+
+        let (undone, _) = run_moves(spawn_undo_move(moved), vec![]);
+        assert_eq!(undone.skipped, 0);
+        assert!(from.join("one.txt").exists(), "the file came back");
+        assert_eq!(
+            fs::read_to_string(from.join("tree/deep/two.txt")).unwrap(),
+            "second",
+            "and so did the tree, with what was in it"
+        );
+        assert!(!to.join("one.txt").exists());
+    }
+
+    #[test]
+    fn a_move_onto_a_taken_name_is_not_offered_as_undoable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let to = tmp.path().join("to");
+        fs::create_dir(&to).unwrap();
+        fs::write(tmp.path().join("one.txt"), b"new").unwrap();
+        fs::write(to.join("one.txt"), b"old").unwrap();
+
+        // answer the overwrite prompt with yes: the move happens, but
+        // putting the source back would not bring back what it landed on
+        let (out, moved) = run_moves(
+            spawn_move(
+                vec![tmp.path().join("one.txt")],
+                to.clone(),
+                TransferOpts::default(),
+                None,
+            ),
+            vec![Reply::Overwrite],
+        );
+        assert_eq!(out.files_done, 1);
+        assert!(moved.is_empty(), "{moved:?}");
+    }
+
+    #[test]
+    fn an_undo_leaves_a_name_that_was_taken_again_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let to = tmp.path().join("to");
+        fs::create_dir(&to).unwrap();
+        fs::write(tmp.path().join("one.txt"), b"moved").unwrap();
+        let (_, moved) = run_moves(
+            spawn_move(
+                vec![tmp.path().join("one.txt")],
+                to.clone(),
+                TransferOpts::default(),
+                None,
+            ),
+            vec![],
+        );
+        assert_eq!(moved.len(), 1);
+        // something else is standing where it came from now
+        fs::write(tmp.path().join("one.txt"), b"someone else").unwrap();
+
+        let (undone, _) = run_moves(spawn_undo_move(moved), vec![]);
+        assert_eq!(undone.skipped, 1);
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("one.txt")).unwrap(),
+            "someone else",
+            "the undo did not overwrite it"
+        );
+        assert!(to.join("one.txt").exists(), "and left the moved copy alone");
     }
 
     #[test]

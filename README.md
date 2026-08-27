@@ -190,6 +190,7 @@ exactly where it was.
 | Alt+F5 | Pack the marked entries into a new archive (the name says the format) |
 | F8 | Delete to trash |
 | Shift+F8 | Delete permanently |
+| Ctrl+X u | Undo the last move (asks first; a second time is the redo) |
 | Alt+N | Sort by name (again = reverse; other orders in the panel's own F9 → Left/Right menu) |
 | Alt+T | Cycle listing format: brief (names in columns) / full / long (active long panel = full-width one-panel view) |
 | Ctrl+U | Swap panels |
@@ -255,6 +256,20 @@ The overwrite prompt is MC's: both files' size and date on screen, then
 **Overwrite / Append / Reget** for this file and **All / Update / Size
 differs / None** for every remaining one (Up/Down switch rows). Append
 and Reget - MC's resume - need a local file on both sides.
+
+**Ctrl+X u undoes the last move.** Every move F6 makes onto a name that
+was free is recorded as it happens, and `Ctrl+X u` asks before putting
+the items back where they came from. It is an ordinary job - the same
+progress, the same error prompts, the same Esc - and because the undo
+is itself a move, a second `Ctrl+X u` is the redo. A move that landed
+on a name that was already taken is not recorded: putting the source
+back would not bring back what it overwrote, and an undo that quietly
+destroyed something would be a second accident rather than the end of
+the first. A pair whose file has since moved on, or whose old name is
+occupied again, is left alone and counted as skipped. A copy leaves no
+record either - undoing one means deleting what it wrote, which is a
+deletion and should be asked for as one - and F8 has always gone to the
+trash, which is where a deletion is undone.
 
 Esc doubles as MC's meta prefix everywhere: after a lone Esc, a digit is
 an F-key (Esc 1 = F1 … Esc 0 = F10) and any other key gets Alt added -

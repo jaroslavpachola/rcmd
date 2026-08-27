@@ -923,6 +923,47 @@ def test_archive_write():
     shutil.rmtree(root)
 
 
+def test_undo():
+    """F6 puts a file somewhere else; C-x u puts it back, and a second
+    C-x u is the redo."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "out"))
+    open(os.path.join(play, "note.txt"), "w").write("kept\n")
+
+    s = Session(play, home, args=(play, os.path.join(play, "out")))
+    s.send(b"\x13note\r", wait=STEP)          # quick search -> note.txt
+    s.send(F6, wait=STEP)
+    s.send(b"\x15" + os.path.join(play, "out").encode() + b"/\r", wait=STEP * 3)
+    check("undo: the move ran", wait_for(s, "done -"))
+    check("undo: it moved", os.path.exists(os.path.join(play, "out", "note.txt"))
+          and not os.path.exists(os.path.join(play, "note.txt")))
+
+    s.send(b"\x18", wait=STEP)                # C-x
+    s.send(b"u", wait=STEP)
+    check("undo: it asks first", "Put" in s.screen(), s.screen())
+    s.send(b"\r", wait=STEP * 3)
+    check("undo: the undo ran", wait_for(s, "done -"))
+    check("undo: the file came back", os.path.exists(os.path.join(play, "note.txt"))
+          and not os.path.exists(os.path.join(play, "out", "note.txt")))
+
+    # the undo is itself a move, so undoing it is a redo
+    s.send(b"\x18u", wait=STEP)
+    s.send(b"\r", wait=STEP * 3)
+    check("undo: the redo ran", wait_for(s, "done -"))
+    check("undo: and it went back out",
+          os.path.exists(os.path.join(play, "out", "note.txt")))
+
+    # nothing left to undo once the log is spent... it is spent by use,
+    # so a fresh session has nothing
+    s.quit()
+    s = Session(play, home, args=(play, os.path.join(play, "out")))
+    s.send(b"\x18u", wait=STEP * 2)
+    check("undo: a fresh session has nothing to undo",
+          wait_for(s, "nothing to undo"))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_pack():
     """M-F5 packs into an archive that is not there yet: the name says
     the container, and the other panel's directory is where it lands."""
@@ -5138,6 +5179,7 @@ def main():
         test_vfslist,
         test_archive_write,
         test_pack,
+        test_undo,
         test_ftp,
         test_find,
         test_compare,
