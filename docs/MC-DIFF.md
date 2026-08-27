@@ -223,3 +223,11 @@ not deliver that half; they are listed under "Left for 4.x" in PLAN4:
 the `M-H` directory history list (§4), the "Filtered view" menu entry
 (§7), the free-space/marked-totals toggle (§3), and `[[open]]` growing
 to mc.ext's matching power (§4).
+
+The same comparison against the rest of the orthodox family - Far
+Manager, DOS Navigator, Volkov Commander, Total Commander and the
+modern TUI managers - is [ORTHODOX-DIFF.md](ORTHODOX-DIFF.md). Its rows
+are proposals rather than parity work, since nothing promises parity
+with those. Five of them reopen decisions recorded here: §13's refusals
+of tabs, in-terminal images and a plugin runtime, and §8's pruning of
+column blocks and editor macros.
