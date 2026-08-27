@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.20.0 - 2026-08-27
+
+- **Named filter sets** (`C-x f`), which is Far's filter menu and the
+  one thing its panels do that rcmd's single anonymous glob could not.
+  `[[filter]]` entries in the config give each a name and a mask list;
+  the dialog is a list of switches saying which of them the panel is
+  under, per panel, several at once. What the panel then shows is what
+  any of them shows minus what any of them hides, which is what joining
+  their mask lists means - and a set that shows everything but the
+  objects still shows everything but the objects when a narrower one is
+  switched on beside it. `Space` ticks, `a` switches them all off or on
+  again, Enter applies, nothing ticked is no filter. `C-f` stays what
+  it was: one glob, typed on the spot.
+
 ## 4.19.0 - 2026-08-27
 
 - **Select and filter by size and age.** The dialog behind `+`, `-`

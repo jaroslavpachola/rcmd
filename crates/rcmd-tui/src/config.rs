@@ -149,6 +149,10 @@ pub struct Config {
     pub commands: Vec<UserCommand>,
     /// Saved panelize commands, in file order.
     pub panelize: Vec<PanelizePreset>,
+    /// `[[filter]]` - named mask lists, switched on and off together
+    /// from `C-x f`. Far's filter menu, which is the one thing its
+    /// panels do that rcmd's single anonymous glob cannot.
+    pub filter: Vec<FilterSet>,
     /// Per-name / per-type colour rules, in file order - the first
     /// matching one wins. MC's filehighlight, as TOML.
     pub highlight: Vec<HighlightRule>,
@@ -179,6 +183,16 @@ impl HotEntry {
             .iter()
             .any(|e| e.path == path || HotEntry::holds(&e.entries, path))
     }
+}
+
+/// `[[filter]]` - a named mask list. Several can be on at once: what
+/// the panel shows is then everything any of them shows, minus
+/// everything any of them hides.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterSet {
+    pub name: String,
+    /// A mask list: `*.c,*.h|*_test.*`.
+    pub mask: String,
 }
 
 /// `[[panelize]]` - a named command whose output becomes a listing.
@@ -458,6 +472,7 @@ impl Default for Config {
             view: Vec::new(),
             commands: Vec::new(),
             panelize: Vec::new(),
+            filter: Vec::new(),
             highlight: Vec::new(),
         }
     }

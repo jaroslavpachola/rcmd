@@ -227,6 +227,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "pack" => Action::Pack,
         "undo" => Action::Undo,
         "synchronize" => Action::Sync,
+        "filter-sets" => Action::Filters,
         "drives-left" => Action::Drives(0),
         "drives-right" => Action::Drives(1),
         "mkdir" => Action::Mkdir,

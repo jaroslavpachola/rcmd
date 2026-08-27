@@ -532,6 +532,10 @@ const HELP_TEXT: &[&str] = &[
     "  Backspace       go to parent directory / leave the archive",
     "  C-s, M-s        quick search (type to jump, C-s again = next)",
     "  C-u             swap the two panels",
+    "  C-x f           the named filter sets ([[filter]] in the config):",
+    "                  Space ticks one, a switches them all off or on,",
+    "                  Enter applies. Several at once show what any of",
+    "                  them shows, minus what any of them hides",
     "  C-f             filter which files the panel shows: a pattern,",
     "                  plus Files only, Case sensitive and Shell",
     "                  patterns (off = a regular expression). '*'",
@@ -1105,6 +1109,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 dialog_rows = draw_pick_list(frame, title, &rows, *row, 0)
             }
             Dialog::Sync(d) => dialog_rows = draw_sync(frame, d),
+            Dialog::Filters(d) => {
+                dialog_rows = draw_filters(frame, &app.config.filter, d);
+            }
             Dialog::Charset(row) => {
                 dialog_rows =
                     draw_pick_list(frame, " Character set ", &crate::app::CHARSET_ROWS, *row, 0)
@@ -4952,6 +4959,63 @@ fn draw_vfs(frame: &mut Frame, dialog: &VfsDialog) {
             area,
         );
     }
+}
+
+/// The named filter sets, and which the panel is under. Several at
+/// once is ordinary: the list is a set of switches, not a menu.
+fn draw_filters(
+    frame: &mut Frame,
+    sets: &[crate::config::FilterSet],
+    d: &crate::app::FiltersDialog,
+) -> Option<crate::app::DialogRows> {
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let shown = sets
+        .len()
+        .min(frame.area().height.saturating_sub(4) as usize)
+        .max(1);
+    let inner = popup(
+        frame,
+        centered(64, shown as u16 + 2, frame.area()),
+        match d.panel {
+            0 => " Filter sets (left panel) ",
+            _ => " Filter sets (right panel) ",
+        },
+        base,
+    );
+    let name_width = 20.min((inner.width as usize).saturating_sub(30));
+    for (i, set) in sets.iter().take(shown).enumerate() {
+        let row = Rect {
+            y: inner.y + i as u16,
+            height: 1,
+            ..inner
+        };
+        let text = format!(
+            " [{}] {}  {}",
+            if d.on.get(i).copied().unwrap_or(false) {
+                "x"
+            } else {
+                " "
+            },
+            fit(&set.name, name_width, false),
+            set.mask,
+        );
+        frame.render_widget(
+            Line::from(format!(
+                "{text:<w$}",
+                w = (inner.width as usize).saturating_sub(1)
+            ))
+            .style(if i == d.row { sel } else { base }),
+            row,
+        );
+    }
+    Some(crate::app::DialogRows {
+        area: Rect {
+            height: shown as u16,
+            ..inner
+        },
+        rows: (0..shown).map(Some).collect(),
+    })
 }
 
 /// The synchronize plan: one row per difference, the arrow saying

@@ -955,6 +955,8 @@ pub enum Dialog {
     Compare(usize),
     /// F9 > Command > Synchronize: the plan the comparison produced.
     Sync(Box<SyncDialog>),
+    /// `C-x f`: the named filter sets and which are on.
+    Filters(Box<FiltersDialog>),
     /// External panelize: the saved commands and the one being typed.
     Panelize(Box<PanelizeDialog>),
     /// Select / unselect group, and the panel filter.
@@ -1006,6 +1008,16 @@ pub enum VfsKind {
     Archive,
     /// A mounted filesystem, from `df`.
     Mount,
+}
+
+/// `C-x f`: the named filter sets, and which of them this panel is
+/// under. Far's filter menu.
+pub struct FiltersDialog {
+    /// One per `[[filter]]` entry, in config order.
+    pub on: Vec<bool>,
+    pub row: usize,
+    /// Which panel it applies to - the active one when it opened.
+    pub panel: usize,
 }
 
 pub struct VfsDialog {
@@ -2144,6 +2156,8 @@ pub enum Action {
     Undo,
     /// F9 > Command > Synchronize: compare, then copy the differences.
     Sync,
+    /// `C-x f`: the named filter sets.
+    Filters,
     /// Far's M-F1 / M-F2: the list of everywhere this *named* panel can
     /// go - the open connections and archives, and what is mounted.
     Drives(usize),
@@ -2332,7 +2346,9 @@ const PANEL_MENU: &[MenuEntry] = &[
     // already spoken for above, and shadowing Right to save an arrow
     // key would be a bad trade
     Some(("Sort by group", "", Action::Sort(SortKey::Group))),
-    Some(("&Unsorted (as listed)", "", Action::Sort(SortKey::Unsorted))),
+    // no letter: u is the full listing's, and every other letter in
+    // the label is spoken for by an entry above or a menu title
+    Some(("Unsorted (as listed)", "", Action::Sort(SortKey::Unsorted))),
     Some(("Re&verse sort", "", Action::SortReverse)),
     None,
     // "Filter" cannot take a letter of its own here: f, i, l, t, e and
@@ -2340,6 +2356,7 @@ const PANEL_MENU: &[MenuEntry] = &[
     // panel-menu entry that shadows File, Command, Options or Right
     // would make that menu unreachable by letter
     Some(("&Glob filter...", "C-f", Action::Filter)),
+    Some(("Filter sets...", "C-x f", Action::Filters)),
     Some(("&Panelize command...", "", Action::Panelize)),
     Some(("Re&scan", "C-r", Action::Reload)),
     Some(("Remote lin&k...", "", Action::SftpLink)),
@@ -2702,6 +2719,8 @@ pub struct App {
     remote_edit: Option<RemoteEdit>,
     du: Option<DuJob>,
     compare: Option<CompareState>,
+    /// Which `[[filter]]` sets each panel is under, in config order.
+    filter_sets_on: [Vec<bool>; 2],
     /// Where the panels have been, this session and every one before:
     /// the hotlist's recent half is ranked by it. Merged back into the
     /// state file on the way out.
@@ -2864,6 +2883,7 @@ impl App {
             dialog: None,
             jobs: Vec::new(),
             undo: None,
+            filter_sets_on: [Vec::new(), Vec::new()],
             visits: state::load().0.visits,
             visited: [String::new(), String::new()],
             compare_then_sync: false,
@@ -5077,6 +5097,7 @@ impl App {
             Action::Pack => self.open_pack(),
             Action::Undo => self.open_undo(),
             Action::Sync => self.open_sync(),
+            Action::Filters => self.open_filters(),
             Action::Delete => self.open_delete(false),
             Action::DeletePerm => self.open_delete(true),
             Action::SelectGroup => self.open_select(true),
@@ -7439,6 +7460,12 @@ impl App {
                 }
                 true
             }
+            Some(Dialog::Filters(d)) => {
+                if let Some(at) = count(d.on.len()) {
+                    d.row = at;
+                }
+                true
+            }
             _ => false,
         }
     }
@@ -7875,6 +7902,42 @@ impl App {
                         self.dialog = Some(Dialog::Sync(d));
                     }
                     _ => self.dialog = Some(Dialog::Sync(d)),
+                }
+            }
+            Dialog::Filters(mut d) => {
+                let last = d.on.len().saturating_sub(1);
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => self.apply_filters(&d),
+                    KeyCode::Up => {
+                        d.row = d.row.saturating_sub(1);
+                        self.dialog = Some(Dialog::Filters(d));
+                    }
+                    KeyCode::Down | KeyCode::Tab => {
+                        d.row = (d.row + 1).min(last);
+                        self.dialog = Some(Dialog::Filters(d));
+                    }
+                    KeyCode::Home => {
+                        d.row = 0;
+                        self.dialog = Some(Dialog::Filters(d));
+                    }
+                    KeyCode::End => {
+                        d.row = last;
+                        self.dialog = Some(Dialog::Filters(d));
+                    }
+                    KeyCode::Char(' ') => {
+                        if let Some(on) = d.on.get_mut(d.row) {
+                            *on = !*on;
+                        }
+                        self.dialog = Some(Dialog::Filters(d));
+                    }
+                    // one key for "show everything again"
+                    KeyCode::Char('a' | 'A') => {
+                        let all_off = d.on.iter().all(|on| !on);
+                        d.on.fill(all_off);
+                        self.dialog = Some(Dialog::Filters(d));
+                    }
+                    _ => self.dialog = Some(Dialog::Filters(d)),
                 }
             }
             Dialog::Learn(mut d) => {
@@ -10327,6 +10390,7 @@ impl App {
                 KeyCode::Char('l' | 'L') => self.open_link(LinkKind::Hard, false),
                 KeyCode::Char('j' | 'J') => self.run_action(Action::Jobs),
                 KeyCode::Char('u' | 'U') => self.run_action(Action::Undo),
+                KeyCode::Char('f' | 'F') => self.run_action(Action::Filters),
                 KeyCode::Char('a' | 'A') => self.run_action(Action::VfsList),
                 KeyCode::Char('!') => self.run_action(Action::Panelize),
                 _ => {}
@@ -10338,7 +10402,8 @@ impl App {
             self.status = Some(
                 " C-x  (d = compare, q = quick view, i = info, c = chmod, \
                  o = chown, s = symlink, j = jobs, a = active VFS, \
-                 u = undo the last move, ! = panelize, t/p = paste tags/path) "
+                 u = undo, f = filter sets, ! = panelize, \
+                 t/p = paste tags/path) "
                     .into(),
             );
             return;
@@ -11084,6 +11149,53 @@ impl App {
             action: InputAction::Mkdir,
             hist: None,
         }));
+    }
+
+    /// `C-x f`: the named filter sets, with the ones this panel is
+    /// under already ticked. Several at once is the point: what the
+    /// panel shows is what any of them shows, minus what any hides.
+    fn open_filters(&mut self) {
+        if self.config.filter.is_empty() {
+            self.status = Some(" no [[filter]] sets in the config - see the README ".into());
+            return;
+        }
+        let on = self.filter_sets_on[self.active].clone();
+        let on = match on.len() == self.config.filter.len() {
+            true => on,
+            false => vec![false; self.config.filter.len()],
+        };
+        self.dialog = Some(Dialog::Filters(Box::new(FiltersDialog {
+            on,
+            row: 0,
+            panel: self.active,
+        })));
+    }
+
+    /// OK on that list: the ticked sets become the panel's filter, and
+    /// none ticked clears it.
+    fn apply_filters(&mut self, d: &FiltersDialog) {
+        let masks: Vec<&str> = self
+            .config
+            .filter
+            .iter()
+            .zip(&d.on)
+            .filter(|(_, on)| **on)
+            .map(|(set, _)| set.mask.as_str())
+            .collect();
+        let text = rcmd_core::pattern::join_masks(masks);
+        self.filter_sets_on[d.panel] = d.on.clone();
+        let panel = &mut self.panels[d.panel];
+        panel.filter = match text.is_empty() {
+            true => None,
+            false => Some(rcmd_core::pattern::Pattern {
+                text,
+                ..Default::default()
+            }),
+        };
+        let active = self.active;
+        self.active = d.panel;
+        self.fallible(|p| p.reload().map(|()| true));
+        self.active = active;
     }
 
     /// C-x u: put back what the last move moved. Only a move leaves a

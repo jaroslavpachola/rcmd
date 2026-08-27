@@ -170,6 +170,39 @@ pub struct Masks {
     fold: bool,
 }
 
+/// Put several mask lists together into one: every include from every
+/// list, and every exclude from every list taken back out. Two named
+/// filters switched on at once is exactly that question - show me what
+/// either of them shows, minus what either of them hides.
+pub fn join_masks<'a>(lists: impl IntoIterator<Item = &'a str>) -> String {
+    let (mut include, mut exclude) = (Vec::new(), Vec::new());
+    // one list that includes everything makes the union everything,
+    // however narrow the others are: `|*.o` shows all but the objects,
+    // and adding "and also the .c files" to it takes nothing away
+    let mut everything = false;
+    for list in lists {
+        let (left, right) = match list.split_once('|') {
+            Some((left, right)) => (left, right),
+            None => (list, ""),
+        };
+        everything |= left.split(',').all(|mask| mask.trim().is_empty());
+        for (part, into) in [(left, &mut include), (right, &mut exclude)] {
+            for mask in part.split(',').map(str::trim).filter(|m| !m.is_empty()) {
+                if !into.contains(&mask.to_string()) {
+                    into.push(mask.to_string());
+                }
+            }
+        }
+    }
+    if everything {
+        include.clear();
+    }
+    match exclude.is_empty() {
+        true => include.join(","),
+        false => format!("{}|{}", include.join(","), exclude.join(",")),
+    }
+}
+
 impl Masks {
     /// Split a mask list into its two halves. The first `|` is the one
     /// that divides them; commas separate the masks on each side,
@@ -333,6 +366,27 @@ mod tests {
         assert!(!all_but.matches("main.o"));
         // an exclusion beats an include that also matched
         assert!(!shell("*|*", true).matches("anything"));
+    }
+
+    #[test]
+    fn several_mask_lists_join_into_one() {
+        assert_eq!(join_masks(["*.c,*.h", "*.rs"]), "*.c,*.h,*.rs");
+        // the exclusions add up too, and land on one side
+        assert_eq!(
+            join_masks(["*.c|*_test.*", "*.rs|*.tmp"]),
+            "*.c,*.rs|*_test.*,*.tmp"
+        );
+        // a mask named twice is one mask
+        assert_eq!(join_masks(["*.c", "*.c,*.h"]), "*.c,*.h");
+        assert_eq!(join_masks(std::iter::empty()), "");
+        // "everything except" joined with a narrow list is still
+        // everything except: a filter that shows more cannot be made to
+        // show less by switching a second one on beside it
+        let joined = join_masks(["|*.o", "*.c"]);
+        assert_eq!(joined, "|*.o");
+        let m = shell(&joined, true);
+        assert!(m.matches("main.c") && m.matches("notes.txt"));
+        assert!(!m.matches("main.o"));
     }
 
     #[test]

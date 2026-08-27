@@ -934,6 +934,59 @@ def test_archive_write():
     shutil.rmtree(root)
 
 
+def test_filtersets():
+    """C-x f: named filter sets, several at once, and the union of what
+    they show minus what they hide."""
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write(
+        '[[filter]]\n'
+        'name = "sources"\n'
+        'mask = "*.c,*.h|*_test.*"\n'
+        '\n'
+        '[[filter]]\n'
+        'name = "notes"\n'
+        'mask = "*.md"\n'
+    )
+    for name in ("main.c", "main.h", "main_test.c", "readme.md", "a.out"):
+        open(os.path.join(play, name), "w").write(name + "\n")
+
+    s = Session(play, home)
+    s.send(b"\x18f", wait=STEP)
+    scr = s.screen()
+    check("filtersets: the sets are listed",
+          "sources" in scr and "notes" in scr and "*.c,*.h|*_test.*" in scr, scr)
+    s.send(b" ", wait=STEP)                    # switch "sources" on
+    s.send(b"\r", wait=STEP * 2)
+    scr = s.screen()
+    check("filtersets: the set filters the panel",
+          scr.count("main.c") == 2 and scr.count("main.h") == 2, scr)
+    # the right panel is on the same directory and unfiltered, so the
+    # count is what says the left one is hiding them
+    check("filtersets: and its exclusion is taken back out",
+          scr.count("main_test.c") == 1 and scr.count("a.out") == 1, scr)
+    check("filtersets: the panel says what it is under",
+          "*.c,*.h" in scr, scr)
+
+    # a second set switched on shows both, not the intersection
+    s.send(b"\x18f", wait=STEP)
+    s.send(DOWN + b" ", wait=STEP)
+    s.send(b"\r", wait=STEP * 2)
+    scr = s.screen()
+    check("filtersets: two sets show both", "main.c" in scr and "readme.md" in scr, scr)
+    check("filtersets: and still not the excluded one",
+          scr.count("main_test.c") == 1, scr)
+
+    # a switched to none clears the filter
+    s.send(b"\x18f", wait=STEP)
+    s.send(b"a", wait=STEP)
+    s.send(b"\r", wait=STEP * 2)
+    check("filtersets: a clears them", "a.out" in s.screen(), s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_selectsize():
     """The select dialog asks DN's other two questions: how big, and how
     recently touched."""
@@ -5358,6 +5411,7 @@ def main():
         test_pack,
         test_undo,
         test_sync,
+        test_filtersets,
         test_selectsize,
         test_visits,
         test_restore_other_dir,

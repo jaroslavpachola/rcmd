@@ -355,6 +355,27 @@ instead of a glob. A regex that will not compile is quoted back at you
 rather than silently matching nothing. The panel names the filter it is
 under along its bottom edge, options included.
 
+**Named filter sets** (`Ctrl+X f`) are Far's filter menu: `[[filter]]`
+entries in the config, each a name and a mask list, and a list of
+switches saying which of them this panel is under. Several can be on at
+once, and what the panel then shows is **what any of them shows, minus
+what any of them hides** - so a "sources" set of `*.c,*.h|*_test.*`
+and a "notes" set of `*.md` switched on together show the sources and
+the notes and still no tests. `Space` ticks a row, `a` switches them
+all off (or all on again), Enter applies, and with nothing ticked the
+panel is unfiltered. `Ctrl+F` stays what it always was: one glob, typed
+on the spot.
+
+```toml
+[[filter]]
+name = "sources"
+mask = "*.c,*.h|*_test.*"
+
+[[filter]]
+name = "no build output"
+mask = "|*.o,*.d,target/*"
+```
+
 Beside the pattern the same dialog asks DN's other two questions:
 **Size** (`>1M`, `<=100k`, `1M-2G` - k/M/G/T, 1024-based as the panel
 counts) and **Newer than** (`30m`, `24h`, `7d`, `2w`). Both are empty

@@ -65,7 +65,7 @@ behind the Adopt rows · `Keep`: rcmd already answers this its own way ·
 | Feature | From | Decision | Note |
 |---|---|---|---|
 | **Include-exclude masks** (`*.c,*.h\|*_test.*`) as one language everywhere | Far | **Adopt - first** | done: 4.11.0 in the select, unselect, filter and find dialogs, 4.11.1 in `[[highlight]]` and `[[open]]`. Far's real trick is not the syntax, it is that select, filter, highlighting, associations and sort groups all speak it. `pattern.rs` has the glob and regex halves already; adding comma lists and the `\|` exclusion upgrades `+`, `-`, `C-f`, `[[highlight]]` and `[[open]]` in one change, and every row below leans on it |
-| **Named filter sets**: several per panel, each with include and exclude masks, toggled independently, saved | Far (`C-i`) | Adopt | `panel.filter` is a single anonymous glob (`panel.rs:80`). This is the largest day-to-day difference between using Far and using rcmd. Far's key is Tab in a terminal (§10), so this one needs a key of its own |
+| **Named filter sets**: several per panel, each with include and exclude masks, toggled independently, saved | Far (`C-i`) | Adopt | done in 4.20.0 on `C-x f`, Far's own key being Tab in a terminal (§10). They are `[[filter]]` entries in the config, switched on per panel and joined into one mask list. Until then `panel.filter` was a single anonymous glob (`panel.rs:80`): This is the largest day-to-day difference between using Far and using rcmd. Far's key is Tab in a terminal (§10), so this one needs a key of its own |
 | Select by size, date range and attributes, not only by mask | DN, dired's `%` | Adopt | done in 4.19.0 for size and age, in the select, unselect *and* filter dialog; attributes are the part still open. Until then the select dialog was a mask plus three checkboxes: "Everything over 100 MB" or "everything touched since yesterday" means `A-F7` and panelize today |
 | Restore the previous selection | Far (`C-m`) | Adopt | marks die to `%u`, to a reload and to every operation; one key that brings the last set back is a handful of lines against the panel's mark storage. Far's key is Enter in a terminal (§10) |
 | **Yank registers for files**: `yy` / `dd` / `p`, named | vifm | Adopt-later | collect from four directories into register `a`, paste once. A `HashMap<char, Vec<PathBuf>>` and three keys, and it subsumes most of what the temporary panel below is for |
@@ -217,9 +217,9 @@ part of the record:
    the half still open: this narrows a list of places, not a tree of
    them.
 
-What is next, and now the live list: panel tabs if §9 reopens them, the
-remote socket and script plugins (§7), and the named filter sets and
-richer select criteria (§2). The sort keys (§4), the mount menu (§3)
+What is next, and now the live list: panel tabs if §9 reopens them, and
+the remote socket and script plugins (§7). §2's filter sets and select
+criteria went in 4.19.0 and 4.20.0. The sort keys (§4), the mount menu (§3)
 and session persistence (§3) went in 4.16.0 to 4.18.0. The socket is
 the one that unlocks the most, since every row that wants a key rcmd
 cannot spare (§10) is answered by letting a script have one.
