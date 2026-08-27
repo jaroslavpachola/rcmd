@@ -83,6 +83,9 @@ class Session:
             os.environ["HOME"] = home
             os.environ.pop("XDG_CONFIG_HOME", None)
             os.environ.pop("XDG_STATE_HOME", None)  # state.toml stays in $HOME
+            # ...and the remote-control socket in the sandbox, so a test
+            # never reaches a real rcmd of the user's
+            os.environ["XDG_RUNTIME_DIR"] = home
             os.environ.pop("SSH_AUTH_SOCK", None)  # keep sftp auth deterministic
             os.environ["SHELL"] = shell
             os.environ["TERM"] = "xterm-256color"
@@ -931,6 +934,64 @@ def test_archive_write():
         body = z.read("renamed.txt").decode()
     check("archwrite: replaced, not shadowed",
           names.count("renamed.txt") == 1 and body == "replaced\n")
+    shutil.rmtree(root)
+
+
+def test_remote():
+    """rcmd --remote drives a running instance: cd, select, any action
+    by name, and the queries that let a script see where it is."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "sub"))
+    for name in ("a.txt", "b.txt", "c.md"):
+        open(os.path.join(play, name), "w").write(name + "\n")
+
+    s = Session(play, home, args=(play, play))
+    env = dict(os.environ, HOME=home, XDG_RUNTIME_DIR=home)
+    env.pop("XDG_CONFIG_HOME", None)
+
+    def remote(*argv):
+        return subprocess.run([BIN, "--remote", *argv], env=env,
+                              capture_output=True, text=True, timeout=10)
+
+    out = remote("pwd")
+    check("remote: pwd answers where the panel is",
+          out.stdout.strip() == play, out.stdout + out.stderr)
+
+    out = remote("select *.txt")
+    check("remote: select marks by mask", out.stdout.strip() == "2",
+          out.stdout + out.stderr)
+    check("remote: and the panel shows it", wait_for(s, "2 file(s)"), s.screen())
+
+    remote("cd " + os.path.join(play, "sub"))
+    check("remote: cd moved the panel", wait_for(s, os.path.join(play, "sub")))
+
+    out = remote("action listing-brief")
+    check("remote: an action by name runs", out.returncode == 0,
+          out.stdout + out.stderr)
+
+    out = remote("action no-such-thing")
+    check("remote: an unknown action is refused",
+          out.returncode != 0 and "no action" in out.stderr,
+          out.stdout + out.stderr)
+
+    # a command rcmd starts is told which instance asked for it
+    socket = [os.path.join(home, "rcmd", f) for f in os.listdir(os.path.join(home, "rcmd"))]
+    env["RCMD_SOCKET"] = socket[0]
+    out = remote("pwd")
+    check("remote: RCMD_SOCKET names the instance",
+          out.stdout.strip().endswith("sub"), out.stdout + out.stderr)
+    del env["RCMD_SOCKET"]
+
+    out = remote("status hello from a script")
+    check("remote: a script can say something",
+          wait_for(s, "hello from a script"), s.screen())
+
+    s.quit()
+    # the socket goes when the instance does
+    time.sleep(0.5)
+    out = remote("pwd")
+    check("remote: nothing to talk to once it has quit", out.returncode != 0,
+          out.stdout + out.stderr)
     shutil.rmtree(root)
 
 
@@ -5411,6 +5472,7 @@ def main():
         test_pack,
         test_undo,
         test_sync,
+        test_remote,
         test_filtersets,
         test_selectsize,
         test_visits,

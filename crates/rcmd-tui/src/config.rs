@@ -114,9 +114,9 @@ pub struct Config {
     /// where they stream straight into the panel as a panelized
     /// listing - which is one keystroke shorter and loses the list.
     pub find_window: bool,
-    /// Enter on a file no `[[open]]` rule claims hands it to the desktop
-    /// - `xdg-open`, or `open` on macOS - when there is a display to
-    /// open it on. Off: such an Enter does nothing, as before 4.9.
+    /// Enter on a file no `[[open]]` rule claims hands it to the
+    /// desktop (`xdg-open`, or `open` on macOS) when there is a display
+    /// to open it on. Off: such an Enter does nothing, as before 4.9.
     pub desktop_open: bool,
     /// Draw the line-number gutter (Alt+N toggles it).
     pub edit_line_numbers: bool,

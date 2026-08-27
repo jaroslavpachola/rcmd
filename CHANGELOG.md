@@ -1,5 +1,23 @@
 # Changelog
 
+## 4.21.0 - 2026-08-27
+
+- **`rcmd --remote` drives a running instance.** Every instance listens
+  on a unix socket of its own; `--remote` hands it one line and prints
+  the answer. `cd`, `select`, `unselect` and `status` do the obvious
+  things, `pwd` / `other` / `cursor` / `marked` answer where it is and
+  what is picked, and **`action NAME` is the whole keymap** - anything
+  a key can be bound to can be asked for by name. `--to PID` names one
+  when several are running.
+- **That is the plugin story too.** A command rcmd itself starts - a
+  `[[commands]]` entry, anything typed in the subshell - is handed
+  `RCMD_SOCKET`, and `--remote` follows it, so a shell script can cd
+  the panel, mark files and run actions without an ABI, an embedded
+  runtime or a versioned interface. The socket is 0600 in a 0700
+  directory under `$XDG_RUNTIME_DIR`, goes when the instance does, and
+  a stale one left by a crash is cleaned up the next time a client
+  looks.
+
 ## 4.20.0 - 2026-08-27
 
 - **Named filter sets** (`C-x f`), which is Far's filter menu and the

@@ -2721,6 +2721,9 @@ pub struct App {
     compare: Option<CompareState>,
     /// Which `[[filter]]` sets each panel is under, in config order.
     filter_sets_on: [Vec<bool>; 2],
+    /// The socket other processes drive this instance through; None
+    /// when it could not be opened, which is not fatal.
+    remote: Option<crate::remote::Server>,
     /// Where the panels have been, this session and every one before:
     /// the hotlist's recent half is ranked by it. Merged back into the
     /// state file on the way out.
@@ -2884,6 +2887,7 @@ impl App {
             jobs: Vec::new(),
             undo: None,
             filter_sets_on: [Vec::new(), Vec::new()],
+            remote: None,
             visits: state::load().0.visits,
             visited: [String::new(), String::new()],
             compare_then_sync: false,
@@ -2966,6 +2970,7 @@ impl App {
                 break;
             }
             self.note_visits();
+            self.drain_remote();
             self.drain_job();
             self.drain_find();
             self.drain_connect();
@@ -3533,6 +3538,9 @@ impl App {
             Exec::Shell => {}
         }
         command.current_dir(&cwd);
+        if let Some(server) = &self.remote {
+            command.env("RCMD_SOCKET", server.path());
+        }
         unsafe {
             command.pre_exec(|| {
                 libc::signal(libc::SIGINT, libc::SIG_DFL);
@@ -8683,6 +8691,88 @@ impl App {
         }
     }
 
+    /// Start listening for `rcmd --remote`. A failure here is worth a
+    /// warning and nothing more: the panels work without it.
+    pub fn serve_remote(&mut self) -> Option<String> {
+        match crate::remote::serve() {
+            Ok(server) => {
+                self.remote = Some(server);
+                None
+            }
+            Err(err) => Some(format!("remote control off: {err}")),
+        }
+    }
+
+    /// Whatever arrived on the socket since the last turn of the loop.
+    fn drain_remote(&mut self) {
+        let mut lines = Vec::new();
+        if let Some(server) = &self.remote {
+            while let Ok(request) = server.requests.try_recv() {
+                lines.push(request);
+            }
+        }
+        for request in lines {
+            let answer = self.run_remote(&request.line);
+            let _ = request.reply.send(answer);
+            self.dirty = true;
+        }
+    }
+
+    /// One line from the socket. The vocabulary is deliberately small,
+    /// because the last of them is the whole keymap: anything rcmd can
+    /// be told to do by a key can be asked for by name.
+    fn run_remote(&mut self, line: &str) -> String {
+        let (verb, rest) = match line.split_once(char::is_whitespace) {
+            Some((verb, rest)) => (verb, rest.trim()),
+            None => (line, ""),
+        };
+        match verb {
+            "" => "error: nothing to do".into(),
+            "pwd" => self.panels[self.active].display_path(),
+            "other" => self.panels[self.active ^ 1].display_path(),
+            "cursor" => self.panels[self.active]
+                .selected()
+                .map(|entry| entry.name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            "marked" => self.panels[self.active]
+                .targets()
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .replace('\n', " "),
+            "cd" if !rest.is_empty() => {
+                self.navigate(rest);
+                "ok".into()
+            }
+            "select" | "unselect" if !rest.is_empty() => {
+                let pattern = rcmd_core::pattern::Pattern {
+                    text: rest.to_string(),
+                    ..Default::default()
+                };
+                match self.panels[self.active].mark_pattern(&pattern, verb == "select") {
+                    Ok(moved) => format!("{moved}"),
+                    Err(err) => format!("error: {err}"),
+                }
+            }
+            "action" if !rest.is_empty() => match keymap::parse_action(rest) {
+                Some(action) => {
+                    self.run_action(action);
+                    "ok".into()
+                }
+                None => format!("error: no action called {rest}"),
+            },
+            "status" if !rest.is_empty() => {
+                self.status = Some(format!(" {rest} "));
+                "ok".into()
+            }
+            other => format!(
+                "error: {other} is not one of cd, select, unselect, action, \
+                 status, pwd, other, cursor, marked"
+            ),
+        }
+    }
+
     /// Note where the panels are now. A directory counts once per
     /// arrival, not once per redraw, which is what `visited` is for.
     fn note_visits(&mut self) {
@@ -9953,13 +10043,17 @@ impl App {
         }
         let cwd = self.panels[self.active].local_cwd();
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let child = std::process::Command::new(&shell)
+        let mut spawn = std::process::Command::new(&shell);
+        spawn
             .arg("-c")
             .arg(command)
             .current_dir(&cwd)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
+            .stderr(std::process::Stdio::piped());
+        if let Some(server) = &self.remote {
+            spawn.env("RCMD_SOCKET", server.path());
+        }
+        let child = spawn.spawn();
         let mut child = match child {
             Ok(child) => child,
             Err(err) => {

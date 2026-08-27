@@ -128,8 +128,8 @@ behind the Adopt rows · `Keep`: rcmd already answers this its own way ·
 
 | Feature | From | Decision | Note |
 |---|---|---|---|
-| **A remote-control socket**: `rcmd -remote 'cd /tmp'`, select, reload | lf | Adopt | one mechanism, and the one that matters. An external script can drive the running instance, which is also what turns `[[commands]]` from "run a command" into a real plugin protocol |
-| Plugins as ordinary shell scripts against that protocol | nnn | Adopt, with the row above | no ABI, no embedded runtime, no versioned interface to maintain. MC-DIFF §13 refused a plugin *runtime*, and this is not one |
+| **A remote-control socket**: `rcmd --remote 'cd /tmp'`, select, reload | lf | Adopt | done in 4.21.0, with `action NAME` reaching the whole keymap and `RCMD_SOCKET` in every command's environment. | one mechanism, and the one that matters. An external script can drive the running instance, which is also what turns `[[commands]]` from "run a command" into a real plugin protocol |
+| Plugins as ordinary shell scripts against that protocol | nnn | Adopt, with the row above | done in 4.21.0: `[[commands]]` entries were already shell, and now they can talk back. | no ABI, no embedded runtime, no versioned interface to maintain. MC-DIFF §13 refused a plugin *runtime*, and this is not one |
 | A Lua plugin API | Far, yazi, xplr | **Skip** | the refusal stands. The two rows above buy most of what people use plugins for at a small fraction of the surface |
 | Git actions: stage and unstage the marked files, diff the cursor file against HEAD, switch branch | Krusader, magit, the modern managers | Adopt-later | `git2` is already linked and `compare.rs` already draws the side-by-side diff, so this is mostly wiring |
 
@@ -217,9 +217,12 @@ part of the record:
    the half still open: this narrows a list of places, not a tree of
    them.
 
-What is next, and now the live list: panel tabs if §9 reopens them, and
-the remote socket and script plugins (§7). §2's filter sets and select
-criteria went in 4.19.0 and 4.20.0. The sort keys (§4), the mount menu (§3)
+What is next: **panel tabs, if §9 reopens them** - the one row left in
+the first two passes, and the one that is not mine to decide. The
+socket and script plugins went in 4.21.0, §2's filter sets and select
+criteria in 4.19.0 and 4.20.0. After that the list is the
+`Adopt-later` rows, of which the fuzzy tree (§3), content columns (§4)
+and the rclone provider (§5) are the ones that change the most. The sort keys (§4), the mount menu (§3)
 and session persistence (§3) went in 4.16.0 to 4.18.0. The socket is
 the one that unlocks the most, since every row that wants a key rcmd
 cannot spare (§10) is answered by letting a script have one.

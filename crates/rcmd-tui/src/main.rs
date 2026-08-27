@@ -4,6 +4,7 @@ mod format;
 mod git;
 mod keymap;
 mod mcimport;
+mod remote;
 mod state;
 mod subshell;
 mod theme;
@@ -17,6 +18,10 @@ use app::Startup;
 
 struct Args {
     printwd: Option<PathBuf>,
+    /// `--remote LINE`: hand the line to a running instance and exit.
+    remote: Option<String>,
+    /// `--to PID`: which instance, when there is more than one.
+    remote_to: Option<u32>,
     dirs: Vec<PathBuf>,
     /// --import-mc [DIR]: print an rcmd config fragment built from mc's
     /// files instead of starting the UI.
@@ -46,6 +51,9 @@ struct Overrides {
 
 fn main() -> Result<()> {
     let args = parse_args()?;
+    if let Some(line) = &args.remote {
+        return remote::send(args.remote_to, line);
+    }
     if let Some(dir) = &args.import_mc {
         return import_mc(dir.clone());
     }
@@ -103,6 +111,9 @@ fn run(
 ) -> Result<()> {
     let mut app = app::App::new(&args.dirs, cfg, warnings, &args.startup)?;
     app.open_startup(args.startup)?;
+    if let Some(warning) = app.serve_remote() {
+        app.status = Some(format!(" {warning} "));
+    }
     let result = app.run(terminal);
 
     // Persist the panel state for the next session - onto the *on-disk*
@@ -217,6 +228,8 @@ fn parse_args() -> Result<Args> {
     let mut it = std::env::args_os();
     let alias = alias_of(Path::new(&it.next().unwrap_or_default()));
     let mut printwd = None;
+    let mut remote = None;
+    let mut remote_to = None;
     let mut import_mc = None;
     let mut over = Overrides::default();
     let mut edit: Vec<PathBuf> = Vec::new();
@@ -230,6 +243,22 @@ fn parse_args() -> Result<Args> {
         };
         match arg.to_str() {
             Some("-P") | Some("--printwd") => printwd = Some(next("-P")?),
+            Some("--remote") => {
+                remote = Some(
+                    it.next()
+                        .context("--remote requires a command")?
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            }
+            Some("--to") => {
+                remote_to = Some(
+                    next("--to")?
+                        .to_string_lossy()
+                        .parse()
+                        .context("--to takes a process id")?,
+                )
+            }
             Some("-e") | Some("--edit") => edit.push(next("-e")?),
             Some("-v") | Some("--view") => view = Some(next("-v")?),
             Some("-l") | Some("--ftplog") => over.ftplog = Some(next("-l")?),
@@ -289,6 +318,8 @@ fn parse_args() -> Result<Args> {
     };
     Ok(Args {
         printwd,
+        remote,
+        remote_to,
         dirs,
         import_mc,
         startup,
@@ -328,6 +359,8 @@ usage: rcmd [OPTIONS] [DIR1 [DIR2]]
   -u, --nosubshell    no persistent subshell
   -U, --subshell      persistent subshell
   -l, --ftplog FILE   log the FTP/fish dialogue to FILE
+      --remote LINE   hand LINE to a running rcmd and exit
+      --to PID        which one, when several are running
   -V, --version       print the version
   -h, --help          this text
   --import-mc [DIR]   print an rcmd config built from mc's menu,

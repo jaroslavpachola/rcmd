@@ -131,6 +131,11 @@ impl Subshell {
         let (pipe_r, pipe_w) = control_pipe()?;
 
         command.current_dir(dir).env("RCMD_SUBSHELL", "1");
+        // ...and where to reach the panels from in there: `rcmd
+        // --remote` needs no argument when it is told which instance
+        if let Ok(socket) = crate::remote::socket_path() {
+            command.env("RCMD_SOCKET", socket);
+        }
         let slave: std::fs::File = slave.into();
         command
             .stdin(slave.try_clone().context("dup pty slave")?)

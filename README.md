@@ -118,6 +118,8 @@ usage: rcmd [OPTIONS] [DIR1 [DIR2]]
   -d, --nomouse       no mouse
   -u / -U             subshell off / on for this run
   -l, --ftplog FILE   log the FTP/fish dialogue to FILE
+      --remote LINE   hand LINE to a running rcmd and exit
+      --to PID        which one, when several are running
 ```
 
 `-e` and `-v` bring rcmd up on **one screen instead of the panels**, and
@@ -773,6 +775,45 @@ remote panel closes the connection. Both panels can share one
 connection - put the same host on both sides, or compare a local tree
 against a remote one with Ctrl+X d and F5 the differences across. The
 hotlist stores sftp:// entries, so `Ctrl+\` + Enter reconnects.
+
+## Driving rcmd from outside
+
+Every instance listens on a unix socket of its own, and `rcmd --remote`
+hands it one line:
+
+```sh
+rcmd --remote 'cd /var/log'        # move the active panel
+rcmd --remote 'select *.log'       # mark by mask (prints how many)
+rcmd --remote 'action sort-size'   # any action, by the name a key would bind
+rcmd --remote pwd                  # ...and the questions a script asks
+rcmd --remote cursor               # the file under the cursor
+rcmd --remote marked               # what is marked, space separated
+```
+
+The vocabulary is small on purpose, because `action` is the whole
+keymap: anything rcmd can be told to do by a key can be asked for by
+name (`rcmd --remote 'action listing-brief'`). `status TEXT` puts a
+line on the status row, which is how a script says it finished.
+
+With several instances running, name one with `--to PID`; a command
+**rcmd itself started** - a `[[commands]]` entry, anything typed in the
+subshell - needs no such thing, because it is handed `RCMD_SOCKET` in
+its environment and `--remote` follows it. That is the whole plugin
+story: a shell script that can cd the panel, mark files and run any
+action is a plugin, and it needs no ABI, no embedded runtime and no
+versioned interface to be one.
+
+```toml
+[[commands]]
+name = "jump to the newest log"
+run = 'rcmd --remote "cd /var/log" && rcmd --remote "select *.log"'
+```
+
+The socket lives in `$XDG_RUNTIME_DIR/rcmd/<pid>.sock` (or
+`/tmp/rcmd-<uid>/` where there is no runtime directory), the directory
+0700 and the socket 0600: anyone who can reach it can already run
+commands as you. It goes when the instance does, and a socket left
+behind by a crash is cleaned up the next time something looks for one.
 
 ## Configuration
 
