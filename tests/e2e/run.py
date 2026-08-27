@@ -8,6 +8,7 @@ Each test runs in a fresh tempdir with an isolated $HOME, so the user's
 real config is never touched. Exits non-zero if any check fails.
 """
 import fcntl
+import hashlib
 import gzip
 import io
 import os
@@ -934,6 +935,57 @@ def test_archive_write():
         body = z.read("renamed.txt").decode()
     check("archwrite: replaced, not shadowed",
           names.count("renamed.txt") == 1 and body == "replaced\n")
+    shutil.rmtree(root)
+
+
+def test_checksums():
+    """A sha256sum file written from the panel, and checked back."""
+    root, play, home = sandbox()
+    open(os.path.join(play, "a.txt"), "w").write("alpha")
+    open(os.path.join(play, "b.txt"), "w").write("bravo")
+
+    s = Session(play, home)
+    env = dict(os.environ, HOME=home, XDG_RUNTIME_DIR=home)
+    env.pop("XDG_CONFIG_HOME", None)
+
+    def remote(line):
+        return subprocess.run([BIN, "--remote", line], env=env,
+                              capture_output=True, text=True, timeout=10)
+
+    s.send(b"\x13a.txt\r", wait=STEP)
+    s.send(INSERT, wait=STEP)
+    s.send(b"\x13b.txt\r", wait=STEP)
+    s.send(INSERT, wait=STEP)
+    s.send(b"\x1b[20~", wait=STEP)             # F9
+    s.send(b"f", wait=STEP)                    # the File menu has it
+    check("checksums: the menu offers it", "Checksum file" in s.screen(), s.screen())
+    s.send(b"\x1b\x1b", wait=STEP)
+
+    remote("action checksum")
+    check("checksums: the dialog opened", wait_for(s, "Checksum"), s.screen())
+    s.send(b"\r", wait=STEP * 3)
+    check("checksums: it ran", wait_for(s, "done -"))
+    sums = os.path.join(play, "SHA256SUMS")
+    lines = open(sums).read().splitlines() if os.path.exists(sums) else []
+    check("checksums: two lines, hash then two spaces then the name",
+          len(lines) == 2 and all(len(l.split("  ")[0]) == 64 for l in lines), lines)
+    # the hash is the one everything else calls sha256
+    want = {name: hashlib.sha256(open(os.path.join(play, name), "rb").read()).hexdigest()
+            for name in ("a.txt", "b.txt")}
+    got = dict((l.split("  ")[1], l.split("  ")[0]) for l in lines)
+    check("checksums: and it is the hash sha256sum would write", got == want,
+          f"{got} != {want}")
+
+    s.send(b"\x12", wait=STEP)                 # C-r so the file shows
+    s.send(b"\x13SHA256\r", wait=STEP)
+    remote("action verify-checksum")
+    check("checksums: both matched", wait_for(s, "2 matched"), s.screen())
+
+    open(os.path.join(play, "a.txt"), "w").write("alphb")
+    remote("action verify-checksum")
+    check("checksums: and it says when one does not",
+          wait_for(s, "did NOT"), s.screen())
+    s.quit()
     shutil.rmtree(root)
 
 
@@ -5563,6 +5615,7 @@ def main():
         test_pack,
         test_undo,
         test_sync,
+        test_checksums,
         test_wipeapply,
         test_panelconveniences,
         test_remote,

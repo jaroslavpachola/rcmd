@@ -1,5 +1,22 @@
 # Changelog
 
+## 4.24.0 - 2026-08-27
+
+- **Verify on the copy form.** A new checkbox reads every copy back and
+  compares it with the source, byte for byte; a mismatch is reported
+  the way any other copy error is, with Retry / Skip / Abort. It is the
+  only thing that turns "the write returned no error" into "the bytes
+  are there", which is what a failing stick or a long haul over sftp
+  makes worth the second read. Off by default.
+- **Checksum files** (F9 > File): *Checksum file (sha256)* writes a
+  `sha256sum`-format file for what is marked - `hash  name` lines with
+  the names relative to the file's own directory, so `sha256sum -c`
+  reads it too - and *Check the checksum file* hashes each named file
+  again and says how many matched and how many did not. sha2 is the one
+  new dependency, pure Rust so the static musl build stays free of
+  another C library. No md5: it is not a checksum anyone should still
+  be writing, and `md5sum` is there for the ones already written.
+
 ## 4.23.0 - 2026-08-27
 
 - **Alt+Del wipes**: every byte of a file overwritten once and flushed

@@ -135,6 +135,7 @@ impl InputAction {
             InputAction::CopyTo { .. } | InputAction::MoveTo { .. } => "destination",
             InputAction::Mkdir => "mkdir",
             InputAction::Apply => "apply",
+            InputAction::Checksum { .. } => "destination",
             InputAction::Pack { .. } => "pack",
             InputAction::SftpConnect => "connect",
             InputAction::EditNew => "edit",
@@ -177,6 +178,10 @@ pub enum InputAction {
     Mkdir,
     /// C-g: the value is a command run once per marked file.
     Apply,
+    /// The value is the checksum file to write.
+    Checksum {
+        paths: Vec<PathBuf>,
+    },
     /// M-F5: the value is the archive to pack the marked files into.
     Pack {
         sources: Vec<PathBuf>,
@@ -501,6 +506,7 @@ pub const TRANSFER_OPTS: &[(&str, OptField)] = &[
     ("Follow links", |o| &mut o.follow_links),
     ("Dive into subdirs", |o| &mut o.dive),
     ("Stable symlinks", |o| &mut o.stable_symlinks),
+    ("Verify (read the copy back)", |o| &mut o.verify),
 ];
 /// Row index of the button line: after the mask, the destination and
 /// the boxes.
@@ -1498,6 +1504,9 @@ pub struct Job {
     /// move, which is what makes those operations un-undoable rather
     /// than wrongly undoable.
     moved: Vec<(PathBuf, PathBuf)>,
+    /// A checksum check, where the count that did not match is the
+    /// answer rather than a footnote about skipping.
+    checking: bool,
 }
 
 enum Exec {
@@ -2179,6 +2188,10 @@ pub enum Action {
     Wipe,
     /// C-g: run one command per marked file.
     Apply,
+    /// Write a sha256sum file for what is marked.
+    Checksum,
+    /// Check the sha256sum file under the cursor.
+    VerifyChecksum,
     /// Far's M-F1 / M-F2: the list of everywhere this *named* panel can
     /// go - the open connections and archives, and what is mounted.
     Drives(usize),
@@ -2284,6 +2297,8 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Delete &permanently", "S-F8", Action::DeletePerm)),
             Some(("&Wipe (overwrite, then delete)", "M-Del", Action::Wipe)),
             Some(("App&ly a command to each...", "C-g", Action::Apply)),
+            Some(("Checksum file (sha256)...", "", Action::Checksum)),
+            Some(("Check the checksum file", "", Action::VerifyChecksum)),
             None,
             Some(("&Select group...", "+", Action::SelectGroup)),
             Some(("&Unselect group...", "-", Action::UnselectGroup)),
@@ -3939,10 +3954,16 @@ impl App {
                 self.undo = Some(std::mem::take(&mut job.moved));
             }
             any_done = true;
-            self.status = Some(match (aborted, skipped) {
-                (true, _) => format!(" aborted - {files_done} item(s) processed "),
-                (false, 0) => format!(" done - {files_done} item(s) processed "),
-                (false, n) => format!(" done - {files_done} item(s) processed, {n} skipped "),
+            self.status = Some(match (job.checking, aborted, skipped) {
+                (true, _, 0) => format!(" checked: {files_done} matched "),
+                (true, _, bad) => {
+                    format!(" checked: {files_done} matched, {bad} did NOT ")
+                }
+                (false, true, _) => format!(" aborted - {files_done} item(s) processed "),
+                (false, false, 0) => format!(" done - {files_done} item(s) processed "),
+                (false, false, n) => {
+                    format!(" done - {files_done} item(s) processed, {n} skipped ")
+                }
             });
         }
         if any_done {
@@ -5160,6 +5181,8 @@ impl App {
             Action::HidePanel(at) => self.hide_panel(at),
             Action::Wipe => self.open_wipe(),
             Action::Apply => self.open_apply(),
+            Action::Checksum => self.open_checksum(),
+            Action::VerifyChecksum => self.verify_checksum(),
             Action::Delete => self.open_delete(false),
             Action::DeletePerm => self.open_delete(true),
             Action::SelectGroup => self.open_select(true),
@@ -9327,6 +9350,53 @@ impl App {
         }));
     }
 
+    /// Write a `sha256sum`-format file for what is marked - the
+    /// checksum you hand to someone else, where Verify on the copy
+    /// form is the one you keep to yourself.
+    fn open_checksum(&mut self) {
+        if !self.require_local() {
+            return;
+        }
+        let paths = self.panels[self.active].targets();
+        if paths.is_empty() {
+            self.status = Some(" nothing selected ".into());
+            return;
+        }
+        let value = self.panels[self.active]
+            .local_cwd()
+            .join("SHA256SUMS")
+            .display()
+            .to_string();
+        self.dialog = Some(Dialog::Input(InputDialog {
+            title: format!(" Checksum {} into ", self.describe(&paths)),
+            cursor: value.chars().count(),
+            value,
+            action: InputAction::Checksum { paths },
+            hist: None,
+        }));
+    }
+
+    /// Check the checksum file under the cursor, in its own directory,
+    /// as `sha256sum -c` would.
+    fn verify_checksum(&mut self) {
+        if !self.require_local() {
+            return;
+        }
+        let panel = &self.panels[self.active];
+        let Some(entry) = panel.selected().filter(|e| !e.is_dir()) else {
+            self.status = Some(" not a file ".into());
+            return;
+        };
+        let sums = panel.local_cwd().join(&entry.name);
+        let dir = panel.local_cwd();
+        let handle = fsops::spawn_verify_checksums(dir, sums.clone());
+        self.push_job_kind(
+            format!(" check {} ", entry.name.to_string_lossy()),
+            handle,
+            true,
+        );
+    }
+
     /// The answer to C-g: the template, expanded once per marked file
     /// and run as one script, so the output, the ordering and the
     /// Ctrl+C are the terminal's, as they are for every other command.
@@ -9792,6 +9862,11 @@ impl App {
     /// A job with nothing special about it: the fields every one of them
     /// starts with, in one place.
     fn push_job(&mut self, title: String, handle: fsops::JobHandle) {
+        self.push_job_kind(title, handle, false);
+    }
+
+    /// ...and the one job whose "skipped" is the point.
+    fn push_job_kind(&mut self, title: String, handle: fsops::JobHandle, checking: bool) {
         self.jobs.push(Job {
             title,
             handle,
@@ -9810,6 +9885,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            checking,
         });
     }
 
@@ -9992,6 +10068,13 @@ impl App {
                 self.start_pack(sources, archive, PathBuf::new());
             }
             InputAction::Apply => self.run_apply(&value),
+            InputAction::Checksum { paths } => {
+                let out = self.resolve(value.trim());
+                let dir = self.panels[self.active].local_cwd();
+                let count = paths.len();
+                let handle = fsops::spawn_checksums(dir, paths, out);
+                self.push_job(format!(" checksum {count} item(s) "), handle);
+            }
             InputAction::SftpConnect => self.connect_remote(&value),
             InputAction::EditNew => {
                 let name = value.trim();
@@ -10104,6 +10187,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            checking: false,
         });
     }
 
@@ -10258,6 +10342,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            checking: false,
         });
     }
 
@@ -10477,6 +10562,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            checking: false,
         });
     }
 
@@ -10536,6 +10622,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            checking: false,
         });
     }
 
@@ -10560,6 +10647,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            checking: false,
         });
     }
 
@@ -10630,6 +10718,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            checking: false,
         });
     }
 
@@ -10664,6 +10753,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            checking: false,
         });
     }
 

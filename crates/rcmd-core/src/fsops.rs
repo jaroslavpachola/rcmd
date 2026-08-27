@@ -141,6 +141,11 @@ pub struct TransferOpts {
     /// user has not already answered that question - which is what a
     /// synchronize is, and nothing else is.
     pub overwrite: bool,
+    /// Read each copy back and compare it with the source. Doubles the
+    /// reading, and is the only thing that turns "the write returned
+    /// no error" into "the bytes are there" - which is what a failing
+    /// stick or a long haul over sftp makes worth having.
+    pub verify: bool,
 }
 
 impl Default for TransferOpts {
@@ -151,6 +156,7 @@ impl Default for TransferOpts {
             dive: true,
             stable_symlinks: true,
             overwrite: false,
+            verify: false,
         }
     }
 }
@@ -428,6 +434,119 @@ pub fn spawn_delete(paths: Vec<PathBuf>, permanent: bool) -> JobHandle {
         }
         Ok(())
     })
+}
+
+/// Write a `sha256sum`-format checksum file for `paths` - one
+/// `hash  name` line each, the names relative to `dir` so the file can
+/// be checked next to what it describes, as `sha256sum -c` would.
+pub fn spawn_checksums(dir: PathBuf, paths: Vec<PathBuf>, out: PathBuf) -> JobHandle {
+    spawn(move |ctx| {
+        let (files, bytes) = scan(&paths);
+        let _ = ctx.tx.send(JobEvent::Total { files, bytes });
+        let mut lines = String::new();
+        for path in &paths {
+            if ctx.cancelled() {
+                return Err(Aborted);
+            }
+            for file in files_under(path) {
+                if ctx.cancelled() {
+                    return Err(Aborted);
+                }
+                ctx.progress(&file);
+                match sha256_file(&file) {
+                    Ok(hash) => {
+                        let name = relative_to(&file, &dir).unwrap_or_else(|| file.clone());
+                        lines.push_str(&format!("{hash}  {}\n", name.display()));
+                        ctx.files_done += 1;
+                        ctx.bytes_done += fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+                        ctx.progress(&file);
+                    }
+                    Err(err) => ctx.error(&file, &err.to_string())?,
+                }
+            }
+        }
+        if let Err(err) = fs::write(&out, lines) {
+            ctx.error(&out, &err.to_string())?;
+        }
+        Ok(())
+    })
+}
+
+/// Check a `sha256sum`-format file: every line is hashed again and
+/// compared. `files_done` counts the ones that matched and `skipped`
+/// the ones that did not - a missing file counts as not matching,
+/// because it does not.
+pub fn spawn_verify_checksums(dir: PathBuf, sums: PathBuf) -> JobHandle {
+    spawn(move |ctx| {
+        let text = match fs::read_to_string(&sums) {
+            Ok(text) => text,
+            Err(err) => return ctx.error(&sums, &err.to_string()),
+        };
+        let lines: Vec<(String, String)> = text
+            .lines()
+            .filter_map(|line| line.split_once("  "))
+            .map(|(hash, name)| (hash.trim().to_lowercase(), name.trim().to_string()))
+            .collect();
+        let _ = ctx.tx.send(JobEvent::Total {
+            files: lines.len() as u64,
+            bytes: 0,
+        });
+        for (want, name) in lines {
+            if ctx.cancelled() {
+                return Err(Aborted);
+            }
+            let path = dir.join(&name);
+            ctx.progress(&path);
+            match sha256_file(&path) {
+                Ok(have) if have == want => ctx.files_done += 1,
+                _ => ctx.skipped += 1,
+            }
+            ctx.progress(&path);
+        }
+        Ok(())
+    })
+}
+
+/// Every regular file under a path, the path itself if it is one.
+fn files_under(path: &Path) -> Vec<PathBuf> {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return Vec::new();
+    };
+    if meta.is_file() {
+        return vec![path.to_path_buf()];
+    }
+    if !meta.is_dir() {
+        return Vec::new(); // a symlink is not a file to checksum
+    }
+    let mut out = Vec::new();
+    if let Ok(entries) = fs::read_dir(path) {
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            out.extend(files_under(&path));
+        }
+    }
+    out
+}
+
+/// The SHA-256 of a file, lowercase hex - what `sha256sum` writes.
+pub fn sha256_file(path: &Path) -> io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 /// Overwrite every byte of each file, then unlink it. Far calls this
@@ -1384,7 +1503,10 @@ fn copy_file(
         }
         let start = ctx.bytes_done;
         ctx.begin_file(size);
-        match try_copy_file(ctx, src, dst, mode) {
+        match try_copy_file(ctx, src, dst, mode).and_then(|()| match ctx.opts.verify {
+            true => verify_copy(src, dst).map_err(CopyErr::Io),
+            false => Ok(()),
+        }) {
             Ok(()) => {
                 ctx.files_done += 1;
                 ctx.bytes_done = start + size; // keep totals consistent with the scan
@@ -1402,6 +1524,41 @@ fn copy_file(
             }
         }
     }
+}
+
+/// Read both files back and compare them. An error here is reported
+/// the way any other copy error is - Retry, Skip, Abort - because a
+/// copy that did not arrive is a copy that failed, whatever the write
+/// said at the time.
+fn verify_copy(src: &Path, dst: &Path) -> io::Result<()> {
+    let (mut a, mut b) = (fs::File::open(src)?, fs::File::open(dst)?);
+    let (mut left, mut right) = (vec![0u8; CHUNK], vec![0u8; CHUNK]);
+    loop {
+        let n = read_full(&mut a, &mut left)?;
+        let m = read_full(&mut b, &mut right)?;
+        if n != m || left[..n] != right[..m] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the copy does not read back the same as the source",
+            ));
+        }
+        if n == 0 {
+            return Ok(());
+        }
+    }
+}
+
+/// Fill the buffer unless the file ends first: a short read is not the
+/// end of a file, and comparing chunk for chunk needs it to be.
+fn read_full(file: &mut fs::File, buf: &mut [u8]) -> io::Result<usize> {
+    let mut have = 0;
+    while have < buf.len() {
+        match file.read(&mut buf[have..])? {
+            0 => break,
+            n => have += n,
+        }
+    }
+    Ok(have)
 }
 
 fn try_copy_file(ctx: &mut Ctx, src: &Path, dst: &Path, mode: Overwrite) -> Result<(), CopyErr> {
@@ -3236,6 +3393,114 @@ mod tests {
     /// A name that is not there yet is packed into rather than
     /// appended to: this is what Alt+F5 does, and the only difference
     /// from appending is that there is nothing to carry across.
+    #[test]
+    fn checksums_are_written_and_checked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        fs::write(dir.join("a.txt"), b"alpha").unwrap();
+        fs::create_dir(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/b.txt"), b"bravo").unwrap();
+        let sums = dir.join("SHA256SUMS");
+
+        let out = run(
+            spawn_checksums(
+                dir.to_path_buf(),
+                vec![dir.join("a.txt"), dir.join("sub")],
+                sums.clone(),
+            ),
+            vec![],
+        );
+        assert!(!out.aborted && out.asks.is_empty(), "{:?}", out.asks);
+        assert_eq!(out.files_done, 2);
+
+        let text = fs::read_to_string(&sums).unwrap();
+        // what sha256sum writes, and what it reads: hash, two spaces,
+        // the name relative to where the file sits
+        assert!(text.contains("  a.txt\n"), "{text}");
+        assert!(text.contains("  sub/b.txt\n"), "{text}");
+        let hash = text
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap();
+        assert!(
+            hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "{hash}"
+        );
+
+        let out = run(
+            spawn_verify_checksums(dir.to_path_buf(), sums.clone()),
+            vec![],
+        );
+        assert_eq!((out.files_done, out.skipped), (2, 0), "both matched");
+
+        // change one byte and it does not match any more
+        fs::write(dir.join("a.txt"), b"alphb").unwrap();
+        let out = run(
+            spawn_verify_checksums(dir.to_path_buf(), sums.clone()),
+            vec![],
+        );
+        assert_eq!((out.files_done, out.skipped), (1, 1));
+
+        // ...and a file that is not there does not match either
+        fs::remove_file(dir.join("sub/b.txt")).unwrap();
+        let out = run(spawn_verify_checksums(dir.to_path_buf(), sums), vec![]);
+        assert_eq!((out.files_done, out.skipped), (0, 2));
+    }
+
+    #[test]
+    fn sha256_is_the_hash_everything_else_calls_sha256() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("f");
+        fs::write(&path, b"abc").unwrap();
+        // the canonical test vector
+        assert_eq!(
+            sha256_file(&path).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        fs::write(&path, b"").unwrap();
+        assert_eq!(
+            sha256_file(&path).unwrap(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn verify_reads_the_copy_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src.bin");
+        let dst = tmp.path().join("dst");
+        fs::create_dir(&dst).unwrap();
+        // bigger than one chunk, so the comparison has to walk it
+        fs::write(&src, vec![7u8; CHUNK * 2 + 11]).unwrap();
+
+        let opts = TransferOpts {
+            verify: true,
+            ..TransferOpts::default()
+        };
+        let out = run(
+            spawn_copy(vec![src.clone()], dst.clone(), opts, None),
+            vec![],
+        );
+        assert!(!out.aborted && out.asks.is_empty(), "{:?}", out.asks);
+        assert_eq!(out.files_done, 1);
+
+        // ...and it is the comparison that would have caught a bad one
+        let other = tmp.path().join("other.bin");
+        fs::write(&other, vec![7u8; CHUNK * 2 + 10]).unwrap();
+        assert!(verify_copy(&src, &other).is_err(), "a shorter file passed");
+        fs::write(&other, {
+            let mut bytes = vec![7u8; CHUNK * 2 + 11];
+            bytes[CHUNK + 5] = 9;
+            bytes
+        })
+        .unwrap();
+        assert!(verify_copy(&src, &other).is_err(), "a changed byte passed");
+        assert!(verify_copy(&src, &dst.join("src.bin")).is_ok());
+    }
+
     #[test]
     fn wipe_overwrites_before_it_unlinks() {
         let tmp = tempfile::tempdir().unwrap();

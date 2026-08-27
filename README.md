@@ -265,6 +265,16 @@ The overwrite prompt is MC's: both files' size and date on screen, then
 differs / None** for every remaining one (Up/Down switch rows). Append
 and Reget - MC's resume - need a local file on both sides.
 
+**Checksums**: F9 → File → *Checksum file (sha256)* writes a
+`sha256sum`-format file for what is marked - `hash  name` lines, the
+names relative to the file's own directory, so `sha256sum -c` reads it
+and so does *Check the checksum file*, which hashes each named file
+again and says how many matched and how many did **not**. That is the
+checksum you hand to someone else; the **Verify** box on the copy form
+is the one you keep to yourself - it reads every copy back and compares
+it with the source, which is the only thing that turns "the write
+returned no error" into "the bytes are there".
+
 **Alt+Del wipes**: every byte of each file is overwritten once and
 flushed to the device before it is unlinked. What that is worth is on
 the confirm dialog, because the difference matters: the bytes that were
