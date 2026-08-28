@@ -1,8 +1,19 @@
 [package]
-name = "rcmd-core"
+name = "rcmd-tui-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "File-manager engine behind rcmd: directory listing, file operations, archive and FTP/SFTP virtual filesystems, find, compare and diff. TUI-free."
+repository = "https://github.com/jaroslavpachola/rcmd"
+homepage = "https://github.com/jaroslavpachola/rcmd"
+readme = "../../README.md"
+keywords = ["file-manager", "filesystem", "archive", "ftp", "vfs"]
+categories = ["filesystem", "command-line-utilities"]
+
+[lib]
+# The published name is namespaced; the code has always said rcmd_core.
+name = "rcmd_core"
+path = "src/lib.rs"
 
 [dependencies]
 trash.workspace = true

@@ -1,8 +1,19 @@
 [package]
-name = "rcmd-edit"
+name = "rcmd-tui-edit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Text-editor core behind rcmd: a ropey buffer with cursor, selection, unlimited undo/redo, regex search, syntax highlighting and atomic save. TUI-free."
+repository = "https://github.com/jaroslavpachola/rcmd"
+homepage = "https://github.com/jaroslavpachola/rcmd"
+readme = "../../README.md"
+keywords = ["editor", "text-editor", "rope", "undo", "syntax"]
+categories = ["text-editors"]
+
+[lib]
+# The published name is namespaced; the code has always said rcmd_edit.
+name = "rcmd_edit"
+path = "src/lib.rs"
 
 [features]
 default = []

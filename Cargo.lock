@@ -1121,7 +1121,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "rcmd-core"
+name = "rcmd-tui"
+version = "4.27.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "git2",
+ "libc",
+ "notify",
+ "ratatui",
+ "rcmd-tui-core",
+ "rcmd-tui-edit",
+ "regex",
+ "serde",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "rcmd-tui-core"
 version = "4.27.0"
 dependencies = [
  "bzip2",
@@ -1140,7 +1158,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rcmd-edit"
+name = "rcmd-tui-edit"
 version = "4.27.0"
 dependencies = [
  "encoding_rs",
@@ -1148,24 +1166,6 @@ dependencies = [
  "ropey",
  "syntect",
  "tempfile",
-]
-
-[[package]]
-name = "rcmd-tui"
-version = "4.27.0"
-dependencies = [
- "anyhow",
- "chrono",
- "git2",
- "libc",
- "notify",
- "ratatui",
- "rcmd-core",
- "rcmd-edit",
- "regex",
- "serde",
- "tempfile",
- "toml",
 ]
 
 [[package]]

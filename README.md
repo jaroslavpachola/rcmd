@@ -110,6 +110,8 @@ decision with a reason next to it.
 ## Install & run
 
 ```sh
+cargo install rcmd-tui                 # from crates.io; installs the `rcmd` binary
+# or straight from git:
 cargo install --git https://github.com/jaroslavpachola/rcmd rcmd-tui
 # from a checkout:
 cargo install --path crates/rcmd-tui   # installs the `rcmd` binary

@@ -3,6 +3,12 @@ name = "rcmd-tui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "A Midnight Commander replacement in Rust: an orthodox dual-pane file manager with mc keybindings, a built-in viewer and editor, archive and FTP/SFTP panels."
+repository = "https://github.com/jaroslavpachola/rcmd"
+homepage = "https://github.com/jaroslavpachola/rcmd"
+readme = "../../README.md"
+keywords = ["file-manager", "tui", "midnight-commander", "orthodox", "ratatui"]
+categories = ["command-line-utilities", "filesystem"]
 
 [[bin]]
 name = "rcmd"
@@ -10,14 +16,14 @@ path = "src/main.rs"
 
 [features]
 default = ["syntax", "git"]
-syntax = ["rcmd-edit/syntax"]
+syntax = ["rcmd-tui-edit/syntax"]
 git = ["dep:git2"]
 # Static builds (musl tarball): vendor the C dependencies.
-vendored = ["rcmd-core/vendored"]
+vendored = ["rcmd-tui-core/vendored"]
 
 [dependencies]
-rcmd-core = { path = "../rcmd-core" }
-rcmd-edit = { path = "../rcmd-edit" }
+rcmd-tui-core = { path = "../rcmd-core", version = "4.27.0" }
+rcmd-tui-edit = { path = "../rcmd-edit", version = "4.27.0" }
 anyhow.workspace = true
 ratatui.workspace = true
 chrono.workspace = true

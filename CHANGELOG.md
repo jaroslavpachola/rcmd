@@ -2,6 +2,14 @@
 
 ## 4.27.0 - 2026-08-27
 
+- **On crates.io**, so `cargo install rcmd-tui` is the whole install.
+  The binary is still `rcmd`; the package had to be `rcmd-tui` because
+  `rcmd` on crates.io is an unrelated argument parser from 2020, and
+  `rcmd-core` is likewise taken, so the two libraries publish as
+  `rcmd-tui-core` and `rcmd-tui-edit`. Their `[lib]` names are pinned
+  to `rcmd_core` and `rcmd_edit`, which is what the code has always
+  said, so nothing inside the tree changed but the manifests.
+
 - **A bulk rename can be undone.** It leaves the same `(from, to)`
   record every move leaves, so `C-x u` puts it back; `rename.rs` had
   only ever rolled back a batch that failed halfway, and a batch that
