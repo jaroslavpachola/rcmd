@@ -1,3 +1,7 @@
+# StartupNotify is false on purpose: eframe never reads the Wayland
+# activation token gnome-shell passes in $XDG_ACTIVATION_TOKEN, so a
+# promised startup sequence never completes and mutter's 'smart' focus
+# leaves the new window behind whatever had focus at the time.
 [Desktop Entry]
 Type=Application
 Version=1.0
@@ -10,5 +14,5 @@ Icon=system-file-manager
 Terminal=false
 Categories=System;FileTools;FileManager;
 Keywords=file;manager;commander;orthodox;panels;mc;
-StartupNotify=true
+StartupNotify=false
 StartupWMClass=rcmd-egui

@@ -35,5 +35,9 @@ install-desktop:
     mkdir -p "$apps"
     sed "s|^Exec=rcmd-egui$|Exec=$bin|; s|^TryExec=rcmd-egui$|TryExec=$bin|" \
         crates/rcmd-egui/dist/rcmd-egui.desktop > "$apps/rcmd-egui.desktop"
+    # a rewritten file leaves the directory's mtime alone, and that mtime is
+    # what invalidates GLib's app-info cache: without this a running
+    # gnome-shell keeps serving the entry it read at login
+    touch "$apps"
     command -v update-desktop-database >/dev/null && update-desktop-database "$apps" || true
     echo "installed $apps/rcmd-egui.desktop -> $bin"

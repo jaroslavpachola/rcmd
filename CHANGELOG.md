@@ -1,5 +1,24 @@
 # Changelog
 
+## 4.30.2 - 2026-09-03
+
+- **The menu entry's window comes up in front now.** It said
+  `StartupNotify=true`, promising a startup handshake the window never
+  completes: eframe reads nothing of the Wayland activation token
+  gnome-shell passes in `$XDG_ACTIVATION_TOKEN` (`egui-winit` only
+  names `WindowEvent::ActivationTokenDone` to ignore it, and winit's
+  `read_token_from_env` is never called), so mutter kept a startup
+  sequence open, and under the default `focus-new-windows = 'smart'`
+  left the new window behind whatever had focus - the terminal you
+  launched it from. The entry no longer makes the promise;
+  `StartupWMClass` stays, since that is what pairs the window with its
+  icon. `just install-desktop` also touches the applications directory
+  now: a rewritten file leaves that directory's mtime alone, and the
+  mtime is what invalidates GLib's app-info cache, so a running
+  gnome-shell would otherwise keep serving the entry it read at login
+  - which is also why a freshly installed entry can be missing from
+  the overview until something else changes the directory.
+
 ## 4.30.1 - 2026-09-03
 
 - **A menu entry for the window.** `crates/rcmd-egui/dist` ships a
