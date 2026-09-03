@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=rcmd
+GenericName=File Manager
+Comment=rcmd in a window: the egui front end
+Exec=rcmd-egui
+TryExec=rcmd-egui
+Icon=system-file-manager
+Terminal=false
+Categories=System;FileTools;FileManager;
+Keywords=file;manager;commander;orthodox;panels;mc;
+StartupNotify=true
+StartupWMClass=rcmd-egui

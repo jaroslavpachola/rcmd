@@ -137,7 +137,18 @@ cargo run -p rcmd-tui                  # or: just run
 cargo install rcmd-egui                # the window build
 cargo install --path crates/rcmd-egui  # the same, from a checkout
 cargo run -p rcmd-egui
+just install-desktop                   # and a menu entry for the window
 ```
+
+`just install-desktop` writes
+`~/.local/share/applications/rcmd-egui.desktop` from
+[crates/rcmd-egui/dist](crates/rcmd-egui/dist), pinning `Exec` to the
+installed binary because a desktop session rarely carries
+`~/.cargo/bin` on its `PATH`; a packager installs the file as it
+stands. The entry claims no `inode/directory` handler on purpose - it
+starts the window where a launcher starts anything, and which program
+a folder opens in is the desktop's own setting, not this file's to
+take.
 
 Release binaries are attached to GitHub releases (built by
 `.github/workflows/release.yml` on `v*` tags): the glibc Linux build, a

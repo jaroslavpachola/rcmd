@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.30.1 - 2026-09-03
+
+- **A menu entry for the window.** `crates/rcmd-egui/dist` ships a
+  `rcmd-egui.desktop` a packager installs as it stands, and `just
+  install-desktop` writes it to
+  `$XDG_DATA_HOME/applications` (`~/.local/share/applications` by
+  default) with `Exec` and `TryExec` pinned to the resolved binary,
+  since a desktop session rarely carries `~/.cargo/bin` on its `PATH`.
+  The entry claims no `inode/directory` handler on purpose: it starts
+  the window the way a launcher starts anything, and which program a
+  folder opens in is the desktop's own setting.
+
 ## 4.30.0 - 2026-09-03
 
 - **The window's font is the user's to choose.** A `[window]` table
