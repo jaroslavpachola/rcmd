@@ -1514,7 +1514,7 @@ pub struct Job {
     checking: bool,
 }
 
-enum Exec {
+pub enum Exec {
     Command(String),
     /// Like Command, but without the "Press Enter" pause - for editors
     /// and [[open]] rules (append `&` in the rule for GUI apps).
@@ -3029,66 +3029,136 @@ impl App {
         Ok(())
     }
 
+    /// The per-frame background work: drain the channels the worker
+    /// threads report through, retire an abandoned ESC prefix, and say
+    /// whether anything is still moving (which is what decides between
+    /// a lazy and a busy poll timeout).
+    ///
+    /// Split out of [`Self::run`] so a front end that does not own its
+    /// event loop can do the same work: `rmut-egui` calls this once per
+    /// egui frame and then draws the same [`ui::draw`] into a window.
+    pub fn tick(&mut self) -> bool {
+        self.note_visits();
+        self.drain_remote();
+        self.drain_job();
+        self.drain_find();
+        self.drain_connect();
+        self.drain_du();
+        self.drain_compare();
+        self.drain_panelize();
+        self.poll_loads();
+        self.update_watches();
+        self.tick_watch();
+        self.follow_tick();
+        self.update_quick_view();
+        self.git_tick();
+        self.disk_tick();
+        self.subshell_tick();
+        // an abandoned ESC prefix becomes a real Escape, like MC
+        if let Some(at) = self.esc_at
+            && at.elapsed() >= Duration::from_millis(self.config.esc_timeout_ms)
+        {
+            self.esc_at = None;
+            self.dirty = true;
+            self.dispatch_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        }
+        let loading = self.panels.iter().any(Panel::is_loading);
+        // a change waiting on a dialog to close is not something
+        // to spin over: it cannot be acted on until the dialog goes
+        let watch_pending = self.watch_can_fire()
+            && self
+                .watch
+                .as_ref()
+                .is_some_and(|w| w.dirty.iter().any(Option::is_some));
+        // "busy" is anything that moves on its own: a job's
+        // progress, a listing still arriving, a followed file
+        !self.jobs.is_empty()
+            || self.compare.is_some()
+            || self.panelize.is_some()
+            || self.find.is_some()
+            || self.connect.is_some()
+            || self.du.is_some()
+            || loading
+            || watch_pending
+            || self.esc_at.is_some()
+            || self.subshell.as_ref().is_some_and(|s| !s.ready())
+            || self.viewer().is_some_and(|v| v.follow)
+    }
+
+    /// The session is over: quit was asked for, or the last screen of a
+    /// standalone editor/viewer/diff closed with nothing underneath it.
+    pub fn exiting(&self) -> bool {
+        self.quit || (self.standalone && self.screens.is_empty())
+    }
+
+    /// Something on screen changed since the last frame.
+    pub fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Say a frame is owed - a front end calls this when an event
+    /// arrives, whatever the event turns out to be.
+    pub fn set_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// A frame has been drawn.
+    pub fn clear_dirty(&mut self) {
+        self.dirty = false;
+    }
+
+    /// C-l asked for the screen to be thrown away before the next draw;
+    /// taking it clears it.
+    pub fn take_repaint(&mut self) -> bool {
+        std::mem::take(&mut self.repaint)
+    }
+
+    /// The command a key press queued, if any. What running it means is
+    /// the front end's: a terminal hands over the tty, a window cannot.
+    pub fn take_exec(&mut self) -> Option<Exec> {
+        self.pending_exec.take()
+    }
+
+    /// Tell the subshell how big its terminal now is.
+    pub fn resize_subshell(&mut self, cols: u16, rows: u16) {
+        if let Some(sub) = self.subshell.as_mut() {
+            sub.resize(cols, rows);
+        }
+    }
+
+    /// Quitting with jobs still running would orphan them, so the quit
+    /// is refused and says why.
+    pub fn hold_quit_for_jobs(&mut self) {
+        if self.quit && !self.jobs.is_empty() {
+            self.quit = false;
+            self.status = Some(format!(
+                " {} job(s) still running - C-x j lists them (Esc/c cancels) ",
+                self.jobs.len()
+            ));
+        }
+    }
+
+    /// On the way out: nothing started here outlives the session.
+    pub fn cancel_background(&mut self) {
+        for job in &self.jobs {
+            job.handle.cancel();
+        }
+        if let Some(find) = &self.find {
+            find.handle.cancel();
+        }
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut last_frame = Instant::now();
-        while !self.quit {
-            // nothing to land back on when the last screen closes
-            if self.standalone && self.screens.is_empty() {
-                break;
-            }
-            self.note_visits();
-            self.drain_remote();
-            self.drain_job();
-            self.drain_find();
-            self.drain_connect();
-            self.drain_du();
-            self.drain_compare();
-            self.drain_panelize();
-            self.poll_loads();
-            self.update_watches();
-            self.tick_watch();
-            self.follow_tick();
-            self.update_quick_view();
-            self.git_tick();
-            self.disk_tick();
-            self.subshell_tick();
-            // an abandoned ESC prefix becomes a real Escape, like MC
-            if let Some(at) = self.esc_at
-                && at.elapsed() >= Duration::from_millis(self.config.esc_timeout_ms)
-            {
-                self.esc_at = None;
-                self.dirty = true;
-                self.dispatch_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-            }
-            let loading = self.panels.iter().any(Panel::is_loading);
-            // a change waiting on a dialog to close is not something
-            // to spin over: it cannot be acted on until the dialog goes
-            let watch_pending = self.watch_can_fire()
-                && self
-                    .watch
-                    .as_ref()
-                    .is_some_and(|w| w.dirty.iter().any(Option::is_some));
-            // "busy" is anything that moves on its own: a job's
-            // progress, a listing still arriving, a followed file
-            let busy = !self.jobs.is_empty()
-                || self.compare.is_some()
-                || self.panelize.is_some()
-                || self.find.is_some()
-                || self.connect.is_some()
-                || self.du.is_some()
-                || loading
-                || watch_pending
-                || self.esc_at.is_some()
-                || self.subshell.as_ref().is_some_and(|s| !s.ready())
-                || self.viewer().is_some_and(|v| v.follow);
+        while !self.exiting() {
+            let busy = self.tick();
             // ...and a frame is drawn when something changed, when
             // something is moving, or once in a while regardless - the
             // last of those is insurance against a state change that
             // forgot to say so, and at one frame every two seconds it
             // costs nothing.
             if self.dirty || busy || last_frame.elapsed() >= IDLE_FRAME {
-                if self.repaint {
-                    self.repaint = false;
+                if self.take_repaint() {
                     terminal.clear()?;
                 }
                 terminal.draw(|frame| ui::draw(frame, self))?;
@@ -3107,15 +3177,11 @@ impl App {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
                     Event::Mouse(mouse) => self.on_mouse(mouse),
-                    Event::Resize(cols, rows) => {
-                        if let Some(sub) = self.subshell.as_mut() {
-                            sub.resize(cols, rows);
-                        }
-                    }
+                    Event::Resize(cols, rows) => self.resize_subshell(cols, rows),
                     _ => {}
                 }
             }
-            if let Some(exec) = self.pending_exec.take() {
+            if let Some(exec) = self.take_exec() {
                 if self.subshell.is_some() && !matches!(exec, Exec::Quiet(_)) {
                     // Ctrl+O and typed commands live in the subshell;
                     // Quiet (editors, openers) stays a one-shot child
@@ -3125,21 +3191,9 @@ impl App {
                     self.finish_remote_edit();
                 }
             }
-            // quitting with jobs still running would orphan them
-            if self.quit && !self.jobs.is_empty() {
-                self.quit = false;
-                self.status = Some(format!(
-                    " {} job(s) still running - C-x j lists them (Esc/c cancels) ",
-                    self.jobs.len()
-                ));
-            }
+            self.hold_quit_for_jobs();
         }
-        for job in &self.jobs {
-            job.handle.cancel();
-        }
-        if let Some(find) = &self.find {
-            find.handle.cancel();
-        }
+        self.cancel_background();
         Ok(())
     }
 
@@ -3561,7 +3615,7 @@ impl App {
     /// After F4 on a remote file: upload the scratch copy back if the
     /// editor modified it, then clean up.
     /// The external editor's copy, once the child has exited.
-    fn finish_remote_edit(&mut self) {
+    pub fn finish_remote_edit(&mut self) {
         let Some(edit) = self.remote_edit.take() else {
             return;
         };
@@ -4012,7 +4066,7 @@ impl App {
     /// (Esc t = Alt+T, Esc Enter = Alt+Enter), and Esc Esc is a real
     /// Escape. Fast Esc+key already arrives as Alt from the terminal;
     /// this handles the deliberate, slow-typed form.
-    fn on_key(&mut self, key: KeyEvent) {
+    pub fn on_key(&mut self, key: KeyEvent) {
         if self.esc_at.take().is_some() {
             match key.code {
                 KeyCode::Char(c @ '0'..='9') if key.modifiers.is_empty() => {
@@ -4084,7 +4138,7 @@ impl App {
         }
     }
 
-    fn on_mouse(&mut self, mouse: MouseEvent) {
+    pub fn on_mouse(&mut self, mouse: MouseEvent) {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let now = Instant::now();

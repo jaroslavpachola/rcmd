@@ -1,0 +1,37 @@
+[package]
+name = "rmut-egui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "rcmd in a window: the orthodox dual-pane file manager, its ratatui drawing painted by egui instead of a terminal."
+repository = "https://github.com/jaroslavpachola/rcmd"
+homepage = "https://github.com/jaroslavpachola/rcmd"
+readme = "../../README.md"
+keywords = ["file-manager", "gui", "egui", "midnight-commander", "orthodox"]
+categories = ["gui", "filesystem"]
+
+[[bin]]
+name = "rmut"
+path = "src/main.rs"
+
+[features]
+default = ["syntax", "git"]
+syntax = ["rcmd-tui/syntax"]
+git = ["rcmd-tui/git"]
+# Render two frames, write $EFRAME_SCREENSHOT_TO and exit. For the
+# README's picture and for checking the grid without a pair of eyes.
+screenshot = ["eframe/__screenshot"]
+
+[dependencies]
+rcmd-tui = { path = "../rcmd-tui", version = "4.28.0", default-features = false }
+rcmd-tui-edit = { path = "../rcmd-edit", version = "4.28.0" }
+ratatui.workspace = true
+anyhow.workspace = true
+# glow rather than the default wgpu: a cell grid is flat 2D drawing,
+# and glow is the smaller dependency tree and the wider driver support
+eframe = { version = "0.36", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }

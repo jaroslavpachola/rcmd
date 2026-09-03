@@ -231,6 +231,58 @@ pub fn update(f: impl FnOnce(&mut State)) -> Result<()> {
 }
 
 /// Overlay the state onto an effective config. Only `Some` fields win.
+/// Persist what the panels ended up showing, on the way out.
+///
+/// Written onto the *on-disk* state rather than this instance's copy:
+/// options-form and hotlist changes are written through when they
+/// happen, and another instance may have saved its own since we
+/// started. Shared by both front ends - a window's last directory is
+/// worth as much as a terminal's.
+pub fn save_session(app: &crate::app::App) -> Result<()> {
+    let panel = &app.panels[app.active];
+    let (show_hidden, sort_reverse) = (panel.show_hidden, panel.sort_reverse);
+    let sort_key = crate::config::sort_key_name(panel.sort_key).to_string();
+    let listing = crate::config::list_mode_name(panel.list_mode).to_string();
+    let history: Vec<String> = app.cmdline.history().to_vec();
+    // the visit log is merged rather than written: another instance has
+    // been going places too, and its counts are as real as ours
+    let visits: Vec<Visit> = app.visit_log().to_vec();
+    // where the panel that is not active ended up, for the next start.
+    // Only a local directory: reconnecting an sftp:// panel unasked, at
+    // startup, is not a favour
+    let other = &app.panels[app.active ^ 1];
+    let other_dir = (other.is_local() && other.archive.is_none())
+        .then(|| other.local_cwd().display().to_string());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    update(|s| {
+        s.show_hidden = Some(show_hidden);
+        s.sort_key = Some(sort_key);
+        s.sort_reverse = Some(sort_reverse);
+        s.listing = Some(listing);
+        s.cmd_history = history;
+        if let Some(dir) = other_dir {
+            s.other_dir = Some(dir);
+        }
+        for visit in &visits {
+            match s.visits.iter().any(|v| v.path == visit.path) {
+                // ours already includes what was on disk when we
+                // started, so a path we know is ours to state outright
+                true => {
+                    if let Some(theirs) = s.visits.iter_mut().find(|v| v.path == visit.path) {
+                        theirs.count = theirs.count.max(visit.count);
+                        theirs.last = theirs.last.max(visit.last);
+                    }
+                }
+                false => merge_visit(&mut s.visits, &visit.path, visit.count, visit.last),
+            }
+        }
+        trim_visits(&mut s.visits, now);
+    })
+}
+
 pub fn apply(state: &State, config: &mut Config) {
     macro_rules! set {
         ($($field:ident),+ $(,)?) => {$(

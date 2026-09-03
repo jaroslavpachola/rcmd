@@ -1609,6 +1609,13 @@ fn draw_user_columns(
     }
 }
 
+/// The theme's own base colours. A terminal resolves `Color::Reset`
+/// against whatever the user's terminal is set to; a window has no such
+/// default, so `rmut-egui` paints these behind the grid instead.
+pub fn base_colors() -> (Color, Color) {
+    (th().panel_fg, th().panel_bg)
+}
+
 fn base_style() -> Style {
     Style::new().fg(th().panel_fg).bg(th().panel_bg)
 }

@@ -1,5 +1,39 @@
 # Changelog
 
+## 4.28.0 - 2026-09-03
+
+- **rcmd in a window.** A second front end, `rmut` (the `rmut-egui`
+  crate), draws the same screen with egui instead of a terminal. It is
+  a front end and nothing else: the panels, the viewer, the editor, the
+  archive and FTP/SFTP handling, the keymap, the themes and
+  `config.toml` are `rcmd-tui`'s, shared rather than reimplemented, and
+  `ui::draw` is called unchanged. What the window adds is a ratatui
+  `Backend` that paints cells (`grid.rs`), a translation from egui
+  input into the crossterm events `app.rs` already dispatches on
+  (`keys.rs`), and an answer to "run this command" that does not assume
+  a tty (`exec.rs`).
+
+  Three things made this cheap. `rcmd-core` and `rcmd-edit` never knew
+  what a terminal was; `app.rs` is 12,900 lines that mention ratatui in
+  sixteen of them; and `crossterm`'s `KeyEvent` is a plain data enum, so
+  a window can build one and every keybinding works as written.
+
+- **`rcmd-tui` is a library as well as a binary**, which is what let the
+  second front end exist. `main.rs` keeps argument parsing and the
+  terminal's start and stop; everything else moved behind `lib.rs`
+  unchanged. `App::run`'s body became `App::tick`, so a front end that
+  does not own its event loop can do the same per-frame work, and the
+  session save that both binaries do is now `state::save_session`.
+
+- **No subshell in the window.** A window has no tty to hand to a child,
+  so `Ctrl+O` has nothing to show and the persistent subshell is off in
+  that build. Openers and `[[open]]` rules spawn detached, which is what
+  an opener always wanted; commands that need a terminal open one
+  (`$TERMINAL`, then the usual emulators). The honest fix is a terminal
+  emulator inside the window, and that is its own piece of work: the
+  subshell already owns a pty, but pumps its bytes at the terminal
+  rather than interpreting them.
+
 ## 4.27.0 - 2026-08-27
 
 - **On crates.io**, so `cargo install rcmd-tui` is the whole install.
