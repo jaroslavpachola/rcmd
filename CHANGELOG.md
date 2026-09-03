@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.28.2 - 2026-09-03
+
+- **The window binary is `rcmd-egui`**, the name of its crate, rather
+  than `rmut`: `cargo install rcmd-egui` now puts `rcmd-egui` on the
+  path the way `cargo install rcmd-tui` puts `rcmd` there, and the
+  window's title and Wayland app id say the same. The two environment
+  variables moved with it - `$RMUT_KEYS` is `$RCMD_EGUI_KEYS` and
+  `$RMUT_FONT` is `$RCMD_EGUI_FONT` - and so did the screenshots,
+  `docs/rmut.png` to `docs/rcmd-egui.png`.
+
 ## 4.28.1 - 2026-09-03
 
 - **The window's terminal pane no longer hangs fish, and keeps what

@@ -30,7 +30,7 @@ const CANDIDATES: &[&str] = &[
 /// one can be found. The bundled font stays behind it as the fallback,
 /// so a glyph the system face lacks is still drawn.
 pub fn install(ctx: &egui::Context) {
-    let Some((name, bytes)) = load(std::env::var("RMUT_FONT").ok().as_deref()) else {
+    let Some((name, bytes)) = load(std::env::var("RCMD_EGUI_FONT").ok().as_deref()) else {
         return;
     };
     let mut fonts = FontDefinitions::default();
@@ -52,7 +52,7 @@ pub fn install(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// `$RMUT_FONT` if it names a readable file, else the first candidate
+/// `$RCMD_EGUI_FONT` if it names a readable file, else the first candidate
 /// that exists. `None` means "keep the bundled font".
 fn load(override_path: Option<&str>) -> Option<(String, Vec<u8>)> {
     let mut paths: Vec<&str> = Vec::new();

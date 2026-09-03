@@ -25,12 +25,12 @@ copying, the persistent subshell](docs/demo.gif)
 the same pty harness that runs the test suite - and rendered with
 [agg](https://github.com/asciinema/agg))*
 
-**4.28** adds a second front end: `rmut` is the same file manager drawn
-by [egui](https://github.com/emilk/egui) in a window instead of by a
-terminal - see [In a window](#in-a-window).
+**4.28** adds a second front end: `rcmd-egui` is the same file
+manager drawn by [egui](https://github.com/emilk/egui) in a window
+instead of by a terminal - see [In a window](#in-a-window).
 
-![rmut: the same two panels, the same keys, in a
-window](docs/rmut.png)
+![rcmd-egui: the same two panels, the same keys, in a
+window](docs/rcmd-egui.png)
 
 ## Status
 
@@ -88,8 +88,8 @@ the two panel menus act on their own panel whichever one has the focus.
 rcmd's own theme files and mc's skin files read where they lie - and
 **macOS builds back** in CI and in the releases.
 
-**4.28** - **a second front end**: `rmut` draws the same screen with
-egui, in a window, sharing every crate with the terminal build and
+**4.28** - **a second front end**: `rcmd-egui` draws the same screen
+with egui, in a window, sharing every crate with the terminal build and
 calling the same `ui::draw`. `rcmd-tui` became a library as well as a
 binary to allow it, and `App::run`'s body became `App::tick` so a front
 end that does not own its event loop can drive the same state machine.
@@ -134,7 +134,7 @@ cargo install --path crates/rcmd-tui   # installs the `rcmd` binary
 # or during development:
 cargo run -p rcmd-tui                  # or: just run
 
-cargo install rcmd-egui                # the window build; installs `rmut`
+cargo install rcmd-egui                # the window build
 cargo install --path crates/rcmd-egui  # the same, from a checkout
 cargo run -p rcmd-egui
 ```
@@ -214,9 +214,9 @@ exactly where it was.
 
 ## In a window
 
-`rmut` is rcmd drawn by egui instead of by a terminal. Same panels, same
-keys, same `config.toml`, same themes, same viewer and editor - it is a
-front end and nothing more. The whole of `rcmd-core`, `rcmd-edit` and
+`rcmd-egui` is rcmd drawn by egui instead of by a terminal. Same
+panels, same keys, same `config.toml`, same themes, same viewer and
+editor - it is a front end and nothing more. The whole of `rcmd-core`, `rcmd-edit` and
 `rcmd-tui` is shared with the terminal build rather than reimplemented,
 and the drawing code (`ui.rs`) is called unchanged: what the window
 contributes is a ratatui `Backend` that paints a monospace cell grid, a
@@ -225,7 +225,7 @@ already dispatches on, and an answer to "run this command" that does not
 assume a tty.
 
 ```
-usage: rmut [OPTIONS] [DIR1 [DIR2]]
+usage: rcmd-egui [OPTIONS] [DIR1 [DIR2]]
 
   -e, --edit FILE     start in the editor on FILE (repeatable)
   -v, --view FILE     start in the viewer on FILE
@@ -237,15 +237,16 @@ usage: rmut [OPTIONS] [DIR1 [DIR2]]
 ```
 
 `$TERMINAL` names the emulator to fall back on when there is no
-subshell; `$RMUT_FONT` a `.ttf`/`.otf` to draw the grid in; `$RMUT_KEYS`
-keys to play in at startup, for driving the window from a script.
+subshell; `$RCMD_EGUI_FONT` a `.ttf`/`.otf` to draw the grid in;
+`$RCMD_EGUI_KEYS` keys to play in at startup, for driving the window
+from a script.
 
 The grid is drawn in a system monospace face - DejaVu, Liberation, Menlo
 or Consolas, whichever is there - because egui's bundled font is missing
 most of the box-drawing block and rcmd frames every panel and every
-dialog in it. `$RMUT_FONT` names a `.ttf`/`.otf` to use instead; egui's
-own font is the fallback beneath whatever is chosen, so a glyph the
-system face lacks is still drawn.
+dialog in it. `$RCMD_EGUI_FONT` names a `.ttf`/`.otf` to use instead;
+egui's own font is the fallback beneath whatever is chosen, so a glyph
+the system face lacks is still drawn.
 
 **Ctrl+O opens a terminal pane**, the same as it opens the output
 screen in a terminal. `subshell.rs` already owned the pty, spawned the
@@ -255,8 +256,8 @@ interpreting half, which is [`vt100`](https://crates.io/crates/vt100) -
 bytes in, a grid of cells out - and painting a grid of cells is what
 this front end does anyway.
 
-![rmut: git status and ls in the embedded terminal
-pane](docs/rmut-shell.png)
+![rcmd-egui: git status and ls in the embedded terminal
+pane](docs/rcmd-egui-shell.png)
 
 Colour, bold, the alternate screen and application-cursor mode all
 work, so `less`, `vim` and anything built on ncurses behave as they do
@@ -1172,17 +1173,17 @@ just gui                                            # the window build
 
 The e2e suite drives `rcmd` through a pty and so covers only the
 terminal front end; what the two share is covered by the unit tests
-either way. `rmut` can render a frame and exit without a pair of eyes
-on it, which is how `docs/rmut.png` is made:
+either way. `rcmd-egui` can render a frame and exit without a pair of
+eyes on it, which is how `docs/rcmd-egui.png` is made:
 
 ```sh
-cargo run -p rcmd-egui --features screenshot        # writes $EFRAME_SCREENSHOT_TO
-RMUT_KEYS='ctrl+o,l,s,enter' cargo run -p rcmd-egui # keys, as if typed
+cargo run -p rcmd-egui --features screenshot   # writes $EFRAME_SCREENSHOT_TO
+RCMD_EGUI_KEYS='ctrl+o,l,s,enter' cargo run -p rcmd-egui  # keys, as if typed
 ```
 
-`$RMUT_KEYS` plays keys in one per frame, spelled the way `config.toml`
-spells them, which is how the pictures above of screens that need a
-keystroke were taken. (A literal comma cannot be spelled: it separates.)
+`$RCMD_EGUI_KEYS` plays keys in one per frame, spelled the way
+`config.toml` spells them, which is how the pictures above of screens
+that need a keystroke were taken. (A literal comma cannot be spelled: it separates.)
 
 The e2e suite includes an SFTP scenario that spins up a local paramiko
 server (`pip install paramiko`; skipped when unavailable).
@@ -1191,7 +1192,7 @@ Workspace layout: `crates/rcmd-core` (panel/fs logic, no TUI deps),
 `crates/rcmd-edit` (editor buffer/undo/search, TUI-free; syntect behind
 the `syntax` feature), `crates/rcmd-tui` (the file manager itself, as a
 library, plus the terminal binary `rcmd`), and `crates/rcmd-egui` (the
-window front end, binary `rmut`, ~1,600 lines on top of the same
-library). CI runs fmt, clippy and the unit tests on Linux and macOS, and
+window front end, the binary of the same name, ~1,600 lines on top of
+that library). CI runs fmt, clippy and the unit tests on Linux and macOS, and
 the pty e2e suite on Linux - it drives the binary through `/dev/pts`
 and installs shells to test them, which is a Linux job. Licensed MIT.

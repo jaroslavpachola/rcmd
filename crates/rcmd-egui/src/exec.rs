@@ -84,7 +84,7 @@ fn terminal_for(cmd: &str) -> Option<(String, Vec<String>)> {
     let script = match cmd.is_empty() {
         true => None,
         false => Some(format!(
-            "{cmd}; printf '\\n[rmut] press Enter to close '; read _",
+            "{cmd}; printf '\\n[rcmd-egui] press Enter to close '; read _",
         )),
     };
 

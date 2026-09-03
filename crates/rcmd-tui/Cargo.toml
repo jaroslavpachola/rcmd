@@ -26,8 +26,8 @@ git = ["dep:git2"]
 vendored = ["rcmd-tui-core/vendored"]
 
 [dependencies]
-rcmd-tui-core = { path = "../rcmd-core", version = "4.28.1" }
-rcmd-tui-edit = { path = "../rcmd-edit", version = "4.28.1" }
+rcmd-tui-core = { path = "../rcmd-core", version = "4.28.2" }
+rcmd-tui-edit = { path = "../rcmd-edit", version = "4.28.2" }
 anyhow.workspace = true
 ratatui.workspace = true
 chrono.workspace = true

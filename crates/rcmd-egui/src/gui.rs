@@ -37,7 +37,7 @@ pub struct Gui {
     /// noticed without asking the backend through a trait import.
     size: (u16, u16),
     last_frame: Instant,
-    /// Keys still to be played in as if typed, one per frame. `$RMUT_KEYS`
+    /// Keys still to be played in as if typed, one per frame. `$RCMD_EGUI_KEYS`
     /// fills this: a window cannot be driven from a script the way the
     /// pty suite drives the terminal build, so this is how a screenshot
     /// gets taken of anything that needs a keystroke to reach.
@@ -139,7 +139,7 @@ impl Gui {
         self.saved = true;
         self.app.cancel_background();
         if let Err(err) = state::save_session(&self.app) {
-            eprintln!("rmut: could not save state: {err}");
+            eprintln!("rcmd-egui: could not save state: {err}");
         }
     }
 }
@@ -182,7 +182,7 @@ impl eframe::App for Gui {
         }
 
         let mut input = ctx.input(|i| keys::collect(i, origin, self.metrics));
-        // $RMUT_KEYS, one per frame ahead of anything real. One per
+        // $RCMD_EGUI_KEYS, one per frame ahead of anything real. One per
         // frame rather than all at once because that is what typing is:
         // a key that opens a screen has to be given the frame in which
         // to open it before the next key arrives, or the next key goes
@@ -225,7 +225,7 @@ impl eframe::App for Gui {
             // the terminal build's drawing code, unchanged
             let Self { app, terminal, .. } = self;
             if let Err(err) = terminal.draw(|frame| ui::draw(frame, app)) {
-                eprintln!("rmut: draw failed: {err}");
+                eprintln!("rcmd-egui: draw failed: {err}");
             }
             self.app.clear_dirty();
             self.last_frame = Instant::now();

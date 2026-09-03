@@ -11,7 +11,7 @@ keywords = ["file-manager", "gui", "egui", "midnight-commander", "orthodox"]
 categories = ["gui", "filesystem"]
 
 [[bin]]
-name = "rmut"
+name = "rcmd-egui"
 path = "src/main.rs"
 
 [features]
@@ -23,8 +23,8 @@ git = ["rcmd-tui/git"]
 screenshot = ["eframe/__screenshot"]
 
 [dependencies]
-rcmd-tui = { path = "../rcmd-tui", version = "4.28.1", default-features = false }
-rcmd-tui-edit = { path = "../rcmd-edit", version = "4.28.1" }
+rcmd-tui = { path = "../rcmd-tui", version = "4.28.2", default-features = false }
+rcmd-tui-edit = { path = "../rcmd-edit", version = "4.28.2" }
 ratatui.workspace = true
 vt100.workspace = true
 anyhow.workspace = true
