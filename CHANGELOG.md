@@ -25,14 +25,35 @@
   does not own its event loop can do the same per-frame work, and the
   session save that both binaries do is now `state::save_session`.
 
-- **No subshell in the window.** A window has no tty to hand to a child,
-  so `Ctrl+O` has nothing to show and the persistent subshell is off in
-  that build. Openers and `[[open]]` rules spawn detached, which is what
-  an opener always wanted; commands that need a terminal open one
-  (`$TERMINAL`, then the usual emulators). The honest fix is a terminal
-  emulator inside the window, and that is its own piece of work: the
-  subshell already owns a pty, but pumps its bytes at the terminal
-  rather than interpreting them.
+- **Ctrl+O opens a terminal pane in the window**, so the subshell is
+  the same in both builds after all. `subshell.rs` already owned the
+  pty, spawned the shell, tracked its directory through the prompt
+  hooks and buffered every byte it wrote; what was missing was only the
+  interpreting half, which is `vt100` - bytes in, a grid of cells out -
+  and painting a grid of cells is what this crate already does. Colour,
+  bold, the alternate screen and application-cursor mode all work, so
+  `less`, `vim` and anything using ncurses behave; the panels come back
+  on a second Ctrl+O, having followed the shell's `cd`, and a command
+  typed on rcmd's own command line opens the pane, runs there, and
+  closes when it finishes.
+
+  Openers and `[[open]]` rules still spawn detached, which is what an
+  opener always wanted. Without a subshell at all (`subshell = false`,
+  or a shell that would not spawn) commands fall back to a terminal
+  emulator: `$TERMINAL`, then the usual ones.
+
+- **The shell protocol is shared, not copied.** `subshell_session`'s
+  150 lines - wait for a prompt, sync the directory in, feed the
+  command, know when it finished, sync back out - became
+  `App::begin_subshell` / `step_subshell` / `end_subshell`. The
+  terminal build loops over them while passing keys through raw; the
+  window calls them once per frame. One copy of the delicate part, and
+  the 95-test pty suite still passes with `RCMD_E2E_SUBSHELL=1`.
+
+- **`$RMUT_KEYS`** plays keys in at startup, spelled the way
+  `config.toml` spells them (`ctrl+o`, `f5,down,enter`), one per frame.
+  A window has no pty for a harness to drive, so this is how a
+  screenshot reaches a screen that needs a keystroke.
 
 ## 4.27.0 - 2026-08-27
 

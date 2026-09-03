@@ -15,10 +15,12 @@ mod font;
 mod grid;
 mod gui;
 mod keys;
+mod term;
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use ratatui::crossterm::event::KeyEvent;
 use rcmd_tui::app::{App, Startup};
 use rcmd_tui::{config, ui};
 
@@ -38,10 +40,11 @@ fn main() -> Result<()> {
     let (mut cfg, load_warning) = config::load();
     let mut warnings: Vec<String> = load_warning.into_iter().collect();
 
-    // No tty to hand over, so no persistent subshell: it would spawn a
-    // shell whose output goes to a stdout nothing renders. `exec.rs`
-    // says what happens to commands instead.
-    cfg.subshell = false;
+    // The subshell stays on: `term.rs` is the half of a terminal that
+    // reads what it writes, so Ctrl+O has a screen to show after all.
+    // Without one (`subshell = false`, or a shell that would not
+    // spawn), `exec.rs` falls back to a terminal emulator.
+    //
     // egui delivers pointer events regardless; the config flag is about
     // asking a terminal to report them, which is not a question here
     cfg.mouse = true;
@@ -58,6 +61,12 @@ fn main() -> Result<()> {
         rcmd_edit::set_user_syntax_dir(dir.join("syntax"));
     }
 
+    // $RMUT_KEYS: keys played in at startup, spelled the way
+    // `config.toml` spells them ("ctrl+o", "f5", "alt+H"), comma
+    // separated. A window has no pty for a test harness to drive, so
+    // this is how a screenshot reaches a screen that needs a keystroke.
+    let startup_keys = parse_startup_keys(&mut warnings);
+
     let mut app = App::new(&args.dirs, cfg, warnings, &args.startup)?;
     app.open_startup(args.startup)?;
 
@@ -72,9 +81,28 @@ fn main() -> Result<()> {
     eframe::run_native(
         "rmut",
         options,
-        Box::new(move |cc| Ok(Box::new(gui::Gui::new(cc, app, font_size)?))),
+        Box::new(move |cc| Ok(Box::new(gui::Gui::new(cc, app, font_size, startup_keys)?))),
     )
     .map_err(|err| anyhow::anyhow!("{err}"))
+}
+
+/// `$RMUT_KEYS` as key events, anything unparseable reported rather
+/// than dropped in silence.
+fn parse_startup_keys(warnings: &mut Vec<String>) -> Vec<KeyEvent> {
+    let Ok(spec) = std::env::var("RMUT_KEYS") else {
+        return Vec::new();
+    };
+    spec.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| match rcmd_tui::keymap::parse_key(s) {
+            Some((code, mods)) => Some(KeyEvent::new(code, mods)),
+            None => {
+                warnings.push(format!("RMUT_KEYS: cannot parse {s:?}"));
+                None
+            }
+        })
+        .collect()
 }
 
 fn parse_args() -> Result<Args> {
@@ -164,6 +192,10 @@ rcmd in a window: the same panels, keys, themes and config.toml as the
   -h, --help           this text
 
 Environment:
+  RMUT_KEYS   keys played in at startup, spelled as config.toml spells
+              them and comma separated (\"ctrl+o\", \"f5,down,enter\").
+              A window has no pty for a harness to drive; this is how a
+              screenshot reaches a screen that needs a keystroke.
   RMUT_FONT   a .ttf/.otf monospace face to draw the grid in; without
               it a system DejaVu/Liberation/Menlo/Consolas is looked
               for, and egui's bundled font is the fallback.

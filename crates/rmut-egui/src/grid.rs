@@ -364,13 +364,14 @@ pub fn to_color32(color: Color, default: Color32) -> Color32 {
         Color::LightCyan => ANSI[14],
         Color::White => ANSI[15],
         Color::Rgb(r, g, b) => Color32::from_rgb(r, g, b),
-        Color::Indexed(i) => indexed(i),
+        Color::Indexed(i) => indexed_color(i),
     }
 }
 
 /// The 256-colour cube: 0-15 are the named ones, 16-231 a 6x6x6 cube,
-/// 232-255 a 24-step grey ramp.
-fn indexed(i: u8) -> Color32 {
+/// 232-255 a 24-step grey ramp. Shared with the terminal pane, so a
+/// colour means the same thing in the panels and in the shell.
+pub fn indexed_color(i: u8) -> Color32 {
     match i {
         0..=15 => ANSI[i as usize],
         16..=231 => {
@@ -429,12 +430,12 @@ mod tests {
 
     #[test]
     fn the_256_colour_cube_lands_where_xterm_puts_it() {
-        assert_eq!(indexed(0), ANSI[0]);
-        assert_eq!(indexed(16), Color32::from_rgb(0, 0, 0));
-        assert_eq!(indexed(231), Color32::from_rgb(255, 255, 255));
-        assert_eq!(indexed(196), Color32::from_rgb(255, 0, 0));
-        assert_eq!(indexed(232), Color32::from_rgb(8, 8, 8));
-        assert_eq!(indexed(255), Color32::from_rgb(238, 238, 238));
+        assert_eq!(indexed_color(0), ANSI[0]);
+        assert_eq!(indexed_color(16), Color32::from_rgb(0, 0, 0));
+        assert_eq!(indexed_color(231), Color32::from_rgb(255, 255, 255));
+        assert_eq!(indexed_color(196), Color32::from_rgb(255, 0, 0));
+        assert_eq!(indexed_color(232), Color32::from_rgb(8, 8, 8));
+        assert_eq!(indexed_color(255), Color32::from_rgb(238, 238, 238));
     }
 
     #[test]

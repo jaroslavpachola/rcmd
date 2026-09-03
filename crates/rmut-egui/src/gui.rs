@@ -14,12 +14,14 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, FontId, Vec2};
 use ratatui::Terminal;
+use ratatui::crossterm::event::KeyEvent;
 use rcmd_tui::app::{App, Exec};
 use rcmd_tui::{state, ui};
 
 use crate::exec;
 use crate::grid::{EguiBackend, Metrics, Palette};
 use crate::keys::{self, Input};
+use crate::term::TerminalPane;
 
 /// Redraw at least this often even when nothing said it changed - the
 /// same insurance `App::run` takes, for the same reason.
@@ -35,13 +37,27 @@ pub struct Gui {
     /// noticed without asking the backend through a trait import.
     size: (u16, u16),
     last_frame: Instant,
+    /// Keys still to be played in as if typed, one per frame. `$RMUT_KEYS`
+    /// fills this: a window cannot be driven from a script the way the
+    /// pty suite drives the terminal build, so this is how a screenshot
+    /// gets taken of anything that needs a keystroke to reach.
+    startup_keys: Vec<KeyEvent>,
+    /// Ctrl+O's output screen, when it is open. While it is, the
+    /// panels are neither drawn nor given any input: the shell has the
+    /// window, exactly as it has the terminal in the other build.
+    pane: Option<TerminalPane>,
     /// Set once the state file has been written, so the closing frames
     /// do not write it again.
     saved: bool,
 }
 
 impl Gui {
-    pub fn new(cc: &eframe::CreationContext<'_>, app: App, font_size: f32) -> anyhow::Result<Self> {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        app: App,
+        font_size: f32,
+        startup_keys: Vec<KeyEvent>,
+    ) -> anyhow::Result<Self> {
         crate::font::install(&cc.egui_ctx);
         let font = FontId::monospace(font_size);
         // no fonts exist until egui has run a frame; `ui` measures
@@ -59,15 +75,28 @@ impl Gui {
             palette,
             size: (80, 25),
             last_frame: Instant::now(),
+            startup_keys,
+            pane: None,
             saved: false,
         })
     }
 
-    /// Run whatever a key press queued. A terminal front end hands the
-    /// tty to the child and steps aside; a window has no tty to hand
-    /// over, so [`exec`] finds a terminal emulator for the commands
-    /// that want one and spawns the rest detached.
+    /// Run whatever a key press queued.
+    ///
+    /// Ctrl+O and typed commands open the embedded terminal pane, which
+    /// is this build's answer to having no tty to hand over: the pty is
+    /// the subshell's already, and the pane is the half that reads what
+    /// it writes. An opener still goes to a detached child, which is
+    /// what an opener always wanted, and a machine with no subshell at
+    /// all falls back to a terminal emulator.
     fn run_exec(&mut self, cmd: Exec) {
+        let quiet = matches!(cmd, Exec::Quiet(_));
+        if !quiet && self.app.subshell_alive() {
+            let (cols, rows) = self.size;
+            self.pane = TerminalPane::open(&mut self.app, cmd, cols, rows);
+            self.app.set_dirty();
+            return;
+        }
         let cwd = self.app.panels[self.app.active].local_cwd();
         match exec::run(&cmd, &cwd) {
             Ok(Some(note)) => self.app.status = Some(format!(" {note} ")),
@@ -76,6 +105,32 @@ impl Gui {
         }
         self.app.finish_remote_edit();
         self.app.set_dirty();
+    }
+
+    /// One frame with the shell in front. Returns the repaint interval:
+    /// a pane is redrawn far more eagerly than idle panels, because
+    /// what it is showing moves on its own.
+    fn pane_frame(&mut self, ui: &mut egui::Ui, origin: egui::Pos2, input: Vec<Input>) -> Duration {
+        let Some(pane) = self.pane.as_mut() else {
+            return Duration::from_millis(500);
+        };
+        let (cols, rows) = self.size;
+        pane.resize(&mut self.app, cols, rows);
+        // Ctrl+O closes it; everything typed before that still reaches
+        // the shell, the way the terminal build feeds the bytes ahead
+        // of the 0x0F and then breaks
+        let open = pane.feed(&mut self.app, &input) & pane.step(&mut self.app);
+        pane.paint(ui.painter(), origin, self.metrics, &self.font, self.palette);
+        let wait = pane.repaint_after();
+        if !open {
+            self.pane = None;
+            self.app.end_subshell();
+            self.app.finish_remote_edit();
+            // the panels are back and owed a frame
+            self.app.set_dirty();
+            return Duration::ZERO;
+        }
+        wait
     }
 
     fn save_once(&mut self) {
@@ -121,15 +176,35 @@ impl eframe::App for Gui {
         if (cols, rows) != self.size {
             self.size = (cols, rows);
             self.terminal.backend_mut().set_size(cols, rows);
-            // the subshell is off in this build, but a front end that
-            // grows one wants the same courtesy the terminal gives it
+            // the pane resizes itself from `self.size`; this is the
+            // subshell's own idea of how big its terminal is
             self.app.resize_subshell(cols, rows);
             self.app.set_dirty();
         }
 
+        let mut input = ctx.input(|i| keys::collect(i, origin, self.metrics));
+        // $RMUT_KEYS, one per frame ahead of anything real. One per
+        // frame rather than all at once because that is what typing is:
+        // a key that opens a screen has to be given the frame in which
+        // to open it before the next key arrives, or the next key goes
+        // to the screen that was on its way out.
+        if !self.startup_keys.is_empty() {
+            let key = self.startup_keys.remove(0);
+            input.insert(0, Input::Key(key));
+            ctx.request_repaint();
+        }
+
+        // With the pane open the shell owns the window: the panels are
+        // neither drawn nor given any input, exactly as they are not in
+        // the terminal build while the output screen is up.
+        if self.pane.is_some() {
+            let wait = self.pane_frame(ui, origin, input);
+            ctx.request_repaint_after(wait);
+            return;
+        }
+
         // Input, in arrival order, into the same handlers the terminal
         // build calls.
-        let input = ctx.input(|i| keys::collect(i, origin, self.metrics));
         if !input.is_empty() {
             // whatever the event turns out to be, the screen may answer it
             self.app.set_dirty();

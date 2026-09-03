@@ -42,6 +42,14 @@ sha2 = "0.10"
 # ways - the alternative is twenty single-byte tables by hand and no
 # CJK at all
 encoding_rs = "0.8"
+# The interpreting half of a terminal: the pty and the shell are
+# subshell.rs's already, this turns the bytes they produce into a
+# screen for the window build's Ctrl+O pane. Alternate screen and
+# application-cursor mode are what make vim and less work in it.
+# Held at 0.15 because 0.16 wants unicode-width 0.2.1 and ratatui
+# 0.29 pins that crate to exactly 0.2.0; 0.15 is on the 0.1 line,
+# a different major, so the two coexist instead of conflicting.
+vt100 = "0.15"
 notify = "8"
 ssh2 = "0.9"
 git2 = { version = "0.20", default-features = false }

@@ -93,8 +93,9 @@ egui, in a window, sharing every crate with the terminal build and
 calling the same `ui::draw`. `rcmd-tui` became a library as well as a
 binary to allow it, and `App::run`'s body became `App::tick` so a front
 end that does not own its event loop can drive the same state machine.
-See [In a window](#in-a-window) for what a window cannot do (the
-subshell) and what it does instead.
+`Ctrl+O` opens a real terminal pane in it: `vt100` interprets what the
+existing subshell's pty produces, so `less` and `vim` work there. See
+[In a window](#in-a-window).
 
 **4.11-4.27** - the orthodox pass, from
 [docs/ORTHODOX-DIFF.md](docs/ORTHODOX-DIFF.md): **directory
@@ -234,6 +235,10 @@ usage: rmut [OPTIONS] [DIR1 [DIR2]]
       --font-size N   point size of the grid font (default 14)
 ```
 
+`$TERMINAL` names the emulator to fall back on when there is no
+subshell; `$RMUT_FONT` a `.ttf`/`.otf` to draw the grid in; `$RMUT_KEYS`
+keys to play in at startup, for driving the window from a script.
+
 The grid is drawn in a system monospace face - DejaVu, Liberation, Menlo
 or Consolas, whichever is there - because egui's bundled font is missing
 most of the box-drawing block and rcmd frames every panel and every
@@ -241,17 +246,37 @@ dialog in it. `$RMUT_FONT` names a `.ttf`/`.otf` to use instead; egui's
 own font is the fallback beneath whatever is chosen, so a glyph the
 system face lacks is still drawn.
 
-**What is different, and why.** A window has no tty to hand to a child
-process, so the persistent subshell is off in this build and `Ctrl+O`
-has nothing to show. Openers and `[[open]]` rules are spawned detached,
-which is what an opener always wanted - a GUI program no longer needs
-its trailing `&`. Commands that want a terminal get one: `$TERMINAL` if
-it is set, else the usual emulators, with a "press Enter" pause so a
-command that only prints an error can be read. The honest fix is a
-terminal emulator inside the window, and that is a piece of work in its
-own right: `subshell.rs` already owns a pty through `libc::openpty`, but
-it pumps those bytes straight at the terminal rather than interpreting
-them, so rendering one means writing the interpreting half.
+**Ctrl+O opens a terminal pane**, the same as it opens the output
+screen in a terminal. `subshell.rs` already owned the pty, spawned the
+shell, tracked its working directory through the prompt hooks and
+buffered every byte it wrote; the window only had to add the
+interpreting half, which is [`vt100`](https://crates.io/crates/vt100) -
+bytes in, a grid of cells out - and painting a grid of cells is what
+this front end does anyway.
+
+![rmut: git status and ls in the embedded terminal
+pane](docs/rmut-shell.png)
+
+Colour, bold, the alternate screen and application-cursor mode all
+work, so `less`, `vim` and anything built on ncurses behave as they do
+anywhere else. A second `Ctrl+O` brings the panels back, and the active
+panel has followed the shell's `cd` - and the shell follows the panel's,
+the same sync the terminal build does. A command typed on rcmd's own
+command line opens the pane, runs there, and closes it again when it
+finishes.
+
+The protocol behind that - wait for a prompt, sync the directory in,
+feed the command, know when it finished, sync back out - is not written
+twice. It is `App::begin_subshell` / `step_subshell` / `end_subshell`,
+and the terminal build loops over the same three calls while passing
+keys through raw.
+
+**What is still different.** Openers and `[[open]]` rules are spawned
+detached, which is what an opener always wanted - a GUI program no
+longer needs its trailing `&`. And with no subshell at all (`subshell =
+false`, or a shell that would not spawn) commands fall back to a
+terminal emulator: `$TERMINAL` if it is set, else the usual ones, with a
+"press Enter" pause so a command that only prints an error can be read.
 
 Everything else is shared, including the state file - the directory a
 window was left in is where the next terminal session starts.
@@ -1151,7 +1176,12 @@ on it, which is how `docs/rmut.png` is made:
 
 ```sh
 cargo run -p rmut-egui --features screenshot        # writes $EFRAME_SCREENSHOT_TO
+RMUT_KEYS='ctrl+o,l,s,enter' cargo run -p rmut-egui # keys, as if typed
 ```
+
+`$RMUT_KEYS` plays keys in one per frame, spelled the way `config.toml`
+spells them, which is how the pictures above of screens that need a
+keystroke were taken. (A literal comma cannot be spelled: it separates.)
 
 The e2e suite includes an SFTP scenario that spins up a local paramiko
 server (`pip install paramiko`; skipped when unavailable).
@@ -1160,7 +1190,7 @@ Workspace layout: `crates/rcmd-core` (panel/fs logic, no TUI deps),
 `crates/rcmd-edit` (editor buffer/undo/search, TUI-free; syntect behind
 the `syntax` feature), `crates/rcmd-tui` (the file manager itself, as a
 library, plus the terminal binary `rcmd`), and `crates/rmut-egui` (the
-window front end, binary `rmut`, ~1,100 lines on top of the same
+window front end, binary `rmut`, ~1,600 lines on top of the same
 library). CI runs fmt, clippy and the unit tests on Linux and macOS, and
 the pty e2e suite on Linux - it drives the binary through `/dev/pts`
 and installs shells to test them, which is a Linux job. Licensed MIT.
