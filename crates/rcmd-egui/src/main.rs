@@ -15,6 +15,7 @@ mod font;
 mod grid;
 mod gui;
 mod keys;
+mod menu;
 mod term;
 
 use std::path::PathBuf;
@@ -72,6 +73,9 @@ fn main() -> Result<()> {
     // for the DA1 reply before every prompt: the shim has to keep
     // answering while the pane is up, not only while the shell is hidden
     app.set_subshell_headless();
+    // the menu bar is egui's, above the grid (menu.rs): the terminal
+    // build's row and dropdown stay off, and F9 opens the real one
+    app.set_external_menubar();
     app.open_startup(args.startup)?;
 
     let font_size = args.font_size;

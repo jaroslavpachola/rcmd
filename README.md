@@ -273,6 +273,18 @@ twice. It is `App::begin_subshell` / `step_subshell` / `end_subshell`,
 and the terminal build loops over the same three calls while passing
 keys through raw.
 
+**The menu bar is the window's own**, above the grid, rather than mc's
+row of titles drawn inside it: real dropdowns, the pointer's, with the
+key shown beside each entry and the hotkey letter underlined and
+working - `F9` opens the leftmost menu as it does in a terminal, the
+arrow keys and Enter walk it, `f` then `q` is still File > Quit. The
+entries are the same tables the terminal build draws (`MENUS` and, in
+the editor, `EDIT_MENUS`), and choosing one makes the same call its
+dropdown makes on Enter, so Left and Right act on their own panel here
+too. The editor on top swaps in its own bar; a dialog, a job, the help
+or the viewer greys it, since what is on top has the keys. The
+`show_menubar` row is the terminal build's and is not drawn here.
+
 **What is still different.** Openers and `[[open]]` rules are spawned
 detached, which is what an opener always wanted - a GUI program no
 longer needs its trailing `&`. And with no subshell at all (`subshell =
@@ -1025,7 +1037,7 @@ subshell = true     # persistent $SHELL behind Ctrl+O (false = one-shot exec)
 brief_columns = 2          # name columns in the brief listing (1..6)
 split = "vertical"         # or "horizontal" (panels stacked)
 split_ratio = 50           # percent for the left/top panel, 20..80
-show_menubar = false       # MC's permanent menu bar (F9 works either way)
+show_menubar = false       # MC's permanent menu bar (F9 works either way; the window has its own)
 show_mini_status = false   # a status row inside each panel (MC's)
 show_free_space = true     # free space in each local panel's footer
 show_status = true         # the cursor-entry row inside the active panel
@@ -1192,7 +1204,7 @@ Workspace layout: `crates/rcmd-core` (panel/fs logic, no TUI deps),
 `crates/rcmd-edit` (editor buffer/undo/search, TUI-free; syntect behind
 the `syntax` feature), `crates/rcmd-tui` (the file manager itself, as a
 library, plus the terminal binary `rcmd`), and `crates/rcmd-egui` (the
-window front end, the binary of the same name, ~1,600 lines on top of
+window front end, the binary of the same name, ~2,400 lines on top of
 that library). CI runs fmt, clippy and the unit tests on Linux and macOS, and
 the pty e2e suite on Linux - it drives the binary through `/dev/pts`
 and installs shells to test them, which is a Linux job. Licensed MIT.

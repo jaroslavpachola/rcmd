@@ -1,5 +1,34 @@
 # Changelog
 
+## 4.29.0 - 2026-09-03
+
+- **The window has a menu bar of its own**, egui's, above the grid,
+  where the terminal build draws mc's row of titles inside it. The
+  dropdowns are real ones: the pointer opens and walks them, every
+  entry shows its key beside it, and the `&` hotkey letter is
+  underlined and works - `F9` opens the leftmost menu as it always
+  did, the arrow keys and Enter walk it, and `F9 f q` is still File >
+  Quit. The entries are the same `MENUS` and `EDIT_MENUS` tables the
+  terminal build draws, so nothing is listed twice, and a chosen entry
+  goes through `App::run_menu_entry`, the call the terminal dropdown
+  makes on Enter, so Left and Right land on their own panel in the
+  window too. An editor on top swaps in its own bar; a dialog, a job,
+  the help or a viewer greys it, since what is on top has the keys.
+  `App::set_external_menubar` is how a front end says it draws the
+  bar itself: the `show_menubar` row is then not drawn and F9 becomes
+  a request the front end reads with `App::take_menu_request`. The
+  bar and the dropdowns take egui's light or dark widget colours by
+  the brightness of the theme's background, on that background, so
+  `-S bw` is not a white grid under a grey bar.
+
+- **Every menu entry can be reached by its letter again.** Four
+  entries had a letter already spent by an entry above them in the
+  same dropdown, and the first match wins, so Delete permanently, Undo
+  last move, Synchronize directories and Directory history could not
+  be run by hotkey in either build. They have letters of their own now
+  (`n`, `l`, `z`, `r`; Apply moved to `y` to free the `l`), and a unit
+  test keeps the letters of every dropdown unique.
+
 ## 4.28.2 - 2026-09-03
 
 - **The window binary is `rcmd-egui`**, the name of its crate, rather

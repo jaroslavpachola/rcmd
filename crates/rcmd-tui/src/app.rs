@@ -2284,6 +2284,16 @@ pub type MenuEntry = Option<(&'static str, &'static str, Action)>;
 /// One menu bar: titles and their entries, whatever the entries do.
 pub type MenuBar<'a, A> = &'a [(&'a str, &'a [Option<(&'static str, &'static str, A)>])];
 
+/// Which bar a front end drawing its own menu bar should show - see
+/// [`App::menu_bar_for`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuBarFor {
+    /// [`MENUS`], the panels' bar.
+    Panels,
+    /// [`EDIT_MENUS`], the editor's own bar, while an editor is on top.
+    Editor,
+}
+
 /// MC's menu bar: the two panel menus bracket the global ones. Left and
 /// Right act on their own panel whichever one has the focus, which is
 /// why their entries carry no side - [`App::menu_side`] reads it off
@@ -2301,14 +2311,14 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Move/rename...", "F6", Action::Move)),
             Some(("&Bulk rename (editor)...", "", Action::BulkRename)),
             Some(("&Pack into archive...", "M-F5", Action::Pack)),
-            Some(("&Undo last move", "C-x u", Action::Undo)),
+            Some(("Undo &last move", "C-x u", Action::Undo)),
             Some(("Ma&ke directory...", "F7", Action::Mkdir)),
             Some(("&Delete (trash)", "F8", Action::Delete)),
-            Some(("Delete &permanently", "S-F8", Action::DeletePerm)),
+            Some(("Delete perma&nently", "S-F8", Action::DeletePerm)),
             // no letters left in either label that some entry above or
             // a menu title has not already taken
             Some(("Wipe (overwrite, then delete)", "M-Del", Action::Wipe)),
-            Some(("App&ly a command to each...", "C-g", Action::Apply)),
+            Some(("Appl&y a command to each...", "C-g", Action::Apply)),
             Some(("Checksum file (sha256)...", "", Action::Checksum)),
             Some(("Check the checksum file", "", Action::VerifyChecksum)),
             None,
@@ -2334,7 +2344,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Directory tr&ee...", "", Action::DirTree)),
             Some(("&Find file...", "M-F7", Action::FindFile)),
             Some(("&Compare directories", "C-x d", Action::CompareDirs)),
-            Some(("S&ynchronize directories...", "", Action::Sync)),
+            Some(("Synchroni&ze directories...", "", Action::Sync)),
             Some(("Compare fi&les", "", Action::CompareFiles)),
             Some(("&Open shell", "C-o", Action::Shell)),
             Some(("S&wap panels", "C-u", Action::SwapPanels)),
@@ -2346,7 +2356,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Jobs...", "C-x j", Action::Jobs)),
             Some(("Acti&ve VFS list...", "C-x a", Action::VfsList)),
             Some(("Command histor&y...", "M-h", Action::HistoryList)),
-            Some(("Directory &history...", "M-H", Action::DirHistory)),
+            Some(("Directory histo&ry...", "M-H", Action::DirHistory)),
             // mc has three of these - extension file, menu file,
             // highlighting file. rcmd has one file, so it has one entry.
             // The `g`: `f` is spent on Find file, and a second entry
@@ -2842,6 +2852,14 @@ pub struct App {
     /// DA1 and DSR during a session too, not only while the shell is
     /// hidden. fish asks before every prompt and waits for the reply.
     subshell_headless: bool,
+    /// The front end draws the menu bar itself, outside the cell grid
+    /// (the window build's native bar). The row `show_menubar` would
+    /// take is not drawn, and F9 asks that bar to open rather than
+    /// dropping the terminal build's own menu over the panels.
+    external_menubar: bool,
+    /// F9 was pressed with an external menu bar: the front end takes
+    /// this and opens its bar. Cleared by [`Self::take_menu_request`].
+    menu_requested: bool,
     /// Started as an editor/viewer/diff rather than as a file manager:
     /// there is nothing to land back on, so closing the last screen is
     /// the end of the session.
@@ -3002,6 +3020,8 @@ impl App {
             pending_exec: None,
             subshell,
             subshell_headless: false,
+            external_menubar: false,
+            menu_requested: false,
             standalone: !startup.is_panels(),
             quit: false,
         })
@@ -3130,6 +3150,69 @@ impl App {
     /// the shim keeps answering while a session is on screen.
     pub fn set_subshell_headless(&mut self) {
         self.subshell_headless = true;
+    }
+
+    /// The front end draws the menu bar itself, above the grid: the
+    /// terminal build's bar row and its dropdowns stay off, and F9
+    /// becomes a request the front end reads with
+    /// [`Self::take_menu_request`].
+    pub fn set_external_menubar(&mut self) {
+        self.external_menubar = true;
+    }
+
+    pub fn external_menubar(&self) -> bool {
+        self.external_menubar
+    }
+
+    /// F9 since the last call, with an external menu bar; taking it
+    /// clears it.
+    pub fn take_menu_request(&mut self) -> bool {
+        std::mem::take(&mut self.menu_requested)
+    }
+
+    /// Whether an F9 is waiting to be taken.
+    pub fn menu_requested(&self) -> bool {
+        self.menu_requested
+    }
+
+    /// Which menu bar an external one should show, and whether it
+    /// may act: the panels' bar is greyed under a dialog, a job, the
+    /// help or a viewer, the editor's under one of the editor's own
+    /// prompts. What is on top takes the keys, and a menu entry run
+    /// from under it would act on a screen nobody is looking at.
+    pub fn menu_bar_for(&self) -> (MenuBarFor, bool) {
+        if self.editor().is_some() {
+            let busy = self.fg_job().is_some()
+                || self.dialog.is_some()
+                || self.screen_list.is_some()
+                || self
+                    .editor()
+                    .is_some_and(|st| st.prompt.is_some() || st.menu.is_some());
+            return (MenuBarFor::Editor, !busy);
+        }
+        let busy = self.fg_job().is_some()
+            || self.connect.is_some()
+            || self.find.is_some()
+            || self.dialog.is_some()
+            || self.help.is_some()
+            || self.screen_list.is_some()
+            || self.viewer().is_some()
+            || self.diff().is_some()
+            || self.menu.is_some()
+            || self.quick_search.is_some();
+        (MenuBarFor::Panels, !busy)
+    }
+
+    /// An entry of [`MENUS`] chosen from an external menu bar - the
+    /// same call the terminal build's dropdown makes on Enter, so the
+    /// Left and Right menus land on their own panel either way.
+    pub fn run_menu_entry(&mut self, menu: usize, action: Action) {
+        self.run_menu_action(menu, action);
+    }
+
+    /// An entry of [`EDIT_MENUS`] chosen from an external menu bar.
+    pub fn run_edit_menu_entry(&mut self, action: EditMenuAction) {
+        self.run_edit_menu_action(action);
     }
 
     /// Tell the subshell how big its terminal now is.
@@ -5297,10 +5380,14 @@ impl App {
         match action {
             Action::Help => self.help = Some(HelpState { top: 0, rows: 1 }),
             Action::Menu => {
-                self.menu = Some(MenuState {
-                    menu: 0,
-                    item: first_menu_item(MENUS[0].1),
-                })
+                if self.external_menubar {
+                    self.menu_requested = true;
+                } else {
+                    self.menu = Some(MenuState {
+                        menu: 0,
+                        item: first_menu_item(MENUS[0].1),
+                    })
+                }
             }
             Action::Mark => self.panel().toggle_mark(),
             Action::QuickSearch => {
@@ -6909,7 +6996,9 @@ impl App {
                 return;
             }
             EA::Menu => {
-                if let Some(st) = self.editor_mut() {
+                if self.external_menubar {
+                    self.menu_requested = true;
+                } else if let Some(st) = self.editor_mut() {
                     st.menu = Some(MenuState {
                         menu: 0,
                         item: first_edit_item(EDIT_MENUS[0].1),
@@ -7518,12 +7607,17 @@ impl App {
             }
             _ => {}
         }
-        match run {
-            Some(EditMenuAction::Key(action)) => self.editor_action(action),
-            Some(EditMenuAction::Options) => self.open_edit_options(),
-            Some(EditMenuAction::ScreenList) => self.open_screen_list(),
-            Some(EditMenuAction::Syntax) => self.open_syntax_picker(),
-            None => {}
+        if let Some(action) = run {
+            self.run_edit_menu_action(action);
+        }
+    }
+
+    fn run_edit_menu_action(&mut self, action: EditMenuAction) {
+        match action {
+            EditMenuAction::Key(action) => self.editor_action(action),
+            EditMenuAction::Options => self.open_edit_options(),
+            EditMenuAction::ScreenList => self.open_screen_list(),
+            EditMenuAction::Syntax => self.open_syntax_picker(),
         }
     }
 

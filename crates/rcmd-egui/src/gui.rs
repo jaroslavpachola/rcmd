@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, FontId, Vec2};
+use eframe::egui::{self, FontId, Popup, Vec2};
 use ratatui::Terminal;
 use ratatui::crossterm::event::KeyEvent;
 use rcmd_tui::app::{App, Exec};
@@ -21,6 +21,7 @@ use rcmd_tui::{state, ui};
 use crate::exec;
 use crate::grid::{EguiBackend, Metrics, Palette};
 use crate::keys::{self, Input};
+use crate::menu;
 use crate::term::TerminalPane;
 
 /// Redraw at least this often even when nothing said it changed - the
@@ -50,6 +51,10 @@ pub struct Gui {
     /// Set once the state file has been written, so the closing frames
     /// do not write it again.
     saved: bool,
+    /// F9 opened a dropdown and its first entry is owed the keyboard
+    /// focus as soon as the dropdown is on screen, which is a frame
+    /// after it was asked for.
+    focus_menu: bool,
 }
 
 impl Gui {
@@ -65,6 +70,12 @@ impl Gui {
         // for real on the first one
         let metrics = Metrics::estimate(font_size);
         let palette = palette_from_theme();
+        // The menu bar and its dropdowns are egui widgets on the grid's
+        // own background, and egui's light or dark set of widget
+        // colours is chosen by how bright that background is - a
+        // dark-grey menu bar over `-S bw`'s white would be a bar from
+        // some other program.
+        cc.egui_ctx.set_visuals(visuals_for(palette));
         // a placeholder size: the first frame measures the window and
         // resizes before anything is drawn into it
         let terminal = Terminal::new(EguiBackend::new(80, 25, palette))?;
@@ -79,6 +90,7 @@ impl Gui {
             startup_keys,
             pane: TerminalPane::new(80, 25),
             saved: false,
+            focus_menu: false,
         })
     }
 
@@ -166,10 +178,32 @@ impl eframe::App for Gui {
         // from construction time.
         self.metrics = Metrics::measure(&ctx, &self.font);
 
-        // The whole window is the grid: no margins, because a cell
-        // grid that does not start at the top-left corner is a cell
-        // grid with a wasted row and column.
-        let available = ui.max_rect();
+        // The menu bar first, egui's own across the top: F9 pressed
+        // last frame asked for it to open, and while the shell has the
+        // window it is there but greyed. With a dropdown open the
+        // keyboard and the pointer are egui's, not the panels': a Down
+        // that walked the dropdown must not also walk the file list,
+        // and the click that closes the dropdown must not also land
+        // on whatever was under it.
+        let menu_open = Popup::is_any_open(&ctx);
+        // F9 with a dropdown open closes it, as it does in a terminal;
+        // Esc egui does by itself
+        if menu_open && ctx.input(|i| i.key_pressed(egui::Key::F9)) {
+            Popup::close_all(&ctx);
+        }
+        let request = menu::Request {
+            open_first: self.app.take_menu_request(),
+            enabled: !self.pane.is_open(),
+        };
+        let Self {
+            app, focus_menu, ..
+        } = self;
+        egui::Panel::top("menubar").show(ui, |ui| menu::show(app, ui, request, focus_menu));
+
+        // The rest of the window is the grid: no margins, because a
+        // cell grid that does not start at the corner under the bar is
+        // a cell grid with a wasted row and column.
+        let available = ui.available_rect_before_wrap();
         let origin = available.min;
         let (cols, rows) = self.metrics.cells(available.size());
         if (cols, rows) != self.size {
@@ -181,13 +215,17 @@ impl eframe::App for Gui {
             self.app.set_dirty();
         }
 
-        let mut input = ctx.input(|i| keys::collect(i, origin, self.metrics));
+        let mut input = if menu_open {
+            Vec::new()
+        } else {
+            ctx.input(|i| keys::collect(i, origin, self.metrics))
+        };
         // $RCMD_EGUI_KEYS, one per frame ahead of anything real. One per
         // frame rather than all at once because that is what typing is:
         // a key that opens a screen has to be given the frame in which
         // to open it before the next key arrives, or the next key goes
         // to the screen that was on its way out.
-        if !self.startup_keys.is_empty() {
+        if !self.startup_keys.is_empty() && !menu_open {
             let key = self.startup_keys.remove(0);
             input.insert(0, Input::Key(key));
             ctx.request_repaint();
@@ -212,6 +250,11 @@ impl eframe::App for Gui {
                     Input::Key(key) => self.app.on_key(key),
                     Input::Mouse(mouse) => self.app.on_mouse(mouse),
                 }
+            }
+            // F9: the bar opens on the next frame, which has to come
+            // sooner than the idle wake-up would bring it
+            if self.app.menu_requested() {
+                ctx.request_repaint();
             }
         }
 
@@ -257,12 +300,38 @@ impl eframe::App for Gui {
     }
 }
 
-/// The window's starting size in points: 100x30 cells, which is a
-/// comfortable two panels. Estimated rather than measured, the fonts
-/// not existing until the window is up.
+/// About what the menu bar takes at the top, in points: egui's
+/// interact height plus the panel's margins and its separator. An
+/// estimate, as the rest of the starting size is.
+const MENU_BAR_HEIGHT: f32 = 26.0;
+
+/// The window's starting size in points: 100x30 cells under the menu
+/// bar, which is a comfortable two panels. Estimated rather than
+/// measured, the fonts not existing until the window is up.
 pub fn window_size(font_size: f32) -> Vec2 {
     let metrics = Metrics::estimate(font_size);
-    Vec2::new(metrics.width * 100.0, metrics.height * 30.0)
+    Vec2::new(
+        metrics.width * 100.0,
+        metrics.height * 30.0 + MENU_BAR_HEIGHT,
+    )
+}
+
+/// egui's widget colours for the menu bar and its dropdowns: the light
+/// set on a bright grid, the dark set on a dark one, either way on the
+/// grid's own background so that the bar is a part of the window and
+/// not a strip of egui's grey across the top of it.
+fn visuals_for(palette: Palette) -> egui::Visuals {
+    let bg = palette.bg;
+    let bright =
+        0.299 * f32::from(bg.r()) + 0.587 * f32::from(bg.g()) + 0.114 * f32::from(bg.b()) > 140.0;
+    let mut visuals = if bright {
+        egui::Visuals::light()
+    } else {
+        egui::Visuals::dark()
+    };
+    visuals.panel_fill = bg;
+    visuals.window_fill = bg;
+    visuals
 }
 
 /// What a `Color::Reset` cell resolves to. In a terminal that is the

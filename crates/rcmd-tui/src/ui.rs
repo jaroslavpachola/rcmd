@@ -965,8 +965,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let bar = |on: bool| Constraint::Length(u16::from(on));
     // the status line is drawn inside the active panel's frame (see
     // `App::panel_mini`), so it takes no row of its own here
+    // a front end with a menu bar of its own outside the grid (the
+    // window) has no use for a second one inside it
     let [menubar, main, cmdline, keybar] = Layout::vertical([
-        bar(cfg.show_menubar),
+        bar(cfg.show_menubar && !app.external_menubar()),
         Constraint::Min(3),
         bar(cfg.show_cmdline),
         bar(cfg.show_keybar),

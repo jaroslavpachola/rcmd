@@ -23,8 +23,8 @@ git = ["rcmd-tui/git"]
 screenshot = ["eframe/__screenshot"]
 
 [dependencies]
-rcmd-tui = { path = "../rcmd-tui", version = "4.28.2", default-features = false }
-rcmd-tui-edit = { path = "../rcmd-edit", version = "4.28.2" }
+rcmd-tui = { path = "../rcmd-tui", version = "4.29.0", default-features = false }
+rcmd-tui-edit = { path = "../rcmd-edit", version = "4.29.0" }
 ratatui.workspace = true
 vt100.workspace = true
 anyhow.workspace = true
