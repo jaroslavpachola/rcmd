@@ -42,10 +42,11 @@ pub struct Gui {
     /// pty suite drives the terminal build, so this is how a screenshot
     /// gets taken of anything that needs a keystroke to reach.
     startup_keys: Vec<KeyEvent>,
-    /// Ctrl+O's output screen, when it is open. While it is, the
+    /// Ctrl+O's output screen. While a session is open on it, the
     /// panels are neither drawn nor given any input: the shell has the
-    /// window, exactly as it has the terminal in the other build.
-    pane: Option<TerminalPane>,
+    /// window, exactly as it has the terminal in the other build. The
+    /// screen itself stays between sessions, as a terminal's does.
+    pane: TerminalPane,
     /// Set once the state file has been written, so the closing frames
     /// do not write it again.
     saved: bool,
@@ -76,7 +77,7 @@ impl Gui {
             size: (80, 25),
             last_frame: Instant::now(),
             startup_keys,
-            pane: None,
+            pane: TerminalPane::new(80, 25),
             saved: false,
         })
     }
@@ -93,7 +94,7 @@ impl Gui {
         let quiet = matches!(cmd, Exec::Quiet(_));
         if !quiet && self.app.subshell_alive() {
             let (cols, rows) = self.size;
-            self.pane = TerminalPane::open(&mut self.app, cmd, cols, rows);
+            self.pane.open(&mut self.app, cmd, cols, rows);
             self.app.set_dirty();
             return;
         }
@@ -111,9 +112,7 @@ impl Gui {
     /// a pane is redrawn far more eagerly than idle panels, because
     /// what it is showing moves on its own.
     fn pane_frame(&mut self, ui: &mut egui::Ui, origin: egui::Pos2, input: Vec<Input>) -> Duration {
-        let Some(pane) = self.pane.as_mut() else {
-            return Duration::from_millis(500);
-        };
+        let pane = &mut self.pane;
         let (cols, rows) = self.size;
         pane.resize(&mut self.app, cols, rows);
         // Ctrl+O closes it; everything typed before that still reaches
@@ -123,7 +122,7 @@ impl Gui {
         pane.paint(ui.painter(), origin, self.metrics, &self.font, self.palette);
         let wait = pane.repaint_after();
         if !open {
-            self.pane = None;
+            pane.close();
             self.app.end_subshell();
             self.app.finish_remote_edit();
             // the panels are back and owed a frame
@@ -197,7 +196,7 @@ impl eframe::App for Gui {
         // With the pane open the shell owns the window: the panels are
         // neither drawn nor given any input, exactly as they are not in
         // the terminal build while the output screen is up.
-        if self.pane.is_some() {
+        if self.pane.is_open() {
             let wait = self.pane_frame(ui, origin, input);
             ctx.request_repaint_after(wait);
             return;

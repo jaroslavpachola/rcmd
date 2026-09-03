@@ -68,6 +68,10 @@ fn main() -> Result<()> {
     let startup_keys = parse_startup_keys(&mut warnings);
 
     let mut app = App::new(&args.dirs, cfg, warnings, &args.startup)?;
+    // the pane's parser never answers a terminal query, and fish waits
+    // for the DA1 reply before every prompt: the shim has to keep
+    // answering while the pane is up, not only while the shell is hidden
+    app.set_subshell_headless();
     app.open_startup(args.startup)?;
 
     let font_size = args.font_size;

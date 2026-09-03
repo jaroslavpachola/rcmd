@@ -2837,6 +2837,11 @@ pub struct App {
     /// The persistent subshell (PLAN3 R1); None = plain exec fallback,
     /// either by `subshell = false` or because the spawn failed.
     subshell: Option<Subshell>,
+    /// No real terminal ever sees the subshell's output - a window
+    /// draws it from a VT parser - so the query shim has to answer
+    /// DA1 and DSR during a session too, not only while the shell is
+    /// hidden. fish asks before every prompt and waits for the reply.
+    subshell_headless: bool,
     /// Started as an editor/viewer/diff rather than as a file manager:
     /// there is nothing to land back on, so closing the last screen is
     /// the end of the session.
@@ -2996,6 +3001,7 @@ impl App {
             dialog_keys,
             pending_exec: None,
             subshell,
+            subshell_headless: false,
             standalone: !startup.is_panels(),
             quit: false,
         })
@@ -3117,6 +3123,13 @@ impl App {
     /// the front end's: a terminal hands over the tty, a window cannot.
     pub fn take_exec(&mut self) -> Option<Exec> {
         self.pending_exec.take()
+    }
+
+    /// The front end has no terminal behind the subshell: whatever the
+    /// shell writes goes to a parser that never answers a query, so
+    /// the shim keeps answering while a session is on screen.
+    pub fn set_subshell_headless(&mut self) {
+        self.subshell_headless = true;
     }
 
     /// Tell the subshell how big its terminal now is.
@@ -3880,7 +3893,9 @@ impl App {
         let Some(sub) = self.subshell.as_mut() else {
             return SubshellStep::Done;
         };
-        sub.pump(true);
+        // a terminal answers the shell's queries itself once the
+        // session is on its screen; a window's parser never will
+        sub.pump(!self.subshell_headless);
         let mut bytes = sub.take_output();
         if sub.failed {
             session.finished = true;

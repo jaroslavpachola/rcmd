@@ -19,6 +19,19 @@
 //! either. It is `App::begin_subshell` / `step_subshell` /
 //! `end_subshell`, shared with the terminal build, which loops over the
 //! same three calls while this one makes one pass per frame.
+//!
+//! The pane outlives its sessions. In the terminal build the shell's
+//! screen is the terminal's primary screen, which is still there with
+//! `ls`'s output on it when the next Ctrl+O leaves the alternate one;
+//! here the parser is that primary screen, so it is created once and
+//! kept, and a session only opens and closes on top of it. A parser
+//! made fresh for every session would open on a black screen, the
+//! command's output having gone with the previous one.
+//!
+//! Nothing behind the parser answers a terminal query, and fish asks
+//! DA1 before every prompt and waits for the reply; `App` is told the
+//! subshell is headless so that `subshell.rs`'s shim keeps answering
+//! while a session is on screen, not only while the shell is hidden.
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -32,8 +45,10 @@ use crate::keys::Input;
 const CTRL_O: u8 = 0x0F;
 
 pub struct TerminalPane {
+    /// The shell's screen, kept across sessions.
     parser: vt100::Parser,
-    session: SubshellSession,
+    /// The session on screen, when one is.
+    session: Option<SubshellSession>,
     size: (u16, u16),
     /// The shell was fed a command rather than merely shown, so the
     /// pane closes itself when that command finishes.
@@ -46,33 +61,55 @@ pub struct TerminalPane {
 }
 
 impl TerminalPane {
-    /// Open a pane for what a key press queued, or `None` when there is
-    /// no session to open (no subshell, or a shell already busy - which
-    /// [`App::begin_subshell`] puts on the status line itself).
-    pub fn open(app: &mut App, exec: Exec, cols: u16, rows: u16) -> Option<Self> {
-        let fed_command = matches!(exec, Exec::Command(_));
-        let session = app.begin_subshell(exec)?;
-        app.resize_subshell(cols, rows);
-        let mut parser = vt100::Parser::new(rows, cols, 0);
-        // Whatever the shell wrote while nothing was watching. The
-        // terminal build replays these onto the output screen at the
-        // same point; here they are the pane's starting state, so a
-        // Ctrl+O lands on a screen that already has the prompt on it.
-        parser.process(&app.take_subshell_output());
-        Some(Self {
-            parser,
-            session,
+    /// A pane with nothing on it yet, sized to the window.
+    pub fn new(cols: u16, rows: u16) -> Self {
+        Self {
+            parser: vt100::Parser::new(rows, cols, 0),
+            session: None,
             size: (cols, rows),
-            fed_command,
-            moving: true,
-        })
+            fed_command: false,
+            moving: false,
+        }
     }
 
-    /// One pass. `false` means the session is over and the pane should
-    /// be dropped - the caller then calls [`App::end_subshell`].
+    /// Open a session for what a key press queued. `false` means there
+    /// was none to open (no subshell, or a shell already busy - which
+    /// [`App::begin_subshell`] puts on the status line itself).
+    pub fn open(&mut self, app: &mut App, exec: Exec, cols: u16, rows: u16) -> bool {
+        let fed_command = matches!(exec, Exec::Command(_));
+        let Some(session) = app.begin_subshell(exec) else {
+            return false;
+        };
+        self.resize(app, cols, rows);
+        // Whatever the shell wrote while nothing was watching. The
+        // terminal build replays these onto the output screen at the
+        // same point; here they land on the kept screen, so a Ctrl+O
+        // finds the prompt - and whatever came before it - already on it.
+        self.parser.process(&app.take_subshell_output());
+        self.session = Some(session);
+        self.fed_command = fed_command;
+        self.moving = true;
+        true
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.session.is_some()
+    }
+
+    /// The session is over: the screen stays, the session goes. The
+    /// caller then calls [`App::end_subshell`].
+    pub fn close(&mut self) {
+        self.session = None;
+    }
+
+    /// One pass. `false` means the session is over and the caller
+    /// should [`Self::close`] it and call [`App::end_subshell`].
     pub fn step(&mut self, app: &mut App) -> bool {
         self.moving = false;
-        match app.step_subshell(&mut self.session) {
+        let Some(session) = self.session.as_mut() else {
+            return false;
+        };
+        match app.step_subshell(session) {
             SubshellStep::Output(bytes) => {
                 self.parser.process(&bytes);
                 self.moving = true;
@@ -94,6 +131,8 @@ impl TerminalPane {
         std::time::Duration::from_millis(if self.moving { 16 } else { 100 })
     }
 
+    /// Follow the window. The subshell is told too, whether or not a
+    /// session is open: `App` skips it when nothing changed.
     pub fn resize(&mut self, app: &mut App, cols: u16, rows: u16) {
         if (cols, rows) == self.size {
             return;

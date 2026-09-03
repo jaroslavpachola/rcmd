@@ -796,4 +796,29 @@ mod tests {
             String::from_utf8_lossy(&sub.take_output())
         );
     }
+
+    #[test]
+    fn fish_reaches_its_next_prompt_only_because_the_shim_answers() {
+        // fish 4 sends DA1 before every prompt, not only the first one,
+        // and waits for the reply. A front end with no terminal behind
+        // the shell - the window - pumps with `visible` false for the
+        // whole session so that the shim keeps answering; this is the
+        // half of that contract the shim owes.
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(mut sub) = spawn_with("fish", tmp.path()) else {
+            return;
+        };
+        assert!(wait_until(&mut sub, false, 20, |s| s.ready()));
+        sub.feed_line("echo marker-$fish_pid");
+        assert!(
+            wait_until(&mut sub, false, 10, |s| s.ready()),
+            "fish never came back to a prompt: {:?}",
+            String::from_utf8_lossy(&sub.take_output())
+        );
+        let out = String::from_utf8_lossy(&sub.take_output()).into_owned();
+        assert!(
+            out.contains("marker-"),
+            "the command's output is not there: {out:?}"
+        );
+    }
 }

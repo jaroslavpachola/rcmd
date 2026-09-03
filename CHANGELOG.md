@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.28.1 - 2026-09-03
+
+- **The window's terminal pane no longer hangs fish, and keeps what
+  was on it.** Two faults, one symptom each. fish 4 asks the terminal
+  a DA1 question before every prompt and waits for the answer;
+  `subshell.rs` has a shim that answers such questions, but only while
+  the shell is hidden, because in the terminal build the real terminal
+  answers once the shell is on screen. The window has no real terminal
+  behind the pane, so the first command run with the pane open left
+  fish waiting for a reply that never came - a black pane, a prompt
+  that never returned, and a typed command whose pane never closed.
+  `App::set_subshell_headless` now tells the shim to keep answering
+  for the whole session. Separately, `term.rs` created its VT parser
+  afresh for every session, so the screen of the previous one - the
+  output of the `ls` typed on the command line - was gone by the next
+  Ctrl+O, which opened on a black screen with nothing but what the
+  shell had written since. The parser is now created once and kept,
+  the way a terminal's primary screen is, and a session opens and
+  closes on top of it.
+
 ## 4.28.0 - 2026-09-03
 
 - **rcmd in a window.** A second front end, `rmut` (the `rmut-egui`
