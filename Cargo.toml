@@ -4,7 +4,7 @@ members = [
     "crates/rcmd-core",
     "crates/rcmd-edit",
     "crates/rcmd-tui",
-    "crates/rmut-egui",
+    "crates/rcmd-egui",
 ]
 
 [workspace.package]

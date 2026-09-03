@@ -134,8 +134,9 @@ cargo install --path crates/rcmd-tui   # installs the `rcmd` binary
 # or during development:
 cargo run -p rcmd-tui                  # or: just run
 
-cargo install --path crates/rmut-egui  # the window build; installs `rmut`
-cargo run -p rmut-egui
+cargo install rcmd-egui                # the window build; installs `rmut`
+cargo install --path crates/rcmd-egui  # the same, from a checkout
+cargo run -p rcmd-egui
 ```
 
 Release binaries are attached to GitHub releases (built by
@@ -1175,8 +1176,8 @@ either way. `rmut` can render a frame and exit without a pair of eyes
 on it, which is how `docs/rmut.png` is made:
 
 ```sh
-cargo run -p rmut-egui --features screenshot        # writes $EFRAME_SCREENSHOT_TO
-RMUT_KEYS='ctrl+o,l,s,enter' cargo run -p rmut-egui # keys, as if typed
+cargo run -p rcmd-egui --features screenshot        # writes $EFRAME_SCREENSHOT_TO
+RMUT_KEYS='ctrl+o,l,s,enter' cargo run -p rcmd-egui # keys, as if typed
 ```
 
 `$RMUT_KEYS` plays keys in one per frame, spelled the way `config.toml`
@@ -1189,7 +1190,7 @@ server (`pip install paramiko`; skipped when unavailable).
 Workspace layout: `crates/rcmd-core` (panel/fs logic, no TUI deps),
 `crates/rcmd-edit` (editor buffer/undo/search, TUI-free; syntect behind
 the `syntax` feature), `crates/rcmd-tui` (the file manager itself, as a
-library, plus the terminal binary `rcmd`), and `crates/rmut-egui` (the
+library, plus the terminal binary `rcmd`), and `crates/rcmd-egui` (the
 window front end, binary `rmut`, ~1,600 lines on top of the same
 library). CI runs fmt, clippy and the unit tests on Linux and macOS, and
 the pty e2e suite on Linux - it drives the binary through `/dev/pts`

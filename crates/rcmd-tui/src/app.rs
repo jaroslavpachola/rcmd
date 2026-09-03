@@ -3041,7 +3041,7 @@ impl App {
     /// a lazy and a busy poll timeout).
     ///
     /// Split out of [`Self::run`] so a front end that does not own its
-    /// event loop can do the same work: `rmut-egui` calls this once per
+    /// event loop can do the same work: `rcmd-egui` calls this once per
     /// egui frame and then draws the same [`ui::draw`] into a window.
     pub fn tick(&mut self) -> bool {
         self.note_visits();

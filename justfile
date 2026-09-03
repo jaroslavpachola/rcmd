@@ -4,7 +4,7 @@ run:
     cargo run -p rcmd-tui
 
 gui:
-    cargo run -p rmut-egui
+    cargo run -p rcmd-egui
 
 test:
     cargo test --workspace

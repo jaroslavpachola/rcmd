@@ -1,7 +1,7 @@
 //! The file manager itself, as a library.
 //!
 //! Everything the `rcmd` binary is made of lives here so that a second
-//! front end can be built on it: `rmut-egui` draws the same [`ui::draw`]
+//! front end can be built on it: `rcmd-egui` draws the same [`ui::draw`]
 //! into a window instead of a terminal, and drives the same [`app::App`]
 //! state machine. The binary's own `main.rs` keeps only argument parsing
 //! and the terminal's start/stop.

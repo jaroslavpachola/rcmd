@@ -20,6 +20,11 @@
   the way a terminal's primary screen is, and a session opens and
   closes on top of it.
 
+- **The window crate is `rcmd-egui` on crates.io**, so `cargo install
+  rcmd-egui` is the window build's install the way `cargo install
+  rcmd-tui` is the terminal's. The directory moved with it, from
+  `crates/rmut-egui` to `crates/rcmd-egui`; the binary is still `rmut`.
+
 ## 4.28.0 - 2026-09-03
 
 - **rcmd in a window.** A second front end, `rmut` (the `rmut-egui`
