@@ -10,12 +10,14 @@
 //! on (`keys`), and an answer to "run this command" that does not
 //! assume a tty (`exec`).
 
+mod dialog;
 mod exec;
 mod font;
 mod grid;
 mod gui;
 mod keys;
 mod menu;
+mod settings;
 mod term;
 
 use std::path::PathBuf;
@@ -25,15 +27,12 @@ use ratatui::crossterm::event::KeyEvent;
 use rcmd_tui::app::{App, Startup};
 use rcmd_tui::{config, ui};
 
-/// Big enough to read on a HiDPI screen, small enough for two panels.
-const DEFAULT_FONT_SIZE: f32 = 14.0;
-
 struct Args {
     dirs: Vec<PathBuf>,
     startup: Startup,
     theme: Option<String>,
     colors: Option<String>,
-    font_size: f32,
+    font_size: Option<f32>,
 }
 
 fn main() -> Result<()> {
@@ -68,6 +67,19 @@ fn main() -> Result<()> {
     // this is how a screenshot reaches a screen that needs a keystroke.
     let startup_keys = parse_startup_keys(&mut warnings);
 
+    // The window's own settings: [window] in config.toml under the
+    // state file, under this session's --font-size and $RCMD_EGUI_FONT.
+    let (win_config, win_state, win_warnings) = settings::load();
+    warnings.extend(win_warnings);
+    let session = settings::Window {
+        font: std::env::var("RCMD_EGUI_FONT")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        font_size: args.font_size,
+    };
+    let window = win_config.overlaid(&win_state).overlaid(&session);
+    let config_size = win_config.size();
+
     let mut app = App::new(&args.dirs, cfg, warnings, &args.startup)?;
     // the pane's parser never answers a terminal query, and fish waits
     // for the DA1 reply before every prompt: the shim has to keep
@@ -78,7 +90,7 @@ fn main() -> Result<()> {
     app.set_external_menubar();
     app.open_startup(args.startup)?;
 
-    let font_size = args.font_size;
+    let font_size = window.size();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("rcmd-egui")
@@ -89,7 +101,15 @@ fn main() -> Result<()> {
     eframe::run_native(
         "rcmd-egui",
         options,
-        Box::new(move |cc| Ok(Box::new(gui::Gui::new(cc, app, font_size, startup_keys)?))),
+        Box::new(move |cc| {
+            Ok(Box::new(gui::Gui::new(
+                cc,
+                app,
+                window,
+                config_size,
+                startup_keys,
+            )?))
+        }),
     )
     .map_err(|err| anyhow::anyhow!("{err}"))
 }
@@ -121,7 +141,7 @@ fn parse_args() -> Result<Args> {
     let mut diff: Vec<PathBuf> = Vec::new();
     let mut theme = None;
     let mut colors = None;
-    let mut font_size = DEFAULT_FONT_SIZE;
+    let mut font_size = None;
 
     while let Some(arg) = it.next() {
         let mut next = |flag: &str| -> Result<PathBuf> {
@@ -142,13 +162,14 @@ fn parse_args() -> Result<Args> {
                 colors = Some(next("-C")?.to_string_lossy().into_owned())
             }
             Some("--font-size") => {
-                font_size = next("--font-size")?
+                let size: f32 = next("--font-size")?
                     .to_string_lossy()
                     .parse()
                     .context("--font-size takes a number")?;
-                if !(4.0..=96.0).contains(&font_size) {
+                if !(4.0..=96.0).contains(&size) {
                     anyhow::bail!("--font-size must be between 4 and 96");
                 }
+                font_size = Some(size);
             }
             Some("-h") | Some("--help") => {
                 print!("{USAGE}");
@@ -195,7 +216,9 @@ rcmd in a window: the same panels, keys, themes and config.toml as the
   -S, --skin NAME      theme: mc, dark, bw
   -b, --nocolor        black and white
   -C, --colors SPEC    mc colour spec: keyword=fg,bg:keyword=fg,bg
-      --font-size N    point size of the grid font (default 14)
+      --font-size N    point size of the grid font for this session
+                       (default 14; [window] in config.toml and the Font
+                       dialog set it for good)
   -V, --version        print the version
   -h, --help           this text
 
@@ -205,10 +228,14 @@ Environment:
                   \"f5,down,enter\"). A window has no pty for a harness to
                   drive; this is how a screenshot reaches a screen that
                   needs a keystroke.
-  RCMD_EGUI_FONT  a .ttf/.otf monospace face to draw the grid in;
-                  without it a system DejaVu/Liberation/Menlo/Consolas
-                  is looked for, and egui's bundled font is the
-                  fallback.
+  RCMD_EGUI_FONT  a .ttf/.otf monospace face to draw the grid in, for
+                  this session. For good: `font` under [window] in
+                  config.toml, a family name or a path, or Options >
+                  Font... in the window, which lists the system's
+                  monospaced families. Without any, a system
+                  DejaVu/Liberation/Menlo/Consolas is looked for, and
+                  egui's bundled font is the fallback. Ctrl+= / Ctrl+- /
+                  Ctrl+0 change the size as you go.
   TERMINAL        the emulator to open for commands that want a tty (F2
                   user commands, the command line). Openers and [[open]]
                   rules are spawned detached and need none.

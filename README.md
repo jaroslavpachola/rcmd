@@ -233,20 +233,36 @@ usage: rcmd-egui [OPTIONS] [DIR1 [DIR2]]
   -S, --skin NAME     theme: mc, dark, bw
   -b, --nocolor       black and white
   -C, --colors SPEC   mc colour spec: keyword=fg,bg:keyword=fg,bg
-      --font-size N   point size of the grid font (default 14)
+      --font-size N   point size of the grid font, for this session
 ```
 
 `$TERMINAL` names the emulator to fall back on when there is no
-subshell; `$RCMD_EGUI_FONT` a `.ttf`/`.otf` to draw the grid in;
-`$RCMD_EGUI_KEYS` keys to play in at startup, for driving the window
-from a script.
+subshell; `$RCMD_EGUI_FONT` a `.ttf`/`.otf` to draw the grid in for
+the one session; `$RCMD_EGUI_KEYS` keys to play in at startup, for
+driving the window from a script.
 
-The grid is drawn in a system monospace face - DejaVu, Liberation, Menlo
-or Consolas, whichever is there - because egui's bundled font is missing
-most of the box-drawing block and rcmd frames every panel and every
-dialog in it. `$RCMD_EGUI_FONT` names a `.ttf`/`.otf` to use instead;
-egui's own font is the fallback beneath whatever is chosen, so a glyph
-the system face lacks is still drawn.
+**The font is yours to choose** - the one setting a terminal cannot
+have. **Options > Font...** in the window's menu bar lists the
+monospaced families the system has, with a size slider beside them,
+and the grid behind the dialog changes as you pick; OK keeps the
+choice, Cancel puts back what you had. **Ctrl+= / Ctrl+- / Ctrl+0**
+step the size and put it back, as in any windowed terminal. Both are
+written to `window.toml` beside rcmd's `state.toml`. By hand, the same
+two go under a `[window]` table in `config.toml`, which the terminal
+build ignores:
+
+```toml
+[window]
+font = "DejaVu Sans Mono"   # a family name, or a path to a .ttf/.otf
+font_size = 14
+```
+
+Without any of that the grid is drawn in a system monospace face -
+DejaVu, Liberation, Menlo or Consolas, whichever is there - because
+egui's bundled font is missing most of the box-drawing block and rcmd
+frames every panel and every dialog in it. egui's own font is the
+fallback beneath whatever is chosen, so a glyph the chosen face lacks
+is still drawn.
 
 **Ctrl+O opens a terminal pane**, the same as it opens the output
 screen in a terminal. `subshell.rs` already owned the pty, spawned the
@@ -1074,6 +1090,10 @@ listing = "full"    # brief | full | long | tree | user
 # owner group inode, plus "space" and "|". MC's Full listing written out:
 listing_format = "half type name | size | mtime"
 
+[window]            # the window build only; see "In a window"
+font = "DejaVu Sans Mono"   # family name or a .ttf/.otf path
+font_size = 14
+
 [keys]              # custom bindings on top of the preset
 "ctrl+y" = "swap-panels"     # bare entries bind in the panel
 [keys.viewer]                # ...and these inside the F3 viewer
@@ -1204,7 +1224,7 @@ Workspace layout: `crates/rcmd-core` (panel/fs logic, no TUI deps),
 `crates/rcmd-edit` (editor buffer/undo/search, TUI-free; syntect behind
 the `syntax` feature), `crates/rcmd-tui` (the file manager itself, as a
 library, plus the terminal binary `rcmd`), and `crates/rcmd-egui` (the
-window front end, the binary of the same name, ~2,400 lines on top of
+window front end, the binary of the same name, ~3,100 lines on top of
 that library). CI runs fmt, clippy and the unit tests on Linux and macOS, and
 the pty e2e suite on Linux - it drives the binary through `/dev/pts`
 and installs shells to test them, which is a Linux job. Licensed MIT.

@@ -14,14 +14,16 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, FontId, Popup, Vec2};
 use ratatui::Terminal;
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rcmd_tui::app::{App, Exec};
 use rcmd_tui::{state, ui};
 
+use crate::dialog::{FontDialog, Verdict};
 use crate::exec;
 use crate::grid::{EguiBackend, Metrics, Palette};
 use crate::keys::{self, Input};
-use crate::menu;
+use crate::menu::{self, WindowEntry};
+use crate::settings::{self, Window};
 use crate::term::TerminalPane;
 
 /// Redraw at least this often even when nothing said it changed - the
@@ -55,16 +57,32 @@ pub struct Gui {
     /// focus as soon as the dropdown is on screen, which is a frame
     /// after it was asked for.
     focus_menu: bool,
+    /// The font settings in force: config, state and the session's
+    /// overrides layered. What the Font dialog opens on and what
+    /// Ctrl+= / Ctrl+- move.
+    window: Window,
+    /// The size `[window]` in config.toml gives, or the default: what
+    /// Ctrl+0 goes back to.
+    config_size: f32,
+    /// What `font::install` last loaded, for the dialog to say.
+    loaded_font: Option<String>,
+    font_dialog: Option<FontDialog>,
 }
 
 impl Gui {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         app: App,
-        font_size: f32,
+        window: Window,
+        config_size: f32,
         startup_keys: Vec<KeyEvent>,
     ) -> anyhow::Result<Self> {
-        crate::font::install(&cc.egui_ctx);
+        let loaded_font = crate::font::install(&cc.egui_ctx, window.font.as_deref());
+        // Ctrl+= / Ctrl+- / Ctrl+0 change the grid's font size below,
+        // not egui's zoom factor: the two on the same keys would be a
+        // bar growing twice as fast as the grid
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        let font_size = window.size();
         let font = FontId::monospace(font_size);
         // no fonts exist until egui has run a frame; `ui` measures
         // for real on the first one
@@ -91,6 +109,10 @@ impl Gui {
             pane: TerminalPane::new(80, 25),
             saved: false,
             focus_menu: false,
+            window,
+            config_size,
+            loaded_font,
+            font_dialog: None,
         })
     }
 
@@ -144,6 +166,81 @@ impl Gui {
         wait
     }
 
+    /// A new font size, from the keys or the dialog: the grid picks it
+    /// up on the next frame, and it is written down so the next window
+    /// starts with it.
+    fn set_font_size(&mut self, size: f32, persist: bool) {
+        let size = size.clamp(4.0, 96.0);
+        self.window.font_size = Some(size);
+        self.font = FontId::monospace(size);
+        self.app.set_dirty();
+        if persist && let Err(err) = settings::save(|state| state.font_size = Some(size)) {
+            self.app.status = Some(format!(" could not save font size: {err} "));
+        }
+    }
+
+    /// A new face, from the dialog: installed now, so the grid behind
+    /// the dialog shows it.
+    fn set_font(&mut self, ctx: &egui::Context, font: Option<String>) {
+        self.window.font = font;
+        self.loaded_font = crate::font::install(ctx, self.window.font.as_deref());
+        self.app.set_dirty();
+    }
+
+    /// Ctrl+= / Ctrl++ and Ctrl+- step the size, Ctrl+0 puts it back
+    /// to the configured one, the way every windowed terminal does.
+    /// Anything else goes through to the panels.
+    fn size_key(&mut self, key: &KeyEvent) -> bool {
+        let Some(size) = stepped_size(key, self.window.size(), self.config_size) else {
+            return false;
+        };
+        self.set_font_size(size, true);
+        true
+    }
+
+    /// The Font dialog's frame: what it changed is applied at once,
+    /// what it decided is kept or put back.
+    fn font_dialog_frame(&mut self, ctx: &egui::Context) {
+        let Some(dialog) = self.font_dialog.as_mut() else {
+            return;
+        };
+        match dialog.show(ctx) {
+            Verdict::Open { changed } => {
+                if changed {
+                    let choice = dialog.choice.clone();
+                    if choice.font != self.window.font {
+                        self.set_font(ctx, choice.font.clone());
+                        if let Some(dialog) = self.font_dialog.as_mut() {
+                            dialog.loaded = self.loaded_font.clone();
+                        }
+                    }
+                    if choice.font_size != self.window.font_size {
+                        self.set_font_size(choice.size(), false);
+                    }
+                }
+            }
+            Verdict::Keep => {
+                let choice = self.window.clone();
+                self.font_dialog = None;
+                if let Err(err) = settings::save(|state| {
+                    state.font = choice.font.clone();
+                    state.font_size = choice.font_size;
+                }) {
+                    self.app.status = Some(format!(" could not save the font: {err} "));
+                }
+                self.app.set_dirty();
+            }
+            Verdict::Revert => {
+                let before = dialog.before().clone();
+                self.font_dialog = None;
+                if before.font != self.window.font {
+                    self.set_font(ctx, before.font.clone());
+                }
+                self.set_font_size(before.size(), false);
+            }
+        }
+    }
+
     fn save_once(&mut self) {
         if self.saved {
             return;
@@ -185,7 +282,8 @@ impl eframe::App for Gui {
         // that walked the dropdown must not also walk the file list,
         // and the click that closes the dropdown must not also land
         // on whatever was under it.
-        let menu_open = Popup::is_any_open(&ctx);
+        // with the Font dialog up the keyboard is its, like a dropdown's
+        let menu_open = Popup::is_any_open(&ctx) || self.font_dialog.is_some();
         // F9 with a dropdown open closes it, as it does in a terminal;
         // Esc egui does by itself
         if menu_open && ctx.input(|i| i.key_pressed(egui::Key::F9)) {
@@ -198,7 +296,13 @@ impl eframe::App for Gui {
         let Self {
             app, focus_menu, ..
         } = self;
-        egui::Panel::top("menubar").show(ui, |ui| menu::show(app, ui, request, focus_menu));
+        let entry = egui::Panel::top("menubar")
+            .show(ui, |ui| menu::show(app, ui, request, focus_menu))
+            .inner;
+        if entry == Some(WindowEntry::Font) && self.font_dialog.is_none() {
+            self.font_dialog = Some(FontDialog::open(&self.window, self.loaded_font.clone()));
+        }
+        self.font_dialog_frame(&ctx);
 
         // The rest of the window is the grid: no margins, because a
         // cell grid that does not start at the corner under the bar is
@@ -247,6 +351,7 @@ impl eframe::App for Gui {
             self.app.set_dirty();
             for event in input {
                 match event {
+                    Input::Key(key) if self.size_key(&key) => {}
                     Input::Key(key) => self.app.on_key(key),
                     Input::Mouse(mouse) => self.app.on_mouse(mouse),
                 }
@@ -300,6 +405,20 @@ impl eframe::App for Gui {
     }
 }
 
+/// The size a Ctrl+= / Ctrl++ / Ctrl+- / Ctrl+0 asks for, from the
+/// one in force and the configured one; `None` for any other key.
+fn stepped_size(key: &KeyEvent, size: f32, config_size: f32) -> Option<f32> {
+    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('=') | KeyCode::Char('+') => Some(size + 1.0),
+        KeyCode::Char('-') => Some(size - 1.0),
+        KeyCode::Char('0') => Some(config_size),
+        _ => None,
+    }
+}
+
 /// About what the menu bar takes at the top, in points: egui's
 /// interact height plus the panel's margins and its separator. An
 /// estimate, as the rest of the starting size is.
@@ -344,5 +463,24 @@ fn palette_from_theme() -> Palette {
     Palette {
         fg: crate::grid::to_color32(fg, fallback.fg),
         bg: crate::grid::to_color32(bg, fallback.bg),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_size_keys_step_and_reset_and_nothing_else_is_theirs() {
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        assert_eq!(stepped_size(&ctrl('='), 14.0, 12.0), Some(15.0));
+        assert_eq!(stepped_size(&ctrl('+'), 14.0, 12.0), Some(15.0));
+        assert_eq!(stepped_size(&ctrl('-'), 14.0, 12.0), Some(13.0));
+        assert_eq!(stepped_size(&ctrl('0'), 14.0, 12.0), Some(12.0));
+        // a bare - is unselect group, a bare 0 a digit typed: the panels'
+        let plain = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        assert_eq!(stepped_size(&plain('-'), 14.0, 12.0), None);
+        assert_eq!(stepped_size(&plain('0'), 14.0, 12.0), None);
+        assert_eq!(stepped_size(&ctrl('x'), 14.0, 12.0), None);
     }
 }

@@ -23,8 +23,8 @@ git = ["rcmd-tui/git"]
 screenshot = ["eframe/__screenshot"]
 
 [dependencies]
-rcmd-tui = { path = "../rcmd-tui", version = "4.29.0", default-features = false }
-rcmd-tui-edit = { path = "../rcmd-edit", version = "4.29.0" }
+rcmd-tui = { path = "../rcmd-tui", version = "4.30.0", default-features = false }
+rcmd-tui-edit = { path = "../rcmd-edit", version = "4.30.0" }
 ratatui.workspace = true
 vt100.workspace = true
 anyhow.workspace = true
@@ -36,3 +36,12 @@ eframe = { version = "0.36", default-features = false, features = [
     "wayland",
     "x11",
 ] }
+# The window's own settings ([window] in config.toml, and the state it
+# writes): the terminal build's Config ignores tables it does not know,
+# so the window reads its table itself.
+toml.workspace = true
+serde.workspace = true
+# System fonts by family name, for `font = "DejaVu Sans Mono"` and the
+# Font dialog's list. Pure Rust; reads fontconfig's configuration on
+# Linux and the usual directories elsewhere.
+fontdb = "0.24"

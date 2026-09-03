@@ -33,25 +33,66 @@ pub struct Request {
     pub enabled: bool,
 }
 
+/// The entries the window adds to the tables: what only a window can
+/// set. They hang off the end of the Options dropdown, in both bars.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WindowEntry {
+    /// Options > Font...: the face and size of the grid.
+    Font,
+}
+
 /// Draw the bar for whatever is on top and run what was chosen.
-pub fn show(app: &mut App, ui: &mut Ui, request: Request, focus_first: &mut bool) {
+/// Returns the window's own entry if that is what was chosen.
+pub fn show(
+    app: &mut App,
+    ui: &mut Ui,
+    request: Request,
+    focus_first: &mut bool,
+) -> Option<WindowEntry> {
     let (kind, enabled) = app.menu_bar_for();
     let enabled = enabled && request.enabled;
+    let mut extra = None;
     match kind {
         MenuBarFor::Panels => {
-            if let Some((menu, action)) = bar(ui, MENUS, enabled, request.open_first, focus_first) {
+            if let Some((menu, action)) = bar(
+                ui,
+                MENUS,
+                enabled,
+                request.open_first,
+                focus_first,
+                &mut extra,
+            ) {
                 app.run_menu_entry(menu, action);
                 app.set_dirty();
             }
         }
         MenuBarFor::Editor => {
-            if let Some((_, action)) = bar(ui, EDIT_MENUS, enabled, request.open_first, focus_first)
-            {
+            if let Some((_, action)) = bar(
+                ui,
+                EDIT_MENUS,
+                enabled,
+                request.open_first,
+                focus_first,
+                &mut extra,
+            ) {
                 app.run_edit_menu_entry(action);
                 app.set_dirty();
             }
         }
     }
+    extra
+}
+
+/// The window's entries, under the table's, in the Options dropdown.
+fn window_entries(ui: &mut Ui, typed: Option<char>, extra: &mut Option<WindowEntry>) -> bool {
+    ui.separator();
+    let button = ui.add(Button::new(label(ui, "Fon&t...")));
+    if button.clicked() || typed == Some('t') {
+        *extra = Some(WindowEntry::Font);
+        ui.close();
+        return true;
+    }
+    false
 }
 
 /// One bar of titles, each a dropdown of entries. The entry chosen this
@@ -64,6 +105,7 @@ fn bar<A: Copy>(
     enabled: bool,
     open_first: bool,
     focus_first: &mut bool,
+    extra: &mut Option<WindowEntry>,
 ) -> Option<(usize, A)> {
     let ctx = ui.ctx().clone();
     // a letter typed with a dropdown open is mc's hotkey: an entry of
@@ -98,6 +140,9 @@ fn bar<A: Copy>(
                                 consumed = true;
                                 ui.close();
                             }
+                        }
+                        if *title == "&Options" && window_entries(ui, typed, extra) {
+                            consumed = true;
                         }
                     })
                     .response;
@@ -170,7 +215,12 @@ mod tests {
     fn hotkey_letters_are_unique_within_every_dropdown() {
         fn check<A>(menus: MenuBar<'_, A>) {
             for (title, entries) in menus {
-                let mut seen = Vec::new();
+                // the window's own Options entry, Fon&t..., spends t
+                let mut seen = if *title == "&Options" {
+                    vec!['t']
+                } else {
+                    Vec::new()
+                };
                 for (text, ..) in entries.iter().flatten() {
                     if let Some(c) = menu_hotkey(text) {
                         assert!(!seen.contains(&c), "{title}: letter {c:?} twice");
@@ -213,7 +263,12 @@ mod tests {
         app
     }
 
-    fn frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>, focus: &mut bool) {
+    fn frame(
+        ctx: &egui::Context,
+        app: &mut App,
+        events: Vec<egui::Event>,
+        focus: &mut bool,
+    ) -> Option<WindowEntry> {
         let input = egui::RawInput {
             events,
             screen_rect: Some(egui::Rect::from_min_size(
@@ -226,11 +281,48 @@ mod tests {
             open_first: app.take_menu_request(),
             enabled: true,
         };
+        let mut entry = None;
         let mut out = ctx.run_ui(input, |ui| {
-            egui::Panel::top("menubar").show(ui, |ui| show(app, ui, request, focus));
+            entry = egui::Panel::top("menubar")
+                .show(ui, |ui| show(app, ui, request, focus))
+                .inner;
         });
         // no painter here to hand the font atlas to
         out.textures_delta.clear();
+        entry
+    }
+
+    /// The window's Font... hangs off the Options dropdown and has a
+    /// letter like the rest: F9 o t, and the bar hands it back rather
+    /// than running anything, the dialog being the window's.
+    #[test]
+    fn the_windows_font_entry_is_reached_by_letter() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let ctx = egui::Context::default();
+        let mut app = app();
+        let mut focus = false;
+        frame(&ctx, &mut app, Vec::new(), &mut focus);
+        app.on_key(KeyEvent::new(KeyCode::F(9), KeyModifiers::NONE));
+        frame(&ctx, &mut app, Vec::new(), &mut focus);
+        frame(&ctx, &mut app, Vec::new(), &mut focus);
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Text("o".into())],
+            &mut focus,
+        );
+        frame(&ctx, &mut app, Vec::new(), &mut focus);
+        assert!(Popup::is_any_open(&ctx), "Options is open");
+        let entry = frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Text("t".into())],
+            &mut focus,
+        );
+        assert_eq!(entry, Some(WindowEntry::Font));
+        assert!(!app.exiting());
+        frame(&ctx, &mut app, Vec::new(), &mut focus);
+        assert!(!Popup::is_any_open(&ctx), "and the dropdown closed");
     }
 
     /// F9 opens the leftmost dropdown, as it does in a terminal; a

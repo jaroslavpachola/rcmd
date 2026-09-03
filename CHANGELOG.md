@@ -1,5 +1,23 @@
 # Changelog
 
+## 4.30.0 - 2026-09-03
+
+- **The window's font is the user's to choose.** A `[window]` table
+  in `config.toml` - `font`, a family name looked up among the system
+  fonts or a path to a `.ttf`/`.otf`, and `font_size` - which the
+  terminal build ignores and the window reads for itself; **Options >
+  Font...** in the window's menu bar, listing the monospaced families
+  the system has, with a size slider, the grid behind the dialog
+  changing as you pick, OK keeping and Cancel putting back; and
+  **Ctrl+= / Ctrl+- / Ctrl+0** stepping the size and putting it back,
+  as any windowed terminal does. What the dialog and the keys change
+  goes to `window.toml` beside `state.toml`, sparse and overlaid at
+  load, the same layering as the rest of rcmd; `--font-size` and
+  `$RCMD_EGUI_FONT` stay as the one session's overrides. Family lookup is
+  [`fontdb`](https://crates.io/crates/fontdb), pure Rust, reading
+  fontconfig's configuration on Linux and the usual directories
+  elsewhere.
+
 ## 4.29.0 - 2026-09-03
 
 - **The window has a menu bar of its own**, egui's, above the grid,
