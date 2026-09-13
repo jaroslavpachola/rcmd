@@ -7726,6 +7726,10 @@ impl App {
     /// While a find streams: Esc cancels, navigation browses the results
     /// as they arrive, everything else waits.
     fn on_find_key(&mut self, key: KeyEvent) {
+        if matches!(&self.dialog, Some(Dialog::FindResults(_))) {
+            self.on_dialog_key(key);
+            return;
+        }
         let page = self.panel_rows.saturating_sub(1).max(1);
         match key.code {
             KeyCode::Esc => {

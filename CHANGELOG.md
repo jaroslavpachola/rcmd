@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.30.4 - 2026-09-13
+
+- **Arrow keys scroll the find results, not the panel behind them.**
+  While a search was still running, `on_find_key` intercepted
+  Up/Down/PageUp/PageDown/Home/End and sent them to the panel, because
+  `self.find` was checked before `self.dialog` in the key dispatch
+  chain. The results window was visible but deaf to navigation until
+  the walk finished. `on_find_key` now delegates to the results dialog
+  when one is showing.
+
 ## 4.30.3 - 2026-09-13
 
 - **Trash delete works on every mount point now.** F8 on a file living
