@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.30.6 - 2026-09-13
+
+- **Window: Enter no longer activates the menu bar.** egui gave
+  keyboard focus to a menu-bar button, so pressing Enter (e.g. to run
+  `cd`) also opened a dropdown, and Left/Right then walked the menus
+  instead of the panels. Focus on menu-bar buttons is now surrendered
+  each frame when no dropdown is deliberately open.
+
 ## 4.30.5 - 2026-09-13
 
 - **Split `app.rs` into an `app/` module directory.** The 13k-line

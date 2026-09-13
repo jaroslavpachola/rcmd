@@ -304,6 +304,15 @@ impl eframe::App for Gui {
         }
         self.font_dialog_frame(&ctx);
 
+        // No dropdown is deliberately open: clear any focus that landed
+        // on a menu-bar button so that Enter and arrow keys reach the
+        // grid instead of activating egui's widget.
+        if !menu_open {
+            if let Some(id) = ctx.memory(|m| m.focused()) {
+                ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+        }
+
         // The rest of the window is the grid: no margins, because a
         // cell grid that does not start at the corner under the bar is
         // a cell grid with a wasted row and column.
