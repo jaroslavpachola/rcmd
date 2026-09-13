@@ -1,5 +1,20 @@
 # Changelog
 
+## 4.30.7 - 2026-09-13
+
+- **Dropped the local trash fallback.** The upstream `trash` crate
+  merged the home-trash fallback
+  ([Byron/trash-rs#151](https://github.com/Byron/trash-rs/pull/151))
+  and released it as 5.2.9, so the local `trash_delete` /
+  `trash_to_home` code is gone and `spawn_delete` calls
+  `trash::delete` directly again.
+
+- **Window: Left/Right cycle between menus.** With a dropdown open,
+  the arrow keys now close it and open the adjacent one, the way mc's
+  F9 bar and every native menu bar does. egui's `menu_button` has no
+  built-in keyboard cycling, so the bar detects the key and switches
+  the popup itself.
+
 ## 4.30.6 - 2026-09-13
 
 - **Window: Enter no longer activates the menu bar.** egui gave

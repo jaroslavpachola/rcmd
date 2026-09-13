@@ -156,15 +156,34 @@ fn bar<A: Copy>(
         }
         *focus_first = true;
         ctx.request_repaint();
-    } else if let Some(c) = typed
-        && !consumed
-        && let Some(i) = menus
-            .iter()
-            .position(|(title, _)| menu_hotkey(title) == Some(c))
-    {
-        Popup::open_id(&ctx, popups[i]);
-        *focus_first = true;
-        ctx.request_repaint();
+    } else if Popup::is_any_open(&ctx) {
+        // Left/Right cycle between menus while a dropdown is open,
+        // the way mc's F9 bar does and the way every native menu bar
+        // does - egui's menu_button has no built-in keyboard cycling.
+        let left = ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft));
+        let right = ctx.input(|i| i.key_pressed(egui::Key::ArrowRight));
+        if left || right {
+            if let Some(cur) = popups.iter().position(|id| Popup::is_id_open(&ctx, *id)) {
+                let next = if right {
+                    (cur + 1) % popups.len()
+                } else {
+                    (cur + popups.len() - 1) % popups.len()
+                };
+                Popup::close_all(&ctx);
+                Popup::open_id(&ctx, popups[next]);
+                *focus_first = true;
+                ctx.request_repaint();
+            }
+        } else if let Some(c) = typed
+            && !consumed
+            && let Some(i) = menus
+                .iter()
+                .position(|(title, _)| menu_hotkey(title) == Some(c))
+        {
+            Popup::open_id(&ctx, popups[i]);
+            *focus_first = true;
+            ctx.request_repaint();
+        }
     }
     chosen
 }
