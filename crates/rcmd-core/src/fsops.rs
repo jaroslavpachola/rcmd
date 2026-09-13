@@ -6,8 +6,10 @@
 //! shared flag checked between chunks and files; dropping the [`JobHandle`]
 //! also unblocks a waiting worker because the reply channel closes.
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -408,6 +410,162 @@ fn set_attrs(ctx: &mut Ctx, path: &Path, attrs: Attrs, recursive: bool) -> Resul
     Ok(())
 }
 
+/// Try `trash::delete`; when it fails because the volume has no
+/// per-volume trash and we cannot create one (permission denied on the
+/// mount-point root), fall back to moving the item into the home trash
+/// (`$XDG_DATA_HOME/Trash` or `~/.local/share/Trash`).
+fn trash_delete(path: &Path) -> Result<(), trash::Error> {
+    match trash::delete(path) {
+        Ok(()) => Ok(()),
+        Err(trash::Error::FileSystem { source, .. })
+            if source.kind() == io::ErrorKind::PermissionDenied =>
+        {
+            trash_to_home(path).map_err(|e| trash::Error::FileSystem {
+                path: path.to_owned(),
+                source: e,
+            })
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn home_trash_dir() -> io::Result<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        Ok(PathBuf::from(xdg).join("Trash"))
+    } else if let Ok(home) = std::env::var("HOME") {
+        Ok(PathBuf::from(home).join(".local/share/Trash"))
+    } else {
+        Err(io::Error::new(io::ErrorKind::NotFound, "cannot locate home directory"))
+    }
+}
+
+fn trash_to_home(src: &Path) -> io::Result<()> {
+    let src = fs::canonicalize(src)?;
+    let trash = home_trash_dir()?;
+    let files_dir = trash.join("files");
+    let info_dir = trash.join("info");
+    fs::create_dir_all(&files_dir)?;
+    fs::create_dir_all(&info_dir)?;
+
+    let name = src
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
+
+    let mut appendage = 0usize;
+    loop {
+        appendage += 1;
+        let in_trash: std::borrow::Cow<'_, OsStr> = if appendage > 1 {
+            let mut n = name.to_owned();
+            n.push(format!(".{appendage}"));
+            n.into()
+        } else {
+            name.into()
+        };
+
+        let mut info_name: std::ffi::OsString = (*in_trash).to_owned();
+        info_name.push(".trashinfo");
+        let info_path = info_dir.join(&info_name);
+
+        let info_file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&info_path);
+        let mut info_file = match info_file {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+
+        let now = now_local_iso();
+        write!(
+            info_file,
+            "[Trash Info]\nPath={}\nDeletionDate={now}\n",
+            encode_trash_path(&src),
+        )?;
+
+        let dest = files_dir.join(&*in_trash);
+        if let Err(e) = cross_device_move(&src, &dest) {
+            let _ = fs::remove_file(&info_path);
+            return Err(e);
+        }
+        return Ok(());
+    }
+}
+
+fn cross_device_move(src: &Path, dst: &Path) -> io::Result<()> {
+    if src.is_dir() {
+        copy_dir_all(src, dst)?;
+        fs::remove_dir_all(src)?;
+    } else {
+        fs::copy(src, dst)?;
+        fs::remove_file(src)?;
+    }
+    Ok(())
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let d = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &d)?;
+        } else {
+            fs::copy(entry.path(), &d)?;
+        }
+    }
+    Ok(())
+}
+
+fn encode_trash_path(path: &Path) -> String {
+    let mut out = String::new();
+    for c in path.components() {
+        match c {
+            Component::RootDir => out.push('/'),
+            Component::Normal(part) => {
+                if !out.ends_with('/') {
+                    out.push('/');
+                }
+                for &b in part.as_bytes() {
+                    if b.is_ascii_alphanumeric()
+                        || b == b'-'
+                        || b == b'_'
+                        || b == b'.'
+                        || b == b'~'
+                    {
+                        out.push(b as char);
+                    } else {
+                        out.push_str(&format!("%{b:02X}"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn now_local_iso() -> String {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Get the local UTC offset from libc, then format.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let t = now as libc::time_t;
+    unsafe { libc::localtime_r(&t, &mut tm) };
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec,
+    )
+}
+
 pub fn spawn_delete(paths: Vec<PathBuf>, permanent: bool) -> JobHandle {
     spawn(move |ctx| {
         if permanent {
@@ -426,7 +584,7 @@ pub fn spawn_delete(paths: Vec<PathBuf>, permanent: bool) -> JobHandle {
                     return Err(Aborted);
                 }
                 ctx.progress(path);
-                if ctx.with_retry(path, || trash::delete(path))?.is_some() {
+                if ctx.with_retry(path, || trash_delete(path))?.is_some() {
                     ctx.files_done += 1;
                     ctx.progress(path);
                 }
