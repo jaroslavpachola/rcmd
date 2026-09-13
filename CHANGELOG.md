@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.30.3 - 2026-09-13
+
+- **Trash delete works on every mount point now.** F8 on a file living
+  on a partition whose root is owned by root (`/mnt/quick`,
+  `/mnt/oldhome`, `/` - anything but the one holding `$HOME`) used to
+  fail with permission denied: the `trash` crate tries to create
+  `.Trash-$uid` at the mount-point root and cannot. `trash_delete` now
+  catches the `PermissionDenied` and moves the item into
+  `~/.local/share/Trash` itself - canonicalized path in the
+  `.trashinfo`, cross-device copy + delete for the payload,
+  `create_new` on the info file for the same race-free unique naming
+  the crate uses - so the desktop's own trash tool still sees and can
+  restore it. A fix for the crate itself is proposed upstream
+  ([Byron/trash-rs#151](https://github.com/Byron/trash-rs/pull/151));
+  when it ships, the local fallback goes away.
+
 ## 4.30.2 - 2026-09-03
 
 - **The menu entry's window comes up in front now.** It said
