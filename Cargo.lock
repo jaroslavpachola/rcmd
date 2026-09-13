@@ -1681,9 +1681,9 @@ dependencies = [
 
 [[package]]
 name = "libssh2-sys"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c04141a07bb0c0bc461cb657808764de571702a59bc5c726c400ac9a7625e3ab"
+checksum = "0f5eb74291e8691cab524a01274a1b1e7742b1a94f29d8b101d8aadc8372c1cd"
 dependencies = [
  "cc",
  "libc",
@@ -2543,7 +2543,7 @@ checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
 name = "rcmd-egui"
-version = "4.30.3"
+version = "4.30.4"
 dependencies = [
  "anyhow",
  "eframe",
@@ -2558,7 +2558,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-tui"
-version = "4.30.3"
+version = "4.30.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2576,7 +2576,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-tui-core"
-version = "4.30.3"
+version = "4.30.4"
 dependencies = [
  "bzip2",
  "encoding_rs",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-tui-edit"
-version = "4.30.3"
+version = "4.30.4"
 dependencies = [
  "encoding_rs",
  "regex",
