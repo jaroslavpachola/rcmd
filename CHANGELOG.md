@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.30.5 - 2026-09-13
+
+- **Split `app.rs` into an `app/` module directory.** The 13k-line
+  file is now eight files: `mod.rs` (types, struct, dispatch, jobs,
+  git, hotlist, tests), `panel.rs` (panel keys, actions, menus,
+  transfers), `dialog.rs` (dialog key handling, form submissions),
+  `editor.rs` (editor keys, syntax, bulk rename), `viewer.rs` (viewer
+  keys, hex edit), `exec.rs` (subshell, command execution),
+  `search.rs` (find dialog, panelize), `connect.rs` (remote
+  connections). No behavioral change.
+
 ## 4.30.4 - 2026-09-13
 
 - **Arrow keys scroll the find results, not the panel behind them.**
