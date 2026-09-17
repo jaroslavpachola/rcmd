@@ -32,7 +32,7 @@ impl FindHandle {
 /// "Skip this path?" - supplied by the caller (e.g. a gitignore check);
 /// a skipped directory is not descended into. Sync because the walk
 /// calls it from several threads at once.
-pub type SkipFn = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
+pub type SkipFn = Box<dyn Fn(&Path) -> bool + Send + Sync>;
 
 /// What to look for: the name, optionally what is inside, and the
 /// answers mc's Find File dialog puts beside them.
@@ -439,7 +439,7 @@ mod tests {
             spawn_find(
                 t.path().to_path_buf(),
                 named("*"),
-                Some(Arc::new(|p: &Path| {
+                Some(Box::new(|p: &Path| {
                     p.file_name()
                         .is_some_and(|n| n == "deep" || n == "notes.txt")
                 })),
