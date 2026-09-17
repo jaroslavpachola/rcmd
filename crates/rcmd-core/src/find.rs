@@ -449,6 +449,56 @@ mod tests {
         assert_eq!(names, ["src", "src/main.rs"]);
     }
 
+    /// A tree wide enough that the walk cannot be over before the test
+    /// gets to cancel it.
+    fn wide_tree() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..40 {
+            let sub = dir.path().join(format!("d{i:03}"));
+            fs::create_dir_all(&sub).unwrap();
+            for j in 0..40 {
+                fs::write(sub.join(format!("f{j:03}.txt")), "x").unwrap();
+            }
+        }
+        dir
+    }
+
+    /// Joins `thread`, or says so if it will not stop.
+    fn joins_within(thread: thread::JoinHandle<()>, secs: u64) -> bool {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = thread.join();
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(secs))
+            .is_ok()
+    }
+
+    #[test]
+    fn cancel_stops_the_walk() {
+        let t = wide_tree();
+        let mut handle = spawn_find(t.path().to_path_buf(), named("*"), None).unwrap();
+        handle.cancel();
+        let thread = handle.thread.take().unwrap();
+        // keep draining: a walker blocked on a full channel would look
+        // like a hang that has nothing to do with cancelling
+        let events = handle.events;
+        thread::spawn(move || while events.recv().is_ok() {});
+        assert!(joins_within(thread, 30), "cancelled walk never stopped");
+    }
+
+    #[test]
+    fn dropping_the_receiver_stops_the_walk() {
+        let t = wide_tree();
+        let mut handle = spawn_find(t.path().to_path_buf(), named("*"), None).unwrap();
+        let thread = handle.thread.take().unwrap();
+        drop(handle.events); // the window closed on a search still running
+        assert!(
+            joins_within(thread, 30),
+            "walk never stopped after its receiver went away"
+        );
+    }
+
     #[test]
     fn content_straddling_chunk_boundary_is_found() {
         let dir = tempfile::tempdir().unwrap();
