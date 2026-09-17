@@ -1,5 +1,34 @@
 # Changelog
 
+## 4.30.8 - 2026-09-17
+
+- **Find file is three to four times faster.** The walk ran on one
+  thread, bound by `read_dir` latency it could not overlap; it now runs
+  on a `jwalk` thread pool. Over `/usr/share` (148534 entries, warm
+  cache, 8 cores): 367ms to 90ms with no matches, 493ms to 229ms
+  matching 39863 files.
+
+- **One fewer `lstat` per entry scanned.** The walk asked every entry
+  for its full `metadata()` just to learn file from directory.
+  `file_type()` answers that from what `readdir` already returned, and
+  the full `stat` now happens only on an actual match.
+
+- **Content search uses a SIMD substring scan.** The byte search was a
+  naive `windows().any()` over each 64KB chunk, and folded case by
+  allocating a lowercased copy of every chunk. It now uses
+  `memchr::memmem` and lowercases in place.
+
+- **`find::SkipFn` gains a `Sync` bound**, since the walk calls the
+  predicate from several threads. An ordinary closure is already
+  `Sync`, so most callers are unaffected; one capturing something
+  non-`Sync` now has to guard it. `git`'s ignore filter holds its
+  `Repository` behind a `Mutex` accordingly.
+
+- With `follow_links` on, a symlink to a file is now content-searched:
+  the walk resolves the target's type, where `lstat` only ever reported
+  "symlink". And `skip_hidden` no longer hides a name that begins with
+  a dot but is not valid UTF-8.
+
 ## 4.30.7 - 2026-09-13
 
 - **Dropped the local trash fallback.** The upstream `trash` crate
