@@ -211,20 +211,17 @@ impl Walk {
             if self.query.skip_hidden && name.to_string_lossy().starts_with('.') {
                 continue;
             }
-            let Ok(meta) = dent.metadata() else { continue }; // lstat
+            let Ok(ft) = dent.file_type() else { continue };
             *scanned += 1;
-            let is_dir = match meta.is_symlink() {
-                // a symlink is followed only when asked, and then it is
-                // its target that decides whether this is a directory
-                true => {
-                    self.query.follow_links && std::fs::metadata(&path).is_ok_and(|m| m.is_dir())
-                }
-                false => meta.is_dir(),
+            let is_dir = if ft.is_symlink() {
+                self.query.follow_links && std::fs::metadata(&path).is_ok_and(|m| m.is_dir())
+            } else {
+                ft.is_dir()
             };
             if self.matcher.matches(&name.to_string_lossy()) {
                 let hit = match &self.seek {
                     None => true,
-                    Some(seek) => meta.is_file() && file_matches(&path, seek),
+                    Some(seek) => ft.is_file() && file_matches(&path, seek),
                 };
                 if hit && let Ok(mut entry) = entry::stat(&path) {
                     if let Ok(rel) = path.strip_prefix(&self.root) {
