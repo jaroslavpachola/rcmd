@@ -307,10 +307,8 @@ impl eframe::App for Gui {
         // No dropdown is deliberately open: clear any focus that landed
         // on a menu-bar button so that Enter and arrow keys reach the
         // grid instead of activating egui's widget.
-        if !menu_open {
-            if let Some(id) = ctx.memory(|m| m.focused()) {
-                ctx.memory_mut(|m| m.surrender_focus(id));
-            }
+        if !menu_open && let Some(id) = ctx.memory(|m| m.focused()) {
+            ctx.memory_mut(|m| m.surrender_focus(id));
         }
 
         // The rest of the window is the grid: no margins, because a
