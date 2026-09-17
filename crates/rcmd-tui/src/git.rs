@@ -36,11 +36,16 @@ pub fn ignore_filter(_root: &Path) -> Option<rcmd_core::find::SkipFn> {
 pub fn ignore_filter(root: &Path) -> Option<rcmd_core::find::SkipFn> {
     let repo = git2::Repository::discover(root).ok()?;
     repo.workdir()?;
-    Some(Box::new(move |path: &Path| {
+    // find walks on several threads and a Repository is Send but not
+    // Sync; the lock costs little next to the readdir it saves, and the
+    // `.git` shortcut answers the hottest path without taking it
+    let repo = std::sync::Mutex::new(repo);
+    Some(std::sync::Arc::new(move |path: &Path| {
         if path.file_name().is_some_and(|n| n == ".git") {
             return true;
         }
-        repo.is_path_ignored(path).unwrap_or(false)
+        repo.lock()
+            .is_ok_and(|repo| repo.is_path_ignored(path).unwrap_or(false))
     }))
 }
 

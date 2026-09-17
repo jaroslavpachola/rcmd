@@ -55,6 +55,9 @@ ssh2 = "0.9"
 git2 = { version = "0.20", default-features = false }
 ropey = "1"
 memchr = "2"
+# Parallel directory walk for find: readdir on a rayon pool rather than
+# one thread. Pure Rust, so the static musl build stays as it was.
+jwalk = "0.9"
 regex = "1"
 syntect = { version = "5", default-features = false, features = [
     "default-fancy",

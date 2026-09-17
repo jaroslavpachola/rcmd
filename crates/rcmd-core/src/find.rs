@@ -7,7 +7,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 
 use crate::entry::{self, Entry};
@@ -30,8 +30,9 @@ impl FindHandle {
 }
 
 /// "Skip this path?" - supplied by the caller (e.g. a gitignore check);
-/// a skipped directory is not descended into.
-pub type SkipFn = Box<dyn Fn(&Path) -> bool + Send>;
+/// a skipped directory is not descended into. Sync because the walk
+/// calls it from several threads at once.
+pub type SkipFn = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 
 /// What to look for: the name, optionally what is inside, and the
 /// answers mc's Find File dialog puts beside them.
@@ -163,82 +164,57 @@ pub fn spawn_find(root: PathBuf, query: Query, skip: Option<SkipFn>) -> Result<F
     let thread = thread::spawn(move || {
         let mut matches = 0u64;
         let mut scanned = 0u64;
-        let mut ctx = Walk {
-            root: root.clone(),
-            query,
-            matcher,
-            seek,
-            skip,
-            tx,
-            cancel: flag,
+        let walk = jwalk::WalkDir::new(&root)
+            // depth 0 is the search root itself, never a result
+            .min_depth(1)
+            .skip_hidden(query.skip_hidden)
+            .follow_links(query.follow_links)
+            // a pool of our own: the shared one may be busy, and jwalk
+            // answers a busy pool by walking nothing at all
+            .parallelism(jwalk::Parallelism::RayonNewPool(0));
+        let walk = match skip {
+            None => walk,
+            // dropping an entry here also prunes it: jwalk never
+            // descends into what it was not handed back
+            Some(skip) => walk.process_read_dir(move |_, _, _, children| {
+                children.retain(|child| match child {
+                    Ok(entry) => !skip(&entry.path()),
+                    Err(_) => true,
+                });
+            }),
         };
-        ctx.walk(&root.clone(), &mut matches, &mut scanned);
-        let _ = ctx.tx.send(FindEvent::Done { matches, scanned });
+        for entry in walk {
+            if flag.load(Ordering::Relaxed) {
+                break;
+            }
+            let Ok(entry) = entry else { continue };
+            scanned += 1;
+            if !matcher.matches(&entry.file_name.to_string_lossy()) {
+                continue;
+            }
+            let path = entry.path();
+            let hit = match &seek {
+                None => true,
+                Some(seek) => entry.file_type.is_file() && file_matches(&path, seek),
+            };
+            if hit && let Ok(mut found) = entry::stat(&path) {
+                if let Ok(rel) = path.strip_prefix(&root) {
+                    found.name = rel.as_os_str().to_os_string();
+                }
+                matches += 1;
+                if tx.send(FindEvent::Match(Box::new(found))).is_err() {
+                    flag.store(true, Ordering::Relaxed);
+                    break;
+                }
+            }
+        }
+        let _ = tx.send(FindEvent::Done { matches, scanned });
     });
     Ok(FindHandle {
         events: rx,
         cancel,
         thread: Some(thread),
     })
-}
-
-/// Everything the walk carries; it recurses, and eight parameters that
-/// never change is a lot to hand down each time.
-struct Walk {
-    root: PathBuf,
-    query: Query,
-    matcher: crate::pattern::Matcher,
-    seek: Option<Seek>,
-    skip: Option<SkipFn>,
-    tx: Sender<FindEvent>,
-    cancel: Arc<AtomicBool>,
-}
-
-impl Walk {
-    fn walk(&mut self, dir: &Path, matches: &mut u64, scanned: &mut u64) {
-        let Ok(read) = std::fs::read_dir(dir) else {
-            return; // unreadable dirs are silently skipped, like find's -readable
-        };
-        for dent in read.flatten() {
-            if self.cancel.load(Ordering::Relaxed) {
-                return;
-            }
-            let path = dent.path();
-            if self.skip.as_deref().is_some_and(|f| f(&path)) {
-                continue;
-            }
-            let name = dent.file_name();
-            if self.query.skip_hidden && name.to_string_lossy().starts_with('.') {
-                continue;
-            }
-            let Ok(ft) = dent.file_type() else { continue };
-            *scanned += 1;
-            let is_dir = if ft.is_symlink() {
-                self.query.follow_links && std::fs::metadata(&path).is_ok_and(|m| m.is_dir())
-            } else {
-                ft.is_dir()
-            };
-            if self.matcher.matches(&name.to_string_lossy()) {
-                let hit = match &self.seek {
-                    None => true,
-                    Some(seek) => ft.is_file() && file_matches(&path, seek),
-                };
-                if hit && let Ok(mut entry) = entry::stat(&path) {
-                    if let Ok(rel) = path.strip_prefix(&self.root) {
-                        entry.name = rel.as_os_str().to_os_string();
-                    }
-                    *matches += 1;
-                    if self.tx.send(FindEvent::Match(Box::new(entry))).is_err() {
-                        self.cancel.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                }
-            }
-            if is_dir {
-                self.walk(&path, matches, scanned);
-            }
-        }
-    }
 }
 
 /// Does this file hold what we are looking for?
@@ -463,7 +439,7 @@ mod tests {
             spawn_find(
                 t.path().to_path_buf(),
                 named("*"),
-                Some(Box::new(|p: &Path| {
+                Some(Arc::new(|p: &Path| {
                     p.file_name()
                         .is_some_and(|n| n == "deep" || n == "notes.txt")
                 })),

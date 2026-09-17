@@ -30,6 +30,7 @@ ssh2.workspace = true
 sha2.workspace = true
 # getpwuid_r / getgrgid_r: who a uid belongs to, through NSS
 libc.workspace = true
+jwalk.workspace = true
 
 [features]
 # Static builds (musl): compile OpenSSL from source instead of linking
