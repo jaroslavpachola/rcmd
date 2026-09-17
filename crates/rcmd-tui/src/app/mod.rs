@@ -1855,7 +1855,6 @@ pub const EDIT_MENUS: &[(&str, &[EditMenuEntry])] = &[
 
 use keymap::EditorAction as EA;
 
-
 mod connect;
 mod dialog;
 mod editor;
@@ -3431,7 +3430,6 @@ impl App {
             }
         }
     }
-
 }
 impl App {
     /// The job whose dialog is on screen (modal); background jobs run
@@ -4564,7 +4562,6 @@ impl App {
             checking,
         });
     }
-
 }
 
 fn line_segs(v: &mut Viewer, idx: usize, cols: usize) -> usize {

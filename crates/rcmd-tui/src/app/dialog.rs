@@ -1744,6 +1744,4 @@ impl App {
             self.dialog = Some(Dialog::Hotlist(HotlistDialog::at(group.clone(), *index)));
         }
     }
-
 }
-

@@ -277,7 +277,6 @@ impl App {
         }
         let _ = std::fs::remove_file(&edit.temp);
     }
-
 }
 
 impl App {
@@ -301,6 +300,4 @@ impl App {
             Err(err) => self.status = Some(format!(" mkdir: {err} ")),
         }
     }
-
 }
-

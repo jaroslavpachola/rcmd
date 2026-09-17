@@ -1188,6 +1188,4 @@ impl App {
             st.left = scol + 1 - cols;
         }
     }
-
 }
-

@@ -2002,7 +2002,12 @@ impl App {
     /// Run one batch of changes against an archive. Every op goes in one
     /// job because the container is rewritten once, however many members
     /// the batch touches.
-    pub(super) fn start_archive_edit(&mut self, archive: PathBuf, ops: Vec<fsops::ArchiveOp>, verb: &str) {
+    pub(super) fn start_archive_edit(
+        &mut self,
+        archive: PathBuf,
+        ops: Vec<fsops::ArchiveOp>,
+        verb: &str,
+    ) {
         let count = ops.len();
         let handle = fsops::spawn_archive_edit(archive, ops);
         self.jobs.push(Job {
@@ -3049,4 +3054,3 @@ impl App {
         }
     }
 }
-

@@ -50,7 +50,6 @@ impl App {
             }
         }
     }
-
 }
 
 impl App {
@@ -416,6 +415,4 @@ impl App {
             None => self.status = Some(format!(" panelizing… {count} so far - Esc cancels ")),
         }
     }
-
 }
-

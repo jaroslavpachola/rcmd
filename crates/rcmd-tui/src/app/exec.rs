@@ -129,7 +129,6 @@ impl App {
     }
 }
 
-
 /// What one pass of a subshell session wants the front end to do.
 #[must_use]
 pub enum SubshellStep {
@@ -178,7 +177,6 @@ fn finish(session: &SubshellSession, bytes: Vec<u8>) -> SubshellStep {
         (true, false) => SubshellStep::Waiting,
     }
 }
-
 
 impl App {
     /// Open a subshell session for `exec`. `None` means there is none to
@@ -338,7 +336,11 @@ impl App {
     /// leave the alternate screen (the shell owns the primary one - its
     /// scrollback IS MC's "output screen") and pass keys through raw
     /// until Ctrl+O comes back or the fed command finishes.
-    pub(super) fn subshell_session(&mut self, terminal: &mut DefaultTerminal, exec: Exec) -> Result<()> {
+    pub(super) fn subshell_session(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        exec: Exec,
+    ) -> Result<()> {
         use std::io::Write as _;
 
         let Some(mut session) = self.begin_subshell(exec) else {
@@ -417,6 +419,4 @@ impl App {
         self.end_subshell();
         Ok(())
     }
-
 }
-
