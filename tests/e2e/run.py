@@ -1463,7 +1463,7 @@ def test_sync():
     s = Session(left, home, args=(left, right))
     s.send(b"\x1b[20~", wait=STEP)  # F9
     s.send(b"c", wait=STEP)                   # Command menu
-    s.send(b"y", wait=STEP)                   # S&ynchronize
+    s.send(b"z", wait=STEP)                   # Synchroni&ze
     check("sync: it asks how to compare", "compare how" in s.screen().lower(), s.screen())
     s.send(b"q", wait=STEP * 2)               # Quick
     screen = s.screen()
@@ -1489,7 +1489,7 @@ def test_sync():
     open(os.path.join(left, "both.txt"), "w").write("mine again, and longer\n")
     s = Session(left, home, args=(left, right))
     s.send(b"\x1b[20~", wait=STEP)             # F9
-    s.send(b"cy", wait=STEP)
+    s.send(b"cz", wait=STEP)
     s.send(b"q", wait=STEP * 2)
     check("sync: the second plan has the one difference",
           "1 of 1 on" in s.screen(), s.screen())
