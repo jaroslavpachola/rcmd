@@ -294,6 +294,7 @@ fn file_contains(path: &Path, needle: &[u8], fold: bool) -> bool {
     let Ok(mut file) = File::open(path) else {
         return false;
     };
+    let finder = memchr::memmem::Finder::new(needle);
     let overlap = needle.len() - 1;
     let mut buf = vec![0u8; 64 * 1024 + overlap];
     let mut carry = 0usize;
@@ -302,15 +303,11 @@ fn file_contains(path: &Path, needle: &[u8], fold: bool) -> bool {
             Ok(0) | Err(_) => return false,
             Ok(n) => n,
         };
-        let hay = &buf[..carry + n];
-        let found = match fold {
-            true => {
-                let lower: Vec<u8> = hay.iter().map(|b| b.to_ascii_lowercase()).collect();
-                lower.windows(needle.len()).any(|w| w == needle)
-            }
-            false => hay.windows(needle.len()).any(|w| w == needle),
-        };
-        if found {
+        let hay = &mut buf[..carry + n];
+        if fold {
+            hay.make_ascii_lowercase();
+        }
+        if finder.find(hay).is_some() {
             return true;
         }
         carry = overlap.min(hay.len());
