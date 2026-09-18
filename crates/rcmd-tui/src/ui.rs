@@ -1049,6 +1049,9 @@ pub fn help_line_of(start: &str) -> usize {
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    // the whole screen, known before any screen returns early: a
+    // viewer's picture in the window is placed from it
+    app.areas.screen = frame.area();
     draw_screens(frame, app);
     // M-h's list sits over whatever form or prompt the field is in
     if let Some(popup) = &app.field_popup {

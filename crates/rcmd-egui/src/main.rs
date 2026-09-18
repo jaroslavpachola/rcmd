@@ -89,6 +89,8 @@ fn main() -> Result<()> {
     // the menu bar is egui's, above the grid (menu.rs): the terminal
     // build's row and dropdown stay off, and F9 opens the real one
     app.set_external_menubar();
+    // the window's clipboard is egui's own, not wl-copy's
+    app.set_host_clipboard();
     app.open_startup(args.startup)?;
 
     let font_size = window.size();
@@ -97,6 +99,8 @@ fn main() -> Result<()> {
             .with_title("rcmd-egui")
             .with_app_id("rcmd-egui")
             .with_inner_size(gui::window_size(font_size)),
+        // where the window was and how big, as it was left
+        persist_window: true,
         ..Default::default()
     };
     let result = eframe::run_native(

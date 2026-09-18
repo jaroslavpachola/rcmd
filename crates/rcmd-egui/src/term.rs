@@ -155,7 +155,7 @@ impl TerminalPane {
                 Input::Paste(text) => {
                     paste(text, self.parser.screen().bracketed_paste(), &mut bytes)
                 }
-                Input::Mouse(_) => {}
+                Input::Mouse(_) | Input::Context { .. } => {}
             }
         }
         match bytes.iter().position(|&b| b == CTRL_O) {

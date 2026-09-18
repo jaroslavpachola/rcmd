@@ -60,7 +60,7 @@ if SUBSHELL and "RCMD_E2E_SETTLE" not in os.environ:
 # a real terminal answers these, so the harness must too.
 QUERY = re.compile(rb"\x1b\[0?c|\x1b\[([56])n|(\x1b\[\?u)")
 
-signal.alarm(900)  # hard cap for the whole suite (the scale test is slow)
+signal.alarm(1200)  # hard cap for the whole suite (the scale test is slow)
 
 
 class Session:
@@ -1982,6 +1982,31 @@ esac
     finally:
         server.terminate()
         server.wait()
+    shutil.rmtree(root)
+
+
+def test_editdrag():
+    """PLAN5 S8: dragging with the left button selects in the editor -
+    in a terminal with button tracking as in the window."""
+    root, play, home = sandbox()
+    path = os.path.join(play, "words.txt")
+    open(path, "w").write("hello world\n")
+    s = Session(play, home, args=("-e", path))
+    check("editdrag: the editor is up", wait_for(s, "hello world"), s.screen())
+    # SGR mouse: press on the h (column 1, the first text row is row 2),
+    # drag to just past "hello ", let go - then Delete takes the selection
+    s.send(b"\x1b[<0;1;2M", wait=0.1, settle=0.05)
+    s.send(b"\x1b[<32;4;2M", wait=0.1, settle=0.05)
+    s.send(b"\x1b[<32;7;2M", wait=0.1, settle=0.05)
+    s.send(b"\x1b[<0;7;2m", wait=STEP)
+    s.send(b"\x1b[3~", wait=STEP)            # Delete
+    check("editdrag: the dragged-over text went", "world" in s.screen()
+          and "hello" not in s.screen(), s.screen())
+    s.send(b"\x1b[12~", wait=STEP)           # F2 saves
+    check("editdrag: and the file says so", open(path).read() == "world\n",
+          repr(open(path).read()))
+    s.send(b"\x1b[21~", wait=STEP)
+    s.quit()
     shutil.rmtree(root)
 
 
@@ -6876,6 +6901,7 @@ def main():
         test_pack,
         test_undo,
         test_palette,
+        test_editdrag,
         test_uservfs,
         test_kittykeys,
         test_trash,

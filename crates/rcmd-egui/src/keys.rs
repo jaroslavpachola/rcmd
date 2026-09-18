@@ -31,11 +31,27 @@ pub enum Input {
     /// Ctrl+V (Shift+Insert on Windows), with the clipboard's text:
     /// egui-winit has already read it.
     Paste(String),
+    /// The right button went down: the window's context menu, at this
+    /// point and over this cell.
+    Context {
+        pos: egui::Pos2,
+        column: u16,
+        row: u16,
+    },
 }
 
 /// Drain a frame's input. `origin` is where cell (0, 0) is painted, so
 /// pointer positions can be turned into columns and rows.
-pub fn collect(input: &egui::InputState, origin: egui::Pos2, metrics: Metrics) -> Vec<Input> {
+/// `wheel` carries the part of a scroll too small to be a step yet, from
+/// one frame to the next: a touchpad reports a flick as many small
+/// distances, and rounding each of them up to a whole step made one
+/// flick scroll a page.
+pub fn collect(
+    input: &egui::InputState,
+    origin: egui::Pos2,
+    metrics: Metrics,
+    wheel: &mut f32,
+) -> Vec<Input> {
     let mut out = Vec::new();
     let modifiers = to_modifiers(&input.modifiers);
     let at = |pos: egui::Pos2| -> (u16, u16) {
@@ -101,42 +117,81 @@ pub fn collect(input: &egui::InputState, origin: egui::Pos2, metrics: Metrics) -
             }
             egui::Event::PointerButton {
                 pos,
-                button,
+                button: egui::PointerButton::Secondary,
                 pressed: true,
                 ..
             } => {
                 let (column, row) = at(*pos);
+                out.push(Input::Context {
+                    pos: *pos,
+                    column,
+                    row,
+                });
+            }
+            egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                ..
+            } => {
+                let (column, row) = at(*pos);
+                let button = to_button(*button);
                 out.push(Input::Mouse(MouseEvent {
-                    kind: MouseEventKind::Down(to_button(*button)),
+                    kind: match pressed {
+                        true => MouseEventKind::Down(button),
+                        false => MouseEventKind::Up(button),
+                    },
                     column,
                     row,
                     modifiers,
                 }));
             }
+            // the left button held while the pointer moves: a drag, as a
+            // terminal with button tracking reports one
+            egui::Event::PointerMoved(pos) if input.pointer.primary_down() => {
+                let (column, row) = at(*pos);
+                out.push(Input::Mouse(MouseEvent {
+                    kind: MouseEventKind::Drag(MouseButton::Left),
+                    column,
+                    row,
+                    modifiers,
+                }));
+            }
+            // what an input method composed arrives whole, as text
+            egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                for c in text.chars().filter(|c| !c.is_control()) {
+                    out.push(Input::Key(KeyEvent::new(
+                        KeyCode::Char(c),
+                        KeyModifiers::NONE,
+                    )));
+                }
+            }
             egui::Event::MouseWheel { unit, delta, .. } => {
-                let Some(pos) = input.pointer.latest_pos() else {
-                    continue;
-                };
+                // no pointer position known: the scroll is still a scroll
+                let pos = input.pointer.latest_pos().unwrap_or(origin);
                 // egui reports a wheel as a distance in whichever unit
                 // the device speaks; a terminal reports one event per
-                // notch, and `on_wheel` already moves three rows per
-                // event. A notch is a line, a page is a screen's worth
-                // capped at what a hand can flick, and points are
-                // divided back into lines by the cell height.
-                let lines = match unit {
-                    egui::MouseWheelUnit::Line => delta.y.abs(),
-                    egui::MouseWheelUnit::Page => delta.y.abs() * 10.0,
-                    egui::MouseWheelUnit::Point => delta.y.abs() / metrics.height,
+                // notch, and `on_wheel` moves three rows per event. A
+                // notch is one step, a page is a screen's worth capped
+                // at what a hand can flick, and points are rows of the
+                // grid, three to a step - so a touchpad scrolls by
+                // what the fingers moved, the remainder kept for the
+                // next frame rather than rounded up now.
+                *wheel += match unit {
+                    egui::MouseWheelUnit::Line => delta.y,
+                    egui::MouseWheelUnit::Page => delta.y * 10.0,
+                    egui::MouseWheelUnit::Point => delta.y / metrics.height / 3.0,
                 };
-                let notches = lines.ceil().min(5.0) as usize;
-                if notches == 0 || delta.y == 0.0 {
+                let notches = (wheel.abs().floor() as usize).min(10);
+                if notches == 0 {
                     continue;
                 }
-                let kind = if delta.y > 0.0 {
+                let kind = if *wheel > 0.0 {
                     MouseEventKind::ScrollUp
                 } else {
                     MouseEventKind::ScrollDown
                 };
+                *wheel -= wheel.signum() * notches as f32;
                 let (column, row) = at(pos);
                 for _ in 0..notches {
                     out.push(Input::Mouse(MouseEvent {
@@ -327,15 +382,36 @@ mod tests {
     // InputState keeps most of itself private, so it is built by
     // assignment rather than with struct-update syntax
     #[allow(clippy::field_reassign_with_default)]
+    #[test]
+    fn small_scrolls_add_up_instead_of_each_being_a_step() {
+        // a touchpad: many small distances in points, a frame apiece
+        let metrics = Metrics::estimate(10.0);
+        let mut wheel = 0.0;
+        let mut steps = 0;
+        for _ in 0..30 {
+            let mut input = egui::InputState::default();
+            input.pointer = Default::default();
+            input.events = vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -metrics.height * 0.3),
+                modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+            }];
+            steps += collect(&input, egui::Pos2::ZERO, metrics, &mut wheel).len();
+        }
+        // thirty tenths of a step each are three steps, not thirty
+        assert!((2..=3).contains(&steps), "{steps}");
+    }
+
     fn collected(events: Vec<egui::Event>, modifiers: egui::Modifiers) -> Vec<KeyEvent> {
         let mut input = egui::InputState::default();
         input.events = events;
         input.modifiers = modifiers;
-        collect(&input, egui::Pos2::ZERO, Metrics::estimate(10.0))
+        collect(&input, egui::Pos2::ZERO, Metrics::estimate(10.0), &mut 0.0)
             .into_iter()
             .filter_map(|i| match i {
                 Input::Key(key) => Some(key),
-                Input::Mouse(_) | Input::Paste(_) => None,
+                Input::Mouse(_) | Input::Paste(_) | Input::Context { .. } => None,
             })
             .collect()
     }
@@ -434,7 +510,7 @@ mod tests {
     fn a_paste_arrives_as_its_text() {
         let mut input = egui::InputState::default();
         input.events = vec![egui::Event::Paste("some text".into())];
-        let got = collect(&input, egui::Pos2::ZERO, Metrics::estimate(10.0));
+        let got = collect(&input, egui::Pos2::ZERO, Metrics::estimate(10.0), &mut 0.0);
         assert!(matches!(got.as_slice(), [Input::Paste(text)] if text == "some text"));
     }
 

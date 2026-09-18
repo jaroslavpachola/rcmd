@@ -3956,6 +3956,20 @@ impl App {
         }
     }
 
+    /// The window takes over the clipboard: copies wait for it in a
+    /// box instead of going to `wl-copy` and friends.
+    pub fn set_host_clipboard(&mut self) {
+        HOSTED_CLIPBOARD.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// What was copied since the window last asked.
+    pub fn take_clipboard_out(&mut self) -> Option<String> {
+        CLIPBOARD_OUT
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut last_frame = Instant::now();
         while !self.exiting() {
@@ -4452,10 +4466,133 @@ impl App {
             MouseEventKind::Down(MouseButton::Right) => {
                 self.on_right_click(mouse.column, mouse.row)
             }
+            MouseEventKind::Drag(MouseButton::Left) => self.on_drag(mouse.column, mouse.row),
             MouseEventKind::ScrollUp => self.on_wheel(mouse.column, mouse.row, -3),
             MouseEventKind::ScrollDown => self.on_wheel(mouse.column, mouse.row, 3),
             _ => {}
         }
+    }
+
+    /// Where in the editor's text a cell is, if it is on the text: the
+    /// gutter counts as column 0, and a wrapped line is walked down to.
+    fn editor_pos_at(&self, x: u16, y: u16) -> Option<rcmd_edit::Pos> {
+        let st = self.editor()?;
+        let x = (x as usize).saturating_sub(st.gutter) as u16;
+        if st.prompt.is_some() || y < 1 || (y as usize) > st.rows {
+            return None;
+        }
+        let (line, col) = if st.wrap {
+            // walk visual rows down from the top to this row
+            let cols = st.wrap_width();
+            let (mut line, mut seg) = (st.top, st.top_seg);
+            for _ in 0..(y as usize - 1) {
+                seg += 1;
+                if seg >= ui::ed_line_segs(&st.ed, line, cols) {
+                    if line + 1 >= st.ed.line_count() {
+                        break;
+                    }
+                    line += 1;
+                    seg = 0;
+                }
+            }
+            let line = line.min(st.ed.line_count().saturating_sub(1));
+            (
+                line,
+                col_at_screen(&st.ed.line(line), seg * cols + x as usize),
+            )
+        } else {
+            let line = (st.top + y as usize - 1).min(st.ed.line_count().saturating_sub(1));
+            (line, col_at_screen(&st.ed.line(line), st.left + x as usize))
+        };
+        Some(rcmd_edit::Pos { line, col })
+    }
+
+    /// The left button held and moved: in the editor, a selection from
+    /// where it went down to where it is now.
+    fn on_drag(&mut self, x: u16, y: u16) {
+        if self.dialog.is_some() || self.help.is_some() || self.menu.is_some() {
+            return;
+        }
+        if let Some(pos) = self.editor_pos_at(x, y)
+            && let Some(st) = self.editor_mut()
+        {
+            st.ed.goto(pos, true);
+        }
+    }
+
+    /// Run an action by the name the keymap and the socket use - the
+    /// window's context menu picks them that way. False = no such name.
+    pub fn run_named_action(&mut self, name: &str) -> bool {
+        match keymap::parse_action(name) {
+            Some(action) => {
+                self.run_action(action);
+                self.dirty = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Files dropped on the window at a cell: the copy form, from them
+    /// to the panel they landed on (the active one, if neither).
+    pub fn drop_paths(&mut self, paths: Vec<PathBuf>, x: u16, y: u16) {
+        let pos = Position { x, y };
+        let side = [0, 1]
+            .into_iter()
+            .find(|&side| match side {
+                0 => self.areas.left.contains(pos),
+                _ => self.areas.right.contains(pos),
+            })
+            .unwrap_or(self.active);
+        let target = self.panels[side].display_path();
+        self.open_transfer_of(false, paths);
+        if let Some(Dialog::Transfer(d)) = self.dialog.as_mut() {
+            d.dest.set(target);
+        }
+        self.dirty = true;
+    }
+
+    /// An image the screen shows as a file's bytes - the viewer on one,
+    /// or the quick view - and the cells it takes. The window paints the
+    /// picture there; a terminal has no way to, and shows what it can.
+    pub fn image_on_screen(&self) -> Option<(PathBuf, Rect)> {
+        let screen = self.areas.screen;
+        if let Some(v) = self.viewer() {
+            let ruler = u16::from(v.ruler);
+            return (!v.hex && is_image(&v.path)).then(|| {
+                (
+                    v.path.clone(),
+                    Rect {
+                        x: 0,
+                        y: 1 + ruler,
+                        width: screen.width,
+                        height: screen.height.saturating_sub(2 + ruler),
+                    },
+                )
+            });
+        }
+        if self.current.is_some() || self.dialog.is_some() {
+            return None;
+        }
+        let q = self.quick_view.as_ref()?;
+        let (path, _) = q.view.as_ref()?;
+        if q.hex || !is_image(path) {
+            return None;
+        }
+        let area = if q.side == 0 {
+            self.areas.left
+        } else {
+            self.areas.right
+        };
+        Some((
+            path.clone(),
+            Rect {
+                x: area.x + 1,
+                y: area.y + 1,
+                width: area.width.saturating_sub(2),
+                height: area.height.saturating_sub(2),
+            },
+        ))
     }
 
     fn on_click(&mut self, x: u16, y: u16, double: bool) {
@@ -4476,34 +4613,11 @@ impl App {
         {
             return;
         }
-        if let Some(st) = self.editor_mut() {
-            // the gutter is not text: a click in it lands on column 0
-            let x = (x as usize).saturating_sub(st.gutter) as u16;
-            if st.prompt.is_none() && y >= 1 && (y as usize) <= st.rows {
-                let (line, col) = if st.wrap {
-                    // walk visual rows down from the top to this row
-                    let cols = st.wrap_width();
-                    let (mut line, mut seg) = (st.top, st.top_seg);
-                    for _ in 0..(y as usize - 1) {
-                        seg += 1;
-                        if seg >= ui::ed_line_segs(&st.ed, line, cols) {
-                            if line + 1 >= st.ed.line_count() {
-                                break;
-                            }
-                            line += 1;
-                            seg = 0;
-                        }
-                    }
-                    let line = line.min(st.ed.line_count().saturating_sub(1));
-                    (
-                        line,
-                        col_at_screen(&st.ed.line(line), seg * cols + x as usize),
-                    )
-                } else {
-                    let line = (st.top + y as usize - 1).min(st.ed.line_count().saturating_sub(1));
-                    (line, col_at_screen(&st.ed.line(line), st.left + x as usize))
-                };
-                st.ed.goto(rcmd_edit::Pos { line, col }, false);
+        if self.editor().is_some() {
+            if let Some(pos) = self.editor_pos_at(x, y)
+                && let Some(st) = self.editor_mut()
+            {
+                st.ed.goto(pos, false);
             }
             return;
         }
@@ -5932,6 +6046,21 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
+/// Whether an image by its name: what the window paints as a picture.
+pub fn is_image(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        matches!(
+            e.to_ascii_lowercase().as_str(),
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp"
+        )
+    })
+}
+
+/// The window's clipboard is egui's: copies go into this box, and the
+/// window hands them over on its next frame. Off in a terminal.
+static HOSTED_CLIPBOARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static CLIPBOARD_OUT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 /// Whether there is a desktop to have a clipboard at all. Over ssh
 /// there is not, and the X tools would each be a process spawned to
 /// fail - so the question is asked before they are.
@@ -5971,6 +6100,10 @@ fn clipboard_set(text: &str) -> bool {
     // the file first: it works over ssh, where no clipboard tool does,
     // and it is what `%q` in a user command reads
     clip_file_write(text);
+    if HOSTED_CLIPBOARD.load(std::sync::atomic::Ordering::Relaxed) {
+        *CLIPBOARD_OUT.lock().unwrap_or_else(|p| p.into_inner()) = Some(text.to_string());
+        return true;
+    }
     if !desktop_clipboard() {
         return false;
     }

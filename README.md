@@ -278,6 +278,27 @@ frames every panel and every dialog in it. egui's own font is the
 fallback beneath whatever is chosen, so a glyph the chosen face lacks
 is still drawn.
 
+**What a window does that a terminal cannot**:
+
+- **Pictures.** F3 on a PNG, JPEG, GIF, WebP or BMP, and the quick view
+  on one, show the picture, as large as fits - an image here is a
+  texture and a rectangle. In a terminal they stay bytes: there, protocol
+  detection and cell geometry are the problem, and rcmd does not guess.
+- **Drop files on a panel** to copy them there: the copy form opens with
+  the panel under the pointer as its destination. (Dragging *out* of the
+  window is not something egui can start.)
+- **The right button** opens a menu over the file it is on - view,
+  edit, copy, move, delete, mark, pack, checksum, diff against HEAD,
+  info.
+- **The clipboard** is the window system's own, through egui, not
+  `wl-copy` or `xclip`.
+- **Where the window was and how big** is remembered.
+- **An input method** composes into the command line and the editor,
+  and is told where the cursor is.
+- The wheel scrolls by as far as a touchpad moved, and dragging with
+  the left button selects in the editor (which a terminal with mouse
+  reporting gets too).
+
 **Ctrl+O opens a terminal pane**, the same as it opens the output
 screen in a terminal. `subshell.rs` already owned the pty, spawned the
 shell, tracked its working directory through the prompt hooks and

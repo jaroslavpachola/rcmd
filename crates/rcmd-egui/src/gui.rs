@@ -67,7 +67,26 @@ pub struct Gui {
     /// What `font::install` last loaded, for the dialog to say.
     loaded_font: Option<String>,
     font_dialog: Option<FontDialog>,
+    /// A scroll too small to be a step yet: see [`keys::collect`].
+    wheel: f32,
+    /// The right-click menu, open at this point.
+    context: Option<egui::Pos2>,
 }
+
+/// The right-click menu: what a file manager is asked to do to the
+/// thing under the pointer, by the names the keymap knows them by.
+const CONTEXT_MENU: &[(&str, &str)] = &[
+    ("View", "view"),
+    ("Edit", "edit"),
+    ("Copy...", "copy"),
+    ("Move/rename...", "move"),
+    ("Delete", "delete"),
+    ("Mark / unmark", "mark"),
+    ("Pack into archive...", "pack"),
+    ("Checksum...", "checksum"),
+    ("Diff against HEAD", "diff-head"),
+    ("Info", "info-view"),
+];
 
 impl Gui {
     pub fn new(
@@ -78,6 +97,9 @@ impl Gui {
         startup_keys: Vec<KeyEvent>,
     ) -> anyhow::Result<Self> {
         let loaded_font = crate::font::install(&cc.egui_ctx, window.font.as_deref());
+        // pictures in the viewer and the quick view: an image here is a
+        // texture and a rectangle, which is all a terminal cannot do
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         // Ctrl+= / Ctrl+- / Ctrl+0 change the grid's font size below,
         // not egui's zoom factor: the two on the same keys would be a
         // bar growing twice as fast as the grid
@@ -113,6 +135,8 @@ impl Gui {
             config_size,
             loaded_font,
             font_dialog: None,
+            wheel: 0.0,
+            context: None,
         })
     }
 
@@ -241,6 +265,108 @@ impl Gui {
         }
     }
 
+    /// An image the viewer or the quick view is on, painted over the
+    /// cells that would show its bytes, as large as fits.
+    fn paint_image(&self, ui: &mut egui::Ui, origin: egui::Pos2) {
+        let Some((path, cells)) = self.app.image_on_screen() else {
+            return;
+        };
+        let m = self.metrics;
+        let rect = egui::Rect::from_min_size(
+            origin + Vec2::new(cells.x as f32 * m.width, cells.y as f32 * m.height),
+            Vec2::new(cells.width as f32 * m.width, cells.height as f32 * m.height),
+        );
+        ui.painter().rect_filled(rect, 0.0, self.palette.bg);
+        let image = egui::Image::new(format!("file://{}", path.display()))
+            .max_size(rect.size())
+            .maintain_aspect_ratio(true);
+        ui.put(rect, image);
+    }
+
+    /// The right-click menu, while it is open.
+    fn context_menu(&mut self, ctx: &egui::Context) {
+        let Some(pos) = self.context else {
+            return;
+        };
+        let mut chosen = None;
+        let area = egui::Area::new(egui::Id::new("context-menu"))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::menu(ui.style()).show(ui, |ui| {
+                    for (label, action) in CONTEXT_MENU {
+                        if ui.button(*label).clicked() {
+                            chosen = Some(*action);
+                        }
+                    }
+                })
+            });
+        let away = ctx.input(|i| {
+            i.key_pressed(egui::Key::Escape)
+                || (i.pointer.any_pressed()
+                    && i.pointer
+                        .interact_pos()
+                        .is_some_and(|p| !area.response.rect.contains(p)))
+        });
+        if let Some(action) = chosen {
+            self.context = None;
+            self.app.run_named_action(action);
+        } else if away {
+            self.context = None;
+            self.app.set_dirty();
+        }
+    }
+
+    /// What the window does that a terminal cannot: copies go to the
+    /// desktop's clipboard through egui, files dropped on a panel are
+    /// copied into it, and an input method is told where the cursor is.
+    fn window_io(&mut self, ctx: &egui::Context, origin: egui::Pos2) {
+        if let Some(text) = self.app.take_clipboard_out() {
+            ctx.copy_text(text);
+        }
+        let m = self.metrics;
+        let cell = |p: egui::Pos2| {
+            (
+                ((p.x - origin.x) / m.width).max(0.0) as u16,
+                ((p.y - origin.y) / m.height).max(0.0) as u16,
+            )
+        };
+        let (dropped, hovering, at) = ctx.input(|i| {
+            (
+                i.raw.dropped_files.clone(),
+                !i.raw.hovered_files.is_empty(),
+                i.pointer.latest_pos(),
+            )
+        });
+        let paths: Vec<std::path::PathBuf> = dropped
+            .iter()
+            .map(|f| f.path().to_path_buf())
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect();
+        if !paths.is_empty() {
+            let (x, y) = at.map(cell).unwrap_or((0, 0));
+            self.app.drop_paths(paths, x, y);
+            ctx.request_repaint();
+        } else if hovering {
+            self.app.status = Some(" drop to copy into the panel under the pointer ".into());
+            self.app.set_dirty();
+        }
+        if let Some(pos) = self.terminal.backend().cursor() {
+            let rect = egui::Rect::from_min_size(
+                origin + Vec2::new(pos.x as f32 * m.width, pos.y as f32 * m.height),
+                Vec2::new(m.width, m.height),
+            );
+            ctx.output_mut(|o| {
+                o.ime = Some(egui::output::IMEOutput {
+                    purpose: Default::default(),
+                    rect,
+                    cursor_rect: rect,
+                    should_interrupt_composition: false,
+                })
+            });
+        }
+    }
+
     fn save_once(&mut self) {
         if self.saved {
             return;
@@ -294,7 +420,8 @@ impl eframe::App for Gui {
         // and the click that closes the dropdown must not also land
         // on whatever was under it.
         // with the Font dialog up the keyboard is its, like a dropdown's
-        let menu_open = Popup::is_any_open(&ctx) || self.font_dialog.is_some();
+        let menu_open =
+            Popup::is_any_open(&ctx) || self.font_dialog.is_some() || self.context.is_some();
         // F9 with a dropdown open closes it, as it does in a terminal;
         // Esc egui does by itself
         if menu_open && ctx.input(|i| i.key_pressed(egui::Key::F9)) {
@@ -340,7 +467,7 @@ impl eframe::App for Gui {
         let mut input = if menu_open {
             Vec::new()
         } else {
-            ctx.input(|i| keys::collect(i, origin, self.metrics))
+            ctx.input(|i| keys::collect(i, origin, self.metrics, &mut self.wheel))
         };
         // $RCMD_EGUI_KEYS, one per frame ahead of anything real. One per
         // frame rather than all at once because that is what typing is:
@@ -373,6 +500,19 @@ impl eframe::App for Gui {
                     Input::Key(key) => self.app.on_key(key),
                     Input::Mouse(mouse) => self.app.on_mouse(mouse),
                     Input::Paste(text) => self.app.on_paste(&text),
+                    // the cursor goes to what was clicked, and the menu
+                    // is about that
+                    Input::Context { pos, column, row } => {
+                        self.app.on_mouse(ratatui::crossterm::event::MouseEvent {
+                            kind: ratatui::crossterm::event::MouseEventKind::Down(
+                                ratatui::crossterm::event::MouseButton::Left,
+                            ),
+                            column,
+                            row,
+                            modifiers: KeyModifiers::NONE,
+                        });
+                        self.context = Some(pos);
+                    }
                 }
             }
             // F9: the bar opens on the next frame, which has to come
@@ -401,6 +541,9 @@ impl eframe::App for Gui {
         self.terminal
             .backend()
             .paint(ui.painter(), origin, self.metrics, &self.font);
+        self.paint_image(ui, origin);
+        self.context_menu(&ctx);
+        self.window_io(&ctx, origin);
 
         if let Some(cmd) = self.app.take_exec() {
             self.run_exec(cmd);

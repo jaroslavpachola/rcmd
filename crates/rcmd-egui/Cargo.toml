@@ -33,9 +33,14 @@ anyhow.workspace = true
 eframe = { version = "0.36", default-features = false, features = [
     "default_fonts",
     "glow",
+    "persistence",
     "wayland",
     "x11",
 ] }
+# Pictures in the viewer and the quick view: egui's loaders, and the
+# decoders for what a file manager is most often pointed at.
+egui_extras = { version = "0.36", default-features = false, features = ["file", "image", "gif", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
 # The window's own settings ([window] in config.toml, and the state it
 # writes): the terminal build's Config ignores tables it does not know,
 # so the window reads its table itself.
