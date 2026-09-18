@@ -225,6 +225,7 @@ pub enum ConnectAsk {
     Password {
         prompt: String,
         value: String,
+        cursor: usize,
         echo: bool,
     },
 }
@@ -1083,8 +1084,9 @@ pub struct PanelizeDialog {
     pub row: usize,
     /// The list has the focus rather than the command field.
     pub on_list: bool,
-    /// Ctrl+S: the field is asking for a name to save the command as.
-    pub naming: Option<String>,
+    /// Ctrl+S: the field is asking for a name to save the command as,
+    /// and where its cursor is.
+    pub naming: Option<(String, usize)>,
 }
 
 /// MC's select / unselect / filter dialog: a pattern and the three

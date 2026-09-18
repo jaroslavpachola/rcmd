@@ -4994,7 +4994,11 @@ def test_panelize():
     s.send(b"\x15echo other.log", wait=STEP)
     s.send(b"\x13", wait=STEP)               # Ctrl+S: save as...
     check("panelize: it asks for a name", "Save as" in s.screen(), s.screen())
-    s.send(b"logs\r", wait=STEP)
+    # the name field keeps its cursor: Left and a letter insert there,
+    # not at the end (the cursor used to be reset on every key)
+    s.send(b"lgs", wait=STEP)
+    s.send(b"\x1b[D\x1b[D", wait=STEP)
+    s.send(b"o\r", wait=STEP)
     check("panelize: the new preset is listed", "logs" in s.screen(), s.screen())
     s.send(b"\r", wait=STEP * 2)
     check("panelize: the typed command ran", wait_for(s, "panelized 1 item(s)"))

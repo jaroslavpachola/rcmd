@@ -162,6 +162,7 @@ impl App {
                     connect.ask = Some(ConnectAsk::Password {
                         prompt,
                         value: String::new(),
+                        cursor: 0,
                         echo,
                     });
                 }
@@ -216,7 +217,7 @@ impl App {
                     }
                 }
             }
-            Some(ConnectAsk::Password { value, .. }) => match key.code {
+            Some(ConnectAsk::Password { value, cursor, .. }) => match key.code {
                 KeyCode::Esc => {
                     let _ = connect.handle.replies.send(ConnectReply::Cancel);
                     self.connect = None;
@@ -231,8 +232,7 @@ impl App {
                     connect.ask = None;
                 }
                 code => {
-                    let mut cursor = value.chars().count();
-                    edit_line(value, &mut cursor, code, key.modifiers);
+                    edit_line(value, cursor, code, key.modifiers);
                 }
             },
         }

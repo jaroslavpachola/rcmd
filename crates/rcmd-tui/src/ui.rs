@@ -3918,9 +3918,9 @@ fn draw_panelize(
     }
     let below = list_rows + 2;
     match &d.naming {
-        Some(name) => {
+        Some((name, cursor)) => {
             frame.render_widget(Line::from("Save as:").style(style), row(below));
-            field_row(frame, row(below + 1), name, Some(name.chars().count()));
+            field_row(frame, row(below + 1), name, Some(*cursor));
         }
         None => {
             frame.render_widget(Line::from("Command:").style(style), row(below));
@@ -4875,6 +4875,7 @@ fn draw_connect_ask(frame: &mut Frame, ask: &ConnectAsk) {
         ConnectAsk::Password {
             prompt,
             value,
+            cursor,
             echo,
         } => {
             let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
@@ -4895,7 +4896,7 @@ fn draw_connect_ask(frame: &mut Frame, ask: &ConnectAsk) {
             } else {
                 "*".repeat(value.chars().count())
             };
-            field_row(frame, row(1), &shown, Some(shown.chars().count()));
+            field_row(frame, row(1), &shown, Some(*cursor));
             frame.render_widget(
                 Line::from("Enter - send   Esc - cancel")
                     .centered()

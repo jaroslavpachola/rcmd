@@ -375,7 +375,7 @@ impl App {
                 let presets = self.config.panelize.clone();
                 // saving asks for a name in the same field: there is
                 // one dialog slot, and a name is one line of typing
-                if let Some(mut name) = d.naming.take() {
+                if let Some((mut name, mut cursor)) = d.naming.take() {
                     match key.code {
                         KeyCode::Esc => {
                             self.dialog = Some(Dialog::Panelize(d));
@@ -395,9 +395,8 @@ impl App {
                             self.dialog = Some(Dialog::Panelize(d));
                         }
                         code => {
-                            let mut cursor = name.chars().count();
                             edit_line(&mut name, &mut cursor, code, key.modifiers);
-                            d.naming = Some(name);
+                            d.naming = Some((name, cursor));
                             self.dialog = Some(Dialog::Panelize(d));
                         }
                     }
@@ -437,7 +436,7 @@ impl App {
                     // C-s saves what is typed, F8 drops what is picked
                     KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         if !d.value.trim().is_empty() {
-                            d.naming = Some(String::new());
+                            d.naming = Some((String::new(), 0));
                         }
                         self.dialog = Some(Dialog::Panelize(d));
                     }
