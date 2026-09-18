@@ -271,7 +271,15 @@ mc copies with a read/write loop onto the final name. So does rcmd
 - `fsync` behind a switch; `chattr` beside chmod (mc has had the
   dialog since 4.8.25).
 
-### S5 - the trash as a place, and a queue that is one
+### S5 - the trash as a place, and a queue that is one - DONE (2026-09-18, 4.36.0)
+
+Shipped as below, with these left: only copies and moves take part in
+the queue (a delete or a wipe is never held, and never holds one back);
+a pause waits for the job's next check, which is at most a chunk of a
+file away; notices reach tmux and screen as the bell alone; and the
+trash's `directorysizes` cache is not updated when rcmd restores or
+purges, which only costs the desktop a recount.
+
 
 - **`trash://`**: F8 to the trash is rcmd's flagship divergence
   (MC-DIFF §6) and nothing in rcmd can list, restore from or empty it

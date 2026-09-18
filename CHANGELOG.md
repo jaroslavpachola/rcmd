@@ -1,5 +1,37 @@
 # Changelog
 
+## 4.36.0 - 2026-09-18
+
+[PLAN5](docs/PLAN5.md)'s S5: the trash as a place, and a queue that is
+one.
+
+- **`trash://`** (or F9 → Command → Trash): a panel over the XDG trash,
+  the home one and every volume's own. The line under the panel says
+  where each item came from, and so does Enter on a file. F6 puts things
+  back where they came from, making the directory again if it has gone
+  and never overwriting what has since taken the name. F8 there deletes
+  for good; F3 and F5 look and copy out.
+
+- **Ctrl+X u is a list.** The session's moves, bulk renames, F8s and
+  restores, newest first; Enter undoes the one picked, and the undo goes
+  on top, so doing it twice is the redo. An F8 comes back out of the
+  trash. A bulk rename that swapped two names now swaps them back,
+  where the undo used to find both names taken and do nothing.
+
+- **Queue** on the copy form: the job starts once nothing else is
+  writing to that device or server, so two copies onto one USB stick
+  run in turn instead of fighting over it.
+
+- **Pause**: `p` in the progress dialog or on a row of the jobs list,
+  and `p` again goes on.
+
+- **Jobs say when they are done.** One that ran in the background, or
+  for more than ten seconds, rings the bell, with a desktop notice in
+  the terminals that pass one on (kitty, foot, Ghostty, iTerm2, WezTerm,
+  Windows Terminal) and through `notify-send` from the window build.
+  While jobs run, the title says how far along they are.
+  `notify_done = false` keeps it quiet.
+
 ## 4.35.0 - 2026-09-18
 
 [PLAN5](docs/PLAN5.md)'s S4: copies you can trust.
