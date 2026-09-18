@@ -104,6 +104,16 @@ pub fn parse(buffer: &str, names: &[OsString]) -> Result<Plan, String> {
 /// refused and that item returns to its original name; phase-1 failures
 /// roll everything back.
 pub fn apply(dir: &Path, renames: &[(OsString, String)]) -> Result<(), String> {
+    let renames: Vec<(OsString, OsString)> = renames
+        .iter()
+        .map(|(old, new)| (old.clone(), OsString::from(new)))
+        .collect();
+    apply_os(dir, &renames)
+}
+
+/// [`apply`] with the new names as they are on disk rather than as
+/// typed - what an undo hands back, since a name need not be UTF-8.
+pub fn apply_os(dir: &Path, renames: &[(OsString, OsString)]) -> Result<(), String> {
     let pid = std::process::id();
     let temp_of = |i: usize| dir.join(format!(".rcmd-bulk-{pid}-{i}"));
     for (i, (old, _)) in renames.iter().enumerate() {
@@ -127,7 +137,11 @@ pub fn apply(dir: &Path, renames: &[(OsString, String)]) -> Result<(), String> {
         };
         if let Err(err) = result {
             let _ = std::fs::rename(temp_of(i), dir.join(old));
-            errors.push(format!("{} → {new}: {err}", Path::new(old).display()));
+            errors.push(format!(
+                "{} → {}: {err}",
+                Path::new(old).display(),
+                Path::new(new).display()
+            ));
         }
     }
     if errors.is_empty() {
@@ -175,6 +189,23 @@ mod tests {
         // an unchanged line never trips the name validation
         let odd = names(&["weird/kept"]);
         assert!(parse("0\tweird/kept\n", &odd).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_swap_is_undone_by_its_inverse() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a"), "1").unwrap();
+        fs::write(dir.path().join("b"), "2").unwrap();
+        let done = [
+            (OsString::from("a"), OsString::from("b")),
+            (OsString::from("b"), OsString::from("a")),
+        ];
+        apply_os(dir.path(), &done).unwrap();
+        assert_eq!(fs::read_to_string(dir.path().join("a")).unwrap(), "2");
+        let back: Vec<_> = done.iter().map(|(o, n)| (n.clone(), o.clone())).collect();
+        apply_os(dir.path(), &back).unwrap();
+        assert_eq!(fs::read_to_string(dir.path().join("a")).unwrap(), "1");
+        assert_eq!(fs::read_to_string(dir.path().join("b")).unwrap(), "2");
     }
 
     #[test]

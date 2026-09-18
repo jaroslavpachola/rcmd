@@ -136,6 +136,11 @@ pub struct Config {
     /// "Xterm window title" does; the title from before is put back on
     /// the way out.
     pub terminal_title: bool,
+    /// A job that ran in the background, or for longer than ten
+    /// seconds, says when it is done: the bell, and a desktop notice
+    /// where the terminal passes one on (the window build sends one of
+    /// its own).
+    pub notify_done: bool,
     /// Draw the line-number gutter (Alt+N toggles it).
     pub edit_line_numbers: bool,
     /// Keep the previous contents as `file~` on every save.
@@ -542,6 +547,7 @@ impl Default for Config {
             desktop_open: true,
             builtin_view: true,
             terminal_title: true,
+            notify_done: true,
             edit_line_numbers: false,
             edit_backups: false,
             edit_clipboard: true,

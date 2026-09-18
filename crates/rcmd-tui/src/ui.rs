@@ -751,6 +751,10 @@ const HELP_TEXT: &[&str] = &[
     "                  directory is where it goes. An archive already",
     "                  there is added to rather than replaced",
     "  F8              delete to trash",
+    "  cd trash://     the trash as a panel (F9>Command>Trash too): the",
+    "                  line under it says where each thing came from,",
+    "                  Enter says it too, F6 puts back, F8 deletes for",
+    "                  good, F3 and F5 look and copy out",
     "  M-Del           wipe: overwrite every byte, then delete. The",
     "                  confirm says what that is and is not worth",
     "  F9>File>Checksum file: a sha256sum-format file for what is",
@@ -761,8 +765,11 @@ const HELP_TEXT: &[&str] = &[
     "  C-g             apply a command to each marked file, one at a",
     "                  time (%f is that file) - where [[commands]] hands",
     "                  them all to one invocation",
-    "  C-x u           undo the last move: put back what F6 moved, on",
-    "                  a yes/no question, and a second C-x u is the redo",
+    "  C-x u           undo: the moves, bulk renames, F8s to the trash",
+    "                  and restores of this session, newest first. Enter",
+    "                  undoes the one picked; the undo goes on top, so",
+    "                  C-x u Enter again is the redo. A swap in a bulk",
+    "                  rename swaps back",
     "  S-F8            delete permanently",
     "  S-F4            edit a new file (created on first save)",
     "  S-F5/F6         copy / rename the cursor file in place",
@@ -775,9 +782,16 @@ const HELP_TEXT: &[&str] = &[
     "                  done, the throughput and the time left, a bar for",
     "                  the whole job and a second one for the current file",
     "  b               send the running operation to the background",
+    "  p               pause it; p again goes on (C-x j too)",
+    "  F5 > Queue      start when nothing else writes to that device,",
+    "                  so two copies to one stick run in turn",
+    "  A job that ran in the background, or for more than ten seconds,",
+    "                  rings when it is done (and a desktop notice where",
+    "                  the terminal passes one on); while jobs run, the",
+    "                  title says how far along they are",
     "  C-x !           panelize a command's output (F9 > Command too)",
     "  C-x r           what the last job skipped, and why",
-    "  C-x j           jobs list: Enter foregrounds, c cancels; the",
+    "  C-x j           jobs list: Enter foregrounds, p pauses, c cancels; the",
     "                  status line shows aggregate background progress",
     "  rcmd --remote 'cd /tmp' drives a running instance from a script:",
     "                  cd, select, unselect, status, any action by name,",
@@ -1259,6 +1273,19 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
                     *selected,
                     None,
                 )
+            }
+            Dialog::Undo(selected) => {
+                // what a row does is at its start: cut the end, where
+                // the history lists keep the end of a command
+                let rows: Vec<String> = app
+                    .undo_rows()
+                    .into_iter()
+                    .map(|row| match row.chars().count() > 61 {
+                        true => row.chars().take(60).chain(['…']).collect(),
+                        false => row,
+                    })
+                    .collect();
+                dialog_rows = draw_history(frame, " Undo ", &rows, *selected, None)
             }
             Dialog::FileHistory(selected) => {
                 dialog_rows = draw_history(
@@ -1853,6 +1880,11 @@ fn entry_summary(panel: &Panel) -> String {
                 .link_target
                 .as_ref()
                 .map(|t| format!(" -> {}", t.display()))
+                .or_else(|| {
+                    // the trash says where a thing came from
+                    let note = panel.fs.note(&panel.cwd.join(&e.name))?;
+                    Some(format!("  {note}"))
+                })
                 .unwrap_or_default();
             format!(
                 "{} {:>9} {}{}",
@@ -2419,7 +2451,7 @@ fn draw_cmdline(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn abbrev_home(path: &std::path::Path) -> String {
+pub(crate) fn abbrev_home(path: &std::path::Path) -> String {
     if let Some(home) = std::env::var_os("HOME")
         && let Ok(rest) = path.strip_prefix(&home)
     {
@@ -5578,7 +5610,7 @@ fn draw_jobs(frame: &mut Frame, jobs: &[Job], selected: usize) -> Option<crate::
     frame.render_widget(Clear, area);
     let block = Block::bordered()
         .title(" Jobs ")
-        .title_bottom(Line::from(" Enter foreground · c cancel · Esc close ").centered())
+        .title_bottom(Line::from(" Enter foreground · p pause · c cancel · Esc close ").centered())
         .style(base);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -5602,8 +5634,15 @@ fn draw_jobs(frame: &mut Frame, jobs: &[Job], selected: usize) -> Option<crate::
             .map(|p| format!("{p:>3}%"))
             .unwrap_or_else(|| "  …%".into());
         let counts = format!("{}/{}", job.files_done, job.total_files);
+        let state = if job.handle.is_held() {
+            "queued  "
+        } else if job.handle.is_paused() {
+            "paused  "
+        } else {
+            ""
+        };
         let text = tail(
-            &format!(" {pct} {counts:>9}  {}", job.title.trim()),
+            &format!(" {pct} {counts:>9}  {state}{}", job.title.trim()),
             inner.width as usize,
         );
         frame.render_widget(
@@ -5696,9 +5735,12 @@ fn draw_job(frame: &mut Frame, job: &Job) {
         frame.render_widget(bar(job.file_done as f64 / job.file_total as f64), row(4));
     }
     frame.render_widget(
-        Line::from("Esc - cancel   b - background")
-            .centered()
-            .style(style),
+        Line::from(match job.handle.is_paused() {
+            true => "paused - p goes on   Esc - cancel",
+            false => "Esc - cancel   b - background   p - pause",
+        })
+        .centered()
+        .style(style),
         row(5),
     );
 }

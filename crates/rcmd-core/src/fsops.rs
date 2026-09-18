@@ -53,6 +53,12 @@ pub enum JobEvent {
     /// name that was already taken is not reported, since putting the
     /// source back would not bring back what it landed on.
     Moved { from: PathBuf, to: PathBuf },
+    /// One item sent to the trash, by where it was: what an undo of
+    /// the F8 takes back out.
+    Trashed { path: PathBuf },
+    /// One item taken out of the trash, by where it went back to: what
+    /// an undo of that puts in again.
+    Restored { path: PathBuf },
     /// Something the job left alone, and why: the lines of the report a
     /// finished job can show, where a bare count said only how many.
     Skipped { path: PathBuf, reason: String },
@@ -231,6 +237,11 @@ pub struct JobHandle {
     pub events: Receiver<JobEvent>,
     pub replies: Sender<Reply>,
     cancel: Arc<AtomicBool>,
+    /// Paused: the job stops at its next look at `cancel`, which every
+    /// loop in here makes between one piece of work and the next.
+    pause: Arc<AtomicBool>,
+    /// Held: queued behind another job, and not begun.
+    held: Arc<AtomicBool>,
     pub thread: Option<JoinHandle<()>>,
 }
 
@@ -238,6 +249,35 @@ impl JobHandle {
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
+
+    pub fn set_paused(&self, paused: bool) {
+        self.pause.store(paused, Ordering::Relaxed);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.pause.load(Ordering::Relaxed)
+    }
+
+    /// Let a held job begin.
+    pub fn release(&self) {
+        self.held.store(false, Ordering::Relaxed);
+    }
+
+    pub fn is_held(&self) -> bool {
+        self.held.load(Ordering::Relaxed)
+    }
+}
+
+thread_local! {
+    static HOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Every job started on this thread while `on` is held until
+/// [`JobHandle::release`]: how a queued job is started without a
+/// moment in which it has already begun. The flag is the caller's
+/// thread's, so the job cannot race it.
+pub fn hold_new_jobs(on: bool) {
+    HOLD.with(|hold| hold.set(on));
 }
 
 pub fn spawn_copy(
@@ -501,8 +541,48 @@ pub fn spawn_delete(paths: Vec<PathBuf>, permanent: bool) -> JobHandle {
                 ctx.progress(path);
                 if ctx.with_retry(path, || trash::delete(path))?.is_some() {
                     ctx.files_done += 1;
+                    let _ = ctx.tx.send(JobEvent::Trashed { path: path.clone() });
                     ctx.progress(path);
                 }
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Take things out of the trash, back where they came from. `by_origin`
+/// names them by where they were - an undo of F8, which knows nothing
+/// else - and otherwise they are paths in a `trash://` panel, which is
+/// F6 there. Something in the way at home is an error to Retry or Skip,
+/// never an overwrite.
+pub fn spawn_restore(
+    trash: Arc<crate::trashcan::TrashFs>,
+    paths: Vec<PathBuf>,
+    by_origin: bool,
+) -> JobHandle {
+    spawn(move |ctx| {
+        let _ = ctx.tx.send(JobEvent::Total {
+            files: paths.len() as u64,
+            bytes: 0,
+        });
+        for path in &paths {
+            if ctx.cancelled() {
+                return Err(Aborted);
+            }
+            ctx.progress(path);
+            let restore = || match by_origin {
+                true => {
+                    let item = trash.find(path).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::NotFound, "no longer in the trash")
+                    })?;
+                    crate::trashcan::restore(&item).map(|()| item.original)
+                }
+                false => trash.restore(path),
+            };
+            if let Some(back) = ctx.with_retry(path, restore)? {
+                ctx.files_done += 1;
+                let _ = ctx.tx.send(JobEvent::Restored { path: back });
+                ctx.progress(path);
             }
         }
         Ok(())
@@ -1137,6 +1217,7 @@ struct Ctx {
     tx: Sender<JobEvent>,
     rx: Receiver<Reply>,
     cancel: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
     files_done: u64,
     bytes_done: u64,
     skipped: u64,
@@ -1157,7 +1238,12 @@ struct Ctx {
 }
 
 impl Ctx {
+    /// Whether to stop - and the place a paused job waits, since every
+    /// loop asks this between one piece of work and the next.
     fn cancelled(&self) -> bool {
+        while self.pause.load(Ordering::Relaxed) && !self.cancel.load(Ordering::Relaxed) {
+            thread::sleep(std::time::Duration::from_millis(50));
+        }
         self.cancel.load(Ordering::Relaxed)
     }
 
@@ -1384,11 +1470,19 @@ fn spawn_with(
     let (reply_tx, reply_rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();
+    let pause = Arc::new(AtomicBool::new(false));
+    let worker_pause = pause.clone();
+    let held = Arc::new(AtomicBool::new(HOLD.with(|hold| hold.get())));
+    let worker_held = held.clone();
     let thread = thread::spawn(move || {
+        while worker_held.load(Ordering::Relaxed) && !worker_cancel.load(Ordering::Relaxed) {
+            thread::sleep(std::time::Duration::from_millis(50));
+        }
         let mut ctx = Ctx {
             tx: event_tx,
             rx: reply_rx,
             cancel: worker_cancel,
+            pause: worker_pause,
             files_done: 0,
             bytes_done: 0,
             skipped: 0,
@@ -1411,6 +1505,8 @@ fn spawn_with(
         events: event_rx,
         replies: reply_tx,
         cancel,
+        pause,
+        held,
         thread: Some(thread),
     }
 }
@@ -3670,6 +3766,90 @@ mod tests {
     }
 
     /// A skip says what and why, for the report a finished job keeps.
+    #[test]
+    fn a_held_job_waits_and_a_paused_one_stops() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("a.txt");
+        fs::write(&src, "a").unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+        hold_new_jobs(true);
+        let handle = spawn_copy(vec![src], out.clone(), TransferOpts::default(), None);
+        hold_new_jobs(false);
+        assert!(handle.is_held());
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!out.join("a.txt").exists(), "held: nothing begun");
+
+        // released but paused: it stops at its first look
+        handle.set_paused(true);
+        handle.release();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!out.join("a.txt").exists(), "paused: nothing written");
+
+        handle.set_paused(false);
+        let outcome = run(handle, vec![]);
+        assert!(!outcome.aborted);
+        assert!(out.join("a.txt").exists());
+
+        // a job started afterwards is not held
+        let later = spawn_delete(vec![out.join("a.txt")], true);
+        assert!(!later.is_held());
+        run(later, vec![]);
+    }
+
+    #[test]
+    fn restore_puts_back_and_asks_before_overwriting() {
+        use crate::trashcan::{TrashDir, TrashFs};
+        let tmp = tempfile::tempdir().unwrap();
+        let trash = tmp.path().join("Trash");
+        fs::create_dir_all(trash.join("files")).unwrap();
+        fs::create_dir_all(trash.join("info")).unwrap();
+        let home = tmp.path().join("home");
+        fs::create_dir(&home).unwrap();
+        for name in ["a.txt", "b.txt"] {
+            fs::write(trash.join("files").join(name), name).unwrap();
+            fs::write(
+                trash.join("info").join(format!("{name}.trashinfo")),
+                format!(
+                    "[Trash Info]\nPath={}\nDeletionDate=2026-09-18T12:00:00\n",
+                    home.join(name).display()
+                ),
+            )
+            .unwrap();
+        }
+        // b.txt has a new file where it used to be
+        fs::write(home.join("b.txt"), "new").unwrap();
+        let fs_ = Arc::new(TrashFs::with_dirs(vec![TrashDir {
+            path: trash.clone(),
+            top: None,
+        }]));
+        let handle = spawn_restore(fs_, vec![home.join("a.txt"), home.join("b.txt")], true);
+        let mut restored = Vec::new();
+        let mut asks = 0;
+        loop {
+            match handle.events.recv().unwrap() {
+                JobEvent::Restored { path } => restored.push(path),
+                JobEvent::AskError { .. } => {
+                    asks += 1;
+                    handle.replies.send(Reply::Skip).unwrap();
+                }
+                JobEvent::Done { files_done, .. } => {
+                    assert_eq!(files_done, 1);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(restored, [home.join("a.txt")]);
+        assert_eq!(fs::read_to_string(home.join("a.txt")).unwrap(), "a.txt");
+        assert_eq!(asks, 1, "the occupied name was asked about");
+        assert_eq!(fs::read_to_string(home.join("b.txt")).unwrap(), "new");
+        assert!(
+            trash.join("files/b.txt").exists(),
+            "and b.txt is still in the trash"
+        );
+    }
+
     #[test]
     fn every_skip_is_reported_with_its_reason() {
         let tmp = tempfile::tempdir().unwrap();

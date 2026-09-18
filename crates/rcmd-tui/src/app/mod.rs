@@ -752,6 +752,64 @@ impl ChmodDialog {
     }
 }
 
+/// Something `C-x u` can put back.
+#[derive(Debug, Clone)]
+pub enum UndoStep {
+    /// What a move job did, as `(from, to)` pairs in the order it did
+    /// them.
+    Moved(Vec<(PathBuf, PathBuf)>),
+    /// A bulk rename's batch in its directory, as `(old, new)` names.
+    /// It is put back the way it was done - in two phases - so a swap
+    /// swaps back, where a pair at a time would find both names taken.
+    Renamed {
+        dir: PathBuf,
+        renames: Vec<(OsString, OsString)>,
+    },
+    /// What F8 sent to the trash, by where it was.
+    Trashed(Vec<PathBuf>),
+    /// What came back out of the trash, by where it went.
+    Restored(Vec<PathBuf>),
+}
+
+/// How many undo steps are kept: enough for a session's regrets, few
+/// enough that the oldest are still about the disk as it is.
+pub const UNDO_DEPTH: usize = 32;
+
+impl UndoStep {
+    /// The row C-x u shows: what undoing this would do.
+    pub fn describe(&self) -> String {
+        fn name(path: &Path) -> String {
+            path.file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+                .into_owned()
+        }
+        match self {
+            UndoStep::Moved(pairs) => match pairs.as_slice() {
+                [(from, to)] => format!(
+                    "Put \"{}\" back from {}",
+                    name(from),
+                    crate::ui::abbrev_home(to.parent().unwrap_or(to))
+                ),
+                _ => format!("Put {} moved items back", pairs.len()),
+            },
+            UndoStep::Renamed { dir, renames } => format!(
+                "Put {} renamed name(s) back in {}",
+                renames.len(),
+                crate::ui::abbrev_home(dir)
+            ),
+            UndoStep::Trashed(paths) => match paths.as_slice() {
+                [path] => format!("Take \"{}\" out of the trash", name(path)),
+                _ => format!("Take {} items out of the trash", paths.len()),
+            },
+            UndoStep::Restored(paths) => match paths.as_slice() {
+                [path] => format!("Put \"{}\" back in the trash", name(path)),
+                _ => format!("Put {} items back in the trash", paths.len()),
+            },
+        }
+    }
+}
+
 /// C-x e: mc's chattr window - the file flags `lsattr` shows, as check
 /// boxes, and what the cursor entry has now in `lsattr`'s letters.
 pub struct ChattrDialog {
@@ -792,7 +850,10 @@ pub struct ChownDialog {
 pub const CHOWN_BUTTONS: &[&str] = &["Set", "Cancel"];
 /// F5/F6's buttons. Background is mc's, and it earns the `&` because
 /// the two others start with letters it does not.
-pub const TRANSFER_BUTTONS: &[&str] = &["OK", "&Background", "Cancel"];
+/// Queue is Total Commander's F2: the job waits until nothing else is
+/// writing to the device it writes to, so two copies onto one USB stick
+/// run one after the other instead of fighting over its head.
+pub const TRANSFER_BUTTONS: &[&str] = &["OK", "&Background", "&Queue", "Cancel"];
 pub const YES_NO: &[&str] = &["Yes", "No"];
 pub const OK_CANCEL: &[&str] = &["OK", "Cancel"];
 /// Focus stops in the chown window: two lists, the box, the buttons.
@@ -897,8 +958,8 @@ pub enum ConfirmKind {
     },
     /// Enter about to run an `[[open]]` command.
     Execute,
-    /// `C-x u` about to put the last move back.
-    Undo,
+    /// F6 on a `trash://` panel: put these back where they came from.
+    Restore,
     /// `M-Del` about to overwrite and delete.
     Wipe,
 }
@@ -1170,6 +1231,9 @@ pub enum Dialog {
     Tree(Box<Tree>),
     /// F5/F6: the copy/move form.
     Transfer(Box<TransferDialog>),
+    /// C-x u: what can be undone, newest first; the payload is the
+    /// selected row.
+    Undo(usize),
     /// C-x c: the chmod bit matrix.
     Chmod(Box<ChmodDialog>),
     /// C-x e: the chattr flags.
@@ -1722,6 +1786,14 @@ pub struct Job {
     /// move, which is what makes those operations un-undoable rather
     /// than wrongly undoable.
     moved: Vec<(PathBuf, PathBuf)>,
+    /// What went to the trash, and what came back out of it: the same
+    /// kind of record, for an F8 and for a restore.
+    trashed: Vec<PathBuf>,
+    restored: Vec<PathBuf>,
+    /// What the job writes to - a device, or a server - for the queue:
+    /// a queued job starts once no other job writes there. `None` for
+    /// the jobs that are not copies or moves.
+    pub device: Option<String>,
     /// What the job left alone, and why - the report C-x r shows.
     skips: Vec<(PathBuf, String)>,
     /// A checksum check, where the count that did not match is the
@@ -2614,6 +2686,8 @@ pub enum Action {
     HotlistAdd,
     /// C-x r: what the last job skipped, and why, in the viewer.
     JobReport,
+    /// The `trash://` panel.
+    Trash,
     /// M-,: panels side by side, or one above the other.
     ToggleSplit,
     /// mc's "Case sensitive" sort switch.
@@ -2735,6 +2809,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             None,
             Some(("&Jobs...", "C-x j", Action::Jobs)),
             Some(("Acti&ve VFS list...", "C-x a", Action::VfsList)),
+            Some(("Tr&ash (trash://)", "", Action::Trash)),
             Some(("Command histor&y...", "M-h", Action::HistoryList)),
             Some(("Directory histo&ry...", "M-H", Action::DirHistory)),
             // mc has three of these - extension file, menu file,
@@ -3154,12 +3229,14 @@ pub struct App {
     pub dialog: Option<Dialog>,
     /// Running jobs; at most one is foreground (its dialog is modal).
     pub jobs: Vec<Job>,
-    /// What the last move actually did, as `(from, to)` pairs, and what
-    /// `C-x u` puts back. One operation deep on purpose: an undo is for
-    /// the move you regret the moment you made it, and a stack of them
-    /// would be a history of a filesystem that other programs are also
-    /// writing to.
-    undo: Option<Vec<(PathBuf, PathBuf)>>,
+    /// What `C-x u` can put back, oldest first: every move, bulk
+    /// rename, F8 to the trash and restore out of it this session. Each
+    /// is undone on its own and checked against the disk as it stands -
+    /// other programs write to it too - so an undo never overwrites.
+    undo: Vec<UndoStep>,
+    /// The `trash://` panel's filesystem, made the first time it is
+    /// wanted: what F6 there and an undo of F8 restore through.
+    trash: Option<Arc<rcmd_core::trashcan::TrashFs>>,
     /// The full-screen things open besides the panels - mc's screens,
     /// listed behind M-`. The panels are what is underneath them all
     /// rather than one of them, which is why this can be empty.
@@ -3243,6 +3320,9 @@ pub struct App {
     /// What the terminal's title was last set to, so it is written only
     /// when it changes; `None` after the terminal was handed away.
     pub title_shown: Option<String>,
+    /// Finished jobs to tell the desktop about, oldest first: the
+    /// terminal loop rings for them, the window build sends a notice.
+    pub notices: Vec<String>,
     pub areas: Areas,
     /// Set by the drawing code; see [`DialogRows`].
     pub dialog_rows: Option<DialogRows>,
@@ -3407,7 +3487,8 @@ impl App {
             panel_rows: 1,
             dialog: None,
             jobs: Vec::new(),
-            undo: None,
+            undo: Vec::new(),
+            trash: None,
             filter_sets_on: [Vec::new(), Vec::new()],
             file_history: state::load().0.file_history,
             du_queue: Vec::new(),
@@ -3444,6 +3525,7 @@ impl App {
             prefix_cx: false,
             repaint: false,
             title_shown: None,
+            notices: Vec::new(),
             areas: Areas::default(),
             dialog_rows: None,
             form_hits: Vec::new(),
@@ -3690,9 +3772,48 @@ impl App {
     }
 
     /// What the window or terminal title says: the program, and where
-    /// the active panel is.
+    /// the active panel is - and while jobs run, how far along they are,
+    /// which is what a title is looked at for from another window.
     pub fn title(&self) -> String {
-        format!("rcmd - {}", self.panels[self.active].display_path())
+        let place = self.panels[self.active].display_path();
+        match self.jobs_percent() {
+            Some(pct) => format!("[{pct}%] rcmd - {place}"),
+            None => format!("rcmd - {place}"),
+        }
+    }
+
+    /// How far the running jobs are, together: by bytes where they
+    /// count bytes, by items where they do not. `None` with none
+    /// running.
+    pub fn jobs_percent(&self) -> Option<u64> {
+        let running = self.jobs.iter().filter(|j| !j.handle.is_held());
+        let (mut done, mut total) = (0u64, 0u64);
+        for job in running {
+            let (d, t) = match job.total_bytes {
+                0 => (job.files_done, job.total_files),
+                bytes => (job.bytes_done, bytes),
+            };
+            // a job still counting has no total yet: it is at 0%
+            let t = t.max(1);
+            done += d.min(t) * 1000 / t;
+            total += 1000;
+        }
+        (total > 0).then(|| done * 100 / total)
+    }
+
+    /// Ring for the jobs that finished since the last frame: the bell
+    /// always - it reaches the user through tmux and ssh - and a
+    /// desktop notice in the terminals known to pass one on.
+    fn ring_notices(&mut self) {
+        if self.notices.is_empty() {
+            return;
+        }
+        use std::io::Write;
+        let mut out = std::io::stdout();
+        for notice in std::mem::take(&mut self.notices) {
+            let _ = write!(out, "\x07{}", notice_escape(&notice));
+        }
+        let _ = out.flush();
     }
 
     /// Set the terminal's title when the place it names has changed.
@@ -3725,6 +3846,7 @@ impl App {
                 }
                 terminal.draw(|frame| ui::draw(frame, self))?;
                 self.update_title();
+                self.ring_notices();
                 self.dirty = false;
                 last_frame = Instant::now();
             }
@@ -3921,7 +4043,28 @@ impl App {
         self.jobs.iter_mut().find(|j| !j.background)
     }
 
+    /// Let each queued job begin whose device nothing ahead of it is
+    /// writing to - in the order they were queued, so the first one
+    /// released keeps the rest waiting.
+    fn release_queued(&mut self) {
+        for i in 0..self.jobs.len() {
+            if !self.jobs[i].handle.is_held() {
+                continue;
+            }
+            let device = &self.jobs[i].device;
+            let busy =
+                device.is_some()
+                    && self.jobs.iter().enumerate().any(|(j, other)| {
+                        j != i && !other.handle.is_held() && other.device == *device
+                    });
+            if !busy {
+                self.jobs[i].handle.release();
+            }
+        }
+    }
+
     fn drain_job(&mut self) {
+        self.release_queued();
         let confirm_overwrite = self.config.confirm_overwrite;
         let mut any_done = false;
         let mut i = 0;
@@ -3971,6 +4114,8 @@ impl App {
                         job.background = false;
                     }
                     JobEvent::Moved { from, to } => job.moved.push((from, to)),
+                    JobEvent::Trashed { path } => job.trashed.push(path),
+                    JobEvent::Restored { path } => job.restored.push(path),
                     JobEvent::AskError { path, message } => {
                         job.ask = Some(Ask::Error { path, message });
                         job.button = 0;
@@ -4001,11 +4146,16 @@ impl App {
                 self.remember_marks(job.src_panel);
                 self.panels[job.src_panel].marked.clear();
             }
-            // the newest move is the one C-x u answers for; a job that
-            // moved nothing leaves the last one standing rather than
-            // clearing it, so an intervening copy does not lose it
+            // what the job changed goes on the undo stack; a job that
+            // changed nothing leaves it as it was
             if !job.moved.is_empty() {
-                self.undo = Some(std::mem::take(&mut job.moved));
+                self.push_undo(UndoStep::Moved(std::mem::take(&mut job.moved)));
+            }
+            if !job.trashed.is_empty() {
+                self.push_undo(UndoStep::Trashed(std::mem::take(&mut job.trashed)));
+            }
+            if !job.restored.is_empty() {
+                self.push_undo(UndoStep::Restored(std::mem::take(&mut job.restored)));
             }
             any_done = true;
             if !job.skips.is_empty() {
@@ -4027,6 +4177,14 @@ impl App {
                     format!(" done - {files_done} item(s) processed, {n} skipped{report} ")
                 }
             });
+            // a job watched to the end needs no one to say it ended
+            if self.config.notify_done
+                && (job.background || job.started.elapsed() >= NOTIFY_AFTER)
+                && let Some(status) = &self.status
+            {
+                self.notices
+                    .push(format!("{} - {}", job.title.trim(), status.trim()));
+            }
         }
         if any_done {
             for panel in &mut self.panels {
@@ -4472,7 +4630,12 @@ impl App {
         let list = self.dialog_rows.is_some()
             || matches!(
                 self.dialog,
-                Some(Dialog::FindResults(_) | Dialog::Fuzzy(_) | Dialog::History(_))
+                Some(
+                    Dialog::FindResults(_)
+                        | Dialog::Fuzzy(_)
+                        | Dialog::History(_)
+                        | Dialog::Undo(_)
+                )
             );
         if self.dialog.is_some() && list && self.fg_job().is_none() && self.connect.is_none() {
             let code = if delta < 0 {
@@ -4717,6 +4880,7 @@ impl App {
                 KeyCode::Esc => job.handle.cancel(),
                 // detach: the job keeps running, panels come back
                 KeyCode::Char('b' | 'B') => job.background = true,
+                KeyCode::Char('p' | 'P') => job.handle.set_paused(!job.handle.is_paused()),
                 _ => {}
             }
             return;
@@ -5132,6 +5296,9 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            trashed: Vec::new(),
+            restored: Vec::new(),
+            device: None,
             skips: Vec::new(),
             checking,
         });
@@ -5672,9 +5839,39 @@ fn menu_step(entries: &[MenuEntry], current: usize, delta: isize) -> usize {
 
 /// "archive.zip://sub/dir" → (archive path, path inside). Plain local
 /// paths return None.
+/// How long a job has to run before it is worth a notice when it ends.
+pub const NOTIFY_AFTER: Duration = Duration::from_secs(10);
+
+/// The desktop-notice escape for the terminal rcmd runs in, or nothing
+/// where none is known to take one - an unknown OSC is ignored by most
+/// terminals, but not by all, and a bell is enough there. kitty has its
+/// own (99); foot, urxvt and Ghostty take 777; iTerm2, WezTerm, ConEmu
+/// and Windows Terminal take 9.
+fn notice_escape(text: &str) -> String {
+    let text: String = text.chars().filter(|c| !c.is_control()).collect();
+    let term = std::env::var("TERM").unwrap_or_default();
+    let program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+    if std::env::var_os("TMUX").is_some() || term.starts_with("screen") {
+        // a multiplexer eats OSC it does not know; the bell gets through
+        return String::new();
+    }
+    if term == "xterm-kitty" {
+        format!("\x1b]99;;{text}\x1b\\")
+    } else if term.starts_with("foot") || term.starts_with("rxvt-unicode") || program == "ghostty" {
+        format!("\x1b]777;notify;rcmd;{text}\x1b\\")
+    } else if matches!(program.as_str(), "iTerm.app" | "WezTerm")
+        || std::env::var_os("WT_SESSION").is_some()
+        || std::env::var_os("ConEmuPID").is_some()
+    {
+        format!("\x1b]9;{text}\x07")
+    } else {
+        String::new()
+    }
+}
+
 /// A location that lives on a server rather than on this machine.
 fn is_remote_url(target: &str) -> bool {
-    ["sftp://", "ftp://", "fish://", "rclone://"]
+    ["sftp://", "ftp://", "fish://", "rclone://", "trash://"]
         .iter()
         .any(|scheme| target.starts_with(scheme))
 }

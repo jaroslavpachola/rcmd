@@ -342,7 +342,7 @@ window was left in is where the next terminal session starts.
 | `*` | Invert marks |
 | Ctrl+X l / s / v | Hard link / absolute symlink / relative symlink to the cursor entry |
 | Ctrl+X Ctrl+S | Change where an existing symlink points |
-| F5 | Copy marked (or cursor) entry - opens MC's form: source mask, destination, preserve attributes / follow links / dive into subdirs / stable symlinks, and OK / Background / Cancel |
+| F5 | Copy marked (or cursor) entry - opens MC's form: source mask, destination, preserve attributes / follow links / dive into subdirs / stable symlinks / verify / sync to disk, and OK / Background / Queue / Cancel |
 | F6 | Move / rename |
 | F7 | Make directory |
 | Alt+F5 | Pack the marked entries into a new archive (the name says the format) |
@@ -350,7 +350,7 @@ window was left in is where the next terminal session starts.
 | Shift+F8 | Delete permanently |
 | Alt+Del | Wipe: overwrite every byte, then delete |
 | Ctrl+G | Apply a command to each marked file, one at a time |
-| Ctrl+X u | Undo the last move (asks first; a second time is the redo) |
+| Ctrl+X u | Undo: the session's moves, bulk renames, F8s and restores, newest first |
 | Alt+N | Sort by name (again = reverse; extension, size, the three times, owner, group and *unsorted* live in the panel's own F9 → Left/Right menu) |
 | Alt+T | Cycle listing format: brief (names in columns) / full / long (active long panel = full-width one-panel view) |
 | Ctrl+U | Swap panels |
@@ -483,20 +483,42 @@ what runs is one line per file, in the terminal, where the output and
 Ctrl+C are as they always are. A `%{question}` is refused here rather
 than asked two hundred times.
 
-**Ctrl+X u undoes the last move.** Every move F6 makes onto a name that
-was free is recorded as it happens - and so is every rename a **bulk
-rename** made, which used to be final the moment it finished - and `Ctrl+X u` asks before putting
-the items back where they came from. It is an ordinary job - the same
-progress, the same error prompts, the same Esc - and because the undo
-is itself a move, a second `Ctrl+X u` is the redo. A move that landed
+**Ctrl+X u undoes.** Every move F6 makes onto a name that was free is
+recorded as it happens, and so is every **bulk rename**, every F8 to
+the trash and every restore out of it. `Ctrl+X u` lists what the
+session can undo, newest first, and Enter undoes the one picked - the
+last move, or the F8 from an hour ago. An undo is an ordinary job, with
+the same progress, error prompts and Esc, and it goes on the list
+itself, so `Ctrl+X u` Enter a second time is the redo. A bulk rename is
+put back the way it was made, in two phases, so a swap swaps back. A
+move that landed
 on a name that was already taken is not recorded: putting the source
 back would not bring back what it overwrote, and an undo that quietly
 destroyed something would be a second accident rather than the end of
 the first. A pair whose file has since moved on, or whose old name is
 occupied again, is left alone and counted as skipped. A copy leaves no
 record either - undoing one means deleting what it wrote, which is a
-deletion and should be asked for as one - and F8 has always gone to the
-trash, which is where a deletion is undone.
+deletion and should be asked for as one.
+
+**The trash is a place**: `cd trash://` (or F9 → Command → Trash) is a
+panel over the XDG trash - the home one and every volume's own - with
+the newest F8 on top when sorted by time. The line under the panel says
+where the cursor's item came from, and Enter on a file says it too. F6
+puts the marked items back where they came from, making the directory
+again if it has gone and never overwriting what has taken the name
+since; F8 there deletes for good; F3 and F5 look and copy out as
+anywhere else. It is the same trash the desktop's own tools use.
+
+**Jobs queue, pause, and say when they are done.** The copy form's
+**Queue** button starts the job only once nothing else is writing to
+that device or server - two copies onto one USB stick run in turn
+instead of fighting over it. `p` in the progress dialog, or on a row of
+the jobs list (`Ctrl+X j`), pauses a job and `p` again lets it go on. A
+job that ran in the background, or for more than ten seconds, rings the
+bell when it ends, with a desktop notice in the terminals that pass one
+on (kitty, foot, Ghostty, iTerm2, WezTerm, Windows Terminal); the
+window build sends one through `notify-send`. While jobs run, the title
+says how far along they are. `notify_done = false` keeps it quiet.
 
 Esc doubles as MC's meta prefix everywhere: after a lone Esc, a digit is
 an F-key (Esc 1 = F1 … Esc 0 = F10) and any other key gets Alt added -
@@ -1138,6 +1160,7 @@ show_status = true         # the cursor-entry row inside the active panel
 show_cmdline = true        # the command line
 show_keybar = true         # the F1..F10 bar along the bottom
 confirm_delete = true      # ask before F8 / Shift+F8
+notify_done = true         # a long or background job rings when it is done
 confirm_overwrite = true   # ask before overwriting during copy/move
 confirm_exit = false       # ask before F10 quits (MC asks; rcmd does not)
 confirm_hotlist_delete = true   # ask before dropping a hotlist entry

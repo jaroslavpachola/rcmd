@@ -276,6 +276,11 @@ impl eframe::App for Gui {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.app.title_shown = Some(title);
         }
+        // a finished job says so on the desktop: the window has no bell
+        // anyone hears, and is likely not the one being looked at
+        for notice in std::mem::take(&mut self.app.notices) {
+            notify_desktop(&notice);
+        }
         // Fonts are only loaded once egui has run a frame, so the
         // metrics are re-measured until they settle rather than trusted
         // from construction time.
@@ -477,6 +482,29 @@ fn palette_from_theme() -> Palette {
     Palette {
         fg: crate::grid::to_color32(fg, fallback.fg),
         bg: crate::grid::to_color32(bg, fallback.bg),
+    }
+}
+
+/// A desktop notification through whatever the system has for it -
+/// `notify-send` on a freedesktop desktop, `osascript` on a Mac. Neither
+/// there is no error: the status line said it already.
+fn notify_desktop(text: &str) {
+    let spawned = if cfg!(target_os = "macos") {
+        let quoted = text.replace('\\', "\\\\").replace('"', "\\\"");
+        std::process::Command::new("osascript")
+            .args([
+                "-e",
+                &format!("display notification \"{quoted}\" with title \"rcmd\""),
+            ])
+            .spawn()
+    } else {
+        std::process::Command::new("notify-send")
+            .args(["--app-name=rcmd", "rcmd", text])
+            .spawn()
+    };
+    // reaped on a thread of its own, so no zombie is left behind
+    if let Ok(mut child) = spawned {
+        std::thread::spawn(move || child.wait());
     }
 }
 

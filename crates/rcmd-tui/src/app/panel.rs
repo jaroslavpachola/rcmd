@@ -434,6 +434,7 @@ impl App {
             }
             Action::Edit => self.open_editor(),
             Action::Copy => self.open_transfer(false),
+            Action::Move if self.in_trash() => self.open_restore(),
             Action::Move => self.open_transfer(true),
             Action::Mkdir => self.open_mkdir(),
             Action::Pack => self.open_pack(),
@@ -598,6 +599,7 @@ impl App {
                 self.cursor_on_screen(action)
             }
             Action::JobReport => self.show_job_report(),
+            Action::Trash => self.connect_remote(rcmd_core::trashcan::PREFIX),
             Action::HotlistAdd => {
                 let panel = &self.panels[self.active];
                 let path = match panel.is_remote() {
@@ -775,6 +777,16 @@ impl App {
         }
         let panel = &self.panels[self.active];
         if !panel.is_local() {
+            // a file in the trash has nowhere to run; what it is asked
+            // about is where it came from
+            if let Some(entry) = panel.selected()
+                && let Some(from) = panel.fs.note(&panel.cwd.join(&entry.name))
+            {
+                self.status = Some(format!(
+                    " {} came {from} - F6 puts it back ",
+                    panel.name_of(entry)
+                ));
+            }
             return;
         }
         let Some(entry) = panel.selected() else {
@@ -1792,6 +1804,9 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            trashed: Vec::new(),
+            restored: Vec::new(),
+            device: None,
             skips: Vec::new(),
             checking: false,
         });
@@ -1937,6 +1952,9 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            trashed: Vec::new(),
+            restored: Vec::new(),
+            device: None,
             skips: Vec::new(),
             checking: false,
         });
@@ -1970,6 +1988,9 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            trashed: Vec::new(),
+            restored: Vec::new(),
+            device: None,
             skips: Vec::new(),
             checking: false,
         });
@@ -1979,13 +2000,34 @@ impl App {
     /// the same error prompts and the same Esc. The moves it makes are
     /// themselves reported, so the log ends up describing the undo -
     /// and a second `C-x u` is a redo.
-    pub(super) fn start_undo(&mut self) {
-        let Some(pairs) = self.undo.take() else {
+    /// Undo step `at` of the stack. It leaves the stack; what the undo
+    /// itself does goes on as the newest step, so undoing that is the
+    /// redo.
+    pub(super) fn start_undo(&mut self, at: usize) {
+        if at >= self.undo.len() {
             return;
-        };
-        let count = pairs.len();
-        let handle = fsops::spawn_undo_move(pairs);
-        self.push_job(format!(" put {count} item(s) back "), handle);
+        }
+        match self.undo.remove(at) {
+            UndoStep::Moved(pairs) => {
+                let count = pairs.len();
+                let handle = fsops::spawn_undo_move(pairs);
+                self.push_job(format!(" put {count} item(s) back "), handle);
+            }
+            UndoStep::Renamed { dir, renames } => {
+                let back: Vec<(OsString, OsString)> =
+                    renames.into_iter().map(|(old, new)| (new, old)).collect();
+                match rcmd_core::rename::apply_os(&dir, &back) {
+                    Ok(()) => {
+                        self.status = Some(format!(" renamed {} item(s) back ", back.len()));
+                        self.push_undo(UndoStep::Renamed { dir, renames: back });
+                    }
+                    Err(err) => self.status = Some(format!(" undo: {err} ")),
+                }
+                self.reload_panels();
+            }
+            UndoStep::Trashed(paths) => self.start_restore(paths, true),
+            UndoStep::Restored(paths) => self.start_delete(paths, false),
+        }
     }
 
     /// Copy INTO an archive: zip appends in place, tar (plain or
@@ -2031,6 +2073,9 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            trashed: Vec::new(),
+            restored: Vec::new(),
+            device: None,
             skips: Vec::new(),
             checking: false,
         });
@@ -2057,6 +2102,9 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            trashed: Vec::new(),
+            restored: Vec::new(),
+            device: None,
             skips: Vec::new(),
             checking: false,
         });
@@ -2134,6 +2182,9 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            trashed: Vec::new(),
+            restored: Vec::new(),
+            device: None,
             skips: Vec::new(),
             checking: false,
         });
@@ -2170,6 +2221,9 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            trashed: Vec::new(),
+            restored: Vec::new(),
+            device: None,
             skips: Vec::new(),
             checking: false,
         });
@@ -3039,26 +3093,78 @@ impl App {
     /// deletion and should be asked for as one, and a delete already
     /// went to the trash.
     fn open_undo(&mut self) {
-        let Some(pairs) = self.undo.clone() else {
+        if self.undo.is_empty() {
             self.status = Some(" nothing to undo ".into());
             return;
-        };
-        let message = match pairs.len() {
-            1 => format!(
-                "Put \"{}\" back where it was?",
-                pairs[0].0.file_name().unwrap_or_default().to_string_lossy()
+        }
+        self.dialog = Some(Dialog::Undo(0));
+    }
+
+    /// The rows of the C-x u list, oldest first - the list draws them
+    /// newest first.
+    pub fn undo_rows(&self) -> Vec<String> {
+        self.undo.iter().map(UndoStep::describe).collect()
+    }
+
+    /// Something to undo later. The oldest goes once there are more
+    /// than [`UNDO_DEPTH`].
+    pub(super) fn push_undo(&mut self, step: UndoStep) {
+        self.undo.push(step);
+        if self.undo.len() > UNDO_DEPTH {
+            self.undo.remove(0);
+        }
+    }
+
+    /// The trash as a filesystem, one for the session.
+    pub(super) fn trash_fs(&mut self) -> Arc<rcmd_core::trashcan::TrashFs> {
+        self.trash
+            .get_or_insert_with(|| Arc::new(rcmd_core::trashcan::TrashFs::new()))
+            .clone()
+    }
+
+    /// Whether the active panel is on `trash://`.
+    pub(super) fn in_trash(&self) -> bool {
+        self.panels[self.active].remote.as_deref() == Some(rcmd_core::trashcan::PREFIX)
+    }
+
+    /// F6 on the trash: put the marked (or cursor) items back where
+    /// they came from, which is the one place a move out of the trash
+    /// means.
+    fn open_restore(&mut self) {
+        if self.panels[self.active].cwd.parent().is_some() {
+            self.status = Some(" only what was thrown away goes back - go up to the top ".into());
+            return;
+        }
+        let paths = self.panels[self.active].targets();
+        if paths.is_empty() {
+            self.status = Some(" nothing selected ".into());
+            return;
+        }
+        let message = match paths.as_slice() {
+            // where from is on the line under the panel; the one line
+            // here has room for the name
+            [path] => format!(
+                "Put \"{}\" back?",
+                path.file_name().unwrap_or_default().to_string_lossy()
             ),
-            n => format!("Put {n} moved items back where they were?"),
+            _ => format!("Put {} items back where they came from?", paths.len()),
         };
         self.dialog = Some(Dialog::Confirm(ConfirmDialog {
-            title: " Undo ".into(),
+            title: " Restore ".into(),
             message,
             yes: true,
-            paths: Vec::new(),
+            paths,
             permanent: false,
-            kind: ConfirmKind::Undo,
+            kind: ConfirmKind::Restore,
             command: None,
         }));
+    }
+
+    pub(super) fn start_restore(&mut self, paths: Vec<PathBuf>, by_origin: bool) {
+        let trash = self.trash_fs();
+        let count = paths.len();
+        let handle = fsops::spawn_restore(trash, paths, by_origin);
+        self.push_job(format!(" restore {count} item(s) "), handle);
     }
 
     /// M-F5: pack what is marked into an archive of its own. The name
@@ -3133,7 +3239,9 @@ impl App {
             return;
         }
         let what = self.describe(&paths);
-        let message = if self.panels[self.active].is_remote() {
+        let message = if self.in_trash() {
+            format!("Delete {what} for good? Nothing comes back from here")
+        } else if self.panels[self.active].is_remote() {
             format!("Permanently delete {what} from the server?")
         } else if permanent {
             format!("Permanently delete {what}?")

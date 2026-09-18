@@ -9,7 +9,12 @@ impl App {
             self.status = Some(" a connection attempt is already running ".into());
             return;
         }
-        let handle = if input.starts_with("rclone://") {
+        let handle = if let Some(rest) = input.strip_prefix(rcmd_core::trashcan::PREFIX) {
+            // on this machine and always there: the "connection" is the
+            // first listing
+            let path = PathBuf::from("/").join(rest.trim_start_matches('/'));
+            remote::spawn_reuse(self.trash_fs(), path, "the trash".into())
+        } else if input.starts_with("rclone://") {
             let Some(url) = rcmd_core::rclone::RcloneUrl::parse(input) else {
                 self.status = Some(" bad URL - rclone://remote[/path] ".into());
                 return;
@@ -172,7 +177,10 @@ impl App {
                     self.connections.retain(|(p, _)| p != &prefix);
                     self.connections.push((prefix.clone(), Arc::downgrade(&fs)));
                     self.panels[connect.panel].adopt_remote(fs, prefix.clone(), start, entries);
-                    self.status = Some(format!(" connected to {prefix} "));
+                    self.status = Some(match prefix == rcmd_core::trashcan::PREFIX {
+                        true => " the trash: F6 puts back, F8 deletes for good ".into(),
+                        false => format!(" connected to {prefix} "),
+                    });
                     return;
                 }
                 ConnectEvent::Err(msg) => {

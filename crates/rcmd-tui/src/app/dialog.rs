@@ -100,6 +100,7 @@ impl App {
             Some(Dialog::Hotlist(d)) => Some(self.hotlist_rows(d).len()),
             _ => None,
         };
+        let undo_len = self.undo.len();
         match self.dialog.as_mut() {
             Some(Dialog::Hotlist(d)) => {
                 if let Some(at) = count(hotlist_len.unwrap_or(0)) {
@@ -115,6 +116,12 @@ impl App {
             }
             Some(Dialog::Jobs(row)) => {
                 if let Some(at) = count(self.jobs.len()) {
+                    *row = at;
+                }
+                true
+            }
+            Some(Dialog::Undo(row)) => {
+                if let Some(at) = count(undo_len) {
                     *row = at;
                 }
                 true
@@ -612,6 +619,25 @@ impl App {
                     _ => self.dialog = Some(Dialog::Sync(d)),
                 }
             }
+            Dialog::Undo(mut row) => {
+                // newest first on screen, newest last on the stack
+                let last = self.undo_rows().len().saturating_sub(1);
+                match key.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => self.start_undo(last.saturating_sub(row)),
+                    KeyCode::Up => {
+                        row = row.saturating_sub(1);
+                        self.dialog = Some(Dialog::Undo(row));
+                    }
+                    KeyCode::Down => {
+                        row = (row + 1).min(last);
+                        self.dialog = Some(Dialog::Undo(row));
+                    }
+                    KeyCode::Home => self.dialog = Some(Dialog::Undo(0)),
+                    KeyCode::End => self.dialog = Some(Dialog::Undo(last)),
+                    _ => self.dialog = Some(Dialog::Undo(row)),
+                }
+            }
             Dialog::FileHistory(mut row) => {
                 let files = self.file_history.clone();
                 let last = files.len().saturating_sub(1);
@@ -742,6 +768,12 @@ impl App {
                     KeyCode::Char('c' | 'C') | KeyCode::Delete => {
                         if let Some(job) = self.jobs.get(selected) {
                             job.handle.cancel();
+                        }
+                        self.dialog = Some(Dialog::Jobs(selected));
+                    }
+                    KeyCode::Char('p' | 'P') => {
+                        if let Some(job) = self.jobs.get(selected) {
+                            job.handle.set_paused(!job.handle.is_paused());
                         }
                         self.dialog = Some(Dialog::Jobs(selected));
                     }
@@ -1165,9 +1197,11 @@ impl App {
                     // line takes everything else as typing
                     KeyCode::Left | KeyCode::Right if d.row == TRANSFER_ROWS => {
                         d.button = if key.code == KeyCode::Left {
-                            d.button.checked_sub(1).unwrap_or(2)
+                            d.button
+                                .checked_sub(1)
+                                .unwrap_or(TRANSFER_BUTTONS.len() - 1)
                         } else {
-                            (d.button + 1) % 3
+                            (d.button + 1) % TRANSFER_BUTTONS.len()
                         };
                         self.dialog = Some(Dialog::Transfer(d));
                     }
@@ -1674,12 +1708,14 @@ impl App {
         self.status = Some(format!(" chattr: {done} item(s) "));
     }
 
-    /// OK or Background on the copy/move form. Cancel never gets here.
+    /// OK, Background or Queue on the copy/move form.
     fn submit_transfer(&mut self, d: TransferDialog) {
-        if d.button == 2 {
-            return; // Cancel
-        }
-        let background = d.button == 1;
+        let (background, queue) = match d.button {
+            0 => (false, false),
+            1 => (true, false),
+            2 => (true, true),
+            _ => return, // Cancel
+        };
         self.remember(&d.dest);
         if d.mask.value != "*" {
             self.remember(&d.mask);
@@ -1695,12 +1731,43 @@ impl App {
             _ => (typed.to_string(), None),
         };
         let rename = Rename::new(Mask::new(&d.mask.value), target);
+        let device = self.write_device(&dest);
+        let before = self.jobs.len();
+        // a queued job is held from the moment it is made, so it cannot
+        // have begun before it is told to wait
+        fsops::hold_new_jobs(queue);
         self.route_transfer(d.sources, &dest, d.is_move, d.opts, rename);
-        // every route ends in a pushed job, or in a status message and
-        // no job at all - marking the last one is right either way
-        if background && let Some(job) = self.jobs.last_mut() {
-            job.background = true;
+        fsops::hold_new_jobs(false);
+        // every route ends in one pushed job, or in a status message and
+        // no job at all
+        if self.jobs.len() > before
+            && let Some(job) = self.jobs.last_mut()
+        {
+            job.device = device;
+            job.background |= background;
+            if queue && job.handle.is_held() {
+                self.status = Some(" queued: it starts when the device is free ".into());
+            }
         }
+        self.release_queued();
+    }
+
+    /// What a copy to `dest` writes to, as the queue tells jobs apart:
+    /// a server by its URL's scheme and host, a local path by the
+    /// device of the nearest directory of it that exists.
+    fn write_device(&self, dest: &str) -> Option<String> {
+        if is_remote_url(dest) {
+            let (scheme, rest) = dest.split_once("://")?;
+            let host = rest.split('/').next().unwrap_or_default();
+            return Some(format!("{scheme}://{host}"));
+        }
+        let path = match split_vfs_dest(dest) {
+            Some((archive, _)) => self.resolve(&archive.to_string_lossy()),
+            None => self.resolve(dest),
+        };
+        use std::os::unix::fs::MetadataExt;
+        let meta = path.ancestors().find_map(|p| std::fs::metadata(p).ok())?;
+        Some(format!("dev:{}", meta.dev()))
     }
 
     pub(super) fn open_filter(&mut self) {
@@ -1822,7 +1889,7 @@ impl App {
     fn confirm_yes(&mut self, d: ConfirmDialog) {
         match d.kind {
             ConfirmKind::Delete => self.start_delete(d.paths, d.permanent),
-            ConfirmKind::Undo => self.start_undo(),
+            ConfirmKind::Restore => self.start_restore(d.paths, false),
             ConfirmKind::Wipe => self.start_wipe(d.paths),
             ConfirmKind::Quit => self.quit_now(),
             ConfirmKind::HotlistDelete { group, index } => {

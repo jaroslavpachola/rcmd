@@ -84,6 +84,7 @@ class Session:
             os.environ["HOME"] = home
             os.environ.pop("XDG_CONFIG_HOME", None)
             os.environ.pop("XDG_STATE_HOME", None)  # state.toml stays in $HOME
+            os.environ.pop("XDG_DATA_HOME", None)   # F8's trash stays in $HOME
             # ...and the remote-control socket in the sandbox, so a test
             # never reaches a real rcmd of the user's
             os.environ["XDG_RUNTIME_DIR"] = home
@@ -1554,6 +1555,75 @@ def test_undo():
     s.send(b"\x18u", wait=STEP * 2)
     check("undo: a fresh session has nothing to undo",
           wait_for(s, "nothing to undo"))
+    s.quit()
+    shutil.rmtree(root)
+
+
+def trash_infos(home):
+    """The .trashinfo names in the sandbox's home trash."""
+    info = os.path.join(home, ".local", "share", "Trash", "info")
+    return sorted(os.listdir(info)) if os.path.isdir(info) else []
+
+
+def test_trash():
+    """PLAN5 S5: trash:// lists what F8 threw away and says where from;
+    F6 puts back, F8 deletes for good, and C-x u takes an F8 back."""
+    root, play, home = sandbox()
+    name = "doomed-%d.txt" % os.getpid()
+    doomed = os.path.join(play, name)
+    open(doomed, "w").write("still here\n")
+    s = Session(play, home, args=(play, play))
+
+    # F8, then C-x u takes it back out of the trash
+    s.send(b"\x13" + name[:6].encode() + b"\r", wait=STEP)
+    s.send(F8, wait=STEP)
+    s.send(b"\r", wait=STEP * 3)
+    check("trash: F8 threw it away", not os.path.exists(doomed))
+    s.send(b"\x18u", wait=STEP)
+    check("trash: C-x u lists what it can undo",
+          "out of the trash" in s.screen() and name in s.screen(), s.screen())
+    s.send(b"\r", wait=STEP * 3)
+    check("trash: and Enter took it back out",
+          wait_for(s, "done -") and os.path.exists(doomed))
+
+    # into the trash panel: it says where a thing came from
+    s.send(b"\x12", wait=STEP)              # Ctrl+R: the file is back
+    s.send(b"\x13" + name[:6].encode() + b"\r", wait=STEP)
+    s.send(F8, wait=STEP)
+    s.send(b"\r", wait=STEP * 3)
+    check("trash: thrown away again", not os.path.exists(doomed))
+    s.send(b"\t", wait=STEP)                # the other panel
+    s.send(b"cd trash://\r", wait=STEP * 2)
+    check("trash: the panel opens on it", wait_for(s, "trash:///"), s.screen())
+    check("trash: it lists what was thrown away", name in s.screen(), s.screen())
+    s.send(b"\x13" + name[:6].encode() + b"\r", wait=STEP)
+    check("trash: the line under it says where it came from",
+          "from /tmp/" in s.screen(), s.screen()[-600:])
+
+    # F6 puts it back where it came from
+    s.send(b"\x1b[17~", wait=STEP)          # F6
+    check("trash: F6 asks to put it back", "Put" in s.screen(), s.screen())
+    s.send(b"\r", wait=STEP * 3)
+    check("trash: and did", wait_for(s, "done -") and os.path.exists(doomed))
+    check("trash: which emptied the trash of it", trash_infos(home) == [],
+          str(trash_infos(home)))
+
+    # F8 in the trash is for good
+    s.send(b"\t", wait=STEP)
+    s.send(b"\x12", wait=STEP)
+    s.send(b"\x13" + name[:6].encode() + b"\r", wait=STEP)
+    s.send(F8, wait=STEP)
+    s.send(b"\r", wait=STEP * 3)
+    s.send(b"\t", wait=STEP)
+    s.send(b"\x12", wait=STEP)              # the trash panel again
+    check("trash: in the trash once more", trash_infos(home) != [])
+    s.send(b"\x13" + name[:6].encode() + b"\r", wait=STEP)
+    s.send(F8, wait=STEP)
+    check("trash: F8 there says it is for good", "for good" in s.screen(), s.screen())
+    s.send(b"y", wait=STEP * 3)
+    check("trash: and it is gone for good",
+          trash_infos(home) == [] and not os.path.exists(doomed),
+          str(trash_infos(home)))
     s.quit()
     shutil.rmtree(root)
 
@@ -3214,10 +3284,11 @@ def test_copyform():
     check("copyform: OK/Background/Cancel", "[ Background ]" in scr, scr[:400])
 
     # Cancel really cancels: down to the buttons, along to Cancel, Enter
-    # (the form opens on the destination, with six boxes below it)
+    # (the form opens on the destination, with six boxes below it;
+    # the buttons are OK, Background, Queue, Cancel)
     s.keys(
         DOWN * 7,
-        b"\x1b[C" * 2,
+        b"\x1b[C" * 3,
         b"\r",
         wait=STEP * 2,
     )
@@ -3342,6 +3413,66 @@ def test_copysafety():
         flags = lsattr_flags(target)
         check("copysafety: Set wrote the flag", flags is not None and flags & 0x40,
               str(flags))
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_queue():
+    """PLAN5 S5: a paused job waits; a queued one starts when nothing
+    else is writing to its device."""
+    root, play, home = sandbox()
+    other = os.path.join(root, "other")
+    os.makedirs(other)
+    with open(os.path.join(play, "big.bin"), "wb") as f:
+        chunk = b"\x01" * (1 << 20)
+        for _ in range(64):
+            f.write(chunk)
+    open(os.path.join(play, "small.txt"), "w").write("small\n")
+    s = Session(play, home, args=(play, other))
+
+    # the big copy, paused the moment it starts, then sent back
+    s.send(b"\x13big\r", wait=STEP)
+    s.send(F5, wait=STEP)
+    s.send(b"\rp", wait=STEP)
+    check("queue: p paused the copy", "paused" in s.screen(), s.screen())
+    s.send(b"b", wait=STEP)
+
+    # the small one, queued behind it: same device, so it waits
+    s.send(b"\x13small\r", wait=STEP)
+    s.send(F5, wait=STEP)
+    check("queue: the form has a Queue button", "[ Queue ]" in s.screen(), s.screen())
+    s.keys(
+        DOWN * 7,
+        b"\x1b[C" * 2,                   # -> Queue
+        b"\r",
+        wait=STEP * 2,
+    )
+    check("queue: it says it is queued", "queued" in s.screen(), s.screen()[-400:])
+    time.sleep(1)
+    check("queue: and it has not begun",
+          not os.path.exists(os.path.join(other, "small.txt")))
+    s.send(b"\x18j", wait=STEP)
+    check("queue: the jobs list shows both states",
+          "paused" in s.screen() and "queued" in s.screen(), s.screen())
+
+    # going on with the first lets the second through after it
+    s.send(HOME_K + b"p", wait=STEP)
+    s.send(b"\x1b", wait=STEP)
+    for _ in range(40):
+        if os.path.exists(os.path.join(other, "small.txt")):
+            break
+        time.sleep(0.25)
+    check("queue: the queued copy ran once the device was free",
+          os.path.exists(os.path.join(other, "small.txt")))
+    check("queue: after the big one finished",
+          os.path.getsize(os.path.join(other, "big.bin")) == 64 << 20)
+    # the title said how far along, and the end rang: a bell that is
+    # not the one closing a title sequence
+    check("queue: the title carried the progress",
+          re.search(rb"\x1b\]0;\[\d+%\] rcmd", s.buf) is not None)
+    time.sleep(STEP * 2)
+    bare = re.sub(rb"\x1b\][^\x07\x1b]*(\x07|\x1b\\)", b"", s.buf)
+    check("queue: a background job that finished rang the bell", b"\x07" in bare)
     s.quit()
     shutil.rmtree(root)
 
@@ -6312,6 +6443,7 @@ def main():
         test_archive_write,
         test_pack,
         test_undo,
+        test_trash,
         test_sync,
         test_bulkundo,
         test_rclone,
@@ -6349,6 +6481,7 @@ def main():
         test_overwrite,
         test_copyform,
         test_copysafety,
+        test_queue,
         test_masks,
         test_chmod,
         test_chown,

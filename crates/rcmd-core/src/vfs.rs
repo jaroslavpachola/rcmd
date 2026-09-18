@@ -26,6 +26,12 @@ pub trait FsProvider: Send + Sync {
     fn is_local(&self) -> bool {
         false
     }
+    /// A word about an entry beyond what its stat says - where a
+    /// trashed thing came from - for the line under the panel. Asked on
+    /// every draw, so it answers from what it already knows.
+    fn note(&self, _path: &Path) -> Option<String> {
+        None
+    }
     /// The write half, if this provider supports writing.
     fn writer(&self) -> Option<&dyn FsWrite> {
         None
