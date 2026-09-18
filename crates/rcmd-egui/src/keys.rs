@@ -87,6 +87,13 @@ pub fn collect(input: &egui::InputState, origin: egui::Pos2, metrics: Metrics) -
                 };
                 out.push(Input::Key(KeyEvent::new(code, mods_ct)));
             }
+            // egui-winit turns the clipboard shortcuts into these and
+            // returns before it pushes the Key event, so without this
+            // arm Ctrl+X - and with it every mc `C-x` chord - Ctrl+C and
+            // Ctrl+V never reach the app at all
+            egui::Event::Cut | egui::Event::Copy | egui::Event::Paste(_) => {
+                out.push(Input::Key(clipboard_key(event, &input.modifiers)));
+            }
             egui::Event::PointerButton {
                 pos,
                 button,
@@ -139,6 +146,23 @@ pub fn collect(input: &egui::InputState, origin: egui::Pos2, metrics: Metrics) -
         }
     }
     out
+}
+
+/// The key a clipboard event was made from. egui-winit makes them
+/// from Ctrl+X/C/V (Cmd on macOS) and, on Windows, from Shift+Delete,
+/// Ctrl+Insert and Shift+Insert as well - which are mc's editor keys
+/// for the same three things. Ctrl+Insert cannot be told from Ctrl+C
+/// once it is an `Event::Copy`, so both come back as Ctrl+C.
+fn clipboard_key(event: &egui::Event, mods: &egui::Modifiers) -> KeyEvent {
+    let shifted = mods.shift && !mods.command;
+    let (code, modifiers) = match event {
+        egui::Event::Cut if shifted => (KeyCode::Delete, KeyModifiers::SHIFT),
+        egui::Event::Paste(_) if shifted => (KeyCode::Insert, KeyModifiers::SHIFT),
+        egui::Event::Cut => (KeyCode::Char('x'), KeyModifiers::CONTROL),
+        egui::Event::Copy => (KeyCode::Char('c'), KeyModifiers::CONTROL),
+        _ => (KeyCode::Char('v'), KeyModifiers::CONTROL),
+    };
+    KeyEvent::new(code, modifiers)
 }
 
 fn to_modifiers(mods: &egui::Modifiers) -> KeyModifiers {
@@ -381,6 +405,40 @@ mod tests {
         assert_eq!(
             collected(vec![key(egui::Key::H, alt_shift)], alt_shift),
             vec![KeyEvent::new(KeyCode::Char('H'), KeyModifiers::ALT)]
+        );
+    }
+
+    #[test]
+    fn the_clipboard_shortcuts_come_back_as_their_keys() {
+        // egui-winit swallows Ctrl+X/C/V into Cut/Copy/Paste; Ctrl+X is
+        // the prefix of every mc `C-x` chord and must still arrive
+        let ctrl = egui::Modifiers::CTRL;
+        assert_eq!(
+            collected(
+                vec![
+                    egui::Event::Cut,
+                    egui::Event::Copy,
+                    egui::Event::Paste("text".into()),
+                ],
+                ctrl,
+            ),
+            vec![
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            ]
+        );
+        // Windows' Shift+Delete and Shift+Insert
+        let shift = egui::Modifiers::SHIFT;
+        assert_eq!(
+            collected(
+                vec![egui::Event::Cut, egui::Event::Paste("text".into())],
+                shift
+            ),
+            vec![
+                KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT),
+                KeyEvent::new(KeyCode::Insert, KeyModifiers::SHIFT),
+            ]
         );
     }
 
