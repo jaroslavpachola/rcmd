@@ -397,7 +397,28 @@ terminal pane. It handles text, key press, pointer press and wheel
   context menu on right click, smooth wheel scrolling.
 - IME and compose input.
 
-### S9 - small wins (any order, none blocks a release)
+### S9 - small wins (any order, none blocks a release) - DONE (2026-09-18, 4.40.0)
+
+Shipped: display width in `fit`, `tail`, fields and the editor; rows
+built only for what is on screen; the editor's trim, final newline,
+visible whitespace, margin, line ending, indent detection and
+`.editorconfig`; the info panel's xattrs, ACL, flags, device, mount,
+filesystem type and inodes; git's `U`, `S` and ahead/behind; Alt+F6
+extract; the hex inspector and hex undo.
+
+Left, each still worth doing and none blocking: graphemes (not only
+cells) in the line editor; `marked_stats` is still a walk per draw;
+changed-line marks in the editor gutter and ORTHODOX-DIFF §7's git
+actions; zstd and 7z writing, archive passwords, a compression level
+on the pack form, archives on remote panels and inside one another,
+and zip names in a chosen codepage.
+
+**i18n, decided: not now.** Every string stays an English literal.
+Translating means a catalogue, a lookup on every string drawn and a
+translator per language, and nobody has asked for one; the day someone
+does, the strings are all in two files (`ui.rs`, `app/`) and the work
+is mechanical. Recorded so the question is closed rather than open.
+
 
 - **Display width.** Nothing uses `unicode-width`: `fit()`, `tail()`,
   `field_row`, the brief and user columns and the editor's

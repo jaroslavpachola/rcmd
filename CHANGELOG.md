@@ -1,5 +1,36 @@
 # Changelog
 
+## 4.40.0 - 2026-09-18
+
+[PLAN5](docs/PLAN5.md)'s S9: small wins.
+
+- **Wide characters** - CJK names, emoji - take the two cells they are
+  drawn in: brief and user columns, titles, dialog fields and the
+  editor's cursor no longer drift.
+
+- **Only what is on screen is drawn**: the full and long listings build
+  their visible rows, not a row per entry; a directory of 100,000 files
+  scrolls as one of 40 does.
+
+- **The editor**: trim trailing blanks and end with a newline on save,
+  show tabs and trailing blanks, a right margin, the line ending in the
+  title row; a file's own indent is read from it, and `.editorconfig`
+  has the last word.
+
+- **The info panel** says what the file carries - extended attributes,
+  an ACL, its chattr flags - and what it is on: the device, the mount
+  point and filesystem type, free inodes.
+
+- **Git**: `U` for a conflict, `S` for a staged change apart from `M` in
+  the work tree, and the branch says how far ahead of and behind its
+  upstream it is.
+
+- **Alt+F6 extracts** the marked archives into the other panel, each in
+  a directory of its own.
+
+- **The hex editor** has a data inspector under the bytes - integers,
+  floats and a Unix time, both endiannesses - and Ctrl+Z.
+
 ## 4.39.0 - 2026-09-18
 
 [PLAN5](docs/PLAN5.md)'s S8: the window.
