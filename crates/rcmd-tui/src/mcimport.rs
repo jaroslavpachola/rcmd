@@ -28,11 +28,29 @@ pub fn default_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME").map(|home| Path::new(&home).join(".config/mc"))
 }
 
-/// Import every mc file found in `dir`. Missing files are not an error:
-/// an mc setup rarely has all of them.
+/// Where mc keeps the files it ships, for the ones a user never copied
+/// into their own directory - which is most of them.
+const SYSTEM_DIRS: &[&str] = &["/etc/mc", "/usr/share/mc"];
+
+/// Import every mc file found in `dir`, falling back to mc's system copy
+/// of each where the user has none. Missing files are not an error: an
+/// mc setup rarely has all of them.
 pub fn import_dir(dir: &Path) -> Imported {
+    import_from(dir, SYSTEM_DIRS)
+}
+
+fn import_from(dir: &Path, system: &[&str]) -> Imported {
     let mut out = Imported::default();
-    let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
+    let mine = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
+    let shipped = |name: &str| {
+        system
+            .iter()
+            .find_map(|sys| std::fs::read_to_string(Path::new(sys).join(name)).ok())
+    };
+    // the user's own file, else mc's shipped one - whose menu is called
+    // mc.menu rather than menu
+    let read =
+        |name: &str| mine(name).or_else(|| shipped(if name == "menu" { "mc.menu" } else { name }));
 
     match read("menu") {
         Some(text) => {
@@ -43,8 +61,15 @@ pub fn import_dir(dir: &Path) -> Imported {
         None => out.warnings.push("no menu file".into()),
     }
 
-    // mc 4.8.28+ ships mc.ext.ini; older versions the line-based mc.ext
-    if let Some(text) = read("mc.ext.ini") {
+    // mc 4.8.28+ ships mc.ext.ini; older versions the line-based mc.ext.
+    // The user's own, in either shape, before anything mc shipped.
+    let ini = mine("mc.ext.ini").or_else(|| {
+        mine("mc.ext")
+            .is_none()
+            .then(|| shipped("mc.ext.ini"))
+            .flatten()
+    });
+    if let Some(text) = ini {
         let (open, view, warnings) = parse_ext_ini(&text);
         out.open.extend(open);
         out.view.extend(view);
@@ -199,13 +224,50 @@ pub fn parse_ext_ini(text: &str) -> (Vec<OpenRule>, Vec<OpenRule>, Vec<String>) 
     let mut warnings = Vec::new();
     let mut matchers: Vec<OpenRule> = Vec::new();
 
+    // `[Include/name]` sections hold actions that other sections take
+    // in with `Include=name` - mc's own file is mostly shaped that way.
+    // They are read first, since they usually come last.
+    let mut includes: std::collections::HashMap<String, Vec<(String, String)>> =
+        std::collections::HashMap::new();
+    let mut section: Option<String> = None;
     for line in text.lines() {
+        let line = line.trim();
+        if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            section = name.strip_prefix("Include/").map(str::to_string);
+            continue;
+        }
+        if let (Some(name), Some((key, value))) = (&section, line.split_once('=')) {
+            includes
+                .entry(name.clone())
+                .or_default()
+                .push((key.trim().to_string(), value.trim().to_string()));
+        }
+    }
+
+    let mut in_include = false;
+    // an Include= line stands for the lines of the section it names
+    let lines = text.lines().flat_map(|line| {
+        let expanded: Vec<String> = match line.trim().split_once('=') {
+            Some((key, name)) if key.trim() == "Include" => includes
+                .get(name.trim())
+                .map(|actions| actions.iter().map(|(k, v)| format!("{k}={v}")).collect())
+                .unwrap_or_default(),
+            _ => vec![line.to_string()],
+        };
+        expanded
+    });
+    for line in lines {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
         }
         if line.starts_with('[') {
             matchers.clear();
+            in_include = line.starts_with("[Include/");
+            continue;
+        }
+        // an include section's own lines were spent where it was named
+        if in_include {
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
@@ -681,6 +743,40 @@ b       Count lines in the tagged files
 c       Uses an unsupported macro
         echo %q
 "#;
+
+    #[test]
+    fn an_include_brings_its_sections_actions() {
+        let ini = "[mc.ext.ini]\nVersion=4.0\n\n\
+                   [tar.gz]\nShell=.tar.gz\nInclude=tarball\n\n\
+                   [notes]\nShell=.notes\nView=cat %f\n\n\
+                   [Include/tarball]\nOpen=%cd %p/utar://\nView=tar tvf %f\n";
+        let (_, view, _) = parse_ext_ini(ini);
+        let runs: Vec<(&str, &str)> = view
+            .iter()
+            .map(|r| (r.pattern.as_deref().unwrap_or(""), r.run.as_str()))
+            .collect();
+        assert!(runs.contains(&("*.tar.gz", "tar tvf %f")), "{runs:?}");
+        assert!(runs.contains(&("*.notes", "cat %f")), "{runs:?}");
+        assert_eq!(
+            runs.len(),
+            2,
+            "the include's own lines are not a rule of their own"
+        );
+    }
+
+    #[test]
+    fn a_file_the_user_never_copied_comes_from_mcs_own() {
+        let user = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        std::fs::write(
+            system.path().join("mc.menu"),
+            "+ t r\n1       Say hi\n        echo hi\n",
+        )
+        .unwrap();
+        let sys = system.path().to_string_lossy().into_owned();
+        let out = import_from(user.path(), &[sys.as_str()]);
+        assert_eq!(out.commands.len(), 1, "{:?}", out.warnings);
+    }
 
     #[test]
     fn menu_entries_become_commands() {

@@ -34,9 +34,16 @@ pub struct SftpUrl {
     /// with it once the session is up.
     pub scheme: String,
     pub user: String,
+    /// As typed: a name, an address, or an alias `~/.ssh/config` knows.
     pub host: String,
     pub port: u16,
     pub path: PathBuf,
+    /// The address to dial, when `host` is an alias with a `HostName`.
+    pub hostname: Option<String>,
+    /// `IdentityFile`s for this host, tried before the default keys.
+    pub identities: Vec<PathBuf>,
+    user_given: bool,
+    port_given: bool,
 }
 
 impl SftpUrl {
@@ -53,36 +60,76 @@ impl SftpUrl {
             None => (rest, PathBuf::new()),
         };
         let (user, hostport) = match hostpart.rsplit_once('@') {
-            Some((u, h)) => (u.to_string(), h),
-            None => (default_user(), hostpart),
+            Some((u, h)) => (Some(u.to_string()), h),
+            None => (None, hostpart),
         };
-        let (host, port) = match hostport.rsplit_once(':') {
-            Some((h, p)) => (h, p.parse().ok()?),
-            None => (hostport, 22),
+        // a port is written after the host - after the brackets of an
+        // IPv6 one, or after the only colon of anything else
+        let port_given = match hostport.split_once(']') {
+            Some((_, after)) => after.starts_with(':'),
+            None => hostport.matches(':').count() == 1,
         };
+        let (host, port) = crate::remote::split_host_port(hostport, 22)?;
+        let user_given = user.is_some();
+        let user = user.unwrap_or_else(default_user);
         if host.is_empty() || user.is_empty() {
             return None;
         }
         Some(SftpUrl {
             scheme: scheme.to_string(),
             user,
-            host: host.to_string(),
+            host,
             port,
             path,
+            hostname: None,
+            identities: Vec::new(),
+            user_given,
+            port_given,
         })
+    }
+
+    /// What `~/.ssh/config` says about the host fills in what the URL
+    /// left out: the user and the port, the address behind an alias,
+    /// and the keys to offer. What the URL did say stands.
+    pub fn with_ssh_config(self) -> SftpUrl {
+        let config = crate::sshconfig::lookup(&self.host);
+        self.with_host_config(&config)
+    }
+
+    fn with_host_config(mut self, config: &crate::sshconfig::HostConfig) -> SftpUrl {
+        if !self.user_given
+            && let Some(user) = &config.user
+        {
+            self.user = user.clone();
+        }
+        if !self.port_given
+            && let Some(port) = config.port
+        {
+            self.port = port;
+        }
+        self.hostname = config.hostname.clone();
+        self.identities = config
+            .identities
+            .iter()
+            .map(|template| crate::sshconfig::identity_path(template, &self.host, &self.user))
+            .collect();
+        self
+    }
+
+    /// The address to connect to: the alias's `HostName`, or the host.
+    pub fn dial_host(&self) -> &str {
+        self.hostname.as_deref().unwrap_or(&self.host)
     }
 
     /// `sftp://user@host[:port]` - the connection identity, also the
     /// panel title prefix and the connection-cache key. The scheme is
     /// part of it: the same host reached two ways is two connections.
     pub fn prefix(&self) -> String {
+        let host = crate::remote::url_host(&self.host);
         if self.port == 22 {
-            format!("{}://{}@{}", self.scheme, self.user, self.host)
+            format!("{}://{}@{}", self.scheme, self.user, host)
         } else {
-            format!(
-                "{}://{}@{}:{}",
-                self.scheme, self.user, self.host, self.port
-            )
+            format!("{}://{}@{}:{}", self.scheme, self.user, host, self.port)
         }
     }
 
@@ -130,12 +177,13 @@ pub fn ssh_session(
     let info = |msg: String| {
         let _ = tx.send(ConnectEvent::Info(msg));
     };
-    info(format!("Connecting to {}:{}…", url.host, url.port));
-    let addrs = (url.host.as_str(), url.port)
+    let host = url.dial_host();
+    info(format!("Connecting to {host}:{}…", url.port));
+    let addrs = (host, url.port)
         .to_socket_addrs()
-        .map_err(|e| format!("{}: {e}", url.host))?;
+        .map_err(|e| format!("{host}: {e}"))?;
     let mut tcp = None;
-    let mut last_err = format!("{}: no addresses", url.host);
+    let mut last_err = format!("{host}: no addresses");
     for addr in addrs {
         match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
             Ok(s) => {
@@ -156,7 +204,27 @@ pub fn ssh_session(
 
     info(format!("Authenticating as {}…", url.user));
     authenticate(url, &sess, tx, rx)?;
+    // keepalives are sent only when asked for; `keep_alive` asks
+    sess.set_keepalive(false, KEEPALIVE.as_secs() as u32);
     Ok(sess)
+}
+
+/// How often an idle connection says something. NAT boxes and
+/// firewalls forget a TCP connection that has been quiet for a few
+/// minutes, and the next listing then hangs until it times out.
+pub(crate) const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A thread that sends a keepalive over `session` every [`KEEPALIVE`]
+/// for as long as the filesystem holding it lives - it has only a weak
+/// reference, so the connection is not kept open by it.
+pub(crate) fn keep_alive<T: Send + Sync + 'static>(fs: std::sync::Weak<T>, ping: fn(&T)) {
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(KEEPALIVE);
+            let Some(fs) = fs.upgrade() else { break };
+            ping(&fs);
+        }
+    });
 }
 
 fn connect(
@@ -174,10 +242,13 @@ fn connect(
     };
     let fs = Arc::new(SftpFs {
         raw: Mutex::new(Raw {
-            _session: sess,
+            session: sess,
             sftp,
         }),
         prefix: url.prefix(),
+    });
+    keep_alive(Arc::downgrade(&fs), |fs: &SftpFs| {
+        let _ = fs.lock().session.keepalive_send();
     });
     let entries = fs
         .read_dir(&start)
@@ -197,7 +268,10 @@ fn check_host_key(
         let _ = kh.read_file(f, KnownHostFileKind::OpenSSH); // may not exist yet
     }
     let (key, key_type) = sess.host_key().ok_or("server sent no host key")?;
-    match kh.check_port(&url.host, url.port, key) {
+    // known_hosts knows the machine by the name it was dialled by, as
+    // OpenSSH records it - the HostName behind an alias
+    let host = url.dial_host();
+    match kh.check_port(host, url.port, key) {
         CheckResult::Match => Ok(()),
         CheckResult::Mismatch => Err(format!(
             "HOST KEY MISMATCH for {} - possible man-in-the-middle attack. \
@@ -215,9 +289,9 @@ fn check_host_key(
             match rx.recv() {
                 Ok(ConnectReply::Accept(true)) => {
                     let name = if url.port == 22 {
-                        url.host.clone()
+                        host.to_string()
                     } else {
-                        format!("[{}]:{}", url.host, url.port)
+                        format!("[{host}]:{}", url.port)
                     };
                     let _ = kh.add(&name, key, "added by rcmd", key_type.into());
                     if let Some(f) = &file {
@@ -260,32 +334,35 @@ fn authenticate(
         if sess.authenticated() {
             return Ok(());
         }
-        if let Some(home) = home_dir() {
-            for name in ["id_ed25519", "id_ecdsa", "id_rsa"] {
-                let key = home.join(".ssh").join(name);
-                if !key.exists() {
-                    continue;
-                }
-                if key_needs_passphrase(&key) {
-                    for _ in 0..3 {
-                        let prompt = format!("Enter passphrase for ~/.ssh/{name}:");
-                        let phrase = ask_secret(tx, rx, prompt, false)?;
-                        if phrase.is_empty() {
-                            break; // skip this key, try the next method
-                        }
-                        match sess.userauth_pubkey_file(&url.user, None, &key, Some(&phrase)) {
-                            Ok(()) => return Ok(()),
-                            Err(e) => last = e.to_string(),
-                        }
-                        if sess.authenticated() {
-                            return Ok(());
-                        }
+        // the host's own keys from ~/.ssh/config first, then the usual
+        let defaults = home_dir().into_iter().flat_map(|home| {
+            ["id_ed25519", "id_ecdsa", "id_rsa"].map(|name| home.join(".ssh").join(name))
+        });
+        let mut keys: Vec<PathBuf> = url.identities.clone();
+        keys.extend(defaults.filter(|key| !url.identities.contains(key)));
+        for key in keys {
+            if !key.exists() {
+                continue;
+            }
+            if key_needs_passphrase(&key) {
+                for _ in 0..3 {
+                    let prompt = format!("Enter passphrase for {}:", key.display());
+                    let phrase = ask_secret(tx, rx, prompt, false)?;
+                    if phrase.is_empty() {
+                        break; // skip this key, try the next method
                     }
-                } else {
-                    let _ = sess.userauth_pubkey_file(&url.user, None, &key, None);
+                    match sess.userauth_pubkey_file(&url.user, None, &key, Some(&phrase)) {
+                        Ok(()) => return Ok(()),
+                        Err(e) => last = e.to_string(),
+                    }
                     if sess.authenticated() {
                         return Ok(());
                     }
+                }
+            } else {
+                let _ = sess.userauth_pubkey_file(&url.user, None, &key, None);
+                if sess.authenticated() {
+                    return Ok(());
                 }
             }
         }
@@ -463,7 +540,7 @@ fn base64(data: &[u8]) -> String {
 
 struct Raw {
     /// Owns the connection; dropped last, closing the transport.
-    _session: Session,
+    session: Session,
     sftp: ssh2::Sftp,
 }
 
@@ -696,6 +773,38 @@ impl Write for SftpFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_config_fills_in_only_what_the_url_left_out() {
+        let config = crate::sshconfig::HostConfig {
+            hostname: Some("box.example.com".into()),
+            user: Some("alice".into()),
+            port: Some(2222),
+            identities: vec!["/keys/%r_%h".into()],
+        };
+        let url = SftpUrl::parse("sftp://box/srv")
+            .unwrap()
+            .with_host_config(&config);
+        assert_eq!((url.user.as_str(), url.port), ("alice", 2222));
+        assert_eq!(url.dial_host(), "box.example.com");
+        assert_eq!(
+            url.prefix(),
+            "sftp://alice@box:2222",
+            "the alias names the connection"
+        );
+        assert_eq!(url.identities, [PathBuf::from("/keys/alice_box")]);
+        let url = SftpUrl::parse("sftp://bob@box:22")
+            .unwrap()
+            .with_host_config(&config);
+        assert_eq!((url.user.as_str(), url.port), ("bob", 22));
+    }
+
+    #[test]
+    fn an_ipv6_literal_parses() {
+        let url = SftpUrl::parse("sftp://me@[::1]:2222/tmp").unwrap();
+        assert_eq!((url.host.as_str(), url.port), ("::1", 2222));
+        assert_eq!(url.prefix(), "sftp://me@[::1]:2222");
+    }
 
     #[test]
     fn url_parse_full() {

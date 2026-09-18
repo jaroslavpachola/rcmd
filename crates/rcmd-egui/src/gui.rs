@@ -270,6 +270,12 @@ impl eframe::App for Gui {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // the window's title says where the active panel is
+        let title = self.app.title();
+        if self.app.title_shown.as_deref() != Some(title.as_str()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.app.title_shown = Some(title);
+        }
         // Fonts are only loaded once egui has run a frame, so the
         // metrics are re-measured until they settle rather than trusted
         // from construction time.

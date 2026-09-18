@@ -103,6 +103,8 @@ impl App {
             set_mouse_capture(true);
         }
         set_bracketed_paste(true);
+        // whatever ran may have set a title of its own
+        self.title_shown = None;
         let _ = terminal.clear();
         for panel in &mut self.panels {
             let _ = panel.refresh();
@@ -419,6 +421,8 @@ impl App {
             set_mouse_capture(true);
         }
         set_bracketed_paste(true);
+        // whatever ran may have set a title of its own
+        self.title_shown = None;
         let _ = terminal.clear();
         self.end_subshell();
         Ok(())

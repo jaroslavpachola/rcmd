@@ -75,3 +75,56 @@ pub fn spawn_reuse(fs: Arc<dyn RemoteFs>, path: PathBuf, host: String) -> Connec
         host,
     }
 }
+
+/// Split a URL's `host[:port]`, an IPv6 literal written in brackets as
+/// URLs write it (`[::1]:2222`). A bare address with more than one colon
+/// is IPv6 with no port. `None` for a port that is not a number.
+pub fn split_host_port(hostport: &str, default: u16) -> Option<(String, u16)> {
+    if let Some(rest) = hostport.strip_prefix('[') {
+        let (host, after) = rest.split_once(']')?;
+        let port = match after.strip_prefix(':') {
+            Some(port) => port.parse().ok()?,
+            None if after.is_empty() => default,
+            None => return None,
+        };
+        return Some((host.to_string(), port));
+    }
+    if hostport.matches(':').count() > 1 {
+        return Some((hostport.to_string(), default));
+    }
+    match hostport.rsplit_once(':') {
+        Some((host, port)) => Some((host.to_string(), port.parse().ok()?)),
+        None => Some((hostport.to_string(), default)),
+    }
+}
+
+/// A host as a URL writes it: an IPv6 address in brackets.
+pub fn url_host(host: &str) -> String {
+    match host.contains(':') {
+        true => format!("[{host}]"),
+        false => host.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_and_port_including_ipv6() {
+        assert_eq!(split_host_port("box", 22), Some(("box".into(), 22)));
+        assert_eq!(split_host_port("box:2222", 22), Some(("box".into(), 2222)));
+        assert_eq!(
+            split_host_port("[::1]:2222", 22),
+            Some(("::1".into(), 2222))
+        );
+        assert_eq!(
+            split_host_port("[fe80::1]", 21),
+            Some(("fe80::1".into(), 21))
+        );
+        assert_eq!(split_host_port("::1", 22), Some(("::1".into(), 22)));
+        assert_eq!(split_host_port("box:x", 22), None);
+        assert_eq!(url_host("::1"), "[::1]");
+        assert_eq!(url_host("box"), "box");
+    }
+}

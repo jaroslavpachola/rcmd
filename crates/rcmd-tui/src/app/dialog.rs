@@ -5,6 +5,68 @@ impl App {
     /// is the Enter that would have followed. A click anywhere else in
     /// the dialog does nothing - closing on a stray click outside would
     /// lose whatever was typed.
+    /// A click on a form dialog: a field takes the focus, a switch is
+    /// ticked, a button is pressed - what the keyboard would do on that
+    /// row. False = the click hit none of those.
+    pub(super) fn click_form(&mut self, x: u16, y: u16) -> bool {
+        let pos = Position { x, y };
+        let Some(&(_, hit)) = self.form_hits.iter().find(|(area, _)| area.contains(pos)) else {
+            return false;
+        };
+        let press = match (self.dialog.as_mut(), hit) {
+            (Some(Dialog::Find(d)), FormHit::Row(row)) => {
+                d.row = row;
+                if (FIND_FIELDS..FIND_ROWS).contains(&row) {
+                    d.toggle();
+                }
+                false
+            }
+            (Some(Dialog::Find(d)), FormHit::Button(button)) => {
+                d.row = FIND_ROWS;
+                d.ok = button == 0;
+                true
+            }
+            (Some(Dialog::Transfer(d)), FormHit::Row(row)) => {
+                d.row = row;
+                if (TRANSFER_DEST_ROW + 1..TRANSFER_ROWS).contains(&row) {
+                    d.toggle(row - TRANSFER_DEST_ROW - 1);
+                }
+                false
+            }
+            (Some(Dialog::Transfer(d)), FormHit::Button(button)) => {
+                d.row = TRANSFER_ROWS;
+                d.button = button;
+                true
+            }
+            (Some(Dialog::Pattern(d)), FormHit::Row(row)) => {
+                d.row = row;
+                if (PATTERN_FIELDS..PATTERN_ROWS).contains(&row) {
+                    d.toggle();
+                }
+                false
+            }
+            (Some(Dialog::Pattern(d)), FormHit::Button(button)) => {
+                d.row = PATTERN_ROWS;
+                d.ok = button == 0;
+                true
+            }
+            (Some(Dialog::Link(d)), FormHit::Row(row)) => {
+                d.row = row;
+                false
+            }
+            (Some(Dialog::Link(d)), FormHit::Button(button)) => {
+                d.row = d.rows();
+                d.ok = button == 0;
+                true
+            }
+            _ => return false,
+        };
+        if press {
+            self.on_dialog_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        }
+        true
+    }
+
     pub(super) fn click_dialog_row(&mut self, x: u16, y: u16, double: bool) {
         let Some(rows) = self.dialog_rows.clone() else {
             return;
@@ -1430,6 +1492,7 @@ impl App {
                         for panel in &mut self.panels {
                             let _ = panel.refresh();
                         }
+                        self.refresh_trees();
                         let panel = &mut self.panels[self.active];
                         if path.parent() == Some(panel.cwd.as_path())
                             && let Some(name) = path.file_name()

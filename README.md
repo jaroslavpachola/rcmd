@@ -200,8 +200,10 @@ what a server that will not list looks like from outside - with the
 password redacted.
 
 Coming from mc? `rcmd --import-mc` reads your `menu`, `mc.ext` and
-`mc.keymap` and prints the equivalent rcmd config on stdout - user menu
-entries, openers, view filters and panel key bindings. It never touches
+`mc.keymap` - mc's own copies in `/etc/mc` for any you never changed,
+with `mc.ext.ini`'s `Include=` sections followed - and prints the
+equivalent rcmd config on stdout - user menu entries, openers, view
+filters and panel key bindings. It never touches
 your `config.toml`; review what it prints and paste what you want.
 Anything with no rcmd equivalent (`type/` matchers, `%cd` commands,
 unsupported macros) is reported on stderr rather than guessed at.
@@ -674,10 +676,12 @@ one). `q` closes it. It is a screen like the viewer and the editor, so
 else.
 
 **Mouse**: click focuses a panel and moves the cursor, double-click
-enters, the wheel scrolls whatever it hovers (panels, viewer, editor,
-quick view), the bottom keybar and the F9 menu are clickable, and a
-click in the editor places the cursor. All additive - every feature
-stays keyboard-reachable. Hold Shift to select terminal text as usual;
+enters, the right button marks what it is on (as mc's does), the wheel
+scrolls whatever it hovers (panels, viewer, editor, quick view, list
+dialogs), the bottom keybar and the F9 menu are clickable, a click in
+the editor places the cursor, and in the find, copy/move, select and
+link dialogs a click takes a field, ticks a switch or presses a button.
+All additive - every feature stays keyboard-reachable. Hold Shift to select terminal text as usual;
 `mouse = false` in the config turns capture off entirely.
 
 **Panel history**: each panel remembers where it has been -
@@ -1005,9 +1009,15 @@ whether or not the ordinary exit question is switched on.
 
 **Remote filesystems (SFTP)**: `cd sftp://[user@]host[:port][/path]`
 (or F9 → Left/Right → SFTP link) connects a panel to a server - user
-defaults to your login, path to the remote home. Authentication tries
-your ssh-agent, then the default `~/.ssh/id_*` keys, then asks for a
-password; host keys are checked against `~/.ssh/known_hosts`, and
+defaults to your login, path to the remote home. `~/.ssh/config` is
+read the way `ssh` reads it: an alias's `HostName`, `User`, `Port` and
+`IdentityFile` fill in whatever the URL left out, so `sftp://box` goes
+where `ssh box` does. An IPv6 address goes in brackets
+(`sftp://[::1]:2222`). An idle connection sends a keepalive every half
+minute, so a NAT box or firewall does not drop it. Authentication tries
+your ssh-agent, then the host's `IdentityFile` keys and the default
+`~/.ssh/id_*` ones, then asks for a password; host keys are checked
+against `~/.ssh/known_hosts`, and
 unknown hosts show a fingerprint dialog before being saved. The panel
 title shows the URL. Everything works panel-normally: F5/F6 transfer
 between local and remote (or between two remote directories) with the

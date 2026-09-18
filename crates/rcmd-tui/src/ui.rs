@@ -12,8 +12,8 @@ use rcmd_core::tree::Tree;
 use crate::format::{Field, Format, Item};
 
 use crate::app::{
-    App, Ask, ConfirmDialog, ConnectAsk, Dialog, EditPrompt, FindDialog, InputDialog, Job, MENUS,
-    MenuState, OptionsDialog, QuickView, VfsDialog, ViewSearch, menu_label,
+    App, Ask, ConfirmDialog, ConnectAsk, Dialog, EditPrompt, FindDialog, FormHit, InputDialog, Job,
+    MENUS, MenuState, OptionsDialog, QuickView, VfsDialog, ViewSearch, menu_label,
 };
 use rcmd_core::view::SearchKind;
 
@@ -646,7 +646,9 @@ const HELP_TEXT: &[&str] = &[
     "                  Down walk it, Left/Right go to parent/child, Enter",
     "                  opens the selection in the *other* panel and the",
     "                  tree stays put,",
-    "                  F4 switches dynamic/static navigation, C-r rescans",
+    "                  F4 switches dynamic/static navigation, C-r rescans,",
+    "                  F5 / F6 / F8 copy, move and delete the selected",
+    "                  directory, F7 makes one inside it",
     "  F9 > Command > Directory tree   the same figure in a dialog, where",
     "                  Enter takes *this* panel there and closes; typing",
     "                  jumps to a directory, F2 rescans, F3 forgets a branch",
@@ -699,8 +701,11 @@ const HELP_TEXT: &[&str] = &[
     "  status column: M modified, A added, ? untracked, ! ignored (dim).",
     "",
     "# Mouse  (mouse = false in config disables)",
-    "  Click focuses a panel and moves the cursor; double-click enters.",
-    "  The wheel scrolls the hovered panel, viewer, editor, or preview.",
+    "  Click focuses a panel and moves the cursor; double-click enters;",
+    "  the right button marks. The wheel scrolls the hovered panel,",
+    "  viewer, editor, preview or list dialog. In the find, copy/move,",
+    "  select and link dialogs a click takes a field, ticks a switch or",
+    "  presses a button.",
     "  The bottom keybar and the F9 menu are clickable. In the editor a",
     "  click places the cursor. Hold Shift to select terminal text.",
     "",
@@ -807,7 +812,10 @@ const HELP_TEXT: &[&str] = &[
     "  cd sftp://[user@]host[:port][/path]   connect (F9>Cmd>Remote link)",
     "  cd fish://[user@]host[:port][/path]   same SSH, over a shell",
     "  cd ftp://[user[:password]@]host[:port][/path]",
-    "  Auth: ssh-agent, then ~/.ssh/id_* keys, then password prompts.",
+    "  ~/.ssh/config's HostName, User, Port and IdentityFile apply;",
+    "  ~/.netrc gives an ftp:// URL its login. IPv6: sftp://[::1]:22.",
+    "  Auth: ssh-agent, then the host's keys and ~/.ssh/id_*, then",
+    "  password prompts. An idle connection is kept alive.",
     "  Unknown host keys show a fingerprint dialog; accepted keys are",
     "  saved to ~/.ssh/known_hosts. The panel title shows the URL.",
     "  F5/F6 up/download between panels (progress dialogs as usual),",
@@ -965,7 +973,9 @@ const HELP_TEXT: &[&str] = &[
     "                  Esc letter = M-letter, Esc Esc = plain Escape",
     "                  (a lone Esc acts after 1 s - at once if you are",
     "                  typing on the command line)",
-    "  F1              this help",
+    "  F1              this help - from the viewer, the editor or a",
+    "                  dialog, opened at the part about it; / searches",
+    "                  it and n finds the next",
     "  F4              edit (built-in editor, see above)",
     "  F9              pulldown menu",
     "  F10             quit",
@@ -981,6 +991,20 @@ const HELP_TEXT: &[&str] = &[
 
 pub fn help_lines() -> usize {
     HELP_TEXT.len()
+}
+
+/// One line of the help, as written.
+pub fn help_line(at: usize) -> &'static str {
+    HELP_TEXT.get(at).copied().unwrap_or("")
+}
+
+/// Where the help's line starting with `start` is - a section heading,
+/// or the key a context is about. The top when there is none.
+pub fn help_line_of(start: &str) -> usize {
+    HELP_TEXT
+        .iter()
+        .position(|line| line.starts_with(start))
+        .unwrap_or(0)
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -1169,20 +1193,21 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
     // where the open dialog's rows landed, for the mouse; the list
     // dialogs fill it in, everything else leaves it empty
     let mut dialog_rows = None;
+    let mut form_hits = Vec::new();
     if let Some(dialog) = &app.dialog {
         match dialog {
             Dialog::Input(d) => draw_input(frame, d),
             Dialog::Confirm(d) => draw_confirm(frame, d),
             Dialog::Tree(tree) => draw_tree_dialog(frame, tree),
-            Dialog::Transfer(d) => draw_transfer(frame, d),
+            Dialog::Transfer(d) => draw_transfer(frame, d, &mut form_hits),
             Dialog::Chmod(d) => draw_chmod(frame, d),
             Dialog::Chown(d) => draw_chown(frame, d),
-            Dialog::Link(d) => draw_link(frame, d),
+            Dialog::Link(d) => draw_link(frame, d, &mut form_hits),
             Dialog::Hotlist(d) => dialog_rows = draw_hotlist(frame, app, d),
             Dialog::UserMenu(d) => dialog_rows = draw_user_menu(frame, d),
-            Dialog::Find(d) => draw_find(frame, d),
+            Dialog::Find(d) => draw_find(frame, d, &mut form_hits),
             Dialog::Options(d) => draw_options(frame, d),
-            Dialog::Pattern(d) => draw_pattern(frame, d),
+            Dialog::Pattern(d) => draw_pattern(frame, d, &mut form_hits),
             Dialog::FindResults(d) => draw_find_results(frame, d),
             Dialog::Panelize(d) => draw_panelize(frame, d, &app.config.panelize),
             Dialog::Compare(row) => {
@@ -1242,6 +1267,7 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
         }
     }
     app.dialog_rows = dialog_rows;
+    app.form_hits = form_hits;
     if let Some(job) = app.fg_job() {
         draw_job(frame, job);
         if let Some(ask) = &job.ask {
@@ -2356,11 +2382,13 @@ fn mini_line(app: &App, side: usize) -> Option<Line<'static>> {
     Some(line)
 }
 
-fn draw_cmdline(frame: &mut Frame, area: Rect, app: &App) {
-    let prompt = tail(
-        &format!("{}$ ", abbrev_home(&app.panels[app.active].local_cwd())),
-        (area.width / 2) as usize,
-    );
+fn draw_cmdline(frame: &mut Frame, area: Rect, app: &mut App) {
+    // the shell's own prompt when it has one to show, mc's way;
+    // otherwise where the panel is
+    let prompt = app
+        .subshell_prompt()
+        .unwrap_or_else(|| format!("{}$ ", abbrev_home(&app.panels[app.active].local_cwd())));
+    let prompt = tail(&prompt, (area.width / 2) as usize);
     let prompt_len = prompt.chars().count();
     let field_width = (area.width as usize).saturating_sub(prompt_len).max(1);
 
@@ -2501,14 +2529,23 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
             ),
             None => ((*text).to_string(), base),
         };
+        // the searched-for text lit where it occurs
+        let hit =
+            !help.query.is_empty() && text.to_lowercase().contains(&help.query.to_lowercase());
+        let style = if hit {
+            style.fg(th().mark_fg).add_modifier(Modifier::BOLD)
+        } else {
+            style
+        };
         frame.render_widget(Line::from(text).style(style), row_area);
     }
+    let bottom_text = match (&help.typing, &help.note) {
+        (Some(field), _) => format!(" /{}", field.value),
+        (None, Some(note)) => note.clone(),
+        (None, None) => " Esc/F1/q close   arrows/PgUp/PgDn scroll   / search, n next".into(),
+    };
     frame.render_widget(
-        Line::from(format!(
-            "{:<width$}",
-            " Esc/F1/q close   arrows/PgUp/PgDn scroll"
-        ))
-        .style(base),
+        Line::from(format!("{bottom_text:<width$}")).style(base),
         bottom,
     );
 }
@@ -3881,6 +3918,25 @@ pub fn tail(text: &str, max: usize) -> String {
 /// marker. Alt and that letter presses the button from anywhere in the
 /// dialog, which is what makes it useful when a text field has the
 /// focus.
+/// Where `buttons_line` puts each of its buttons in `area`: the line is
+/// centred, and each button is its label in `[ ]` and one space after.
+fn button_rects(labels: &[&str], area: Rect) -> Vec<Rect> {
+    let widths: Vec<u16> = labels
+        .iter()
+        .map(|label| crate::app::button_hotkey(label).0.chars().count() as u16 + 4)
+        .collect();
+    let total: u16 = widths.iter().map(|w| w + 1).sum();
+    let mut x = area.x + area.width.saturating_sub(total) / 2;
+    widths
+        .into_iter()
+        .map(|width| {
+            let rect = Rect { x, width, ..area };
+            x += width + 1;
+            rect
+        })
+        .collect()
+}
+
 fn buttons_line(labels: &[&str], selected: usize, base: Style, sel: Style) -> Line<'static> {
     let mut spans = Vec::new();
     for (i, label) in labels.iter().enumerate() {
@@ -4067,7 +4123,7 @@ fn draw_panelize(
 
 /// MC's select / unselect / filter form: the pattern, then the three
 /// answers that change what it means.
-fn draw_pattern(frame: &mut Frame, d: &crate::app::PatternDialog) {
+fn draw_pattern(frame: &mut Frame, d: &crate::app::PatternDialog, hits: &mut Vec<(Rect, FormHit)>) {
     use crate::app::{PATTERN_FIELDS, PATTERN_ROWS};
     let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
@@ -4079,6 +4135,22 @@ fn draw_pattern(frame: &mut Frame, d: &crate::app::PatternDialog) {
         width: inner.width.saturating_sub(2),
         height: 1,
     };
+    // the pattern, the size and the age fields, then the switches
+    for (at, which) in [(0, 0), (3, 1), (5, 2), (6, 3), (7, 4), (8, 5)] {
+        hits.push((row(at), FormHit::Row(which)));
+    }
+    let buttons_at = Rect {
+        x: inner.x,
+        y: inner.y + 10,
+        width: inner.width,
+        height: 1,
+    };
+    for (i, rect) in button_rects(&["OK", "Cancel"], buttons_at)
+        .into_iter()
+        .enumerate()
+    {
+        hits.push((rect, FormHit::Button(i)));
+    }
     field_row(
         frame,
         row(0),
@@ -4291,7 +4363,7 @@ fn draw_fuzzy(frame: &mut Frame, d: &crate::app::FuzzyDialog) {
     );
 }
 
-fn draw_find(frame: &mut Frame, d: &FindDialog) {
+fn draw_find(frame: &mut Frame, d: &FindDialog, hits: &mut Vec<(Rect, FormHit)>) {
     use crate::app::{FIND_FIELD_LABELS, FIND_FIELDS, FIND_ROWS, FIND_SWITCHES};
     let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
@@ -4313,6 +4385,7 @@ fn draw_find(frame: &mut Frame, d: &FindDialog) {
     const LABEL: u16 = 13;
     for (i, label) in FIND_FIELD_LABELS.iter().enumerate() {
         let at = row(i);
+        hits.push((at, FormHit::Row(i)));
         frame.render_widget(Line::from(*label).style(style), at);
         let Some(field) = d.field_at(i) else { continue };
         field_row(
@@ -4331,18 +4404,32 @@ fn draw_find(frame: &mut Frame, d: &FindDialog) {
     for (i, label) in FIND_SWITCHES.iter().enumerate() {
         let focused = d.row == FIND_FIELDS + i;
         let at = row(FIND_FIELDS + 1 + i / 2);
+        let at = Rect {
+            x: at.x + (i % 2) as u16 * half,
+            width: half,
+            ..at
+        };
+        hits.push((at, FormHit::Row(FIND_FIELDS + i)));
         frame.render_widget(
             Line::from(format!("{} {label}", check(d.switch(i)))).style(if focused {
                 sel
             } else {
                 style
             }),
-            Rect {
-                x: at.x + (i % 2) as u16 * half,
-                width: half,
-                ..at
-            },
+            at,
         );
+    }
+    let buttons_at = Rect {
+        x: inner.x,
+        y: inner.y + (FIND_FIELDS + switch_rows + 2) as u16,
+        width: inner.width,
+        height: 1,
+    };
+    for (i, rect) in button_rects(&["OK", "Cancel"], buttons_at)
+        .into_iter()
+        .enumerate()
+    {
+        hits.push((rect, FormHit::Button(i)));
     }
     frame.render_widget(
         buttons_line(
@@ -4355,12 +4442,7 @@ fn draw_find(frame: &mut Frame, d: &FindDialog) {
             style,
             sel,
         ),
-        Rect {
-            x: inner.x,
-            y: inner.y + (FIND_FIELDS + switch_rows + 2) as u16,
-            width: inner.width,
-            height: 1,
-        },
+        buttons_at,
     );
 }
 
@@ -4504,7 +4586,7 @@ fn draw_tree_rows(frame: &mut Frame, area: Rect, tree: &Tree, base: Style, selec
 /// that stays open and moves the *other* panel.
 /// C-x l / s / v / C-s: the link form. What to point at on top, what to
 /// call it below - except when editing a link, which already has a name.
-fn draw_link(frame: &mut Frame, d: &crate::app::LinkDialog) {
+fn draw_link(frame: &mut Frame, d: &crate::app::LinkDialog, hits: &mut Vec<(Rect, FormHit)>) {
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
     let rows = d.rows();
@@ -4543,6 +4625,15 @@ fn draw_link(frame: &mut Frame, d: &crate::app::LinkDialog) {
     } else {
         usize::MAX
     };
+    for row in 0..rows {
+        hits.push((row_at(row as u16), FormHit::Row(row)));
+    }
+    for (i, rect) in button_rects(&["OK", "Cancel"], row_at(rows as u16 + 1))
+        .into_iter()
+        .enumerate()
+    {
+        hits.push((rect, FormHit::Button(i)));
+    }
     frame.render_widget(
         buttons_line(&["OK", "Cancel"], selected, base, sel),
         row_at(rows as u16 + 1),
@@ -4761,7 +4852,11 @@ fn draw_chmod(frame: &mut Frame, d: &crate::app::ChmodDialog) {
 /// that change what the copy does under it, then OK / Background /
 /// Cancel - Background starts the job detached, which is otherwise only
 /// reachable by pressing b once it is already running.
-fn draw_transfer(frame: &mut Frame, d: &crate::app::TransferDialog) {
+fn draw_transfer(
+    frame: &mut Frame,
+    d: &crate::app::TransferDialog,
+    hits: &mut Vec<(Rect, FormHit)>,
+) {
     use crate::app::{TRANSFER_DEST_ROW, TRANSFER_OPTS, TRANSFER_ROWS};
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
@@ -4786,6 +4881,18 @@ fn draw_transfer(frame: &mut Frame, d: &crate::app::TransferDialog) {
             Span::styled(format!("{:<room$}", tail(text, room)), sel),
         ])
     };
+    for row in 0..TRANSFER_ROWS {
+        hits.push((row_at(row as u16), FormHit::Row(row)));
+    }
+    for (i, rect) in button_rects(
+        crate::app::TRANSFER_BUTTONS,
+        row_at(TRANSFER_ROWS as u16 + 1),
+    )
+    .into_iter()
+    .enumerate()
+    {
+        hits.push((rect, FormHit::Button(i)));
+    }
     frame.render_widget(field(&d.mask.value, " mask "), row_at(0));
     frame.render_widget(
         field(&d.dest.value, " to   "),

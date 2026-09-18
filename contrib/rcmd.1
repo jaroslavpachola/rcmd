@@ -1,0 +1,111 @@
+.TH RCMD 1 "2026-09-18" "rcmd 4.34.0" "User Commands"
+.SH NAME
+rcmd, rcedit, rcview, rcdiff \- an orthodox two-panel file manager with mc's keys
+.SH SYNOPSIS
+.B rcmd
+[\fIOPTIONS\fR] [\fIDIR1\fR [\fIDIR2\fR]]
+.br
+.B rcedit
+\fIFILE\fR...
+.br
+.B rcview
+\fIFILE\fR | \fB-\fR
+.br
+.B rcdiff
+\fIFILE1\fR \fIFILE2\fR
+.br
+.B rcmd --import-mc
+[\fIMC_CONFIG_DIR\fR]
+.SH DESCRIPTION
+.B rcmd
+is a Midnight Commander replacement: two panels, the command line under
+them, a persistent subshell behind Ctrl+O, and mc's key bindings, with a
+viewer, an editor, archives, SFTP, FISH and FTP panels, find, compare and
+synchronize built in.
+.PP
+Called as
+.BR rcedit ,
+.B rcview
+or
+.B rcdiff
+(through a link of that name), it opens the editor, the viewer or the
+file comparison on its own, as mc's mcedit, mcview and mcdiff do.
+.B rcview -
+pages through standard input.
+.PP
+F1 inside rcmd is the full list of keys, opened at the part about what is
+on screen; / searches it.
+.SH OPTIONS
+.TP
+.BR \-e ", " \-\-edit " " \fIFILE\fR
+Start in the editor on FILE; repeatable.
+.TP
+.BR \-v ", " \-\-view " " \fIFILE\fR
+Start in the viewer on FILE; \fB-\fR reads standard input.
+.TP
+.BR \-P ", " \-\-printwd " " \fIFILE\fR
+Write the last active directory to FILE on exit, for a shell wrapper to
+cd to (contrib/rc.sh, contrib/rc.fish).
+.TP
+.BR \-S ", " \-\-skin " " \fINAME\fR
+The theme: mc, dark, bw, or a skin of your own.
+.TP
+.BR \-b ", " \-\-nocolor
+Black and white.
+.TP
+.BR \-c ", " \-\-color
+Colour (the default).
+.TP
+.BR \-C ", " \-\-colors " " \fISPEC\fR
+mc's colour spec: keyword=fg,bg:keyword=fg,bg.
+.TP
+.BR \-d ", " \-\-nomouse
+No mouse.
+.TP
+.BR \-u ", " \-\-nosubshell
+No persistent subshell.
+.TP
+.BR \-U ", " \-\-subshell
+A persistent subshell.
+.TP
+.BR \-l ", " \-\-ftplog " " \fIFILE\fR
+Log the FTP and FISH dialogue to FILE.
+.TP
+.BR \-\-remote " " \fILINE\fR
+Hand LINE to a running rcmd and exit.
+.TP
+.BR \-\-to " " \fIPID\fR
+Which running rcmd, when there are several.
+.TP
+.B \-\-print\-config
+Print every setting at its default, each line commented out, as a
+config.toml to start from.
+.TP
+.BR \-\-import\-mc " [" \fIDIR\fR ]
+Print an rcmd configuration built from mc's user menu, mc.ext and keymap
+(default ~/.config/mc, with mc's own files in /etc/mc for anything not
+there).
+.TP
+.BR \-V ", " \-\-version
+Print the version.
+.TP
+.BR \-h ", " \-\-help
+Print the usage.
+.SH FILES
+.TP
+.I ~/.config/rcmd/config.toml
+The configuration: yours, never rewritten by rcmd.
+.TP
+.I ~/.local/state/rcmd/state.toml
+What rcmd remembers between sessions: settings changed inside it, the
+histories, the hotlist, where each panel and each edited file was.
+.TP
+.I ~/.ssh/config
+HostName, User, Port and IdentityFile for sftp:// and fish:// hosts.
+.TP
+.I ~/.netrc
+Logins and passwords for ftp:// hosts.
+.SH SEE ALSO
+.BR mc (1),
+.BR ssh_config (5),
+.BR netrc (5)

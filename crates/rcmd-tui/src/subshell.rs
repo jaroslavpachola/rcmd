@@ -103,6 +103,9 @@ pub struct Subshell {
     pipe_acc: Vec<u8>,
     /// Tail of the previous chunk, for query patterns split across reads.
     carry: Vec<u8>,
+    /// What the shell has printed since its last line break: at a
+    /// prompt, the prompt itself.
+    line: Vec<u8>,
     /// One-shot status-line note (respawn and the like).
     pub note: Option<String>,
     /// The shell died and could not be respawned; fall back to plain exec.
@@ -182,6 +185,7 @@ impl Subshell {
             buf: Vec::new(),
             pipe_acc: Vec::new(),
             carry: Vec::new(),
+            line: Vec::new(),
             note: None,
             failed: false,
             size: (cols, rows),
@@ -234,6 +238,15 @@ impl Subshell {
                 self.answer_queries(chunk);
             }
             self.buf.extend_from_slice(chunk);
+            for &byte in chunk {
+                match byte {
+                    b'\n' | b'\r' => self.line.clear(),
+                    _ => self.line.push(byte),
+                }
+            }
+            if self.line.len() > 4096 {
+                self.line.drain(..self.line.len() - 1024);
+            }
         }
         if self.buf.len() > BUF_CAP {
             let cut = self.buf.len() - BUF_CAP / 2;
@@ -290,6 +303,17 @@ impl Subshell {
             }
             _ => self.prompt_seen,
         }
+    }
+
+    /// The shell's own prompt, as it drew it, while it sits at one: what
+    /// mc puts in front of the command line. Colours and cursor moves
+    /// are taken out; `None` when the shell is busy or said nothing.
+    pub fn prompt(&self) -> Option<String> {
+        if !self.ready() {
+            return None;
+        }
+        let text = strip_escapes(&self.line);
+        (!text.trim().is_empty()).then_some(text)
     }
 
     /// Last known working directory of the shell.
@@ -651,6 +675,45 @@ impl std::fmt::Debug for Subshell {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Subshell({}, {:?})", self.shell, self.kind)
     }
+}
+
+/// Terminal output with its escape sequences taken out: CSI (colours,
+/// cursor moves), OSC (titles, hyperlinks) and the two-byte ones, and
+/// every other control character.
+fn strip_escapes(bytes: &[u8]) -> String {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            0x1b => match bytes.get(i + 1) {
+                Some(b'[') => {
+                    i += 2;
+                    while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                Some(b']') => {
+                    i += 2;
+                    while i < bytes.len() && bytes[i] != 0x07 {
+                        if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') {
+                            i += 1;
+                            break;
+                        }
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                _ => i += 2,
+            },
+            byte if byte < 0x20 || byte == 0x7f => i += 1,
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]

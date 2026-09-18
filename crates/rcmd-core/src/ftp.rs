@@ -38,6 +38,7 @@ pub struct FtpUrl {
     pub host: String,
     pub port: u16,
     pub path: PathBuf,
+    user_given: bool,
 }
 
 impl FtpUrl {
@@ -58,29 +59,55 @@ impl FtpUrl {
             },
             None => ("anonymous".to_string(), None),
         };
-        let (host, port) = match hostport.rsplit_once(':') {
-            Some((h, p)) => (h, p.parse().ok()?),
-            None => (hostport, 21),
-        };
+        let (host, port) = crate::remote::split_host_port(hostport, 21)?;
         if host.is_empty() || user.is_empty() {
             return None;
         }
         Some(FtpUrl {
             user,
             password,
-            host: host.to_string(),
+            host,
             port,
             path,
+            user_given: userinfo.is_some(),
         })
+    }
+
+    /// What `~/.netrc` says fills in what the URL left out: the login
+    /// and password for a URL that named no user, the password for one
+    /// that named a user and no password. mc's ftpfs reads it too.
+    pub fn with_netrc(self) -> FtpUrl {
+        let Some(home) = std::env::var_os("HOME") else {
+            return self;
+        };
+        match std::fs::read_to_string(PathBuf::from(home).join(".netrc")) {
+            Ok(text) => self.with_netrc_text(&text),
+            Err(_) => self,
+        }
+    }
+
+    fn with_netrc_text(mut self, text: &str) -> FtpUrl {
+        let want = self.user_given.then_some(self.user.as_str());
+        let Some((login, password)) = netrc_lookup(text, &self.host, want) else {
+            return self;
+        };
+        if !self.user_given {
+            self.user = login;
+        }
+        if self.password.is_none() {
+            self.password = password;
+        }
+        self
     }
 
     /// `ftp://user@host[:port]` - the connection identity, the panel
     /// title prefix and the cache key. The password is never in it.
     pub fn prefix(&self) -> String {
+        let host = crate::remote::url_host(&self.host);
         if self.port == 21 {
-            format!("ftp://{}@{}", self.user, self.host)
+            format!("ftp://{}@{host}", self.user)
         } else {
-            format!("ftp://{}@{}:{}", self.user, self.host, self.port)
+            format!("ftp://{}@{host}:{}", self.user, self.port)
         }
     }
 
@@ -441,6 +468,69 @@ impl FtpFs {
             Ok(parse_list(&String::from_utf8_lossy(&bytes)))
         })
     }
+}
+
+/// The login and password `.netrc` has for `host` (and `user`, when the
+/// URL named one), or its `default` entry. Tokens are whitespace
+/// separated; a `macdef` runs to the next blank line and is skipped.
+fn netrc_lookup(text: &str, host: &str, user: Option<&str>) -> Option<(String, Option<String>)> {
+    #[derive(Default)]
+    struct Entry {
+        machine: Option<String>,
+        login: Option<String>,
+        password: Option<String>,
+    }
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut lines = text.lines();
+    let mut tokens: Vec<String> = Vec::new();
+    while let Some(line) = lines.next() {
+        for word in line.split_whitespace() {
+            if word == "macdef" {
+                // the macro's body is the lines up to a blank one
+                for body in lines.by_ref() {
+                    if body.trim().is_empty() {
+                        break;
+                    }
+                }
+                break;
+            }
+            tokens.push(word.to_string());
+        }
+    }
+    let mut it = tokens.into_iter();
+    while let Some(token) = it.next() {
+        match token.as_str() {
+            "machine" => entries.push(Entry {
+                machine: it.next(),
+                ..Entry::default()
+            }),
+            "default" => entries.push(Entry::default()),
+            "login" | "password" | "account" => {
+                let value = it.next();
+                if let Some(entry) = entries.last_mut() {
+                    match token.as_str() {
+                        "login" => entry.login = value,
+                        "password" => entry.password = value,
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let fits = |entry: &&Entry| {
+        user.is_none_or(|user| entry.login.as_deref() == Some(user)) && entry.login.is_some()
+    };
+    let exact = entries
+        .iter()
+        .filter(|e| {
+            e.machine
+                .as_deref()
+                .is_some_and(|m| m.eq_ignore_ascii_case(host))
+        })
+        .find(fits);
+    let found = exact.or_else(|| entries.iter().filter(|e| e.machine.is_none()).find(fits))?;
+    Some((found.login.clone()?, found.password.clone()))
 }
 
 /// A command is one line, ended by the CRLF `command` adds. A CR or LF
@@ -877,6 +967,45 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn netrc_fills_in_what_the_url_left_out() {
+        let netrc = "machine files.example.com login alice password s3cret\n\
+                     macdef init\ncd /pub\n\n\
+                     machine files.example.com login bob password other\n\
+                     default login anonymous password me@home\n";
+        let url = FtpUrl::parse("ftp://files.example.com/pub").unwrap();
+        let url = url.with_netrc_text(netrc);
+        assert_eq!(
+            (url.user.as_str(), url.password.as_deref()),
+            ("alice", Some("s3cret"))
+        );
+        // a named user gets that user's password, and only that
+        let url = FtpUrl::parse("ftp://bob@files.example.com")
+            .unwrap()
+            .with_netrc_text(netrc);
+        assert_eq!(url.password.as_deref(), Some("other"));
+        // what the URL said stands
+        let url = FtpUrl::parse("ftp://bob:typed@files.example.com")
+            .unwrap()
+            .with_netrc_text(netrc);
+        assert_eq!(url.password.as_deref(), Some("typed"));
+        // elsewhere, the default entry
+        let url = FtpUrl::parse("ftp://elsewhere")
+            .unwrap()
+            .with_netrc_text(netrc);
+        assert_eq!(
+            (url.user.as_str(), url.password.as_deref()),
+            ("anonymous", Some("me@home"))
+        );
+    }
+
+    #[test]
+    fn an_ipv6_host_is_bracketed() {
+        let url = FtpUrl::parse("ftp://[::1]:2121/pub").unwrap();
+        assert_eq!((url.host.as_str(), url.port), ("::1", 2121));
+        assert_eq!(url.prefix(), "ftp://anonymous@[::1]:2121");
+    }
 
     #[test]
     fn a_name_cannot_smuggle_a_second_command() {

@@ -447,8 +447,6 @@ impl App {
         }
     }
 
-    /// Run a command, its stdout lines become the panel listing.
-    /// Synchronous: meant for fast listers (git ls-files, rg -l, …).
     /// Run the command with its output streaming into the panel. A
     /// listing that takes a while to produce - a find, a git command
     /// over a big tree - fills in as it goes rather than after.

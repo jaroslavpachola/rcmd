@@ -224,6 +224,28 @@ impl Tree {
         self.select_path(&path);
     }
 
+    /// After a file operation: look again at the selected directory and
+    /// the one above it, which is where a copy, a move, a delete or a new
+    /// directory shows. A selection that is gone falls back to its parent.
+    pub fn refresh(&mut self) {
+        let Some(path) = self.selected_path() else {
+            return;
+        };
+        let parent = path.parent().map(Path::to_path_buf);
+        for dir in parent.iter().chain(std::iter::once(&path)) {
+            if let Some(node) = self.node_mut(dir) {
+                node.children = None;
+            }
+        }
+        let target = match (path.is_dir(), parent) {
+            (false, Some(parent)) => parent,
+            _ => path,
+        };
+        self.open_chain(&target);
+        self.flatten();
+        self.select_path(&target);
+    }
+
     /// mc's F3: drop this directory from the figure (not from disk).
     /// The parent keeps it out until it is rescanned.
     pub fn forget(&mut self) {

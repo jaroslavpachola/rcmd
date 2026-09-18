@@ -1,10 +1,11 @@
-//! Running a command from a window.
+//! Running a command from a window, when the shell pane cannot.
 //!
-//! This is the one place where the two front ends genuinely cannot do
-//! the same thing. The terminal build leaves the alternate screen and
-//! hands the real tty to the child: `less` pages, `make` scrolls, and
-//! Ctrl+O drops you into a shell that is still there when you come
-//! back. There is no tty behind a window to hand over, so:
+//! The terminal build leaves the alternate screen and hands the real
+//! tty to the child. The window has the subshell on a pty of its own,
+//! drawn by `term.rs`, and commands run there as they do in the
+//! terminal. This file is for what is left over - the subshell switched
+//! off, or a shell that would not spawn - where there is no tty to hand
+//! over, so:
 //!
 //! * `Exec::Quiet` - the openers and the `[[open]]` rules, which rcmd
 //!   already documents as wanting a trailing `&` for GUI programs - is
@@ -12,13 +13,6 @@
 //! * `Exec::Command` and `Exec::Shell` want a terminal, so one is
 //!   asked for: `$TERMINAL` first, then the usual emulators. Without
 //!   one the command still runs, detached and silent, and says so.
-//!
-//! The honest alternative is a terminal emulator inside the window, and
-//! that is a bigger thing than this crate: rcmd's subshell already owns
-//! a pty (`libc::openpty`) but pumps its bytes straight at the terminal
-//! rather than interpreting them, so rendering it means implementing
-//! the interpreting half. Until then this build runs with the subshell
-//! switched off, and Ctrl+O has nothing to show.
 
 use std::path::Path;
 use std::process::{Command, Stdio};

@@ -242,7 +242,7 @@ Environment:
                   user commands, the command line). Openers and [[open]]
                   rules are spawned detached and need none.
 
-There is no persistent subshell in this build: a window has no tty to
-hand to a child, so Ctrl+O has nothing to show. Commands run in a
-terminal emulator instead.
+The subshell runs on a pty of its own and Ctrl+O shows it in the
+window, as the terminal build does. With subshell = false, commands
+run in a terminal emulator instead.
 ";

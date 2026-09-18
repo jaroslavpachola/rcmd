@@ -22,7 +22,7 @@ impl App {
             };
             remote::spawn_reuse(fs, url.path, url.remote)
         } else if input.starts_with("ftp://") {
-            let Some(url) = FtpUrl::parse(input) else {
+            let Some(url) = FtpUrl::parse(input).map(FtpUrl::with_netrc) else {
                 self.status = Some(" bad URL - ftp://[user[:password]@]host[:port][/path] ".into());
                 return;
             };
@@ -33,7 +33,7 @@ impl App {
         } else {
             let fish = input.starts_with("fish://");
             let scheme = if fish { "fish" } else { "sftp" };
-            let Some(url) = SftpUrl::parse_as(scheme, input) else {
+            let Some(url) = SftpUrl::parse_as(scheme, input).map(SftpUrl::with_ssh_config) else {
                 self.status = Some(format!(" bad URL - {scheme}://[user@]host[:port][/path] "));
                 return;
             };

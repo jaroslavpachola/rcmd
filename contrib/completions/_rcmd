@@ -1,0 +1,26 @@
+#compdef rcmd rcedit rcview rcdiff
+# zsh completion for rcmd - put it on $fpath
+
+case $service in
+    rcedit|rcview|rcdiff) _files; return ;;
+esac
+
+_arguments -s \
+    '*'{-e,--edit}'[start in the editor on FILE]:file:_files' \
+    '(-v --view)'{-v,--view}'[start in the viewer on FILE (- reads standard input)]:file:_files' \
+    '(-P --printwd)'{-P,--printwd}'[write the last directory to FILE on exit]:file:_files' \
+    '(-S --skin)'{-S,--skin}'[theme]:theme:(mc dark bw)' \
+    '(-b --nocolor -c --color)'{-b,--nocolor}'[black and white]' \
+    '(-b --nocolor -c --color)'{-c,--color}'[colour]' \
+    '(-C --colors)'{-C,--colors}'[mc colour spec]:spec:' \
+    '(-d --nomouse)'{-d,--nomouse}'[no mouse]' \
+    '(-u --nosubshell -U --subshell)'{-u,--nosubshell}'[no persistent subshell]' \
+    '(-u --nosubshell -U --subshell)'{-U,--subshell}'[persistent subshell]' \
+    '(-l --ftplog)'{-l,--ftplog}'[log the FTP dialogue to FILE]:file:_files' \
+    '--remote[hand LINE to a running rcmd]:line:' \
+    '--to[which running rcmd]:pid:' \
+    '--print-config[print every setting at its default]' \
+    '--import-mc[print a config built from mc'"'"'s files]:mc config dir:_directories' \
+    '(- *)'{-V,--version}'[print the version]' \
+    '(- *)'{-h,--help}'[print the usage]' \
+    '*:directory:_directories'

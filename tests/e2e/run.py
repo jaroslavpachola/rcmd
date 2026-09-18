@@ -5211,6 +5211,76 @@ def test_firstrun():
     shutil.rmtree(root)
 
 
+def test_leftovers():
+    """PLAN5 S3, second half: --print-config and a config error that
+    says where and why; F1 opens help at the part about what is on
+    screen and / searches it; the right button marks; a form dialog's
+    switches click; F7 in the tree makes a directory inside the
+    selected one."""
+    root, play, home = sandbox()
+    for name in ("a.txt", "b.txt"):
+        open(os.path.join(play, name), "w").write(name + "\n")
+
+    proc = subprocess.run([BIN, "--print-config"], capture_output=True, text=True)
+    lines = [l for l in proc.stdout.splitlines() if l.strip()]
+    check("leftovers: --print-config prints every setting, commented",
+          proc.returncode == 0 and lines and all(l.startswith("#") for l in lines)
+          and any("sort_key" in l for l in lines), proc.stdout[:300])
+
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    cfg = os.path.join(cfgdir, "config.toml")
+    open(cfg, "w").write("sort_key = \n")
+    s = Session(play, home)
+    scr = s.screen()
+    check("leftovers: a config error names the line and the reason",
+          re.search(r"config: line \d+, column \d+: invalid string", scr) is not None, scr)
+    s.quit()
+    os.remove(cfg)
+
+    s = Session(play, home)
+    s.send(b"\x13a.txt\r", wait=STEP)
+    s.send(F3, wait=STEP * 2)
+    s.send(b"\x1bOP", wait=STEP * 2)           # F1
+    check("leftovers: F1 in the viewer opens its part of the help",
+          "Viewer (F3)" in "\n".join(s.screen().split("\n")[:4]), s.screen())
+    s.send(b"/", wait=STEP)
+    s.send(b"hotlist\r", wait=STEP * 2)
+    check("leftovers: / searched the help", "hotlist" in s.screen().lower(), s.screen())
+    s.send(b"q", wait=STEP)
+    check("leftovers: closing it lands back in the viewer",
+          "a.txt" in s.screen() and "Help - rcmd" not in s.screen(), s.screen())
+    s.send(b"q", wait=STEP)
+
+    # the right button marks: two files, and F8 is about two
+    s.send(b"\x1b[<2;10;4M\x1b[<2;10;4m", wait=STEP)
+    s.send(b"\x1b[<2;10;5M\x1b[<2;10;5m", wait=STEP)
+    s.send(F8, wait=STEP)
+    check("leftovers: right-click marked two", "2 " in s.screen() and "Delete" in s.screen(),
+          s.screen())
+    s.send(b"\x1b\x1b", wait=STEP)
+
+    # a click ticks a switch in the find dialog
+    s.send(b"\x1b[20~"); s.send(b"\x1b[C" * 2); s.send(DOWN * 5)
+    s.send(b"\r", wait=STEP)
+    rows = s.screen().split("\n")
+    at = next(i for i, l in enumerate(rows) if "Whole words" in l)
+    col = rows[at].index("[ ] Whole words") + 2
+    s.send(click(col, at + 1), wait=STEP)
+    check("leftovers: a click ticked Whole words", "[x] Whole words" in s.screen(), s.screen())
+    s.send(b"\x1b\x1b", wait=STEP)
+
+    # the tree: F7 makes the directory inside the selected one
+    s.keys(b"\x1b[20~", DOWN * 4 + b"\r")
+    s.send(F7, wait=STEP)
+    check("leftovers: F7 in the tree prefills the selection",
+          "Create directory" in s.screen() and play in s.screen(), s.screen())
+    s.send(b"made-in-tree\r", wait=STEP * 2)
+    check("leftovers: and made it there", os.path.isdir(os.path.join(play, "made-in-tree")))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_findwindow():
     """PLAN4 S6: mc's find results window - the matches in a list of
     their own, with Chdir, Again, Panelize, View and Edit."""
@@ -6207,6 +6277,7 @@ def main():
         test_fields,
         test_findhits,
         test_firstrun,
+        test_leftovers,
         test_findwindow,
         test_panelize,
         test_diff,

@@ -88,7 +88,13 @@ fn main() -> Result<()> {
         rcmd_edit::set_user_syntax_dir(dir.join("syntax"));
     }
     let mouse = cfg.mouse;
+    let title = cfg.terminal_title;
     let mut terminal = ratatui::init();
+    // keep the title the terminal had, to put back on the way out (the
+    // xterm title stack: CSI 22 t pushes, CSI 23 t pops)
+    if cfg.terminal_title {
+        print!("\x1b[22;0t");
+    }
     if mouse {
         app::set_mouse_capture(true);
     }
@@ -100,6 +106,9 @@ fn main() -> Result<()> {
     // (disabling an inactive capture is a harmless escape sequence).
     app::set_mouse_capture(false);
     app::set_bracketed_paste(false);
+    if title {
+        print!("\x1b[23;0t");
+    }
     ratatui::restore();
     result
 }
@@ -242,6 +251,10 @@ fn parse_args() -> Result<Args> {
                 println!("rcmd {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
+            Some("--print-config") => {
+                print!("{}", config::print_config());
+                std::process::exit(0);
+            }
             Some(flag) if flag.starts_with('-') && flag != "-" => {
                 anyhow::bail!("unknown option: {flag}")
             }
@@ -317,6 +330,8 @@ usage: rcmd [OPTIONS] [DIR1 [DIR2]]
   -l, --ftplog FILE   log the FTP/fish dialogue to FILE
       --remote LINE   hand LINE to a running rcmd and exit
       --to PID        which one, when several are running
+      --print-config  print every setting at its default, commented,
+                      as a config.toml to start from
   -V, --version       print the version
   -h, --help          this text
   --import-mc [DIR]   print an rcmd config built from mc's menu,

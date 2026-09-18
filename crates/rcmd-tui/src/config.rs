@@ -132,6 +132,10 @@ pub struct Config {
     /// `[[view]]` rules - each used only when its tool is installed,
     /// and always after the user's. Off: only the user's rules.
     pub builtin_view: bool,
+    /// The terminal's title says where the active panel is, as mc's
+    /// "Xterm window title" does; the title from before is put back on
+    /// the way out.
+    pub terminal_title: bool,
     /// Draw the line-number gutter (Alt+N toggles it).
     pub edit_line_numbers: bool,
     /// Keep the previous contents as `file~` on every save.
@@ -537,6 +541,7 @@ impl Default for Config {
             find_window: true,
             desktop_open: true,
             builtin_view: true,
+            terminal_title: true,
             edit_line_numbers: false,
             edit_backups: false,
             edit_clipboard: true,
@@ -582,13 +587,7 @@ pub fn load() -> (Config, Option<String>) {
         Some(text) => match toml::from_str(text) {
             Ok(config) => config,
             Err(err) => {
-                let first = err
-                    .to_string()
-                    .lines()
-                    .next()
-                    .unwrap_or_default()
-                    .to_string();
-                warnings.push(format!("config: {first}"));
+                warnings.push(format!("config: {}", toml_error(&err.to_string())));
                 Config::default()
             }
         },
@@ -600,6 +599,58 @@ pub fn load() -> (Config, Option<String>) {
     crate::state::apply(&state, &mut config);
 
     (config, (!warnings.is_empty()).then(|| warnings.join(" · ")))
+}
+
+/// A TOML error on one line: where it is, and what is wrong there. The
+/// parser's own message spreads over five - the position, an excerpt of
+/// the file with a caret under the spot, then the reason - and the
+/// first line alone, which is all a status line used to show, is the
+/// position without the reason.
+pub fn toml_error(message: &str) -> String {
+    let mut lines = message.lines();
+    let at = lines
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches("TOML parse error at ")
+        .to_string();
+    // the excerpt is the lines that open with a gutter: "  |", "3 |"
+    let excerpt = |line: &str| {
+        let head = line.trim_start();
+        head.starts_with('|')
+            || head.split_once('|').is_some_and(|(n, _)| {
+                !n.trim().is_empty() && n.trim().chars().all(|c| c.is_ascii_digit())
+            })
+    };
+    let why: Vec<&str> = lines
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !excerpt(line))
+        .collect();
+    match why.is_empty() {
+        true => at,
+        false => format!("{at}: {}", why.join("; ")),
+    }
+}
+
+/// `rcmd --print-config`: every setting at its default, each line
+/// commented out, for a config file to be started from - uncommenting a
+/// line is the whole of changing it.
+pub fn print_config() -> String {
+    let body = toml::to_string_pretty(&Config::default()).unwrap_or_default();
+    let mut out = String::from(
+        "# rcmd configuration - every setting at its default.\n\
+         # Uncomment a line to change it; the README says what each does.\n\n",
+    );
+    for line in body.lines() {
+        match line.is_empty() {
+            true => out.push('\n'),
+            false => {
+                out.push_str("# ");
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out
 }
 
 pub fn list_mode_from_name(name: &str) -> ListMode {
@@ -654,6 +705,36 @@ pub fn sort_key_name(key: SortKey) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_toml_error_says_where_and_why_on_one_line() {
+        let err = toml::from_str::<Config>("theme = 3\nsplit = \"x")
+            .unwrap_err()
+            .to_string();
+        let one = toml_error(&err);
+        assert!(!one.contains('\n'), "{one}");
+        assert!(one.starts_with("line "), "{one}");
+        assert!(one.contains(": "), "the reason is there too: {one}");
+    }
+
+    #[test]
+    fn the_printed_config_reads_back_uncommented() {
+        let printed = print_config();
+        assert!(
+            printed
+                .lines()
+                .filter(|l| !l.is_empty())
+                .all(|l| l.starts_with('#'))
+        );
+        let uncommented: String = printed
+            .lines()
+            .skip(2)
+            .map(|l| l.strip_prefix("# ").unwrap_or(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let back: Config = toml::from_str(&uncommented).expect("the template is valid TOML");
+        assert_eq!(back.sort_key, Config::default().sort_key);
+    }
+
     #[test]
     fn the_builtin_view_rules_need_their_tools() {
         let rules = builtin_view_rules();

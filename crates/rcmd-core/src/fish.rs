@@ -89,6 +89,10 @@ fn dial(
         prefix: url.prefix(),
         me: me.clone(),
     });
+    sftp::keep_alive(Arc::downgrade(&fs), |fs: &FishFs| {
+        let session = fs.session.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = session.keepalive_send();
+    });
     let start = if url.path.as_os_str().is_empty() {
         fs.realpath(Path::new("."))
             .unwrap_or_else(|_| PathBuf::from("/"))

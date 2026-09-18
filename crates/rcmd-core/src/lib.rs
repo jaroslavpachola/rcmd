@@ -24,6 +24,7 @@ pub mod remote;
 pub mod rename;
 pub mod rpm;
 pub mod sftp;
+pub mod sshconfig;
 pub mod tree;
 pub mod usermenu;
 pub mod users;

@@ -2141,10 +2141,17 @@ const EDIT_OPTIONS_MENU: &[EditMenuEntry] = &[
 /// One panel side's cached free-space measurement.
 pub type DiskSpace = Option<(PathBuf, Instant, Option<(u64, u64)>)>;
 
-/// Where the open dialog drew its rows, and which index the topmost
-/// drawn row answers to. Filled in on every draw and spent by the
-/// mouse - a list dialog is the one shape where a click has an obvious
-/// meaning, so those are the ones that take one.
+/// What a click on a form dialog landed on: one of its rows - a field
+/// or a switch - or one of its buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormHit {
+    Row(usize),
+    Button(usize),
+}
+
+/// Where the open list dialog drew its rows, and which index the
+/// topmost drawn row answers to. Filled in on every draw and spent by
+/// the mouse.
 #[derive(Clone)]
 pub struct DialogRows {
     pub area: Rect,
@@ -2947,6 +2954,24 @@ pub struct HelpState {
     pub top: usize,
     /// Content rows; updated on every draw, drives paging.
     pub rows: usize,
+    /// `/` typing a search: the field.
+    pub typing: Option<TextField>,
+    /// What was searched for last, for `n` and for highlighting.
+    pub query: String,
+    pub note: Option<String>,
+}
+
+impl HelpState {
+    /// Help opened at `top`.
+    pub fn at(top: usize) -> HelpState {
+        HelpState {
+            top,
+            rows: 1,
+            typing: None,
+            query: String::new(),
+            note: None,
+        }
+    }
 }
 
 /// The MC-style command line at the bottom of the screen.
@@ -3186,9 +3211,15 @@ pub struct App {
     prefix_cx: bool,
     /// C-l: clear the terminal before the next draw.
     repaint: bool,
+    /// What the terminal's title was last set to, so it is written only
+    /// when it changes; `None` after the terminal was handed away.
+    pub title_shown: Option<String>,
     pub areas: Areas,
     /// Set by the drawing code; see [`DialogRows`].
     pub dialog_rows: Option<DialogRows>,
+    /// Where the open form dialog drew its rows and buttons, from the
+    /// last draw, for the mouse.
+    pub form_hits: Vec<(Rect, FormHit)>,
     /// Last left-button press, for double-click detection.
     last_click: Option<(Instant, u16, u16)>,
     /// A lone Esc waiting for its follow-up key (MC's ESC-as-Meta
@@ -3382,8 +3413,10 @@ impl App {
             dirty: true,
             prefix_cx: false,
             repaint: false,
+            title_shown: None,
             areas: Areas::default(),
             dialog_rows: None,
+            form_hits: Vec::new(),
             last_click: None,
             esc_at: None,
             git_info: [None, None],
@@ -3626,6 +3659,27 @@ impl App {
         }
     }
 
+    /// What the window or terminal title says: the program, and where
+    /// the active panel is.
+    pub fn title(&self) -> String {
+        format!("rcmd - {}", self.panels[self.active].display_path())
+    }
+
+    /// Set the terminal's title when the place it names has changed.
+    fn update_title(&mut self) {
+        if !self.config.terminal_title {
+            return;
+        }
+        let title = self.title();
+        if self.title_shown.as_deref() != Some(title.as_str()) {
+            let _ = ratatui::crossterm::execute!(
+                std::io::stdout(),
+                ratatui::crossterm::terminal::SetTitle(&title)
+            );
+            self.title_shown = Some(title);
+        }
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut last_frame = Instant::now();
         while !self.exiting() {
@@ -3640,6 +3694,7 @@ impl App {
                     terminal.clear()?;
                 }
                 terminal.draw(|frame| ui::draw(frame, self))?;
+                self.update_title();
                 self.dirty = false;
                 last_frame = Instant::now();
             }
@@ -3807,6 +3862,27 @@ impl App {
 impl App {
     /// The job whose dialog is on screen (modal); background jobs run
     /// without one until they finish or need an answer.
+    /// The subshell's own prompt for the command line - only while the
+    /// shell stands where the panel does, or it would name a directory
+    /// the panel has left (the two sync before the next command).
+    pub fn subshell_prompt(&mut self) -> Option<String> {
+        let here = self.panels[self.active].local_cwd();
+        let sub = self.subshell.as_mut()?;
+        (sub.cwd() == here).then(|| sub.prompt()).flatten()
+    }
+
+    /// A tree panel looks again around its selection after something
+    /// changed the directories under it.
+    pub(super) fn refresh_trees(&mut self) {
+        for side in [0, 1] {
+            if self.panels[side].list_mode == ListMode::Tree
+                && let Some(tree) = self.trees[side].as_mut()
+            {
+                tree.refresh();
+            }
+        }
+    }
+
     pub fn fg_job(&self) -> Option<&Job> {
         self.jobs.iter().find(|j| !j.background)
     }
@@ -3912,6 +3988,7 @@ impl App {
             for panel in &mut self.panels {
                 let _ = panel.refresh();
             }
+            self.refresh_trees();
             self.git_refresh();
             if self.jobs.is_empty() && matches!(self.dialog, Some(Dialog::Jobs(_))) {
                 self.dialog = None;
@@ -3955,6 +4032,15 @@ impl App {
         }
         if self.field_popup.is_some() {
             self.on_field_popup_key(key);
+            return;
+        }
+        // help over a dialog, an editor or a viewer takes the keys until
+        // it closes, and closing it lands back where F1 was pressed
+        if self.help.is_some() {
+            self.on_help_key(key);
+            return;
+        }
+        if key.code == KeyCode::F(1) && self.help_here() {
             return;
         }
         // mc's M-h inside a field: its history as a list to pick from,
@@ -4034,6 +4120,9 @@ impl App {
                 };
                 self.on_click(mouse.column, mouse.row, double);
             }
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.on_right_click(mouse.column, mouse.row)
+            }
             MouseEventKind::ScrollUp => self.on_wheel(mouse.column, mouse.row, -3),
             MouseEventKind::ScrollDown => self.on_wheel(mouse.column, mouse.row, 3),
             _ => {}
@@ -4041,11 +4130,12 @@ impl App {
     }
 
     fn on_click(&mut self, x: u16, y: u16, double: bool) {
-        // A list dialog takes a click on one of its rows: that is the
-        // one shape where a click means something obvious. The dialogs
-        // with fields and checkboxes in them stay keyboard-only.
+        // A form dialog takes a click on a field, a switch or a button;
+        // a list dialog on one of its rows.
         if self.dialog.is_some() {
-            self.click_dialog_row(x, y, double);
+            if !self.click_form(x, y) {
+                self.click_dialog_row(x, y, double);
+            }
             return;
         }
         // Other prompts stay keyboard-only; the menu is the exception.
@@ -4163,10 +4253,21 @@ impl App {
             self.header_click(side, area, x);
             return;
         }
+        if let Some(index) = self.entry_at(side, area, x, y) {
+            self.panels[side].cursor = index;
+            if double {
+                self.enter_or_open();
+            }
+        }
+    }
+
+    /// Which entry of panel `side` is drawn at (x, y), for a listing
+    /// (the tree maps its own clicks).
+    fn entry_at(&self, side: usize, area: Rect, x: u16, y: u16) -> Option<usize> {
         // 2 border+header rows on top, 1 border row at the bottom
         let content_y = area.y + 2;
         if y < content_y || y + 1 >= area.y + area.height {
-            return;
+            return None;
         }
         let row = (y - content_y) as usize;
         let offset = self.table_states[side].offset();
@@ -4192,10 +4293,29 @@ impl App {
         } else {
             offset + row
         };
-        if index < self.panels[side].entries.len() {
-            self.panels[side].cursor = index;
-            if double {
-                self.enter_or_open();
+        (index < self.panels[side].entries.len()).then_some(index)
+    }
+
+    /// The right button marks what it is on, as mc's does - the cursor
+    /// goes there too, so what was marked is plain to see.
+    fn on_right_click(&mut self, x: u16, y: u16) {
+        if !self.on_panels() {
+            return;
+        }
+        let pos = Position { x, y };
+        for side in [0, 1] {
+            let area = if side == 0 {
+                self.areas.left
+            } else {
+                self.areas.right
+            };
+            if !area.contains(pos) || self.panels[side].list_mode == ListMode::Tree {
+                continue;
+            }
+            if let Some(index) = self.entry_at(side, area, x, y) {
+                self.active = side;
+                self.panels[side].cursor = index;
+                self.panels[side].toggle_mark();
             }
         }
     }
@@ -4304,6 +4424,23 @@ impl App {
     }
 
     fn on_wheel(&mut self, x: u16, y: u16, delta: isize) {
+        // a list dialog scrolls under the wheel as under the arrows
+        let list = self.dialog_rows.is_some()
+            || matches!(
+                self.dialog,
+                Some(Dialog::FindResults(_) | Dialog::Fuzzy(_) | Dialog::History(_))
+            );
+        if self.dialog.is_some() && list && self.fg_job().is_none() && self.connect.is_none() {
+            let code = if delta < 0 {
+                KeyCode::Up
+            } else {
+                KeyCode::Down
+            };
+            for _ in 0..delta.unsigned_abs() {
+                self.on_dialog_key(KeyEvent::new(code, KeyModifiers::NONE));
+            }
+            return;
+        }
         if self.fg_job().is_some()
             || self.connect.is_some()
             || self.find.is_some()
