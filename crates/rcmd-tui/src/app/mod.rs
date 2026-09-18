@@ -473,6 +473,9 @@ pub struct InputDialog {
     /// Where in this field's history M-p / M-n have walked to, counted
     /// back from the newest. `None` = on the line being typed.
     pub hist: Option<usize>,
+    /// What was in the field when the walk began - typed or prefilled -
+    /// which stepping forward past the newest entry puts back.
+    pub draft: String,
 }
 
 /// F5/F6: MC's copy/move form - where the files go, the switches that
@@ -4469,6 +4472,7 @@ impl App {
             value,
             action: InputAction::HotlistLabel { group, index, path },
             hist: None,
+            draft: String::new(),
         }));
     }
 

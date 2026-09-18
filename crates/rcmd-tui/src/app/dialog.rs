@@ -1402,15 +1402,20 @@ impl App {
             return;
         }
         let at = match (d.hist, back) {
-            (None, true) => Some(0),
-            (None, false) => None,
+            (None, true) => {
+                d.draft = d.value.clone();
+                Some(0)
+            }
+            // nothing newer than the line itself: leave it be, rather
+            // than wiping what was prefilled or typed
+            (None, false) => return,
             (Some(at), true) => Some((at + 1).min(history.len() - 1)),
             (Some(0), false) => None,
             (Some(at), false) => Some(at - 1),
         };
         d.value = match at {
             Some(at) => history[history.len() - 1 - at].clone(),
-            None => String::new(),
+            None => std::mem::take(&mut d.draft),
         };
         d.cursor = d.value.chars().count();
         d.hist = at;

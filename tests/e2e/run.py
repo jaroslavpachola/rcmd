@@ -2304,6 +2304,12 @@ def test_sortclick():
     check("sortclick: size reversed", "aaa.txt" in row(3))
     s.send(click(10, 2), wait=STEP)     # Name header restores name order
     check("sortclick: back to name", "aaa.txt" in row(3) and "zzz.txt" in row(4))
+    # M-n is sort-by-name as well: again reverses. It used to be eaten
+    # as a command-history step even with no history walk under way
+    s.send(b"\x1bn", wait=STEP)
+    check("sortclick: M-n reverses the name order", "zzz.txt" in row(3), s.screen())
+    s.send(b"\x1bn", wait=STEP)
+    check("sortclick: M-n again restores it", "aaa.txt" in row(3), s.screen())
     s.quit()
     shutil.rmtree(root)
 
@@ -5271,12 +5277,19 @@ def test_dialogkeys():
 
     # M-p walks back through them, newest first
     s.send(F7, wait=STEP)
+    s.send(b"zeta", wait=STEP)
+    s.send(b"\x1bn", wait=STEP)
+    check("dialogkeys: M-n with no walk leaves the field alone",
+          "zeta" in s.screen(), s.screen())
     s.send(b"\x1bp", wait=STEP)
     check("dialogkeys: M-p offers the last answer", "beta" in s.screen(), s.screen())
     s.send(b"\x1bp", wait=STEP)
     check("dialogkeys: and the one before that", "alpha" in s.screen(), s.screen())
     s.send(b"\x1bn", wait=STEP)
     check("dialogkeys: M-n walks forward again", "beta" in s.screen(), s.screen())
+    s.send(b"\x1bn", wait=STEP)
+    check("dialogkeys: and past the newest, back to what was typed",
+          "zeta" in s.screen(), s.screen())
     s.send(b"\x1b", wait=STEP)                 # Esc closes without making it
 
     # the rebound keys: Ctrl+J accepts, Ctrl+Q cancels

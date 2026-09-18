@@ -376,6 +376,7 @@ impl App {
                     cursor: 0,
                     action: InputAction::FilteredView,
                     hist: None,
+                    draft: String::new(),
                 }));
             }
             Action::Edit => self.open_editor(),
@@ -437,6 +438,7 @@ impl App {
                     cursor: 7,
                     action: InputAction::SftpConnect,
                     hist: None,
+                    draft: String::new(),
                 }));
             }
             Action::HistoryBack => self.history_step(false),
@@ -557,6 +559,7 @@ impl App {
                     cursor: 0,
                     action: InputAction::QuickCd,
                     hist: None,
+                    draft: String::new(),
                 }));
             }
             Action::Repaint => self.repaint = true,
@@ -820,6 +823,7 @@ impl App {
                 quiet,
             },
             hist: None,
+            draft: String::new(),
         }));
     }
 
@@ -1115,6 +1119,7 @@ impl App {
             cursor: 0,
             action: InputAction::Apply,
             hist: None,
+            draft: String::new(),
         }));
     }
 
@@ -1216,6 +1221,7 @@ impl App {
             value,
             action: InputAction::Checksum { paths },
             hist: None,
+            draft: String::new(),
         }));
     }
 
@@ -2313,7 +2319,10 @@ impl App {
                 self.cmdline.hist_prev();
                 return;
             }
-            KeyCode::Char('n') if ctrl || alt => {
+            // M-n is also sort-by-name, and a history step with no walk
+            // under way has nothing to step to: only then does it fall
+            // through to the keymap - before, sort-name was unreachable
+            KeyCode::Char('n') if ctrl || (alt && self.cmdline.hist_pos.is_some()) => {
                 self.cmdline.hist_next();
                 return;
             }
@@ -2612,6 +2621,7 @@ impl App {
             value: name,
             action,
             hist: None,
+            draft: String::new(),
         }));
     }
 
@@ -2626,6 +2636,7 @@ impl App {
             cursor: 0,
             action: InputAction::EditNew,
             hist: None,
+            draft: String::new(),
         }));
     }
 
@@ -2731,6 +2742,7 @@ impl App {
                 cursor: 0,
                 action: InputAction::Chown { paths },
                 hist: None,
+                draft: String::new(),
             }));
             return;
         }
@@ -2865,6 +2877,7 @@ impl App {
             cursor: 0,
             action: InputAction::Mkdir,
             hist: None,
+            draft: String::new(),
         }));
     }
 
@@ -2950,6 +2963,7 @@ impl App {
             value,
             action: InputAction::Pack { sources },
             hist: None,
+            draft: String::new(),
         }));
     }
 
