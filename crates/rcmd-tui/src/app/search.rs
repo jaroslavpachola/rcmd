@@ -150,7 +150,14 @@ impl App {
     }
 
     pub(super) fn submit_find(&mut self, dialog: FindDialog) {
-        let text = dialog.name.trim();
+        for field in [&dialog.start, &dialog.name, &dialog.content] {
+            self.remember(field);
+        }
+        let memory = dialog.memory();
+        if let Err(err) = state::update(move |s| s.find = Some(memory)) {
+            self.status = Some(format!(" could not save state: {err} "));
+        }
+        let text = dialog.name.value.trim();
         let name = rcmd_core::pattern::Pattern {
             text: if text.is_empty() { "*" } else { text }.to_string(),
             shell: dialog.shell,
@@ -159,7 +166,7 @@ impl App {
             ..Default::default()
         };
         let content = {
-            let text = dialog.content.trim();
+            let text = dialog.content.value.trim();
             (!text.is_empty()).then(|| find::Content {
                 text: text.to_string(),
                 regex: dialog.regex,
@@ -178,7 +185,7 @@ impl App {
             skip_hidden: dialog.skip_hidden,
             follow_links: dialog.follow_links,
         };
-        let root = match dialog.start.trim() {
+        let root = match dialog.start.value.trim() {
             "" => self.panels[self.active].local_cwd(),
             typed => self.resolve(typed),
         };
@@ -232,21 +239,25 @@ impl App {
             return;
         }
         let start = self.panels[self.active].local_cwd().display().to_string();
-        self.dialog = Some(Dialog::Find(Box::new(FindDialog {
-            start_cursor: start.chars().count(),
-            start,
+        // the last question, from this session or the one before
+        let last = state::load().0.find.unwrap_or(state::FindMemory {
             name: "*".into(),
-            name_cursor: 1,
-            content: String::new(),
-            content_cursor: 0,
             shell: true,
-            case_sensitive: false,
-            whole_words: false,
-            regex: false,
-            all_charsets: false,
-            skip_hidden: false,
-            follow_links: false,
             skip_ignored: true,
+            ..Default::default()
+        });
+        self.dialog = Some(Dialog::Find(Box::new(FindDialog {
+            start: TextField::new(start).with_history("find-start"),
+            name: TextField::new(last.name).with_history("find-name"),
+            content: TextField::new(last.content).with_history("find-content"),
+            shell: last.shell,
+            case_sensitive: last.case_sensitive,
+            whole_words: last.whole_words,
+            regex: last.regex,
+            all_charsets: last.all_charsets,
+            skip_hidden: last.skip_hidden,
+            follow_links: last.follow_links,
+            skip_ignored: last.skip_ignored,
             row: 1,
             ok: true,
         })));
@@ -257,8 +268,7 @@ impl App {
             return;
         }
         self.dialog = Some(Dialog::Panelize(Box::new(PanelizeDialog {
-            value: String::new(),
-            cursor: 0,
+            command: TextField::new("").with_history("panelize"),
             row: 0,
             // the saved list has the focus when there is one to pick
             // from, which is the point of saving them

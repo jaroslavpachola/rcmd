@@ -148,8 +148,15 @@ impl TerminalPane {
     pub fn feed(&mut self, app: &mut App, input: &[Input]) -> bool {
         let mut bytes = Vec::new();
         for event in input {
-            let Input::Key(key) = event else { continue };
-            encode(key, self.parser.screen().application_cursor(), &mut bytes);
+            match event {
+                Input::Key(key) => {
+                    encode(key, self.parser.screen().application_cursor(), &mut bytes)
+                }
+                Input::Paste(text) => {
+                    paste(text, self.parser.screen().bracketed_paste(), &mut bytes)
+                }
+                Input::Mouse(_) => {}
+            }
         }
         match bytes.iter().position(|&b| b == CTRL_O) {
             Some(at) => {
@@ -313,6 +320,21 @@ fn to_color32(color: vt100::Color, default: Color32) -> Color32 {
 /// shell expects from one. `application_cursor` is DECCKM - a program
 /// that turned it on (vim, less, anything using ncurses) wants `SS3 A`
 /// for Up rather than `CSI A`, and gets a stray character otherwise.
+/// A paste as a terminal sends it: wrapped in the bracketed-paste
+/// markers when the shell asked for them, so it can tell a paste from
+/// typing, and with line breaks as the CR a keyboard's Enter is.
+fn paste(text: &str, bracketed: bool, out: &mut Vec<u8>) {
+    let text = text.replace("\r\n", "\r").replace('\n', "\r");
+    if bracketed {
+        out.extend_from_slice(b"\x1b[200~");
+        // the end marker inside the text would end the paste early
+        out.extend_from_slice(text.replace("\x1b[201~", "").as_bytes());
+        out.extend_from_slice(b"\x1b[201~");
+    } else {
+        out.extend_from_slice(text.as_bytes());
+    }
+}
+
 fn encode(key: &KeyEvent, application_cursor: bool, out: &mut Vec<u8>) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);

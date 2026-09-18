@@ -843,9 +843,24 @@ const HELP_TEXT: &[&str] = &[
     "  cd -            back to the panel's previous directory; a relative",
     "                  cd that misses here also tries $CDPATH",
     "  %f %d %D %t     expand on the command line, as in MC (%% = percent)",
-    "  C-a / C-e       start / end of line",
+    "  Tab / M-Tab     complete: a command from $PATH as the first word,",
+    "                  a path after it, $NAME and ~user anywhere; several",
+    "                  candidates open a list to pick from",
     "  Esc             clear the command line - acts at once while typing",
     "  C-o             open a full shell here; exit returns to rcmd",
+    "",
+    "# Editing a line (the command line and every dialog field)",
+    "  C-a / C-e       start / end of line",
+    "  M-b / M-f       word back / forward (C-Left / C-Right too)",
+    "  C-w             cut back to the last space (the shell's C-w)",
+    "  M-Backspace/M-d cut the word before / after the cursor",
+    "  C-k / C-u       cut to the end / the whole line (C-u on the",
+    "                  command line is still swap panels, as in MC)",
+    "  C-y             put back what was cut last, in any field",
+    "  M-p / M-n       walk the field's own history, kept per question",
+    "  M-h             the field's history as a list to pick from",
+    "  M-Tab           complete a path (Tab too in one-line dialogs)",
+    "  a paste         arrives as text: a line break in it runs nothing",
     "",
     "# Viewer (F3)",
     "  F2              toggle line wrap",
@@ -940,6 +955,15 @@ pub fn help_lines() -> usize {
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    draw_screens(frame, app);
+    // M-h's list sits over whatever form or prompt the field is in
+    if let Some(popup) = &app.field_popup {
+        let rows: Vec<&str> = popup.rows.iter().map(String::as_str).collect();
+        draw_pick_list(frame, popup.title, &rows, popup.selected, 0);
+    }
+}
+
+fn draw_screens(frame: &mut Frame, app: &mut App) {
     if app.help.is_some() {
         draw_help(frame, app);
         return;
@@ -2920,7 +2944,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
 
     match &st.prompt {
         None => {}
-        Some(EditPrompt::Search { value, cursor }) => {
+        Some(EditPrompt::Search(field)) => {
             let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
             let inner = popup(
                 frame,
@@ -2928,9 +2952,9 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
                 " Search (regex) ",
                 style,
             );
-            draw_field(frame, inner, value, *cursor);
+            draw_field(frame, inner, &field.value, field.cursor);
         }
-        Some(EditPrompt::ReplaceFind { value, cursor }) => {
+        Some(EditPrompt::ReplaceFind(field)) => {
             let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
             let inner = popup(
                 frame,
@@ -2938,9 +2962,9 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
                 " Replace (regex) ",
                 style,
             );
-            draw_field(frame, inner, value, *cursor);
+            draw_field(frame, inner, &field.value, field.cursor);
         }
-        Some(EditPrompt::ReplaceWith { value, cursor, .. }) => {
+        Some(EditPrompt::ReplaceWith { field, .. }) => {
             let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
             let inner = popup(
                 frame,
@@ -2948,7 +2972,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
                 " Replace with ",
                 style,
             );
-            draw_field(frame, inner, value, *cursor);
+            draw_field(frame, inner, &field.value, field.cursor);
         }
         Some(EditPrompt::ConfirmReplace { count, button, .. }) => {
             let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
@@ -3397,7 +3421,7 @@ fn draw_view_search(frame: &mut Frame, dialog: &ViewSearch) {
     let area = centered(56, 9, frame.area());
     let inner = popup(frame, area, " Search ", style);
     let field = Rect { height: 1, ..inner };
-    draw_field(frame, field, &dialog.value, dialog.cursor);
+    draw_field(frame, field, &dialog.field.value, dialog.field.cursor);
 
     let kind = match dialog.kind {
         SearchKind::Normal => "Normal",
@@ -3785,7 +3809,7 @@ fn draw_input(frame: &mut Frame, d: &InputDialog) {
     let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let area = centered(64, 5, frame.area());
     let inner = popup(frame, area, &d.title, style);
-    draw_field(frame, inner, &d.value, d.cursor);
+    draw_field(frame, inner, &d.field.value, d.field.cursor);
 }
 
 /// Editable text field on the first inner row of a dialog.
@@ -3927,8 +3951,8 @@ fn draw_panelize(
             field_row(
                 frame,
                 row(below + 1),
-                &d.value,
-                (!d.on_list).then_some(d.cursor),
+                &d.command.value,
+                (!d.on_list).then_some(d.command.cursor),
             );
         }
     }
@@ -3954,11 +3978,20 @@ fn draw_pattern(frame: &mut Frame, d: &crate::app::PatternDialog) {
         width: inner.width.saturating_sub(2),
         height: 1,
     };
-    field_row(frame, row(0), &d.value, (d.row == 0).then_some(d.cursor));
+    field_row(
+        frame,
+        row(0),
+        &d.value.value,
+        (d.row == 0).then_some(d.value.cursor),
+    );
     // the two questions mc never asks, so they say what they take
     for (i, (text, cursor, hint)) in [
-        (&d.size, d.size_cursor, "Size    (>1M, <=100k, 1M-2G)"),
-        (&d.newer, d.newer_cursor, "Newer than  (30m, 24h, 7d, 2w)"),
+        (&d.size.value, d.size.cursor, "Size    (>1M, <=100k, 1M-2G)"),
+        (
+            &d.newer.value,
+            d.newer.cursor,
+            "Newer than  (30m, 24h, 7d, 2w)",
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -4095,9 +4128,13 @@ fn draw_find(frame: &mut Frame, d: &FindDialog) {
         height: 1,
     };
     let fields = [
-        ("Start at:", &d.start, d.start_cursor),
-        ("Filename:", &d.name, d.name_cursor),
-        ("Containing text (optional):", &d.content, d.content_cursor),
+        ("Start at:", &d.start.value, d.start.cursor),
+        ("Filename:", &d.name.value, d.name.cursor),
+        (
+            "Containing text (optional):",
+            &d.content.value,
+            d.content.cursor,
+        ),
     ];
     for (i, (label, value, cursor)) in fields.iter().enumerate() {
         frame.render_widget(Line::from(*label).style(style), row(i * 2));
@@ -4305,9 +4342,9 @@ fn draw_link(frame: &mut Frame, d: &crate::app::LinkDialog) {
     };
     for (label, which, row) in labels {
         let text = if *which == "target" {
-            &d.target
+            &d.target.value
         } else {
-            &d.name
+            &d.name.value
         };
         frame.render_widget(
             Line::from(field(text, label)).style(if d.row == *row { sel } else { base }),
@@ -4325,9 +4362,9 @@ fn draw_link(frame: &mut Frame, d: &crate::app::LinkDialog) {
     );
     if d.row < rows {
         let cursor = if d.row == 0 {
-            d.target_cursor
+            d.target.cursor
         } else {
-            d.name_cursor
+            d.name.cursor
         };
         let x = inner.x + 11 + cursor.min(width.saturating_sub(12)) as u16;
         frame.set_cursor_position((x, inner.y + d.row as u16));
@@ -4562,8 +4599,11 @@ fn draw_transfer(frame: &mut Frame, d: &crate::app::TransferDialog) {
             Span::styled(format!("{:<room$}", tail(text, room)), sel),
         ])
     };
-    frame.render_widget(field(&d.mask, " mask "), row_at(0));
-    frame.render_widget(field(&d.dest, " to   "), row_at(TRANSFER_DEST_ROW as u16));
+    frame.render_widget(field(&d.mask.value, " mask "), row_at(0));
+    frame.render_widget(
+        field(&d.dest.value, " to   "),
+        row_at(TRANSFER_DEST_ROW as u16),
+    );
     for (i, (label, _)) in TRANSFER_OPTS.iter().enumerate() {
         let mark = if d.checked(i) { "[x]" } else { "[ ]" };
         let text = format!(" {mark} {label}");
@@ -4585,8 +4625,8 @@ fn draw_transfer(frame: &mut Frame, d: &crate::app::TransferDialog) {
     );
     // the cursor sits in whichever of the two text rows has the focus
     let text_row = match d.row {
-        0 => Some((0u16, d.mask_cursor)),
-        TRANSFER_DEST_ROW => Some((TRANSFER_DEST_ROW as u16, d.cursor)),
+        0 => Some((0u16, d.mask.cursor)),
+        TRANSFER_DEST_ROW => Some((TRANSFER_DEST_ROW as u16, d.dest.cursor)),
         _ => None,
     };
     if let Some((row, cursor)) = text_row {

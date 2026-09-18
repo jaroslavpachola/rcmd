@@ -491,10 +491,7 @@ impl App {
                 let from = next_pos(&st.ed);
                 if pattern.is_empty() {
                     if let Some(st) = self.editor_mut() {
-                        st.prompt = Some(EditPrompt::Search {
-                            value: String::new(),
-                            cursor: 0,
-                        });
+                        st.prompt = Some(EditPrompt::Search(search_field("")));
                     }
                 } else {
                     self.editor_find(&pattern, from);
@@ -524,19 +521,11 @@ impl App {
                 edited = false;
             }
             EA::Replace => {
-                let value = st.ed.search.clone();
-                st.prompt = Some(EditPrompt::ReplaceFind {
-                    cursor: value.chars().count(),
-                    value,
-                });
+                st.prompt = Some(EditPrompt::ReplaceFind(search_field(&st.ed.search)));
                 return;
             }
             EA::Search => {
-                let value = st.ed.search.clone();
-                st.prompt = Some(EditPrompt::Search {
-                    cursor: value.chars().count(),
-                    value,
-                });
+                st.prompt = Some(EditPrompt::Search(search_field(&st.ed.search)));
                 return;
             }
             EA::BlockCopy | EA::BlockMove => {
@@ -661,51 +650,44 @@ impl App {
             return;
         };
         match prompt {
-            EditPrompt::Search {
-                mut value,
-                mut cursor,
-            } => match key.code {
+            EditPrompt::Search(mut field) => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => {
-                    let pattern = value.trim().to_string();
+                    let pattern = field.value.trim().to_string();
                     if !pattern.is_empty() {
+                        remember_in(st, &field);
                         let from = next_pos(&st.ed);
                         self.editor_find(&pattern, from);
                     }
                 }
-                code => {
-                    edit_line(&mut value, &mut cursor, code, key.modifiers);
-                    st.prompt = Some(EditPrompt::Search { value, cursor });
+                _ => {
+                    field.key(key);
+                    st.prompt = Some(EditPrompt::Search(field));
                 }
             },
-            EditPrompt::ReplaceFind {
-                mut value,
-                mut cursor,
-            } => match key.code {
+            EditPrompt::ReplaceFind(mut field) => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => {
-                    let pattern = value.trim().to_string();
+                    let pattern = field.value.trim().to_string();
                     if !pattern.is_empty() {
+                        remember_in(st, &field);
                         st.ed.search = pattern.clone();
                         st.prompt = Some(EditPrompt::ReplaceWith {
                             pattern,
-                            value: String::new(),
-                            cursor: 0,
+                            field: TextField::new("").with_history("edit-replace"),
                         });
                     }
                 }
-                code => {
-                    edit_line(&mut value, &mut cursor, code, key.modifiers);
-                    st.prompt = Some(EditPrompt::ReplaceFind { value, cursor });
+                _ => {
+                    field.key(key);
+                    st.prompt = Some(EditPrompt::ReplaceFind(field));
                 }
             },
-            EditPrompt::ReplaceWith {
-                pattern,
-                mut value,
-                mut cursor,
-            } => match key.code {
+            EditPrompt::ReplaceWith { pattern, mut field } => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => {
+                    remember_in(st, &field);
+                    let value = field.value;
                     let re = match rcmd_edit::Editor::compile(&pattern) {
                         Ok(re) => re,
                         Err(_) => {
@@ -727,13 +709,9 @@ impl App {
                         None => st.note = Some(" not found ".into()),
                     }
                 }
-                code => {
-                    edit_line(&mut value, &mut cursor, code, key.modifiers);
-                    st.prompt = Some(EditPrompt::ReplaceWith {
-                        pattern,
-                        value,
-                        cursor,
-                    });
+                _ => {
+                    field.key(key);
+                    st.prompt = Some(EditPrompt::ReplaceWith { pattern, field });
                 }
             },
             EditPrompt::ConfirmReplace {
@@ -1198,5 +1176,19 @@ impl App {
         if scol >= st.left + cols {
             st.left = scol + 1 - cols;
         }
+    }
+}
+
+/// The editor's search field: the last search, with the ring of the
+/// ones before it behind M-p.
+fn search_field(last: &str) -> TextField {
+    TextField::new(last).with_history("edit-search")
+}
+
+/// Keep what was asked, saying so on the editor's own note line when
+/// the state file cannot be written.
+fn remember_in(st: &mut EditorState, field: &TextField) {
+    if let Err(err) = field.remember() {
+        st.note = Some(format!(" could not save state: {err} "));
     }
 }

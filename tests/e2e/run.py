@@ -4810,6 +4810,21 @@ def test_selectdialog():
     shutil.rmtree(root)
 
 
+def forget_find(home):
+    """Drop the remembered find from the state file, so the next Alt+F7
+    opens on the defaults rather than on the last question asked."""
+    path = os.path.join(home, ".local", "state", "rcmd", "state.toml")
+    if not os.path.exists(path):
+        return
+    out, skipping = [], False
+    for line in open(path).read().splitlines(keepends=True):
+        if line.startswith("["):
+            skipping = line.strip() == "[find]"
+        if not skipping:
+            out.append(line)
+    open(path, "w").write("".join(out))
+
+
 def test_finddialog():
     """PLAN4 S6: mc's Find File options - a start directory, content by
     whole words, by regular expression, in every codepage, and hidden
@@ -4832,6 +4847,8 @@ def test_finddialog():
     # field: 1 Shell patterns, 2 Case sensitive, 3 Whole words,
     # 4 Regular expression, 5 All charsets, 6 Skip hidden
     def find(keys, wait=STEP):
+        # each question here starts from the defaults
+        forget_find(home)
         s.keys(
             b"\x1b[20~",                     # F9
             b"\x1b[C" * 2,                   # -> Command
@@ -4889,6 +4906,100 @@ def test_finddialog():
     check("finddialog: searched where it was told",
           "1 match(es)" in scr and scr.count("b1.txt") == 1, scr)
 
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_fields():
+    """PLAN5 S1: one text field for every form - a shell's line-editing
+    keys, a history in every field with M-h listing it, completion in a
+    field, a paste that is text rather than keys, and a find that opens
+    on the last question asked."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "alpha-dir"))
+    os.makedirs(os.path.join(play, "alpine"))
+    open(os.path.join(play, "notes.txt"), "w").write("x\n")
+    dest = os.path.join(root, "dest")
+    os.makedirs(dest)
+    s = Session(play, home)
+
+    def field():
+        """The text of the Create directory field: the first line of
+        text inside the dialog's frame, under its title."""
+        lines = s.screen().split("\n")
+        for row, line in enumerate(lines):
+            if "┌ Create directory" in line:
+                left = line.index("┌ Create directory")
+                for below in lines[row + 1:row + 4]:
+                    inner = below[left + 1:].split("│")[0].strip()
+                    if inner:
+                        return inner
+        return ""
+
+    # the line-editing keys, in a dialog
+    s.send(F7, wait=STEP)
+    s.send(b"one two three", wait=STEP)
+    s.send(b"\x17", wait=STEP)                # C-w: the last word
+    check("fields: C-w cut a word", field() == "one two", s.screen())
+    s.send(b"\x1bb", wait=STEP)               # M-b: back to "two"
+    s.send(b"\x0b", wait=STEP)                # C-k: kill to the end
+    check("fields: M-b and C-k", field() == "one", s.screen())
+    s.send(b"\x05\x19", wait=STEP)            # C-e, C-y: yank it back
+    check("fields: C-y yanked it back", field() == "one two", s.screen())
+    s.send(b"\x15made\r", wait=STEP * 2)
+    check("fields: and the form still submits",
+          os.path.isdir(os.path.join(play, "made")))
+
+    # M-h lists a field's history; Enter puts the pick in the field
+    s.send(F7, wait=STEP)
+    s.send(b"\x1bh", wait=STEP)
+    check("fields: M-h lists the history", "History" in s.screen() and "made" in s.screen(),
+          s.screen())
+    s.send(b"\r", wait=STEP)
+    check("fields: the pick is in the field", field() == "made", s.screen())
+
+    # M-Tab completes in a field; two candidates open a list
+    s.send(b"\x15al\x1b\t", wait=STEP)
+    scr = s.screen()
+    check("fields: M-Tab lists the candidates",
+          "Complete" in scr and "alpha-dir" in scr and "alpine" in scr, scr)
+    s.send(b"\r", wait=STEP)
+    check("fields: the pick completes the word", field() == "alpha-dir/", s.screen())
+    s.send(b"\x1b\x1b", wait=STEP)
+
+    # the F5 destination is remembered now, not only Shift+F5's
+    s.send(b"\x13notes\r", wait=STEP)
+    s.send(F5, wait=STEP)
+    s.send(b"\x15" + dest.encode() + b"\r", wait=STEP * 3)
+    check("fields: the copy went through",
+          wait_file(os.path.join(dest, "notes.txt"), "x"))
+    s.send(F5, wait=STEP)
+    s.send(b"\x15\x1bp", wait=STEP)
+    check("fields: M-p offers F5's last destination", dest in s.screen(), s.screen())
+    s.send(b"\x1b\x1b", wait=STEP)
+
+    # a paste is text: its line break runs nothing, its + selects nothing
+    s.send(b"\x1b[200~+echo pasted\necho twice\x1b[201~", wait=STEP)
+    scr = s.screen()
+    check("fields: the paste landed on the command line",
+          "+echo pasted echo twice" in scr, scr)
+    check("fields: and neither ran nor selected", "Select group" not in scr, scr)
+    s.send(b"\x15", wait=STEP)
+
+    # a find opens on the last question asked, in the next session too
+    s.send(b"\x1b[20~"); s.send(b"\x1b[C" * 2); s.send(DOWN * 5)
+    s.send(b"\r", wait=STEP)
+    s.send(b"\x15*.txt\tneedle\r", wait=STEP * 2)
+    wait_for(s, "match(es)")
+    s.send(b"\x1b\x1b", wait=STEP)
+    s.quit()
+    s = Session(play, home)
+    s.send(b"\x1b[20~"); s.send(b"\x1b[C" * 2); s.send(DOWN * 5)
+    s.send(b"\r", wait=STEP)
+    scr = s.screen()
+    check("fields: find reopens on the last question",
+          "*.txt" in scr and "needle" in scr, scr)
+    s.send(b"\x1b\x1b", wait=STEP)
     s.quit()
     shutil.rmtree(root)
 
@@ -5886,6 +5997,7 @@ def main():
         test_panelcharset,
         test_selectdialog,
         test_finddialog,
+        test_fields,
         test_findwindow,
         test_panelize,
         test_diff,

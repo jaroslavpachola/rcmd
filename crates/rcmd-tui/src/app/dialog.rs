@@ -130,19 +130,14 @@ impl App {
             Dialog::Input(mut d) => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => self.submit_input(d),
-                // M-p / M-n walk what was typed into this field before
-                KeyCode::Char('p') if alt => {
-                    self.field_history_step(&mut d, true);
+                // one field and nowhere else to go: Tab completes, as it
+                // does on the command line
+                KeyCode::Tab => {
                     self.dialog = Some(Dialog::Input(d));
+                    self.complete_focused(false);
                 }
-                KeyCode::Char('n') if alt => {
-                    self.field_history_step(&mut d, false);
-                    self.dialog = Some(Dialog::Input(d));
-                }
-                code => {
-                    edit_line(&mut d.value, &mut d.cursor, code, key.modifiers);
-                    // typing leaves the history and keeps what is typed
-                    d.hist = None;
+                _ => {
+                    d.field.key(key);
                     self.dialog = Some(Dialog::Input(d));
                 }
             },
@@ -363,9 +358,9 @@ impl App {
                     d.ok = !d.ok;
                     self.dialog = Some(Dialog::Pattern(d));
                 }
-                code if d.row < PATTERN_FIELDS => {
-                    if let Some((value, cursor)) = d.field_mut() {
-                        edit_line(value, cursor, code, key.modifiers);
+                _ if d.row < PATTERN_FIELDS => {
+                    if let Some(field) = d.field_mut() {
+                        field.key(key);
                     }
                     self.dialog = Some(Dialog::Pattern(d));
                 }
@@ -386,7 +381,7 @@ impl App {
                                 self.save_panelize(
                                     Some(crate::config::PanelizePreset {
                                         name,
-                                        run: d.value.clone(),
+                                        run: d.command.value.clone(),
                                     }),
                                     None,
                                 );
@@ -407,11 +402,14 @@ impl App {
                     KeyCode::Enter => {
                         let command = match (d.on_list, presets.get(d.row)) {
                             (true, Some(preset)) => preset.run.clone(),
-                            _ => d.value.trim().to_string(),
+                            _ => d.command.value.trim().to_string(),
                         };
                         if command.is_empty() {
                             self.dialog = Some(Dialog::Panelize(d));
                         } else {
+                            if !d.on_list {
+                                self.remember(&d.command);
+                            }
                             self.run_panelize(&command);
                         }
                     }
@@ -428,14 +426,13 @@ impl App {
                         // the highlighted command is what Enter runs,
                         // so it shows in the field as well
                         if let Some(preset) = presets.get(d.row) {
-                            d.value = preset.run.clone();
-                            d.cursor = d.value.chars().count();
+                            d.command.set(preset.run.clone());
                         }
                         self.dialog = Some(Dialog::Panelize(d));
                     }
                     // C-s saves what is typed, F8 drops what is picked
                     KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        if !d.value.trim().is_empty() {
+                        if !d.command.value.trim().is_empty() {
                             d.naming = Some((String::new(), 0));
                         }
                         self.dialog = Some(Dialog::Panelize(d));
@@ -446,10 +443,9 @@ impl App {
                         d.on_list = !self.config.panelize.is_empty();
                         self.dialog = Some(Dialog::Panelize(d));
                     }
-                    code => {
+                    _ => {
                         if !d.on_list {
-                            let (value, cursor) = (&mut d.value, &mut d.cursor);
-                            edit_line(value, cursor, code, key.modifiers);
+                            d.command.key(key);
                         }
                         self.dialog = Some(Dialog::Panelize(d));
                     }
@@ -911,16 +907,12 @@ impl App {
                             self.submit_link(*d);
                         }
                     }
-                    code => {
+                    _ => {
                         match d.row {
-                            0 => {
-                                edit_line(&mut d.target, &mut d.target_cursor, code, key.modifiers);
-                            }
-                            1 => {
-                                edit_line(&mut d.name, &mut d.name_cursor, code, key.modifiers);
-                            }
-                            _ => {}
-                        }
+                            0 => d.target.key(key),
+                            1 => d.name.key(key),
+                            _ => false,
+                        };
                         self.dialog = Some(Dialog::Link(d));
                     }
                 }
@@ -1080,16 +1072,12 @@ impl App {
                         d.toggle(row);
                         self.dialog = Some(Dialog::Transfer(d));
                     }
-                    code => {
+                    _ => {
                         match d.row {
-                            0 => {
-                                edit_line(&mut d.mask, &mut d.mask_cursor, code, key.modifiers);
-                            }
-                            TRANSFER_DEST_ROW => {
-                                edit_line(&mut d.dest, &mut d.cursor, code, key.modifiers);
-                            }
-                            _ => {}
-                        }
+                            0 => d.mask.key(key),
+                            TRANSFER_DEST_ROW => d.dest.key(key),
+                            _ => false,
+                        };
                         self.dialog = Some(Dialog::Transfer(d));
                     }
                 }
@@ -1258,9 +1246,9 @@ impl App {
                     d.ok = !d.ok;
                     self.dialog = Some(Dialog::Find(d));
                 }
-                code => {
-                    if let Some((value, cursor)) = d.field() {
-                        edit_line(value, cursor, code, key.modifiers);
+                _ => {
+                    if let Some(field) = d.field() {
+                        field.key(key);
                     }
                     self.dialog = Some(Dialog::Find(d));
                 }
@@ -1387,63 +1375,20 @@ impl App {
         }
     }
 
-    /// M-p / M-n: step back or forward through this field's history.
-    fn field_history_step(&mut self, d: &mut InputDialog, back: bool) {
-        let Some(name) = d.action.history() else {
-            return;
-        };
-        let history = state::load()
-            .0
-            .field_history
-            .remove(name)
-            .unwrap_or_default();
-        if history.is_empty() {
-            return;
-        }
-        let at = match (d.hist, back) {
-            (None, true) => {
-                d.draft = d.value.clone();
-                Some(0)
-            }
-            // nothing newer than the line itself: leave it be, rather
-            // than wiping what was prefilled or typed
-            (None, false) => return,
-            (Some(at), true) => Some((at + 1).min(history.len() - 1)),
-            (Some(0), false) => None,
-            (Some(at), false) => Some(at - 1),
-        };
-        d.value = match at {
-            Some(at) => history[history.len() - 1 - at].clone(),
-            None => std::mem::take(&mut d.draft),
-        };
-        d.cursor = d.value.chars().count();
-        d.hist = at;
-    }
-
-    /// Remember what was answered, so M-p can offer it next time.
-    fn remember_field(&mut self, action: &InputAction, value: &str) {
-        let Some(name) = action.history() else {
-            return;
-        };
-        let (name, value) = (name.to_string(), rcmd_core::vfslog::redact_urls(value));
-        if let Err(err) = state::update(move |s| {
-            let ring = s.field_history.entry(name).or_default();
-            ring.retain(|old| old != &value);
-            ring.push(value);
-            // a field's history is a convenience, not an archive
-            let over = ring.len().saturating_sub(FIELD_HISTORY);
-            ring.drain(..over);
-        }) {
+    /// Add what a field holds to its history; a state file that cannot
+    /// be written is worth a word on the status line, nothing more.
+    pub(super) fn remember(&mut self, field: &TextField) {
+        if let Err(err) = field.remember() {
             self.status = Some(format!(" could not save state: {err} "));
         }
     }
 
     fn submit_input(&mut self, dialog: InputDialog) {
-        let value = dialog.value.trim().to_string();
+        let value = dialog.field.value.trim().to_string();
         if value.is_empty() {
             return;
         }
-        self.remember_field(&dialog.action, &value);
+        self.remember(&dialog.field);
         match dialog.action {
             InputAction::CopyTo { sources } => {
                 self.route_transfer(sources, &value, false, TransferOpts::default(), None)
@@ -1592,16 +1537,21 @@ impl App {
             return; // Cancel
         }
         let background = d.button == 1;
+        self.remember(&d.dest);
+        if d.mask.value != "*" {
+            self.remember(&d.mask);
+        }
         // MC puts the target mask in the destination's last component;
         // anything without a wildcard there is a plain destination
-        let (dest, target) = match d.dest.rsplit_once('/') {
+        let typed = d.dest.value.as_str();
+        let (dest, target) = match typed.rsplit_once('/') {
             Some((dir, last)) if mask::is_target_mask(last) => {
                 (format!("{dir}/"), Some(last.to_string()))
             }
-            _ if mask::is_target_mask(&d.dest) => (String::new(), Some(d.dest.clone())),
-            _ => (d.dest.clone(), None),
+            _ if mask::is_target_mask(typed) => (String::new(), Some(typed.to_string())),
+            _ => (typed.to_string(), None),
         };
-        let rename = Rename::new(Mask::new(&d.mask), target);
+        let rename = Rename::new(Mask::new(&d.mask.value), target);
         self.route_transfer(d.sources, &dest, d.is_move, d.opts, rename);
         // every route ends in a pushed job, or in a status message and
         // no job at all - marking the last one is right either way
@@ -1616,12 +1566,9 @@ impl App {
         let current = self.panels[self.active].filter.clone().unwrap_or_default();
         self.dialog = Some(Dialog::Pattern(Box::new(PatternDialog {
             title: " Filter (show files matching) ".into(),
-            cursor: current.text.chars().count(),
-            value: current.text,
-            size_cursor: current.size.chars().count(),
-            size: current.size,
-            newer_cursor: current.newer.chars().count(),
-            newer: current.newer,
+            value: PatternDialog::pattern_field(PatternKind::Filter, current.text),
+            size: TextField::new(current.size).with_history("size"),
+            newer: TextField::new(current.newer).with_history("newer"),
             shell: current.shell,
             case_sensitive: current.case_sensitive,
             files_only: current.files_only,
@@ -1633,6 +1580,9 @@ impl App {
 
     /// OK on that form: mark, unmark, or set the panel's filter.
     fn submit_pattern(&mut self, d: &PatternDialog) {
+        for field in d.fields() {
+            self.remember(field);
+        }
         let pattern = d.to_pattern();
         if let Err(err) = pattern.compile() {
             // the regular expression is the user's, so it is quoted
@@ -1660,7 +1610,12 @@ impl App {
 
     /// OK on the link form.
     fn submit_link(&mut self, d: LinkDialog) {
-        let (target, name) = (d.target.trim().to_string(), d.name.trim().to_string());
+        self.remember(&d.target);
+        self.remember(&d.name);
+        let (target, name) = (
+            d.target.value.trim().to_string(),
+            d.name.value.trim().to_string(),
+        );
         if target.is_empty() || name.is_empty() {
             return;
         }

@@ -382,10 +382,20 @@ window was left in is where the next terminal session starts.
 Typing goes to the **command line** at the bottom; Enter runs it in the
 active panel's directory (`cd` changes the panel instead, and `cd -`
 goes back to where the panel came from; a relative `cd` that misses
-locally also tries `$CDPATH`). Dialog fields remember what was typed
-into them before - Alt+P and Alt+N walk a field's own history, kept per
-kind of question (destinations, `mkdir`, `cd`, `chown`…) and saved
-between sessions. MC's macros expand there too (the same
+locally also tries `$CDPATH`). Every dialog field remembers what was
+typed into it before - Alt+P and Alt+N walk a field's own history, Alt+H
+lists it to pick from, kept per kind of question (copy and move
+destinations, find's three fields, select patterns, `mkdir`, `cd`,
+`chown`, link targets, editor and viewer searches…) and saved between
+sessions; find opens on the last question asked, switches included.
+Every field and the command line edit alike: Alt+B/F and Ctrl+←/→ move
+by word, Ctrl+W, Alt+Backspace, Alt+D, Ctrl+K and Ctrl+U cut, and
+Ctrl+Y puts back the last cut, in whichever field. Tab completes on the
+command line (a command from `$PATH` as the first word, a path after
+it, `$NAME` and `~user` anywhere) and Alt+Tab in any field; when several
+match, a list opens to pick from. A paste is text, not keys: its line
+breaks run nothing and a leading `+` selects nothing, in the terminal
+(bracketed paste) and in the window alike. MC's macros expand there too (the same
 set the user menu gets, below - so `%%s` is how you type a literal
 `%s`). Alt+Enter
 inserts the selected filename, Ctrl+P/Ctrl+N walk history, Ctrl+A/E are

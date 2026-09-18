@@ -84,12 +84,14 @@ fn main() -> Result<()> {
     if mouse {
         app::set_mouse_capture(true);
     }
+    app::set_bracketed_paste(true);
     let result = run(args, cfg, warnings, &mut terminal);
     // after run(): the App, and the subshell in it, are gone by now
     rcmd_tui::scratch::cleanup();
     // Unconditional: the options form can turn the mouse on mid-session
     // (disabling an inactive capture is a harmless escape sequence).
     app::set_mouse_capture(false);
+    app::set_bracketed_paste(false);
     ratatui::restore();
     result
 }

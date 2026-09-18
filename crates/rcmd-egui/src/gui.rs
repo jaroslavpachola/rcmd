@@ -361,6 +361,7 @@ impl eframe::App for Gui {
                     Input::Key(key) if self.size_key(&key) => {}
                     Input::Key(key) => self.app.on_key(key),
                     Input::Mouse(mouse) => self.app.on_mouse(mouse),
+                    Input::Paste(text) => self.app.on_paste(&text),
                 }
             }
             // F9: the bar opens on the next frame, which has to come

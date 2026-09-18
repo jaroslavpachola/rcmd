@@ -106,6 +106,9 @@ impl App {
                     let asked = dialog.clone();
                     v.prompt = None;
                     if !asked.is_empty() {
+                        if let Err(err) = asked.field.remember() {
+                            v.note = Some(format!(" could not save state: {err} "));
+                        }
                         let from = if asked.backwards {
                             v.top.saturating_sub(1)
                         } else {
@@ -123,9 +126,8 @@ impl App {
                 }
                 KeyCode::Char(' ') if dialog.row != VIEW_SEARCH_FIELD => dialog.toggle(),
                 KeyCode::Left | KeyCode::Right if dialog.row == VIEW_SEARCH_KIND => dialog.toggle(),
-                code if dialog.row == VIEW_SEARCH_FIELD => {
-                    let (value, cursor) = (&mut dialog.value, &mut dialog.cursor);
-                    edit_line(value, cursor, code, key.modifiers);
+                _ if dialog.row == VIEW_SEARCH_FIELD => {
+                    dialog.field.key(key);
                 }
                 _ => {}
             }
@@ -199,7 +201,8 @@ impl App {
             VA::ToggleHex => v.hex = !v.hex,
             VA::Search => {
                 let mut dialog = v.search.clone();
-                dialog.cursor = dialog.value.chars().count();
+                // the last search, with the ones before it behind M-p
+                dialog.field = TextField::new(dialog.field.value).with_history("view-search");
                 dialog.row = VIEW_SEARCH_FIELD;
                 v.prompt = Some(dialog);
             }

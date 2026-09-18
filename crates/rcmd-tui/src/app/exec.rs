@@ -12,6 +12,7 @@ impl App {
         if self.config.mouse {
             set_mouse_capture(false);
         }
+        set_bracketed_paste(false);
         ratatui::restore();
         // Shell-style job control: the child runs in its own foreground
         // process group, so Ctrl+C/Ctrl+Z hit it and never rcmd. We ignore
@@ -101,6 +102,7 @@ impl App {
         if self.config.mouse {
             set_mouse_capture(true);
         }
+        set_bracketed_paste(true);
         let _ = terminal.clear();
         for panel in &mut self.panels {
             let _ = panel.reload();
@@ -350,6 +352,7 @@ impl App {
         if self.config.mouse {
             set_mouse_capture(false);
         }
+        set_bracketed_paste(false);
         let mut out = std::io::stdout();
         ratatui::crossterm::execute!(out, LeaveAlternateScreen, cursor::Show)?;
         // whatever the shell wrote while it was hidden, replayed
@@ -415,6 +418,7 @@ impl App {
         if self.config.mouse {
             set_mouse_capture(true);
         }
+        set_bracketed_paste(true);
         let _ = terminal.clear();
         self.end_subshell();
         Ok(())

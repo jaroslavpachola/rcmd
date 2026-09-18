@@ -4,6 +4,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+pub use crate::field::TextField;
+use crate::field::{byte_index, edit_line};
 use anyhow::{Context, Result};
 use notify::Watcher as _;
 use ratatui::DefaultTerminal;
@@ -242,12 +244,9 @@ pub struct RemoteEdit {
 /// Alt+F7 find dialog: filename glob + optional content substring.
 pub struct FindDialog {
     /// Where the walk starts; the panel's directory unless changed.
-    pub start: String,
-    pub start_cursor: usize,
-    pub name: String,
-    pub name_cursor: usize,
-    pub content: String,
-    pub content_cursor: usize,
+    pub start: TextField,
+    pub name: TextField,
+    pub content: TextField,
     /// The filename is a glob; off = a regular expression.
     pub shell: bool,
     pub case_sensitive: bool,
@@ -322,12 +321,28 @@ impl FindDialog {
     }
 
     /// The field the cursor is in, if it is in one.
-    fn field(&mut self) -> Option<(&mut String, &mut usize)> {
+    pub fn field(&mut self) -> Option<&mut TextField> {
         match self.row {
-            0 => Some((&mut self.start, &mut self.start_cursor)),
-            1 => Some((&mut self.name, &mut self.name_cursor)),
-            2 => Some((&mut self.content, &mut self.content_cursor)),
+            0 => Some(&mut self.start),
+            1 => Some(&mut self.name),
+            2 => Some(&mut self.content),
             _ => None,
+        }
+    }
+
+    /// The answers worth opening the next find on.
+    pub fn memory(&self) -> crate::state::FindMemory {
+        crate::state::FindMemory {
+            name: self.name.value.clone(),
+            content: self.content.value.clone(),
+            shell: self.shell,
+            case_sensitive: self.case_sensitive,
+            whole_words: self.whole_words,
+            regex: self.regex,
+            all_charsets: self.all_charsets,
+            skip_hidden: self.skip_hidden,
+            follow_links: self.follow_links,
+            skip_ignored: self.skip_ignored,
         }
     }
 }
@@ -467,16 +482,31 @@ struct WatchState {
 
 pub struct InputDialog {
     pub title: String,
-    pub value: String,
-    /// Cursor position in characters, not bytes.
-    pub cursor: usize,
+    /// The line, its cursor, and the ring of earlier answers
+    /// `InputAction::history` names.
+    pub field: TextField,
     pub action: InputAction,
-    /// Where in this field's history M-p / M-n have walked to, counted
-    /// back from the newest. `None` = on the line being typed.
-    pub hist: Option<usize>,
-    /// What was in the field when the walk began - typed or prefilled -
-    /// which stepping forward past the newest entry puts back.
-    pub draft: String,
+}
+
+impl InputDialog {
+    pub fn new(title: impl Into<String>, value: impl Into<String>, action: InputAction) -> Self {
+        let field = TextField::new(value);
+        let field = match action.history() {
+            Some(name) => field.with_history(name),
+            None => field,
+        };
+        InputDialog {
+            title: title.into(),
+            field,
+            action,
+        }
+    }
+
+    /// Where the cursor starts, when not at the end.
+    pub fn cursor(mut self, at: usize) -> Self {
+        self.field = self.field.cursor(at);
+        self
+    }
 }
 
 /// F5/F6: MC's copy/move form - where the files go, the switches that
@@ -485,11 +515,8 @@ pub struct TransferDialog {
     pub title: String,
     /// MC's source mask: which of the marked files take part, and what
     /// their wildcards capture for the destination to spend.
-    pub mask: String,
-    pub mask_cursor: usize,
-    pub dest: String,
-    /// Cursor position in the destination, in characters.
-    pub cursor: usize,
+    pub mask: TextField,
+    pub dest: TextField,
     pub is_move: bool,
     pub sources: Vec<PathBuf>,
     pub opts: TransferOpts,
@@ -656,10 +683,8 @@ impl ChownDialog {
 /// point at, and what to call it.
 pub struct LinkDialog {
     pub kind: LinkKind,
-    pub target: String,
-    pub target_cursor: usize,
-    pub name: String,
-    pub name_cursor: usize,
+    pub target: TextField,
+    pub name: TextField,
     /// 0 = target, 1 = name, 2 = the buttons. Editing a symlink has no
     /// name row: the link already has one.
     pub row: usize,
@@ -908,9 +933,6 @@ fn focus_button(dialog: &mut Dialog, c: char) -> bool {
     }
 }
 
-/// How many answers a dialog field remembers.
-const FIELD_HISTORY: usize = 30;
-
 /// How many viewed/edited files are remembered.
 const FILE_HISTORY: usize = 60;
 
@@ -1078,8 +1100,8 @@ pub enum EditFollowUp {
 /// MC's external panelize: the saved commands, and the one being
 /// typed. Running one streams its output into the panel as it arrives.
 pub struct PanelizeDialog {
-    pub value: String,
-    pub cursor: usize,
+    /// The command whose output becomes the listing.
+    pub command: TextField,
     /// Which saved preset the cursor is on.
     pub row: usize,
     /// The list has the focus rather than the command field.
@@ -1094,14 +1116,11 @@ pub struct PanelizeDialog {
 /// in mc they are one dialog with a different title.
 pub struct PatternDialog {
     pub title: String,
-    pub value: String,
-    pub cursor: usize,
+    pub value: TextField,
     /// DN's other two questions: how big, and how recently touched.
     /// Empty asks nothing, which is what they both start as.
-    pub size: String,
-    pub size_cursor: usize,
-    pub newer: String,
-    pub newer_cursor: usize,
+    pub size: TextField,
+    pub newer: TextField,
     pub shell: bool,
     pub case_sensitive: bool,
     pub files_only: bool,
@@ -1128,23 +1147,37 @@ impl PatternDialog {
     /// The core's shape of the same question.
     pub fn to_pattern(&self) -> rcmd_core::pattern::Pattern {
         rcmd_core::pattern::Pattern {
-            text: self.value.trim().to_string(),
+            text: self.value.value.trim().to_string(),
             shell: self.shell,
             case_sensitive: self.case_sensitive,
             files_only: self.files_only,
-            size: self.size.trim().to_string(),
-            newer: self.newer.trim().to_string(),
+            size: self.size.value.trim().to_string(),
+            newer: self.newer.value.trim().to_string(),
         }
     }
 
     /// The field the cursor is in, if it is in one.
-    fn field_mut(&mut self) -> Option<(&mut String, &mut usize)> {
+    pub fn field_mut(&mut self) -> Option<&mut TextField> {
         match self.row {
-            0 => Some((&mut self.value, &mut self.cursor)),
-            1 => Some((&mut self.size, &mut self.size_cursor)),
-            2 => Some((&mut self.newer, &mut self.newer_cursor)),
+            0 => Some(&mut self.value),
+            1 => Some(&mut self.size),
+            2 => Some(&mut self.newer),
             _ => None,
         }
+    }
+
+    /// The three fields, as they were answered.
+    pub fn fields(&self) -> [&TextField; 3] {
+        [&self.value, &self.size, &self.newer]
+    }
+
+    /// A pattern field whose history fits the question: what gets
+    /// marked is not what a panel is filtered by.
+    pub fn pattern_field(kind: PatternKind, value: impl Into<String>) -> TextField {
+        TextField::new(value).with_history(match kind {
+            PatternKind::Select { .. } => "select",
+            PatternKind::Filter => "panel-filter",
+        })
     }
 
     fn toggle(&mut self) {
@@ -1575,18 +1608,11 @@ impl EditorState {
 }
 
 pub enum EditPrompt {
-    Search {
-        value: String,
-        cursor: usize,
-    },
-    ReplaceFind {
-        value: String,
-        cursor: usize,
-    },
+    Search(TextField),
+    ReplaceFind(TextField),
     ReplaceWith {
         pattern: String,
-        value: String,
-        cursor: usize,
+        field: TextField,
     },
     /// Per-match decision: Replace / Skip / All / Quit.
     ConfirmReplace {
@@ -1864,6 +1890,7 @@ mod connect;
 mod dialog;
 mod editor;
 mod exec;
+mod focus;
 mod panel;
 mod search;
 mod viewer;
@@ -1956,6 +1983,59 @@ pub struct Areas {
     pub right: Rect,
     pub keybar: Rect,
     pub menubar: Rect,
+}
+
+/// A list over the line being typed into: M-h's history of a field,
+/// or the candidates of a completion that had more than one.
+pub struct FieldPopup {
+    pub title: &'static str,
+    /// What the rows say, top first.
+    pub rows: Vec<String>,
+    /// What picking each row puts on the line.
+    pub picks: Vec<String>,
+    pub selected: usize,
+    /// The stretch of the line, in characters, a pick replaces: the
+    /// word being completed. `None` = the whole line, as a history
+    /// entry is.
+    pub span: Option<(usize, usize)>,
+}
+
+/// The line that has the keyboard, if one does: a form's field with
+/// its history, or a plain line - the command line, a password, a
+/// goto - that has none.
+pub enum FocusedLine<'a> {
+    Field(&'a mut TextField),
+    Plain(&'a mut String, &'a mut usize),
+}
+
+impl FocusedLine<'_> {
+    fn insert(self, text: &str) {
+        match self {
+            FocusedLine::Field(field) => field.insert(text),
+            FocusedLine::Plain(value, cursor) => crate::field::insert_text(value, cursor, text),
+        }
+    }
+
+    /// The text and its cursor, whichever kind of line it is.
+    fn parts(&mut self) -> (&mut String, &mut usize) {
+        match self {
+            FocusedLine::Field(field) => (&mut field.value, &mut field.cursor),
+            FocusedLine::Plain(value, cursor) => (value, cursor),
+        }
+    }
+}
+
+/// Bracketed paste on or off. On, a paste arrives as one event rather
+/// than as keystrokes, so a newline in it is text and not Enter, and a
+/// leading `+` is not the select-group key. Off whenever the terminal
+/// is handed to a shell or a program, which want pastes as their own.
+pub fn set_bracketed_paste(on: bool) {
+    let mut out = std::io::stdout();
+    let _ = if on {
+        ratatui::crossterm::execute!(out, event::EnableBracketedPaste)
+    } else {
+        ratatui::crossterm::execute!(out, event::DisableBracketedPaste)
+    };
 }
 
 /// Turn terminal mouse reporting on or off (a no-op if the terminal
@@ -2110,8 +2190,7 @@ impl Viewer {
 /// remembered search, so "search next" repeats the options too.
 #[derive(Clone, Debug, Default)]
 pub struct ViewSearch {
-    pub value: String,
-    pub cursor: usize,
+    pub field: TextField,
     pub kind: SearchKind,
     pub case_sensitive: bool,
     pub whole_word: bool,
@@ -2131,7 +2210,7 @@ impl ViewSearch {
     /// The core's shape of the same question.
     pub fn to_search(&self) -> Search {
         Search {
-            pattern: self.value.trim().to_string(),
+            pattern: self.field.value.trim().to_string(),
             kind: self.kind,
             case_sensitive: self.case_sensitive,
             whole_word: self.whole_word,
@@ -2142,7 +2221,7 @@ impl ViewSearch {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.value.trim().is_empty()
+        self.field.value.trim().is_empty()
     }
 
     /// Space on a row: the kind cycles, the rest tick.
@@ -2799,6 +2878,8 @@ pub struct App {
     pub cmdline: CmdLine,
     /// Quick-search prefix while Ctrl+S type-ahead is active.
     pub quick_search: Option<QuickSearch>,
+    /// M-h inside a text field: that field's history as a list.
+    pub field_popup: Option<FieldPopup>,
     pub find: Option<FindState>,
     pub connect: Option<ConnectState>,
     /// Live remote connections by URL prefix; weak so that leaving a
@@ -3018,6 +3099,7 @@ impl App {
             help: None,
             cmdline,
             quick_search: None,
+            field_popup: None,
             find: None,
             connect: None,
             connections: Vec::new(),
@@ -3210,6 +3292,7 @@ impl App {
             let busy = self.fg_job().is_some()
                 || self.dialog.is_some()
                 || self.screen_list.is_some()
+                || self.field_popup.is_some()
                 || self
                     .editor()
                     .is_some_and(|st| st.prompt.is_some() || st.menu.is_some());
@@ -3221,6 +3304,7 @@ impl App {
             || self.dialog.is_some()
             || self.help.is_some()
             || self.screen_list.is_some()
+            || self.field_popup.is_some()
             || self.viewer().is_some()
             || self.diff().is_some()
             || self.menu.is_some()
@@ -3297,6 +3381,7 @@ impl App {
                 self.dirty = true;
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
+                    Event::Paste(text) => self.on_paste(&text),
                     Event::Mouse(mouse) => self.on_mouse(mouse),
                     Event::Resize(cols, rows) => self.resize_subshell(cols, rows),
                     _ => {}
@@ -3593,6 +3678,27 @@ impl App {
         self.status = None;
         if self.screen_list.is_some() {
             self.on_screen_list_key(key);
+            return;
+        }
+        if self.field_popup.is_some() {
+            self.on_field_popup_key(key);
+            return;
+        }
+        // mc's M-h inside a field: its history as a list to pick from,
+        // rather than M-p pressed until the right one comes round
+        if key.code == KeyCode::Char('h')
+            && key.modifiers == KeyModifiers::ALT
+            && self.open_field_popup()
+        {
+            return;
+        }
+        // M-Tab completes in any field, as it does on the command line
+        // (which the panels handle themselves, Tab included)
+        if key.code == KeyCode::Tab
+            && key.modifiers == KeyModifiers::ALT
+            && !self.on_panels()
+            && self.complete_focused(false)
+        {
             return;
         }
         // M-` reaches the list from wherever you are - that is the
@@ -4468,14 +4574,11 @@ impl App {
         index: Option<usize>,
         path: String,
     ) {
-        self.dialog = Some(Dialog::Input(InputDialog {
-            title: title.to_string(),
-            cursor: value.chars().count(),
+        self.dialog = Some(Dialog::Input(InputDialog::new(
+            title.to_string(),
             value,
-            action: InputAction::HotlistLabel { group, index, path },
-            hist: None,
-            draft: String::new(),
-        }));
+            InputAction::HotlistLabel { group, index, path },
+        )));
     }
 
     /// ...and what the answer does. Either way the hotlist comes back
@@ -5073,43 +5176,6 @@ fn menu_step(entries: &[MenuEntry], current: usize, delta: isize) -> usize {
     }
 }
 
-/// Shared line editing for the command line and input dialogs.
-/// Returns true when the key changed the value or cursor.
-fn edit_line(value: &mut String, cursor: &mut usize, code: KeyCode, mods: KeyModifiers) -> bool {
-    let ctrl = mods.contains(KeyModifiers::CONTROL);
-    let alt = mods.contains(KeyModifiers::ALT);
-    match code {
-        KeyCode::Char('u') if ctrl => {
-            value.clear();
-            *cursor = 0;
-        }
-        KeyCode::Char('a') if ctrl => *cursor = 0,
-        KeyCode::Char('e') if ctrl => *cursor = value.chars().count(),
-        KeyCode::Char(c) if !ctrl && !alt => {
-            value.insert(byte_index(value, *cursor), c);
-            *cursor += 1;
-        }
-        KeyCode::Backspace => {
-            if *cursor > 0 {
-                *cursor -= 1;
-                value.remove(byte_index(value, *cursor));
-            }
-        }
-        KeyCode::Delete => {
-            let idx = byte_index(value, *cursor);
-            if idx < value.len() {
-                value.remove(idx);
-            }
-        }
-        KeyCode::Left => *cursor = cursor.saturating_sub(1),
-        KeyCode::Right => *cursor = (*cursor + 1).min(value.chars().count()),
-        KeyCode::Home => *cursor = 0,
-        KeyCode::End => *cursor = value.chars().count(),
-        _ => return false,
-    }
-    true
-}
-
 /// "archive.zip://sub/dir" → (archive path, path inside). Plain local
 /// paths return None.
 /// A location that lives on a server rather than on this machine.
@@ -5125,13 +5191,6 @@ fn split_vfs_dest(input: &str) -> Option<(PathBuf, PathBuf)> {
         PathBuf::from(archive),
         PathBuf::from(inside.trim_matches('/')),
     ))
-}
-
-fn byte_index(s: &str, char_idx: usize) -> usize {
-    s.char_indices()
-        .nth(char_idx)
-        .map(|(i, _)| i)
-        .unwrap_or(s.len())
 }
 
 /// `cd`? Returns the target ("" = home) or None if this isn't a cd command.
@@ -5403,38 +5462,6 @@ mod tests {
         assert_eq!(shell_quote("with space"), "'with space'");
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
         assert_eq!(shell_quote(""), "''");
-    }
-
-    #[test]
-    fn edit_line_handles_unicode_and_shortcuts() {
-        let mut value = String::new();
-        let mut cursor = 0;
-        for c in "héllo".chars() {
-            edit_line(
-                &mut value,
-                &mut cursor,
-                KeyCode::Char(c),
-                KeyModifiers::NONE,
-            );
-        }
-        assert_eq!(value, "héllo");
-        assert_eq!(cursor, 5);
-        edit_line(
-            &mut value,
-            &mut cursor,
-            KeyCode::Char('a'),
-            KeyModifiers::CONTROL,
-        );
-        assert_eq!(cursor, 0);
-        edit_line(&mut value, &mut cursor, KeyCode::Delete, KeyModifiers::NONE);
-        assert_eq!(value, "éllo");
-        edit_line(
-            &mut value,
-            &mut cursor,
-            KeyCode::Char('u'),
-            KeyModifiers::CONTROL,
-        );
-        assert_eq!(value, "");
     }
 
     #[test]

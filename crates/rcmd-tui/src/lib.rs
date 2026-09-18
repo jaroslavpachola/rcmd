@@ -8,6 +8,7 @@
 
 pub mod app;
 pub mod config;
+pub mod field;
 pub mod format;
 pub mod git;
 pub mod keymap;

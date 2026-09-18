@@ -122,6 +122,27 @@ pub struct State {
     /// and is still there next session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub visits: Vec<Visit>,
+    /// The last find, which the next Alt+F7 opens on - mc keeps its
+    /// answers for the session, this keeps them for the next one too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub find: Option<FindMemory>,
+}
+
+/// The find dialog's answers, less the start directory: that is where
+/// the panel is, every time.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FindMemory {
+    pub name: String,
+    pub content: String,
+    pub shell: bool,
+    pub case_sensitive: bool,
+    pub whole_words: bool,
+    pub regex: bool,
+    pub all_charsets: bool,
+    pub skip_hidden: bool,
+    pub follow_links: bool,
+    pub skip_ignored: bool,
 }
 
 /// One directory in the visit log.

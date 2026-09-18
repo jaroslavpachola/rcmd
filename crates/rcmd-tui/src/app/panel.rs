@@ -370,14 +370,14 @@ impl App {
                         return;
                     }
                 };
-                self.dialog = Some(Dialog::Input(InputDialog {
-                    title: " Filtered view: command and arguments ".into(),
-                    value: name,
-                    cursor: 0,
-                    action: InputAction::FilteredView,
-                    hist: None,
-                    draft: String::new(),
-                }));
+                self.dialog = Some(Dialog::Input(
+                    InputDialog::new(
+                        " Filtered view: command and arguments ",
+                        name,
+                        InputAction::FilteredView,
+                    )
+                    .cursor(0),
+                ));
             }
             Action::Edit => self.open_editor(),
             Action::Copy => self.open_transfer(false),
@@ -432,14 +432,11 @@ impl App {
             }
             Action::Shell => self.pending_exec = Some(Exec::Shell),
             Action::SftpLink => {
-                self.dialog = Some(Dialog::Input(InputDialog {
-                    title: " Remote link (sftp:// fish:// ftp://[user@]host[/path]) ".into(),
-                    value: "sftp://".into(),
-                    cursor: 7,
-                    action: InputAction::SftpConnect,
-                    hist: None,
-                    draft: String::new(),
-                }));
+                self.dialog = Some(Dialog::Input(InputDialog::new(
+                    " Remote link (sftp:// fish:// ftp://[user@]host[/path]) ",
+                    "sftp://",
+                    InputAction::SftpConnect,
+                )));
             }
             Action::HistoryBack => self.history_step(false),
             Action::HistoryForward => self.history_step(true),
@@ -553,14 +550,11 @@ impl App {
                 self.insert_cmdline(&text);
             }
             Action::QuickCd => {
-                self.dialog = Some(Dialog::Input(InputDialog {
-                    title: " Quick cd ".into(),
-                    value: String::new(),
-                    cursor: 0,
-                    action: InputAction::QuickCd,
-                    hist: None,
-                    draft: String::new(),
-                }));
+                self.dialog = Some(Dialog::Input(InputDialog::new(
+                    " Quick cd ",
+                    "",
+                    InputAction::QuickCd,
+                )));
             }
             Action::Repaint => self.repaint = true,
             Action::BulkRename => self.open_bulk_rename(),
@@ -813,18 +807,15 @@ impl App {
     }
 
     fn ask_macro(&mut self, question: String, before: String, rest: String, quiet: bool) {
-        self.dialog = Some(Dialog::Input(InputDialog {
-            title: format!(" {} ", question.trim()),
-            value: String::new(),
-            cursor: 0,
-            action: InputAction::MacroPrompt {
+        self.dialog = Some(Dialog::Input(InputDialog::new(
+            format!(" {} ", question.trim()),
+            "",
+            InputAction::MacroPrompt {
                 before,
                 rest,
                 quiet,
             },
-            hist: None,
-            draft: String::new(),
-        }));
+        )));
     }
 
     /// The answer to one `%{...}`, and on with the rest of the template.
@@ -1113,14 +1104,11 @@ impl App {
             self.status = Some(" nothing selected ".into());
             return;
         }
-        self.dialog = Some(Dialog::Input(InputDialog {
-            title: " Apply to each marked file ".into(),
-            value: String::new(),
-            cursor: 0,
-            action: InputAction::Apply,
-            hist: None,
-            draft: String::new(),
-        }));
+        self.dialog = Some(Dialog::Input(InputDialog::new(
+            " Apply to each marked file ",
+            "",
+            InputAction::Apply,
+        )));
     }
 
     /// Remember a file the viewer or the editor opened. The list is
@@ -1215,14 +1203,11 @@ impl App {
             .join("SHA256SUMS")
             .display()
             .to_string();
-        self.dialog = Some(Dialog::Input(InputDialog {
-            title: format!(" Checksum {} into ", self.describe(&paths)),
-            cursor: value.chars().count(),
+        self.dialog = Some(Dialog::Input(InputDialog::new(
+            format!(" Checksum {} into ", self.describe(&paths)),
             value,
-            action: InputAction::Checksum { paths },
-            hist: None,
-            draft: String::new(),
-        }));
+            InputAction::Checksum { paths },
+        )));
     }
 
     /// Check the checksum file under the cursor, in its own directory,
@@ -2461,27 +2446,8 @@ impl App {
 
     /// Tab: complete the path under the cursor (files/dirs only).
     fn complete_cmdline(&mut self) {
-        use rcmd_core::complete::{complete_word, word_start};
-        let cur = byte_index(&self.cmdline.value, self.cmdline.cursor);
-        let head = &self.cmdline.value[..cur];
-        let start = word_start(head);
-        let cwd = self.panels[self.active].local_cwd();
-        match complete_word(&cwd, &head[start..cur]) {
-            None => self.status = Some(" no match ".into()),
-            Some(done) => {
-                let word_chars = self.cmdline.value[start..cur].chars().count();
-                self.cmdline.value.replace_range(start..cur, &done.word);
-                self.cmdline.cursor = self.cmdline.cursor - word_chars + done.word.chars().count();
-                self.cmdline.hist_pos = None;
-                if done.matches.len() > 1 {
-                    let mut list = done.matches.join("  ");
-                    if list.chars().count() > 76 {
-                        list = format!("{}…", list.chars().take(75).collect::<String>());
-                    }
-                    self.status = Some(format!(" {list} "));
-                }
-            }
-        }
+        self.complete_focused(true);
+        self.cmdline.hist_pos = None;
     }
 
     /// Alt+Enter: append the cursor entry's (shell-quoted) name.
@@ -2578,10 +2544,8 @@ impl App {
         let title = format!(" {verb} {} to: ", self.describe(&sources));
         self.dialog = Some(Dialog::Transfer(Box::new(TransferDialog {
             title,
-            mask: "*".into(),
-            mask_cursor: 1,
-            cursor: dest.chars().count(),
-            dest,
+            mask: TextField::new("*").with_history("mask"),
+            dest: TextField::new(dest).with_history("destination"),
             is_move,
             sources,
             opts: TransferOpts::default(),
@@ -2615,14 +2579,11 @@ impl App {
         } else {
             ("Copy", InputAction::CopyTo { sources })
         };
-        self.dialog = Some(Dialog::Input(InputDialog {
-            title: format!(" {verb} \"{name}\" in place to: "),
-            cursor: name.chars().count(),
-            value: name,
+        self.dialog = Some(Dialog::Input(InputDialog::new(
+            format!(" {verb} \"{name}\" in place to: "),
+            name,
             action,
-            hist: None,
-            draft: String::new(),
-        }));
+        )));
     }
 
     /// S-F4: prompt for a file name, then edit it - existing or not.
@@ -2630,14 +2591,11 @@ impl App {
         if !self.require_local() {
             return;
         }
-        self.dialog = Some(Dialog::Input(InputDialog {
-            title: " Edit new file ".into(),
-            value: String::new(),
-            cursor: 0,
-            action: InputAction::EditNew,
-            hist: None,
-            draft: String::new(),
-        }));
+        self.dialog = Some(Dialog::Input(InputDialog::new(
+            " Edit new file ",
+            "",
+            InputAction::EditNew,
+        )));
     }
 
     /// Open the editor on `path`; a missing file becomes an empty
@@ -2736,14 +2694,11 @@ impl App {
         // On a remote panel our /etc/passwd means nothing: the ids
         // belong to the server, so it stays a typed spec.
         if self.panels[self.active].is_remote() {
-            self.dialog = Some(Dialog::Input(InputDialog {
-                title: format!(" Chown {} (user[:group]) ", self.describe(&paths)),
-                value: String::new(),
-                cursor: 0,
-                action: InputAction::Chown { paths },
-                hist: None,
-                draft: String::new(),
-            }));
+            self.dialog = Some(Dialog::Input(InputDialog::new(
+                format!(" Chown {} (user[:group]) ", self.describe(&paths)),
+                "",
+                InputAction::Chown { paths },
+            )));
             return;
         }
         let panel = &self.panels[self.active];
@@ -2797,10 +2752,8 @@ impl App {
         let link = format!("{name}-link");
         self.dialog = Some(Dialog::Link(Box::new(LinkDialog {
             kind,
-            target_cursor: target.chars().count(),
-            target,
-            name_cursor: link.chars().count(),
-            name: link,
+            target: TextField::new(target).with_history("link-target"),
+            name: TextField::new(link).with_history("link-name"),
             row: 1, // the name is what usually needs changing
             ok: true,
         })));
@@ -2824,10 +2777,8 @@ impl App {
         let target = target.display().to_string();
         self.dialog = Some(Dialog::Link(Box::new(LinkDialog {
             kind: LinkKind::EditSymlink,
-            target_cursor: target.chars().count(),
-            target,
-            name: panel.name_of(entry),
-            name_cursor: 0,
+            target: TextField::new(target).with_history("link-target"),
+            name: TextField::new(panel.name_of(entry)).cursor(0),
             row: 0,
             ok: true,
         })));
@@ -2871,14 +2822,11 @@ impl App {
         if self.panels[self.active].archive.is_some() && self.editable_archive().is_none() {
             return;
         }
-        self.dialog = Some(Dialog::Input(InputDialog {
-            title: " Create directory ".into(),
-            value: String::new(),
-            cursor: 0,
-            action: InputAction::Mkdir,
-            hist: None,
-            draft: String::new(),
-        }));
+        self.dialog = Some(Dialog::Input(InputDialog::new(
+            " Create directory ",
+            "",
+            InputAction::Mkdir,
+        )));
     }
 
     /// `C-x f`: the named filter sets, with the ones this panel is
@@ -2957,14 +2905,11 @@ impl App {
             false => self.panels[self.active].local_cwd(),
         };
         let value = dir.join(format!("{stem}.tar.gz")).display().to_string();
-        self.dialog = Some(Dialog::Input(InputDialog {
-            title: format!(" Pack {} to: ", self.describe(&sources)),
-            cursor: value.chars().count(),
+        self.dialog = Some(Dialog::Input(InputDialog::new(
+            format!(" Pack {} to: ", self.describe(&sources)),
             value,
-            action: InputAction::Pack { sources },
-            hist: None,
-            draft: String::new(),
-        }));
+            InputAction::Pack { sources },
+        )));
     }
 
     fn open_select(&mut self, mark: bool) {
@@ -2973,12 +2918,9 @@ impl App {
                 true => " Select group ".into(),
                 false => " Unselect group ".into(),
             },
-            value: "*".into(),
-            cursor: 1,
-            size: String::new(),
-            size_cursor: 0,
-            newer: String::new(),
-            newer_cursor: 0,
+            value: PatternDialog::pattern_field(PatternKind::Select { mark }, "*"),
+            size: TextField::new("").with_history("size"),
+            newer: TextField::new("").with_history("newer"),
             shell: true,
             case_sensitive: true,
             files_only: true,

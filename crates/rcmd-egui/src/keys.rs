@@ -28,6 +28,9 @@ use crate::grid::Metrics;
 pub enum Input {
     Key(KeyEvent),
     Mouse(MouseEvent),
+    /// Ctrl+V (Shift+Insert on Windows), with the clipboard's text:
+    /// egui-winit has already read it.
+    Paste(String),
 }
 
 /// Drain a frame's input. `origin` is where cell (0, 0) is painted, so
@@ -89,9 +92,11 @@ pub fn collect(input: &egui::InputState, origin: egui::Pos2, metrics: Metrics) -
             }
             // egui-winit turns the clipboard shortcuts into these and
             // returns before it pushes the Key event, so without this
-            // arm Ctrl+X - and with it every mc `C-x` chord - Ctrl+C and
-            // Ctrl+V never reach the app at all
-            egui::Event::Cut | egui::Event::Copy | egui::Event::Paste(_) => {
+            // arm Ctrl+X - and with it every mc `C-x` chord - and Ctrl+C
+            // never reach the app at all. A paste is text, which is
+            // what the terminal build's bracketed paste delivers too.
+            egui::Event::Paste(text) => out.push(Input::Paste(text.clone())),
+            egui::Event::Cut | egui::Event::Copy => {
                 out.push(Input::Key(clipboard_key(event, &input.modifiers)));
             }
             egui::Event::PointerButton {
@@ -149,18 +154,16 @@ pub fn collect(input: &egui::InputState, origin: egui::Pos2, metrics: Metrics) -
 }
 
 /// The key a clipboard event was made from. egui-winit makes them
-/// from Ctrl+X/C/V (Cmd on macOS) and, on Windows, from Shift+Delete,
-/// Ctrl+Insert and Shift+Insert as well - which are mc's editor keys
-/// for the same three things. Ctrl+Insert cannot be told from Ctrl+C
-/// once it is an `Event::Copy`, so both come back as Ctrl+C.
+/// from Ctrl+X/C (Cmd on macOS) and, on Windows, from Shift+Delete and
+/// Ctrl+Insert as well - which are mc's editor keys for the same two
+/// things. Ctrl+Insert cannot be told from Ctrl+C once it is an
+/// `Event::Copy`, so both come back as Ctrl+C.
 fn clipboard_key(event: &egui::Event, mods: &egui::Modifiers) -> KeyEvent {
     let shifted = mods.shift && !mods.command;
     let (code, modifiers) = match event {
         egui::Event::Cut if shifted => (KeyCode::Delete, KeyModifiers::SHIFT),
-        egui::Event::Paste(_) if shifted => (KeyCode::Insert, KeyModifiers::SHIFT),
         egui::Event::Cut => (KeyCode::Char('x'), KeyModifiers::CONTROL),
-        egui::Event::Copy => (KeyCode::Char('c'), KeyModifiers::CONTROL),
-        _ => (KeyCode::Char('v'), KeyModifiers::CONTROL),
+        _ => (KeyCode::Char('c'), KeyModifiers::CONTROL),
     };
     KeyEvent::new(code, modifiers)
 }
@@ -332,7 +335,7 @@ mod tests {
             .into_iter()
             .filter_map(|i| match i {
                 Input::Key(key) => Some(key),
-                Input::Mouse(_) => None,
+                Input::Mouse(_) | Input::Paste(_) => None,
             })
             .collect()
     }
@@ -410,36 +413,29 @@ mod tests {
 
     #[test]
     fn the_clipboard_shortcuts_come_back_as_their_keys() {
-        // egui-winit swallows Ctrl+X/C/V into Cut/Copy/Paste; Ctrl+X is
-        // the prefix of every mc `C-x` chord and must still arrive
+        // egui-winit swallows Ctrl+X/C into Cut/Copy; Ctrl+X is the
+        // prefix of every mc `C-x` chord and must still arrive
         let ctrl = egui::Modifiers::CTRL;
         assert_eq!(
-            collected(
-                vec![
-                    egui::Event::Cut,
-                    egui::Event::Copy,
-                    egui::Event::Paste("text".into()),
-                ],
-                ctrl,
-            ),
+            collected(vec![egui::Event::Cut, egui::Event::Copy], ctrl),
             vec![
                 KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
                 KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
             ]
         );
-        // Windows' Shift+Delete and Shift+Insert
-        let shift = egui::Modifiers::SHIFT;
+        // Windows' Shift+Delete
         assert_eq!(
-            collected(
-                vec![egui::Event::Cut, egui::Event::Paste("text".into())],
-                shift
-            ),
-            vec![
-                KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT),
-                KeyEvent::new(KeyCode::Insert, KeyModifiers::SHIFT),
-            ]
+            collected(vec![egui::Event::Cut], egui::Modifiers::SHIFT),
+            vec![KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT)]
         );
+    }
+
+    #[test]
+    fn a_paste_arrives_as_its_text() {
+        let mut input = egui::InputState::default();
+        input.events = vec![egui::Event::Paste("some text".into())];
+        let got = collect(&input, egui::Pos2::ZERO, Metrics::estimate(10.0));
+        assert!(matches!(got.as_slice(), [Input::Paste(text)] if text == "some text"));
     }
 
     #[test]
