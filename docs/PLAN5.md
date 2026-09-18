@@ -329,7 +329,18 @@ is by words, not characters.
 - **Diff against HEAD** for the cursor file - `git2` is linked, the
   viewer is there (ORTHODOX-DIFF §7, Adopt-later).
 
-### S7 - reach
+### S7 - reach - DONE (2026-09-18, 4.38.0)
+
+Shipped as below, with these left: `sudo://` asks for no password (`-n`:
+`sudo -v` first), and podman and kubectl are reached exactly as docker
+is, without a login step of their own; a `[[vfs]]` filesystem is
+read-only, and its members are copied out to a temporary file to be
+read; rclone cannot set a file's time after an upload; the kitty
+protocol is asked for only in the terminals known to answer, and only
+its disambiguating flag is used; the keyring is reached through
+`secret-tool` and `security`, with no library of its own, and on a Mac
+`security` takes the password on its command line.
+
 
 - **One shell transport, many panels.** `fish.rs` touches ssh2 in four
   places (`:81-102,107,125-153,189`); everything else goes through

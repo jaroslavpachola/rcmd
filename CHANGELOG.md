@@ -1,5 +1,47 @@
 # Changelog
 
+## 4.38.0 - 2026-09-18
+
+[PLAN5](docs/PLAN5.md)'s S7: reach.
+
+- **Containers, pods, phones and root as panels**: `docker://box/path`,
+  `podman://`, `k8s://[namespace:]pod/path`, `adb://[serial]/path` and
+  `sudo://[user]/path`. FISH's shell scripts, run through `docker exec
+  -i`, `kubectl exec -i`, `adb shell` or `sudo -n` instead of over SSH;
+  F3, F5 both ways, F6, F7, F8 and chmod all work. FISH uploads now
+  stream instead of being gathered in memory first.
+
+- **User-defined filesystems**, mc's extfs: a `[[vfs]]` rule makes a
+  kind of file enterable like an archive, read through a `list` and a
+  `copyout` command - or through one of mc's own extfs scripts, named
+  as `script`.
+
+- **rclone panels are writable**: uploads stream into `rclone rcat`,
+  and F6, F7 and F8 are `moveto`, `mkdir`, `deletefile` and `rmdir`.
+
+- **The socket is a protocol**: `marked` gives one path a line (or
+  NUL-separated with `-0`), `panelize` makes a list on stdin the panel,
+  `prompt` and `menu` ask the person at the panels and print the
+  answer, and `subscribe` streams `cd`, `cursor` and `marks` events.
+  `rcmd --remote` takes the rest of its command line.
+
+- **Alt+X, the command palette**: every action by a few letters of its
+  name or menu label, with the key it is on.
+
+- **The kitty keyboard protocol** in the terminals that have it (kitty,
+  foot, WezTerm, Ghostty, Alacritty): Esc acts at once, Ctrl+I is not
+  Tab, the Ctrl-digits can be bound. `kitty_keyboard = false` turns it
+  off.
+
+- **Saved connections** (F9 → Command → Connections): a name, a URL and
+  a key file; `k` has the desktop keyring keep the password (the Secret
+  Service through `secret-tool`, or the macOS keychain). rcmd never
+  writes a password into a file of its own.
+
+- A finished connection redraws at once instead of at the next idle
+  frame, and a failed one names its scheme rather than calling every
+  server "sftp".
+
 ## 4.37.0 - 2026-09-18
 
 [PLAN5](docs/PLAN5.md)'s S6: synchronize, recursively, and a diff worth
