@@ -19,6 +19,18 @@ use crate::config::{Config, HotEntry};
 
 /// Every field optional: `None` = "rcmd never changed this", so the
 /// config file (or the built-in default) still decides.
+/// A connection under a name: where (a URL, start directory and all),
+/// the key to try first, and whether the keyring keeps its password.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedConnection {
+    pub name: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub keyring: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct State {
@@ -124,6 +136,10 @@ pub struct State {
     /// and is still there next session.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub visits: Vec<Visit>,
+    /// Saved connections - F9 > Command > Connections. A password is
+    /// never among them: that is the keyring's, or nobody's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<SavedConnection>,
     /// The last find, which the next Alt+F7 opens on - mc keeps its
     /// answers for the session, this keeps them for the next one too.
     #[serde(skip_serializing_if = "Option::is_none")]

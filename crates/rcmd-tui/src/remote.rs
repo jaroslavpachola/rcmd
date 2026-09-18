@@ -10,8 +10,14 @@
 //!
 //! The socket lives under the user's runtime directory, 0700: anyone
 //! who can reach it can already run commands as the user.
+//!
+//! A request is a line, and for the verbs that take a list (`panelize`,
+//! `menu`) the lines after it, up to the end of what the client sends.
+//! An answer is everything the server writes before it closes the
+//! connection - one line, many, or for `subscribe` a stream of events
+//! for as long as the client listens.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -19,10 +25,23 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use anyhow::{Context, Result, bail};
 
-/// One line from a client, and where to send the answer.
+/// One request from a client, and where to send the answer.
 pub struct Request {
     pub line: String,
+    /// What came after the line: the list `panelize` and `menu` take.
+    pub data: String,
+    /// The answer; for `subscribe`, each event, until the client goes.
     pub reply: Sender<String>,
+}
+
+/// The verbs whose request carries a list after its line.
+const TAKES_DATA: &[&str] = &["panelize", "menu"];
+
+/// The verbs a person answers, not rcmd: no timeout on those.
+const ASKS_THE_USER: &[&str] = &["prompt", "menu"];
+
+fn verb(line: &str) -> &str {
+    line.split_whitespace().next().unwrap_or("")
 }
 
 /// The listener, alive as long as this instance is.
@@ -79,28 +98,51 @@ pub fn serve() -> Result<Server> {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
-            if handle(stream, &tx).is_err() {
-                // the app is gone; so is any point in listening
-                break;
-            }
+            // a connection each: a subscriber, or a prompt waiting on
+            // the user, must not hold up the next client
+            let tx = tx.clone();
+            std::thread::spawn(move || handle(stream, &tx));
         }
     });
     Ok(Server { requests, path })
 }
 
 fn handle(mut stream: UnixStream, tx: &Sender<Request>) -> Result<()> {
+    let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
-    BufReader::new(stream.try_clone()?).read_line(&mut line)?;
+    reader.read_line(&mut line)?;
+    let line = line.trim().to_string();
+    let mut data = String::new();
+    if TAKES_DATA.contains(&verb(&line)) {
+        reader.read_to_string(&mut data)?;
+    }
     let (reply, answer) = channel();
-    tx.send(Request {
-        line: line.trim().to_string(),
-        reply,
-    })
-    .map_err(|_| anyhow::anyhow!("the app has stopped listening"))?;
-    // a command that never answers must not wedge the client for ever
-    let answer = answer
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .unwrap_or_else(|_| "error: no answer".to_string());
+    let (subscribe, asks) = (
+        verb(&line) == "subscribe",
+        ASKS_THE_USER.contains(&verb(&line)),
+    );
+    tx.send(Request { line, data, reply })
+        .map_err(|_| anyhow::anyhow!("the app has stopped listening"))?;
+    if subscribe {
+        // events until the client stops reading or rcmd stops sending
+        for event in answer {
+            if writeln!(stream, "{event}").is_err() {
+                break;
+            }
+        }
+        return Ok(());
+    }
+    let answer = match asks {
+        // a question waits for as long as the person takes; closing it
+        // unanswered is a cancel
+        true => answer
+            .recv()
+            .unwrap_or_else(|_| "error: cancelled".to_string()),
+        // anything else that never answers must not wedge the client
+        false => answer
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap_or_else(|_| "error: no answer".to_string()),
+    };
     let _ = writeln!(stream, "{answer}");
     Ok(())
 }
@@ -132,14 +174,27 @@ pub fn send(to: Option<u32>, line: &str) -> Result<()> {
     let mut stream =
         UnixStream::connect(&path).with_context(|| format!("cannot reach {}", path.display()))?;
     writeln!(stream, "{line}")?;
-    let mut answer = String::new();
-    BufReader::new(stream).read_line(&mut answer)?;
-    let answer = answer.trim();
-    if let Some(err) = answer.strip_prefix("error: ") {
-        bail!("{err}");
+    // the list a `panelize` or a `menu` takes comes on stdin
+    if TAKES_DATA.contains(&verb(line)) {
+        std::io::copy(&mut std::io::stdin().lock(), &mut stream)?;
     }
-    if !answer.is_empty() && answer != "ok" {
-        println!("{answer}");
+    stream.shutdown(std::net::Shutdown::Write)?;
+    // line by line as it comes: a subscription never ends by itself
+    let mut first = true;
+    let mut out = std::io::stdout().lock();
+    for answer in BufReader::new(stream).lines() {
+        let answer = answer?;
+        if first {
+            first = false;
+            if let Some(err) = answer.strip_prefix("error: ") {
+                bail!("{err}");
+            }
+            if answer == "ok" {
+                continue;
+            }
+        }
+        writeln!(out, "{answer}")?;
+        out.flush()?;
     }
     Ok(())
 }

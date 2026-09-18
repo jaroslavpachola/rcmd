@@ -14,6 +14,16 @@ impl App {
             // first listing
             let path = PathBuf::from("/").join(rest.trim_start_matches('/'));
             remote::spawn_reuse(self.trash_fs(), path, "the trash".into())
+        } else if let Some(url) = fish::ShellUrl::parse(input) {
+            // a container, a pod, a phone, root: a local command is the
+            // way in, and there is nothing to log in to
+            match self.connection(&url.prefix()) {
+                Some(fs) => {
+                    let prefix = url.prefix();
+                    remote::spawn_reuse(fs, url.path, prefix)
+                }
+                None => fish::spawn_shell(url),
+            }
         } else if input.starts_with("rclone://") {
             let Some(url) = rcmd_core::rclone::RcloneUrl::parse(input) else {
                 self.status = Some(" bad URL - rclone://remote[/path] ".into());
@@ -38,10 +48,15 @@ impl App {
         } else {
             let fish = input.starts_with("fish://");
             let scheme = if fish { "fish" } else { "sftp" };
-            let Some(url) = SftpUrl::parse_as(scheme, input).map(SftpUrl::with_ssh_config) else {
+            let Some(mut url) = SftpUrl::parse_as(scheme, input).map(SftpUrl::with_ssh_config)
+            else {
                 self.status = Some(format!(" bad URL - {scheme}://[user@]host[:port][/path] "));
                 return;
             };
+            // a saved connection's key goes first
+            if let Some(key) = self.pending_key.clone() {
+                url.identities.insert(0, key);
+            }
             match (self.connection(&url.prefix()), fish) {
                 (Some(fs), _) => remote::spawn_reuse(fs, url.path, url.host),
                 (None, true) => fish::spawn_connect(url),
@@ -53,7 +68,132 @@ impl App {
             handle,
             panel: self.active,
             ask: None,
+            keyring: None,
+            keyring_tried: false,
+            typed: None,
         });
+    }
+
+    /// Connect through a saved connection: its key tried first, and
+    /// its password from the keyring when it keeps one there.
+    pub(super) fn connect_saved(&mut self, saved: &crate::state::SavedConnection) {
+        self.pending_key = saved
+            .key
+            .as_deref()
+            .map(|key| match key.strip_prefix("~/") {
+                Some(rest) => home_dir().join(rest),
+                None => PathBuf::from(key),
+            });
+        self.connect_remote(&saved.url);
+        self.pending_key = None;
+        if saved.keyring
+            && let Some(connect) = self.connect.as_mut()
+        {
+            connect.keyring = Some(saved.url.clone());
+        }
+    }
+
+    /// F9 > Command > Connections.
+    pub(super) fn open_connections(&mut self) {
+        self.dialog = Some(Dialog::Connections(0));
+    }
+
+    pub fn saved_connections(&self) -> Vec<crate::state::SavedConnection> {
+        crate::state::load().0.connections
+    }
+
+    pub(super) fn on_connections_key(&mut self, mut row: usize, key: KeyEvent) {
+        let saved = self.saved_connections();
+        let last = saved.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Esc => {}
+            KeyCode::Enter => {
+                if let Some(conn) = saved.get(row) {
+                    self.connect_saved(conn);
+                }
+            }
+            KeyCode::Insert | KeyCode::Char('a') => {
+                // the panel's own server, if it is on one, is the
+                // likeliest thing to save
+                let here = match self.panels[self.active].is_remote() {
+                    true => format!("name {}", self.panels[self.active].display_path()),
+                    false => String::new(),
+                };
+                self.dialog = Some(Dialog::Input(InputDialog::new(
+                    " New connection: name, URL, and a key file if any ",
+                    &here,
+                    InputAction::SaveConnection,
+                )));
+            }
+            KeyCode::Delete | KeyCode::F(8) => {
+                if let Some(conn) = saved.get(row) {
+                    let name = conn.name.clone();
+                    crate::keyring::forget(&conn.url);
+                    let _ = crate::state::update(|s| s.connections.retain(|c| c.name != name));
+                    self.status = Some(format!(" forgot {name} "));
+                }
+                self.dialog = Some(Dialog::Connections(row.min(last.saturating_sub(1))));
+            }
+            // k: keep the password in the keyring, or stop keeping it
+            KeyCode::Char('k') => {
+                if let Some(conn) = saved.get(row) {
+                    let (name, url, keep) = (conn.name.clone(), conn.url.clone(), !conn.keyring);
+                    if !keep {
+                        crate::keyring::forget(&url);
+                    }
+                    let _ = crate::state::update(|s| {
+                        for c in s.connections.iter_mut().filter(|c| c.name == name) {
+                            c.keyring = keep;
+                        }
+                    });
+                    self.status = Some(match keep {
+                        true => {
+                            format!(" {name}: the keyring keeps its password from the next login ")
+                        }
+                        false => format!(" {name}: the keyring keeps nothing for it "),
+                    });
+                }
+                self.dialog = Some(Dialog::Connections(row));
+            }
+            KeyCode::Up => {
+                row = row.saturating_sub(1);
+                self.dialog = Some(Dialog::Connections(row));
+            }
+            KeyCode::Down => {
+                row = (row + 1).min(last);
+                self.dialog = Some(Dialog::Connections(row));
+            }
+            _ => self.dialog = Some(Dialog::Connections(row)),
+        }
+    }
+
+    /// `name URL [key]` from the new-connection field.
+    pub(super) fn save_connection(&mut self, value: &str) {
+        let mut words = value.split_whitespace();
+        let (Some(name), Some(url)) = (words.next(), words.next()) else {
+            self.status = Some(" a name, then the URL ".into());
+            return;
+        };
+        if !is_remote_url(url) {
+            self.status = Some(format!(" {url} is not a URL rcmd can connect to "));
+            return;
+        }
+        let saved = crate::state::SavedConnection {
+            name: name.to_string(),
+            url: url.to_string(),
+            key: words.next().map(str::to_string),
+            keyring: false,
+        };
+        let _ = crate::state::update(|s| {
+            s.connections.retain(|c| c.name != saved.name);
+            s.connections.push(saved.clone());
+        });
+        let row = self
+            .saved_connections()
+            .iter()
+            .position(|c| c.name == name)
+            .unwrap_or(0);
+        self.dialog = Some(Dialog::Connections(row));
     }
 
     /// What the panels are sitting on that is not the local filesystem,
@@ -155,6 +295,9 @@ impl App {
             return;
         };
         while let Ok(event) = connect.handle.events.try_recv() {
+            // whatever came - a question, the panel, a failure - the
+            // screen has to show it now, not at the next idle frame
+            self.dirty = true;
             match event {
                 ConnectEvent::Info(msg) => self.status = Some(format!(" {msg} ")),
                 ConnectEvent::AskHostKey { fingerprint } => {
@@ -164,6 +307,22 @@ impl App {
                     });
                 }
                 ConnectEvent::AskPassword { prompt, echo } => {
+                    // the keyring answers once; if that is refused, the
+                    // person does, and what they type is kept
+                    if let Some(account) = connect.keyring.clone()
+                        && !std::mem::replace(&mut connect.keyring_tried, true)
+                        && let Some(password) = crate::keyring::lookup(&account)
+                    {
+                        let _ = connect
+                            .handle
+                            .replies
+                            .send(ConnectReply::Password(password));
+                        continue;
+                    }
+                    let prompt = match connect.keyring.is_some() {
+                        true => format!("{prompt} (kept in the keyring)"),
+                        false => prompt,
+                    };
                     connect.ask = Some(ConnectAsk::Password {
                         prompt,
                         value: String::new(),
@@ -173,19 +332,27 @@ impl App {
                 }
                 ConnectEvent::Ok { fs, start, entries } => {
                     let connect = self.connect.take().expect("connect present");
+                    let kept = match (&connect.keyring, &connect.typed) {
+                        (Some(account), Some(password)) => crate::keyring::store(account, password),
+                        _ => false,
+                    };
                     let prefix = fs.prefix().to_string();
                     self.connections.retain(|(p, _)| p != &prefix);
                     self.connections.push((prefix.clone(), Arc::downgrade(&fs)));
                     self.panels[connect.panel].adopt_remote(fs, prefix.clone(), start, entries);
-                    self.status = Some(match prefix == rcmd_core::trashcan::PREFIX {
-                        true => " the trash: F6 puts back, F8 deletes for good ".into(),
-                        false => format!(" connected to {prefix} "),
+                    self.status = Some(match (prefix == rcmd_core::trashcan::PREFIX, kept) {
+                        (true, _) => " the trash: F6 puts back, F8 deletes for good ".into(),
+                        (false, true) => {
+                            format!(" connected to {prefix} - the keyring keeps the password ")
+                        }
+                        (false, false) => format!(" connected to {prefix} "),
                     });
                     return;
                 }
                 ConnectEvent::Err(msg) => {
+                    let host = connect.handle.host.clone();
                     self.connect = None;
-                    self.status = Some(format!(" sftp: {msg} "));
+                    self.status = Some(format!(" {host}: {msg} "));
                     return;
                 }
             }
@@ -233,6 +400,9 @@ impl App {
                 }
                 KeyCode::Enter => {
                     let password = std::mem::take(value);
+                    if connect.keyring.is_some() {
+                        connect.typed = Some(password.clone());
+                    }
                     let _ = connect
                         .handle
                         .replies

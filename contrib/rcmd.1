@@ -71,8 +71,10 @@ A persistent subshell.
 .BR \-l ", " \-\-ftplog " " \fIFILE\fR
 Log the FTP and FISH dialogue to FILE.
 .TP
-.BR \-\-remote " " \fILINE\fR
-Hand LINE to a running rcmd and exit.
+.BR \-\-remote " " \fICMD\fR...
+Hand the rest of the command line to a running rcmd and exit; put
+.B \-\-to
+before it.
 .TP
 .BR \-\-to " " \fIPID\fR
 Which running rcmd, when there are several.

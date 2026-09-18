@@ -14,10 +14,17 @@
 //! round trips than mc's persistent helper shell, and simpler to be
 //! sure of: nothing can be left half-said on a channel that the next
 //! command then reads as its own output.
+//!
+//! The shell is reached through a [`ShellTransport`]: SSH is one, and a
+//! local command is the other - `docker exec -i`, `podman exec -i`,
+//! `kubectl exec -i`, `adb shell` and `sudo` are each a way of running a
+//! command somewhere with a shell, so each is a panel: a container, a
+//! pod, a phone, the machine as root. See [`ShellUrl`].
 
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -57,6 +64,29 @@ for f in * .*; do
 done
 "#;
 
+/// A way to run a command in a shell somewhere and read what it
+/// prints: over SSH, or through a local command that reaches a
+/// container, a pod, a phone or root.
+pub trait ShellTransport: Send + Sync {
+    /// Run one command with `stdin` fed to it, and collect everything.
+    fn run(&self, command: &str, stdin: &[u8]) -> io::Result<Output>;
+    /// Run one command and read its output as it arrives; a command
+    /// that failed says so when the output ends.
+    fn stream(&self, command: &str) -> io::Result<Box<dyn Read + Send>>;
+    /// Run one command and write its input as it goes; flushing the
+    /// writer ends the input and reports how the command ended.
+    fn feed(&self, command: &str) -> io::Result<Box<dyn Write + Send>>;
+    /// Keep an idle connection open; nothing to do for most.
+    fn keepalive(&self) {}
+}
+
+/// What a remote command printed and what it exited with.
+pub struct Output {
+    pub stdout: Vec<u8>,
+    pub stderr: String,
+    pub status: i32,
+}
+
 /// Dial a server and put a panel on its shell.
 pub fn spawn_connect(url: SftpUrl) -> ConnectHandle {
     let (event_tx, event_rx) = std::sync::mpsc::channel();
@@ -84,20 +114,23 @@ fn dial(
     rx: &std::sync::mpsc::Receiver<ConnectReply>,
 ) -> Result<Dialed, String> {
     let session = sftp::ssh_session(url, tx, rx)?;
-    let fs = Arc::new_cyclic(|me| FishFs {
-        session: Mutex::new(session),
-        prefix: url.prefix(),
-        me: me.clone(),
-    });
-    sftp::keep_alive(Arc::downgrade(&fs), |fs: &FishFs| {
-        let session = fs.session.lock().unwrap_or_else(|p| p.into_inner());
-        let _ = session.keepalive_send();
-    });
-    let start = if url.path.as_os_str().is_empty() {
-        fs.realpath(Path::new("."))
-            .unwrap_or_else(|_| PathBuf::from("/"))
+    let fs = Arc::new(ShellFs::new(
+        Box::new(Ssh {
+            session: Mutex::new(session),
+        }),
+        url.prefix(),
+    ));
+    sftp::keep_alive(Arc::downgrade(&fs), |fs: &ShellFs| fs.transport.keepalive());
+    first_listing(fs, &url.path)
+}
+
+/// The panel's first directory - the one asked for, or where the shell
+/// starts - and what is in it.
+fn first_listing(fs: Arc<ShellFs>, path: &Path) -> Result<Dialed, String> {
+    let start = if path.as_os_str().is_empty() {
+        fs.realpath(Path::new(".")).map_err(|err| err.to_string())?
     } else {
-        url.path.clone()
+        path.to_path_buf()
     };
     let entries = fs
         .read_dir(&start)
@@ -105,55 +138,36 @@ fn dial(
     Ok((fs, start, entries))
 }
 
-pub struct FishFs {
-    /// One session, one command at a time - `exec` opens its own
-    /// channel, but the library's session is not shared across threads.
-    session: Mutex<Session>,
+/// A panel on a shell: every operation a small script run through the
+/// transport.
+pub struct ShellFs {
+    transport: Box<dyn ShellTransport>,
     prefix: String,
-    /// A handle on itself, so an upload can outlive the `&self` call
-    /// that made it. `open_write` hands back a writer, and the writer
-    /// needs the connection when it is closed, not when it is made.
-    me: std::sync::Weak<FishFs>,
 }
 
-/// What a remote command printed and what it exited with.
-struct Output {
-    stdout: Vec<u8>,
-    stderr: String,
-    status: i32,
-}
+/// The name this had when SSH was the only way in.
+pub type FishFs = ShellFs;
 
-impl FishFs {
-    /// Run one command on the server. `stdin` is fed to it, which is
-    /// how a file gets uploaded without a temporary anywhere.
+impl ShellFs {
+    pub fn new(transport: Box<dyn ShellTransport>, prefix: String) -> Self {
+        ShellFs { transport, prefix }
+    }
+
     fn run(&self, command: &str, stdin: &[u8]) -> io::Result<Output> {
         crate::vfslog::line(">", command);
-        let session = self.session.lock().unwrap_or_else(|p| p.into_inner());
-        let mut channel = session.channel_session().map_err(ioerr)?;
-        channel.exec(command).map_err(ioerr)?;
-        if !stdin.is_empty() {
-            channel.write_all(stdin)?;
-        }
-        channel.send_eof().map_err(ioerr)?;
-        let mut stdout = Vec::new();
-        channel.read_to_end(&mut stdout)?;
-        let mut stderr = String::new();
-        let _ = channel.stderr().read_to_string(&mut stderr);
-        channel.wait_close().map_err(ioerr)?;
-        let status = channel.exit_status().unwrap_or(-1);
+        let out = self.transport.run(command, stdin)?;
         if crate::vfslog::is_on() {
             // the payload is a listing or a whole file; what is worth
             // reading back is how it went, and anything it complained about
-            crate::vfslog::line("<", &format!("exit {status}, {} byte(s)", stdout.len()));
-            for line in stderr.lines() {
+            crate::vfslog::line(
+                "<",
+                &format!("exit {}, {} byte(s)", out.status, out.stdout.len()),
+            );
+            for line in out.stderr.lines() {
                 crate::vfslog::line("<", line);
             }
         }
-        Ok(Output {
-            stdout,
-            stderr,
-            status,
-        })
+        Ok(out)
     }
 
     /// Run a command that is expected to succeed and print nothing
@@ -172,6 +186,390 @@ impl FishFs {
             return Err(io::Error::other(first_line(&out.stderr)));
         }
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
+    }
+}
+
+/// SSH: one session, one command per channel.
+struct Ssh {
+    /// The library's session is not shared across threads; a channel,
+    /// once open, carries its own share of it.
+    session: Mutex<Session>,
+}
+
+impl Ssh {
+    fn channel(&self, command: &str) -> io::Result<ssh2::Channel> {
+        let session = self.session.lock().unwrap_or_else(|p| p.into_inner());
+        let mut channel = session.channel_session().map_err(ioerr)?;
+        channel.exec(command).map_err(ioerr)?;
+        Ok(channel)
+    }
+}
+
+impl ShellTransport for Ssh {
+    fn run(&self, command: &str, stdin: &[u8]) -> io::Result<Output> {
+        let mut channel = self.channel(command)?;
+        if !stdin.is_empty() {
+            channel.write_all(stdin)?;
+        }
+        channel.send_eof().map_err(ioerr)?;
+        let mut stdout = Vec::new();
+        channel.read_to_end(&mut stdout)?;
+        let mut stderr = String::new();
+        let _ = channel.stderr().read_to_string(&mut stderr);
+        channel.wait_close().map_err(ioerr)?;
+        let status = channel.exit_status().unwrap_or(-1);
+        Ok(Output {
+            stdout,
+            stderr,
+            status,
+        })
+    }
+
+    fn stream(&self, command: &str) -> io::Result<Box<dyn Read + Send>> {
+        let mut channel = self.channel(command)?;
+        channel.send_eof().map_err(ioerr)?;
+        Ok(Box::new(SshRead {
+            channel,
+            ended: false,
+        }))
+    }
+
+    fn feed(&self, command: &str) -> io::Result<Box<dyn Write + Send>> {
+        Ok(Box::new(SshWrite {
+            channel: Some(self.channel(command)?),
+        }))
+    }
+
+    fn keepalive(&self) {
+        let session = self.session.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = session.keepalive_send();
+    }
+}
+
+/// A command's output on its way in over SSH.
+struct SshRead {
+    channel: ssh2::Channel,
+    ended: bool,
+}
+
+impl Read for SshRead {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.ended {
+            return Ok(0);
+        }
+        let n = self.channel.read(buf)?;
+        if n == 0 && !buf.is_empty() {
+            self.ended = true;
+            let mut stderr = String::new();
+            let _ = self.channel.stderr().read_to_string(&mut stderr);
+            self.channel.wait_close().map_err(ioerr)?;
+            if self.channel.exit_status().unwrap_or(-1) != 0 {
+                return Err(io::Error::other(first_line(&stderr)));
+            }
+        }
+        Ok(n)
+    }
+}
+
+/// A command's input on its way out over SSH: written as it comes, and
+/// ended - with the command's verdict - on flush.
+struct SshWrite {
+    channel: Option<ssh2::Channel>,
+}
+
+impl Write for SshWrite {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self.channel.as_mut() {
+            Some(channel) => channel.write(buf),
+            None => Err(io::Error::other("the upload is already finished")),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let Some(mut channel) = self.channel.take() else {
+            return Ok(());
+        };
+        channel.send_eof().map_err(ioerr)?;
+        let mut stderr = String::new();
+        let _ = channel.stderr().read_to_string(&mut stderr);
+        let _ = io::copy(&mut channel, &mut io::sink());
+        channel.wait_close().map_err(ioerr)?;
+        match channel.exit_status().unwrap_or(-1) {
+            0 => Ok(()),
+            _ => Err(io::Error::other(first_line(&stderr))),
+        }
+    }
+}
+
+impl Drop for SshWrite {
+    fn drop(&mut self) {
+        // a writer dropped without a flush still gets its bytes there;
+        // the error, if any, has nowhere left to go
+        let _ = self.flush();
+    }
+}
+
+/// How a local command takes the command it is to run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wrap {
+    /// As `sh -c COMMAND` after its own arguments: `docker exec -i box
+    /// sh -c ...`, which passes the arguments on untouched.
+    ShellArgs,
+    /// As one more argument, which the far side hands to its shell:
+    /// `adb shell COMMAND`.
+    OneString,
+}
+
+/// A shell reached by running a local command: each operation is one
+/// process, as each is one channel over SSH.
+pub struct CommandTransport {
+    argv: Vec<String>,
+    wrap: Wrap,
+}
+
+impl CommandTransport {
+    pub fn new(argv: Vec<String>, wrap: Wrap) -> Self {
+        CommandTransport { argv, wrap }
+    }
+
+    fn command(&self, command: &str) -> io::Result<Command> {
+        let mut args: Vec<&str> = self.argv.iter().map(String::as_str).collect();
+        match self.wrap {
+            Wrap::ShellArgs => args.extend(["sh", "-c", command]),
+            Wrap::OneString => args.push(command),
+        }
+        let (program, rest) = args
+            .split_first()
+            .ok_or_else(|| io::Error::other("no command to reach the shell with"))?;
+        let mut cmd = Command::new(program);
+        cmd.args(rest);
+        Ok(cmd)
+    }
+
+    fn spawn(&self, command: &str, stdin: Stdio, stdout: Stdio) -> io::Result<Child> {
+        self.command(command)?
+            .stdin(stdin)
+            .stdout(stdout)
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|err| match err.kind() {
+                io::ErrorKind::NotFound => io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("{} is not installed", self.argv.first().map_or("", |a| a)),
+                ),
+                _ => err,
+            })
+    }
+}
+
+/// How a finished child went: its stderr's first line if it failed.
+fn verdict(child: &mut Child) -> io::Result<()> {
+    let mut stderr = String::new();
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_string(&mut stderr);
+    }
+    match child.wait()?.success() {
+        true => Ok(()),
+        false => Err(io::Error::other(first_line(&stderr))),
+    }
+}
+
+impl ShellTransport for CommandTransport {
+    fn run(&self, command: &str, stdin: &[u8]) -> io::Result<Output> {
+        let mut child = self.spawn(command, Stdio::piped(), Stdio::piped())?;
+        // feed on a thread: a command that prints before it has read
+        // all of its input would otherwise wait on us while we wait on it
+        let feeder = child.stdin.take().map(|mut pipe| {
+            let input = stdin.to_vec();
+            std::thread::spawn(move || {
+                let _ = pipe.write_all(&input);
+            })
+        });
+        let out = child.wait_with_output()?;
+        if let Some(feeder) = feeder {
+            let _ = feeder.join();
+        }
+        Ok(Output {
+            stdout: out.stdout,
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            status: out.status.code().unwrap_or(-1),
+        })
+    }
+
+    fn stream(&self, command: &str) -> io::Result<Box<dyn Read + Send>> {
+        let mut child = self.spawn(command, Stdio::null(), Stdio::piped())?;
+        let stdout = child.stdout.take().expect("piped");
+        Ok(Box::new(ChildRead {
+            child,
+            stdout,
+            ended: false,
+        }))
+    }
+
+    fn feed(&self, command: &str) -> io::Result<Box<dyn Write + Send>> {
+        let mut child = self.spawn(command, Stdio::piped(), Stdio::null())?;
+        let stdin = child.stdin.take();
+        Ok(Box::new(ChildWrite { child, stdin }))
+    }
+}
+
+struct ChildRead {
+    child: Child,
+    stdout: ChildStdout,
+    ended: bool,
+}
+
+impl Read for ChildRead {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.ended {
+            return Ok(0);
+        }
+        let n = self.stdout.read(buf)?;
+        if n == 0 && !buf.is_empty() {
+            self.ended = true;
+            verdict(&mut self.child)?;
+        }
+        Ok(n)
+    }
+}
+
+impl Drop for ChildRead {
+    fn drop(&mut self) {
+        // read only part way: the rest is not wanted
+        if !self.ended {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+struct ChildWrite {
+    child: Child,
+    stdin: Option<ChildStdin>,
+}
+
+impl Write for ChildWrite {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self.stdin.as_mut() {
+            Some(stdin) => stdin.write(buf),
+            None => Err(io::Error::other("the upload is already finished")),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self.stdin.take() {
+            // closing its input is what tells `cat` it is done
+            Some(stdin) => {
+                drop(stdin);
+                verdict(&mut self.child)
+            }
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for ChildWrite {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
+}
+
+/// `docker://box/path`, `podman://box/path`, `k8s://[namespace:]pod/path`,
+/// `adb://[serial]/path` and `sudo://[user]/path`: a shell somewhere
+/// that a local command reaches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellUrl {
+    pub scheme: String,
+    /// The container, pod, device or user; empty where the scheme has
+    /// a default (the one device, root).
+    pub target: String,
+    pub path: PathBuf,
+}
+
+/// The schemes [`ShellUrl`] takes.
+pub const SHELL_SCHEMES: &[&str] = &["docker", "podman", "k8s", "adb", "sudo"];
+
+impl ShellUrl {
+    pub fn parse(input: &str) -> Option<ShellUrl> {
+        let (scheme, rest) = input.split_once("://")?;
+        if !SHELL_SCHEMES.contains(&scheme) {
+            return None;
+        }
+        let (target, path) = match rest.split_once('/') {
+            Some((target, path)) => (target, format!("/{path}")),
+            None => (rest, String::new()),
+        };
+        // a container, pod or device has to be named; the one device
+        // and root are what an empty name means for adb and sudo
+        if target.is_empty() && !matches!(scheme, "adb" | "sudo") {
+            return None;
+        }
+        Some(ShellUrl {
+            scheme: scheme.to_string(),
+            target: target.to_string(),
+            path: PathBuf::from(path),
+        })
+    }
+
+    pub fn prefix(&self) -> String {
+        format!("{}://{}", self.scheme, self.target)
+    }
+
+    /// The command that reaches the shell, and how it takes a command.
+    pub fn transport(&self) -> CommandTransport {
+        let t = self.target.clone();
+        let argv = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        match self.scheme.as_str() {
+            "docker" | "podman" => {
+                CommandTransport::new(argv(&[&self.scheme, "exec", "-i", &t]), Wrap::ShellArgs)
+            }
+            "k8s" => {
+                let mut words = argv(&["kubectl", "exec", "-i"]);
+                match t.split_once(':') {
+                    Some((ns, pod)) => words.extend(argv(&["-n", ns, pod])),
+                    None => words.push(t),
+                }
+                words.push("--".into());
+                CommandTransport::new(words, Wrap::ShellArgs)
+            }
+            "adb" => {
+                let mut words = argv(&["adb"]);
+                if !t.is_empty() {
+                    words.extend(argv(&["-s", &t]));
+                }
+                words.push("shell".into());
+                CommandTransport::new(words, Wrap::OneString)
+            }
+            // sudo: -n never stops to ask for a password on a terminal
+            // rcmd is drawing on; `sudo -v` beforehand is the way in
+            _ => {
+                let mut words = argv(&["sudo", "-n"]);
+                if !t.is_empty() {
+                    words.extend(argv(&["-u", &t]));
+                }
+                CommandTransport::new(words, Wrap::ShellArgs)
+            }
+        }
+    }
+}
+
+/// Put a panel on the shell a [`ShellUrl`] names. Nothing to log in to:
+/// the local command did that, or needs no login at all.
+pub fn spawn_shell(url: ShellUrl) -> ConnectHandle {
+    let (event_tx, event_rx) = std::sync::mpsc::channel();
+    let (reply_tx, _reply_rx) = std::sync::mpsc::channel();
+    let host = url.prefix();
+    std::thread::spawn(move || {
+        let fs = Arc::new(ShellFs::new(Box::new(url.transport()), url.prefix()));
+        let _ = event_tx.send(match first_listing(fs, &url.path) {
+            Ok((fs, start, entries)) => ConnectEvent::Ok { fs, start, entries },
+            Err(message) => ConnectEvent::Err(message),
+        });
+    });
+    ConnectHandle {
+        events: event_rx,
+        replies: reply_tx,
+        host,
     }
 }
 
@@ -194,7 +592,7 @@ fn ioerr(err: ssh2::Error) -> io::Error {
     io::Error::other(err.to_string())
 }
 
-impl FsProvider for FishFs {
+impl FsProvider for ShellFs {
     fn read_dir(&self, dir: &Path) -> io::Result<Vec<Entry>> {
         let out = self.run(
             &format!("D={} sh -c {}", quote(dir), shell_quote(LIST_SCRIPT)),
@@ -241,14 +639,7 @@ impl FsProvider for FishFs {
     fn open_read(&self, path: &Path) -> io::Result<Box<dyn Read + Send>> {
         let command = format!("cat -- {}", quote(path));
         crate::vfslog::line(">", &command);
-        let session = self.session.lock().unwrap_or_else(|p| p.into_inner());
-        let mut channel = session.channel_session().map_err(ioerr)?;
-        channel.exec(&command).map_err(ioerr)?;
-        channel.send_eof().map_err(ioerr)?;
-        Ok(Box::new(Streamed {
-            channel,
-            ended: false,
-        }))
+        self.transport.stream(&command)
     }
 
     fn writer(&self) -> Option<&dyn FsWrite> {
@@ -256,32 +647,7 @@ impl FsProvider for FishFs {
     }
 }
 
-/// A command's output on its way in.
-struct Streamed {
-    channel: ssh2::Channel,
-    ended: bool,
-}
-
-impl Read for Streamed {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.ended {
-            return Ok(0);
-        }
-        let n = self.channel.read(buf)?;
-        if n == 0 && !buf.is_empty() {
-            self.ended = true;
-            let mut stderr = String::new();
-            let _ = self.channel.stderr().read_to_string(&mut stderr);
-            self.channel.wait_close().map_err(ioerr)?;
-            if self.channel.exit_status().unwrap_or(-1) != 0 {
-                return Err(io::Error::other(first_line(&stderr)));
-            }
-        }
-        Ok(n)
-    }
-}
-
-impl RemoteFs for FishFs {
+impl RemoteFs for ShellFs {
     fn prefix(&self) -> &str {
         &self.prefix
     }
@@ -295,48 +661,7 @@ impl RemoteFs for FishFs {
     }
 }
 
-/// An upload: bytes are buffered here and sent on flush, because the
-/// remote `cat` wants one stream and a `Write` hands them over in
-/// pieces. Flush is where it happens rather than drop, so a server
-/// that refuses the write says so to the job that asked.
-struct Upload {
-    fs: Arc<FishFs>,
-    path: PathBuf,
-    buffer: Vec<u8>,
-    sent: bool,
-}
-
-impl Write for Upload {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.buffer.extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        if self.sent {
-            return Ok(());
-        }
-        self.sent = true;
-        let out = self
-            .fs
-            .run(&format!("cat > {}", quote(&self.path)), &self.buffer)?;
-        self.buffer = Vec::new();
-        if out.status != 0 {
-            return Err(io::Error::other(first_line(&out.stderr)));
-        }
-        Ok(())
-    }
-}
-
-impl Drop for Upload {
-    fn drop(&mut self) {
-        // a writer dropped without a flush still gets its bytes there;
-        // the error, if any, has nowhere left to go
-        let _ = self.flush();
-    }
-}
-
-impl FsWrite for FishFs {
+impl FsWrite for ShellFs {
     fn mkdir(&self, dir: &Path) -> io::Result<()> {
         self.check(&format!("mkdir -- {}", quote(dir)))
     }
@@ -353,17 +678,12 @@ impl FsWrite for FishFs {
         self.check(&format!("mv -- {} {}", quote(from), quote(to)))
     }
 
+    /// `cat` on the far side, fed as the copy goes: nothing is held
+    /// here but the piece in hand.
     fn open_write(&self, path: &Path) -> io::Result<Box<dyn Write + Send>> {
-        let fs = self
-            .me
-            .upgrade()
-            .ok_or_else(|| io::Error::other("the connection went away"))?;
-        Ok(Box::new(Upload {
-            fs,
-            path: path.to_path_buf(),
-            buffer: Vec::new(),
-            sent: false,
-        }))
+        let command = format!("cat > {}", quote(path));
+        crate::vfslog::line(">", &command);
+        self.transport.feed(&command)
     }
 
     fn set_mode(&self, path: &Path, mode: u32) -> io::Result<()> {
@@ -471,6 +791,94 @@ mod tests {
             }
         }
         out
+    }
+
+    /// A panel on the local shell - the transport every scheme but
+    /// SSH uses, with nothing in front of `sh -c`.
+    fn local_shell() -> ShellFs {
+        ShellFs::new(
+            Box::new(CommandTransport::new(Vec::new(), Wrap::ShellArgs)),
+            "test://".into(),
+        )
+    }
+
+    #[test]
+    fn a_shell_through_a_local_command_is_a_whole_filesystem() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("a file.txt"), "hello").unwrap();
+        let fs = local_shell();
+        let names: Vec<_> = fs
+            .read_dir(dir)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, ["a file.txt"]);
+
+        let mut text = String::new();
+        fs.open_read(&dir.join("a file.txt"))
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(text, "hello");
+
+        // an upload streams: written in pieces, finished by the flush
+        let target = dir.join("up.bin");
+        let mut out = fs.writer().unwrap().open_write(&target).unwrap();
+        for _ in 0..64 {
+            out.write_all(&[7u8; 4096]).unwrap();
+        }
+        out.flush().unwrap();
+        drop(out);
+        assert_eq!(std::fs::metadata(&target).unwrap().len(), 64 * 4096);
+
+        let w = fs.writer().unwrap();
+        w.mkdir(&dir.join("sub")).unwrap();
+        w.rename(&target, &dir.join("sub/moved.bin")).unwrap();
+        w.set_mode(&dir.join("sub/moved.bin"), 0o600).unwrap();
+        let moved = fs.stat(&dir.join("sub/moved.bin")).unwrap();
+        assert_eq!((moved.size, moved.mode), (64 * 4096, 0o600));
+        w.remove_file(&dir.join("sub/moved.bin")).unwrap();
+        w.remove_dir(&dir.join("sub")).unwrap();
+        assert!(!dir.join("sub").exists());
+
+        // a failure says what the far side said
+        let err = fs.open_read(&dir.join("missing")).and_then(|mut r| {
+            let mut sink = Vec::new();
+            r.read_to_end(&mut sink)
+        });
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn shell_urls_name_the_command_that_reaches_the_shell() {
+        let url = ShellUrl::parse("docker://web/var/www").unwrap();
+        assert_eq!(
+            (url.prefix().as_str(), url.path.as_path()),
+            ("docker://web", Path::new("/var/www"))
+        );
+        assert_eq!(url.transport().argv, ["docker", "exec", "-i", "web"]);
+        let k8s = ShellUrl::parse("k8s://prod:api-7f9/app").unwrap();
+        assert_eq!(
+            k8s.transport().argv,
+            ["kubectl", "exec", "-i", "-n", "prod", "api-7f9", "--"]
+        );
+        let adb = ShellUrl::parse("adb:///sdcard").unwrap();
+        assert_eq!(
+            (adb.target.as_str(), adb.transport().wrap),
+            ("", Wrap::OneString)
+        );
+        assert_eq!(
+            ShellUrl::parse("sudo://postgres/")
+                .unwrap()
+                .transport()
+                .argv,
+            ["sudo", "-n", "-u", "postgres"]
+        );
+        // a container has to be named
+        assert!(ShellUrl::parse("docker:///x").is_none());
+        assert!(ShellUrl::parse("sftp://host/").is_none());
     }
 
     #[test]

@@ -13,6 +13,7 @@ impl App {
             set_mouse_capture(false);
         }
         set_bracketed_paste(false);
+        set_keyboard_protocol(false);
         ratatui::restore();
         // Shell-style job control: the child runs in its own foreground
         // process group, so Ctrl+C/Ctrl+Z hit it and never rcmd. We ignore
@@ -103,6 +104,7 @@ impl App {
             set_mouse_capture(true);
         }
         set_bracketed_paste(true);
+        set_keyboard_protocol(true);
         // whatever ran may have set a title of its own
         self.title_shown = None;
         let _ = terminal.clear();
@@ -355,6 +357,7 @@ impl App {
             set_mouse_capture(false);
         }
         set_bracketed_paste(false);
+        set_keyboard_protocol(false);
         let mut out = std::io::stdout();
         ratatui::crossterm::execute!(out, LeaveAlternateScreen, cursor::Show)?;
         // whatever the shell wrote while it was hidden, replayed
@@ -421,6 +424,7 @@ impl App {
             set_mouse_capture(true);
         }
         set_bracketed_paste(true);
+        set_keyboard_protocol(true);
         // whatever ran may have set a title of its own
         self.title_shown = None;
         let _ = terminal.clear();

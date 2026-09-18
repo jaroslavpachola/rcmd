@@ -474,8 +474,8 @@ impl Panel {
         self.panelized = None;
         let keep = self.selected().map(|e| e.name.clone());
         // re-index the archive so appended members (F5 into a zip) appear
-        if let Some(archive) = &self.archive {
-            self.fs = Arc::new(ArchiveFs::open(archive)?);
+        if let Some(fresh) = self.fs.reopen() {
+            self.fs = fresh?;
         }
         let order = self.order();
         let listing = |dir: &Path, fs: &dyn FsProvider| {
@@ -618,8 +618,14 @@ impl Panel {
     }
 
     fn enter_archive(&mut self, path: PathBuf) -> io::Result<()> {
-        let archive_fs = Arc::new(ArchiveFs::open(&path)?);
-        let prev_fs = std::mem::replace(&mut self.fs, archive_fs);
+        self.enter_provider(Arc::new(ArchiveFs::open(&path)?), path)
+    }
+
+    /// Go into a file as if it were a directory, through a provider
+    /// that reads it - an archive, or a user-defined filesystem. `..`
+    /// at its top comes back out beside the file.
+    pub fn enter_provider(&mut self, fs: Arc<dyn FsProvider>, path: PathBuf) -> io::Result<()> {
+        let prev_fs = std::mem::replace(&mut self.fs, fs);
         let prev_archive = self.archive.replace(path);
         match self.change_dir(PathBuf::new()) {
             Ok(()) => Ok(()),

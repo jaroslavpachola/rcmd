@@ -58,15 +58,17 @@ if SUBSHELL and "RCMD_E2E_SETTLE" not in os.environ:
 
 # Terminal queries a shell may block on (fish probes at every prompt);
 # a real terminal answers these, so the harness must too.
-QUERY = re.compile(rb"\x1b\[0?c|\x1b\[([56])n")
+QUERY = re.compile(rb"\x1b\[0?c|\x1b\[([56])n|(\x1b\[\?u)")
 
 signal.alarm(900)  # hard cap for the whole suite (the scale test is slow)
 
 
 class Session:
     def __init__(self, cwd, home, args=(), shell="/bin/sh", subshell=None, argv0=None,
-                 exec_argv=None, env=None):
+                 exec_argv=None, env=None, kitty=False):
         self.buf = b""
+        # answer the kitty keyboard query as kitty does, or not at all
+        self.kitty = kitty
         want = SUBSHELL if subshell is None else subshell
         cfg = os.path.join(home, ".config", "rcmd", "config.toml")
         os.makedirs(os.path.dirname(cfg), exist_ok=True)
@@ -136,7 +138,10 @@ class Session:
                 self.buf += chunk
                 quiet_since = time.time()
                 for m in QUERY.finditer(chunk):  # act like a real terminal
-                    if m.group(1) == b"6":
+                    if m.group(2):
+                        if self.kitty:
+                            os.write(self.fd, b"\x1b[?0u")
+                    elif m.group(1) == b"6":
                         os.write(self.fd, b"\x1b[1;1R")
                     elif m.group(1) == b"5":
                         os.write(self.fd, b"\x1b[0n")
@@ -1303,6 +1308,74 @@ def test_remote():
     shutil.rmtree(root)
 
 
+def test_protocol():
+    """PLAN5 S7: the socket as a protocol - a marked list that keeps a
+    name with a space in it whole, a list pushed into a panel, events a
+    script can listen to, and a prompt and a menu a script can raise."""
+    root, play, home = sandbox()
+    open(os.path.join(play, "a b.txt"), "w").write("a\n")
+    open(os.path.join(play, "c.txt"), "w").write("c\n")
+    elsewhere = os.path.join(root, "elsewhere")
+    os.makedirs(elsewhere)
+    # the other panel somewhere else, so what the list leaves out is
+    # nowhere on screen
+    s = Session(play, home, args=(play, elsewhere))
+    env = dict(os.environ, HOME=home, XDG_RUNTIME_DIR=home)
+    env.pop("XDG_CONFIG_HOME", None)
+
+    def remote(*argv, stdin=None):
+        return subprocess.run([BIN, "--remote", *argv], env=env, input=stdin,
+                              capture_output=True, text=True, timeout=10)
+
+    remote("select *.txt")
+    marked = remote("marked").stdout.splitlines()
+    check("protocol: marked is one path a line, spaces and all",
+          marked == [os.path.join(play, "a b.txt"), os.path.join(play, "c.txt")], str(marked))
+    zero = remote("marked -0").stdout
+    check("protocol: and -0 separates them with NULs",
+          zero.split("\0")[:2] == marked, repr(zero))
+
+    out = remote("panelize", "picked", stdin="c.txt\n")
+    check("protocol: panelize took the list", out.stdout.strip() == "1", out.stdout + out.stderr)
+    check("protocol: and the panel shows it", wait_for(s, "picked")
+          and "a b.txt" not in s.screen(), s.screen())
+    s.send(b"\x12", wait=STEP)                  # Ctrl+R back to the directory
+
+    # a subscriber hears the cd another client asks for
+    listener = subprocess.Popen([BIN, "--remote", "subscribe", "cd"], env=env,
+                                stdout=subprocess.PIPE, text=True)
+    time.sleep(0.5)
+    remote("cd " + elsewhere)
+    line = ""
+    deadline = time.time() + 5
+    while time.time() < deadline and elsewhere not in line:
+        line = listener.stdout.readline()
+    listener.kill()
+    listener.wait()
+    check("protocol: subscribe streams the cd", line.strip() == "cd " + elsewhere, repr(line))
+
+    # a prompt, answered on screen
+    asking = subprocess.Popen([BIN, "--remote", "prompt", "Your name?"], env=env,
+                              stdout=subprocess.PIPE, text=True)
+    check("protocol: the prompt is on screen", wait_for(s, "Your name?"), s.screen())
+    s.send(b"Ada\r", wait=STEP)
+    check("protocol: and the script got the answer",
+          asking.communicate(timeout=10)[0].strip() == "Ada")
+
+    # a menu, picked from
+    picking = subprocess.Popen([BIN, "--remote", "menu", "Which one"], env=env,
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    picking.stdin.write("first\nsecond\nthird\n")
+    picking.stdin.close()
+    check("protocol: the menu is on screen", wait_for(s, "second"), s.screen())
+    s.send(DOWN + b"\r", wait=STEP)
+    picked = picking.stdout.read()
+    picking.wait(timeout=10)
+    check("protocol: and the pick went back", picked.strip() == "second", repr(picked))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_filtersets():
     """C-x f: named filter sets, several at once, and the union of what
     they show minus what they hide."""
@@ -1714,6 +1787,201 @@ def test_trash():
           trash_infos(home) == [] and not os.path.exists(doomed),
           str(trash_infos(home)))
     s.quit()
+    shutil.rmtree(root)
+
+
+def test_shellpanel():
+    """PLAN5 S7: docker://, podman://, k8s://, adb:// and sudo:// are
+    panels on a shell a local command reaches - here a docker that runs
+    what it is given right here, which is all the transport needs."""
+    root, play, home = sandbox()
+    bin_dir = os.path.join(root, "bin")
+    os.makedirs(bin_dir)
+    fake = os.path.join(bin_dir, "docker")
+    open(fake, "w").write("#!/bin/sh\n# docker exec -i NAME sh -c CMD\nshift 3\nexec \"$@\"\n")
+    os.chmod(fake, 0o755)
+    box = os.path.join(root, "box")
+    os.makedirs(box)
+    open(os.path.join(box, "in the box.txt"), "w").write("inside\n")
+    open(os.path.join(play, "upload.txt"), "w").write("going in\n")
+    env = {"PATH": bin_dir + ":" + os.environ["PATH"]}
+    s = Session(play, home, args=(play, play), env=env)
+    s.send(b"\t", wait=STEP)
+    s.send(f"cd docker://web{box}\r".encode(), wait=STEP * 2)
+    # "docker://web" is in the connecting message too: wait for what
+    # only the panel on the container can show
+    check("shellpanel: the panel is in the container",
+          wait_for(s, "in the box.txt") and "docker://web" in s.screen(), s.screen())
+    s.send(b"\x13in the\r", wait=STEP)
+    s.send(F3, wait=STEP * 2)
+    check("shellpanel: F3 reads through it", "inside" in s.screen(), s.screen())
+    s.send(b"q", wait=STEP)
+    # F5 out, F5 in
+    s.keys(F5, b"\r", wait=STEP * 3)
+    check("shellpanel: copied out", wait_for(s, "done -")
+          and os.path.exists(os.path.join(play, "in the box.txt")))
+    s.send(b"\t", wait=STEP)
+    s.send(b"\x13upload\r", wait=STEP)
+    s.keys(F5, b"\r", wait=STEP * 3)
+    check("shellpanel: copied in",
+          open(os.path.join(box, "upload.txt")).read() == "going in\n"
+          if os.path.exists(os.path.join(box, "upload.txt")) else False)
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_palette():
+    """PLAN5 S7: Alt+X lists every action by name, with its menu label
+    and its key, finds one by a few letters, and runs it."""
+    root, play, home = sandbox()
+    other = os.path.join(root, "other")
+    os.makedirs(other)
+    s = Session(play, home, args=(play, other))
+    s.send(b"\x1bx", wait=STEP)
+    scr = s.screen()
+    check("palette: Alt+X opens it", "Command palette" in scr, scr)
+    s.send(b"swap", wait=STEP)
+    scr = s.screen()
+    check("palette: a few letters find the action",
+          "swap-panels" in scr and "ctrl+u" in scr.lower(), scr)
+    s.send(b"\r", wait=STEP * 2)
+    title = s.screen().split("\n")[0]
+    check("palette: Enter runs it - the panels swapped",
+          title.find("other") < title.find("play"), title)
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_kittykeys():
+    """PLAN5 S7: in a terminal that has the kitty keyboard protocol, rcmd
+    turns it on - and an Esc is an Esc at once, with no prefix to wait
+    out - and turns it off again on the way out."""
+    root, play, home = sandbox()
+    s = Session(play, home, env={"TERM": "xterm-kitty"}, kitty=True)
+    check("kittykeys: the flags are pushed", b"\x1b[>1u" in s.buf, repr(s.buf[-300:]))
+    s.send(F7, wait=STEP)
+    check("kittykeys: a dialog is up", "Create directory" in s.screen(), s.screen())
+    s.send(b"\x1b[27u", wait=0.2, settle=0.1)   # Esc, as kitty sends it
+    scr = s.screen()
+    check("kittykeys: Esc closed it at once", "Create directory" not in scr
+          and "ESC-" not in scr, scr)
+    s.quit()
+    check("kittykeys: and popped on the way out", b"\x1b[<1u" in s.buf or b"\x1b[<u" in s.buf,
+          repr(s.buf[-300:]))
+    shutil.rmtree(root)
+
+    # a terminal that does not answer is never waited on
+    root, play, home = sandbox()
+    s = Session(play, home, env={"TERM": "xterm-kitty"})
+    check("kittykeys: no answer, no flags", b"\x1b[>1u" not in s.buf)
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_uservfs():
+    """PLAN5 S7: a [[vfs]] rule makes a kind of file enterable, read
+    through a list command and a copyout command - mc's extfs."""
+    root, play, home = sandbox()
+    cfg = os.path.join(home, ".config", "rcmd", "config.toml")
+    os.makedirs(os.path.dirname(cfg), exist_ok=True)
+    open(cfg, "w").write(
+        "[[vfs]]\n"
+        "match = \"*.box\"\n"
+        "list = \"cat %f\"\n"
+        "copyout = \"printf 'member %p' > %t\"\n")
+    open(os.path.join(play, "thing.box"), "w").write(
+        "-rw-r--r-- 1 u g 20 2024-01-01 00:00 inner/one.txt\n"
+        "-rw-r--r-- 1 u g 9 Jan 01 2024 top.txt\n")
+    s = Session(play, home)
+    s.send(b"\x13thing\r", wait=STEP)
+    s.send(b"\r", wait=STEP * 2)
+    scr = s.screen()
+    check("uservfs: Enter goes into the file",
+          "inner" in scr and "top.txt" in scr and "thing.box" in scr, scr)
+    s.send(b"\x13inner\r", wait=STEP)
+    s.send(b"\r", wait=STEP)
+    check("uservfs: and into its directories", "one.txt" in s.screen(), s.screen())
+    s.send(b"\x13one\r", wait=STEP)
+    s.send(F3, wait=STEP * 2)
+    check("uservfs: F3 reads a member through copyout",
+          "member inner/one.txt" in s.screen(), s.screen())
+    s.send(b"q", wait=STEP)
+    s.send(HOME_K + b"\r", wait=STEP)          # .. in inner
+    s.send(HOME_K + b"\r", wait=STEP)          # .. at the top: back out
+    check("uservfs: .. at the top comes back out", "Modify time" in s.screen()
+          and "top.txt" not in s.screen(), s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_connections():
+    """PLAN5 S7: saved connections, with the password in the keyring -
+    here a stand-in secret-tool - and never in rcmd's own files."""
+    root, play, home = sandbox()
+    bindir = os.path.join(root, "bin")
+    os.makedirs(bindir)
+    fake = os.path.join(bindir, "secret-tool")
+    open(fake, "w").write("""#!/bin/sh
+dir="$HOME/.fake-keyring"; mkdir -p "$dir"
+for a; do last="$a"; done
+f="$dir/$(printf %s "$last" | tr '/:@' '___')"
+case "$1" in
+  store) cat > "$f" ;;
+  lookup) [ -f "$f" ] && cat "$f" || exit 1 ;;
+  clear) rm -f "$f" ;;
+esac
+""")
+    os.chmod(fake, 0o755)
+    remote_dir = os.path.join(root, "remote")
+    os.makedirs(remote_dir)
+    open(os.path.join(remote_dir, "on-the-server.txt"), "w").write("x\n")
+    server = subprocess.Popen(
+        ["python3", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "ftp_server.py"), remote_dir],
+        stdout=subprocess.PIPE,
+    )
+    try:
+        port = server.stdout.readline().decode().split()[1]
+        url = f"ftp://tester@127.0.0.1:{port}/"
+        env = {"PATH": bindir + ":" + os.environ["PATH"]}
+        renv = dict(os.environ, HOME=home, XDG_RUNTIME_DIR=home)
+        renv.pop("XDG_CONFIG_HOME", None)
+        s = Session(play, home, env=env)
+        subprocess.run([BIN, "--remote", "action connections"], env=renv, timeout=10)
+        check("connections: the list opens", wait_for(s, "Connections"), s.screen())
+        s.send(INSERT, wait=STEP)
+        s.send(b"\x15" + f"srv {url}".encode() + b"\r", wait=STEP)
+        check("connections: saved under its name", "srv" in s.screen(), s.screen())
+        s.send(b"k", wait=STEP)
+        check("connections: k has the keyring keep its password",
+              "[keyring]" in s.screen(), s.screen())
+        s.send(b"\r", wait=STEP * 2)
+        check("connections: the first time, it asks",
+              wait_for(s, "kept in the keyring"), s.screen())
+        s.send(b"secret\r", wait=STEP)
+        check("connections: connected", wait_for(s, "on-the-server.txt"), s.screen())
+        check("connections: and the keyring has it",
+              "keyring keeps the password" in s.screen(), s.screen())
+        s.quit()
+        state = open(os.path.join(home, ".config", "rcmd", "state.toml")).read() \
+            if os.path.exists(os.path.join(home, ".config", "rcmd", "state.toml")) else ""
+        state += "".join(open(os.path.join(dp, f)).read()
+                         for dp, _, fs in os.walk(os.path.join(home, ".local"))
+                         for f in fs if f.endswith(".toml"))
+        check("connections: the password is in no file of rcmd's",
+              "srv" in state and "secret" not in state, state[:400])
+
+        s = Session(play, home, env=env)
+        subprocess.run([BIN, "--remote", "action connections"], env=renv, timeout=10)
+        wait_for(s, "Connections")
+        s.send(b"\r", wait=STEP * 2)
+        check("connections: the next time, the keyring answers",
+              wait_for(s, "on-the-server.txt") and "password" not in s.screen().lower(),
+              s.screen())
+        s.quit()
+    finally:
+        server.terminate()
+        server.wait()
     shutil.rmtree(root)
 
 
@@ -6607,6 +6875,9 @@ def main():
         test_archive_write,
         test_pack,
         test_undo,
+        test_palette,
+        test_uservfs,
+        test_kittykeys,
         test_trash,
         test_sync,
         test_syncdeep,
@@ -6617,11 +6888,13 @@ def main():
         test_wipeapply,
         test_panelconveniences,
         test_remote,
+        test_protocol,
         test_filtersets,
         test_selectsize,
         test_visits,
         test_restore_other_dir,
         test_ftp,
+        test_connections,
         test_find,
         test_compare,
         test_watch,
@@ -6689,6 +6962,7 @@ def main():
         test_subshell,
         test_sftp,
         test_fish,
+        test_shellpanel,
         test_sftp_auth,
         test_scale,
     ):

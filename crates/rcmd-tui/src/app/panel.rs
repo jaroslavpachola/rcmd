@@ -487,7 +487,7 @@ impl App {
             Action::Shell => self.pending_exec = Some(Exec::Shell),
             Action::SftpLink => {
                 self.dialog = Some(Dialog::Input(InputDialog::new(
-                    " Remote link (sftp:// fish:// ftp://[user@]host[/path]) ",
+                    " Remote link (sftp:// fish:// ftp:// docker:// k8s:// adb:// sudo://) ",
                     "sftp://",
                     InputAction::SftpConnect,
                 )));
@@ -601,6 +601,8 @@ impl App {
             Action::JobReport => self.show_job_report(),
             Action::Trash => self.connect_remote(rcmd_core::trashcan::PREFIX),
             Action::DiffHead => self.open_diff_head(),
+            Action::Palette => self.open_palette(),
+            Action::Connections => self.open_connections(),
             Action::HotlistAdd => {
                 let panel = &self.panels[self.active];
                 let path = match panel.is_remote() {
@@ -768,6 +770,9 @@ impl App {
     /// first matching glob wins, case-insensitive). The `enter` keymap
     /// action (lynx-motion Right) stays dirs-only on purpose.
     pub(super) fn enter_or_open(&mut self) {
+        if self.enter_user_vfs() {
+            return;
+        }
         match self.panels[self.active].enter() {
             Ok(true) => return,
             Ok(false) => {}
@@ -1769,7 +1774,9 @@ impl App {
         // a remote destination (must match before the zip:// syntax -
         // a URL also contains "://")
         if is_remote_url(value) {
-            let parsed = if value.starts_with("ftp://") {
+            let parsed = if let Some(url) = fish::ShellUrl::parse(value) {
+                Some((url.prefix(), value.to_string(), url.path))
+            } else if value.starts_with("ftp://") {
                 FtpUrl::parse(value)
                     .map(FtpUrl::with_netrc)
                     .map(|url| (url.prefix(), url.display(), url.path))
@@ -2162,6 +2169,33 @@ impl App {
             skips: Vec::new(),
             checking: false,
         });
+    }
+
+    /// Enter on a file a `[[vfs]]` rule claims: into it, like an
+    /// archive. False = no rule has it, and Enter goes on as usual.
+    fn enter_user_vfs(&mut self) -> bool {
+        let panel = &self.panels[self.active];
+        if !panel.is_local() {
+            return false;
+        }
+        let Some(entry) = panel.selected().filter(|e| !e.is_parent() && !e.is_dir()) else {
+            return false;
+        };
+        let name = entry.name.to_string_lossy().into_owned();
+        let Some(rule) = self.config.vfs.iter().find(|r| r.matches(&name)) else {
+            return false;
+        };
+        let Some(rule) = rule.rule() else {
+            self.status = Some(" a [[vfs]] rule needs a script, or both list and copyout ".into());
+            return true;
+        };
+        let path = panel.cwd.join(&entry.name);
+        let opened = rcmd_core::extfs::ExtFs::open(&path, &rule)
+            .and_then(|fs| self.panels[self.active].enter_provider(Arc::new(fs), path));
+        if let Err(err) = opened {
+            self.status = Some(format!(" {name}: {err} "));
+        }
+        true
     }
 
     /// Resolve user input to a normalized path: `~` expands to $HOME,

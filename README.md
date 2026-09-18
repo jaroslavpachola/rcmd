@@ -173,7 +173,8 @@ usage: rcmd [OPTIONS] [DIR1 [DIR2]]
   -d, --nomouse       no mouse
   -u / -U             subshell off / on for this run
   -l, --ftplog FILE   log the FTP/fish dialogue to FILE
-      --remote LINE   hand LINE to a running rcmd and exit
+      --remote CMD... hand the rest of the line to a running rcmd and exit
+                      (--to PID before it, where several are running)
       --to PID        which one, when several are running
 ```
 
@@ -917,12 +918,46 @@ and reused: one login covers a whole session of listing and copying.
 **rclone**: `cd rclone://<remote>[/path]` puts a panel on anything
 rclone reaches - S3, Google Drive, Dropbox, B2, WebDAV, Swift and the
 forty-odd others - using the config rclone already has on that machine.
-Listing, F3 and F5 **out** work; the panel is read-only, because
-writing back is rclone's `copyto` and belongs with the progress
-reporting rather than with the listing. One integration instead of
+Listing, F3, F5 both ways, F6, F7 and F8 work: an upload streams into
+`rclone rcat`, and `mkdir`, `deletefile`, `rmdir` and `moveto` do the
+rest. A cloud store has no modes, owners or symlinks, and says so. One
+integration instead of
 forty protocols is the whole argument: `rclone lsf` and `rclone cat`
 are a smaller thing to depend on, and a much smaller thing to get
 wrong. Without rclone installed, opening one says so.
+
+**Containers, pods, phones, root**: `docker://box/path`,
+`podman://box/path`, `k8s://[namespace:]pod/path`, `adb://[serial]/path`
+and `sudo://[user]/path` put a panel on a shell that a local command
+reaches - `docker exec -i`, `kubectl exec -i`, `adb shell`, `sudo -n`.
+They are FISH without the SSH: the same small scripts, run through that
+command instead of over a connection, so everything a FISH panel does
+works here - F3, F5 both ways, F6, F7, F8, chmod. `sudo://` never stops
+to ask for a password on a screen rcmd is drawing; run `sudo -v` first.
+
+**Your own filesystems**, mc's extfs: a `[[vfs]]` rule makes a kind of
+file enterable like an archive. `list` prints what is in it, `ls -l`
+style with the path inside as the name, and `copyout` writes one member
+out (`%f` the file, `%p` the member, `%t` where to write it). mc's own
+helper scripts work as they are, by name:
+
+```toml
+[[vfs]]
+match = "*.deb"
+script = "/usr/lib/mc/extfs.d/deb"      # = deb list %f, deb copyout %f %p %t
+
+[[vfs]]
+match = "*.box"
+list = "boxtool ls -l %f"
+copyout = "boxtool cat %f %p > %t"
+```
+
+**Saved connections** (F9 → Command → Connections): a name for a URL,
+its start directory in it, and a key file to try first. Insert adds
+one, Enter connects, F8 forgets it. **k** has the desktop keyring keep
+its password - `secret-tool` on Linux, the login keychain on a Mac -
+and the next login needs no typing. rcmd never writes a password into a
+file of its own: the keyring, or nowhere.
 
 **Ctrl+X A** lists everywhere a panel can go: the open archives and
 live SFTP connections, with the panel each one belongs to, and under
@@ -1095,16 +1130,27 @@ hotlist stores sftp:// entries, so `Ctrl+\` + Enter reconnects.
 ## Driving rcmd from outside
 
 Every instance listens on a unix socket of its own, and `rcmd --remote`
-hands it one line:
+hands it the rest of its command line:
 
 ```sh
-rcmd --remote 'cd /var/log'        # move the active panel
+rcmd --remote cd /var/log          # move the active panel
 rcmd --remote 'select *.log'       # mark by mask (prints how many)
-rcmd --remote 'action sort-size'   # any action, by the name a key would bind
+rcmd --remote action sort-size     # any action, by the name a key would bind
 rcmd --remote pwd                  # ...and the questions a script asks
 rcmd --remote cursor               # the file under the cursor
-rcmd --remote marked               # what is marked, space separated
+rcmd --remote marked               # what is marked, one path a line
+rcmd --remote marked -0            # ...or NUL-separated, for xargs -0
+find . -name '*.orig' | rcmd --remote panelize leftovers   # a list as the panel
+rcmd --remote prompt 'Tag name?'   # ask the person at the panels; prints the answer
+printf 'a\nb\n' | rcmd --remote menu Which   # a list to pick from; prints the pick
+rcmd --remote subscribe cd cursor  # a line per change, for as long as it runs
 ```
+
+`prompt` and `menu` wait for as long as the person takes, and a cancel
+is an error exit, so a script can stop there. `subscribe` streams `cd
+PATH`, `cursor NAME` and `marks N` lines - any of the three, or all by
+default - which is how a preview pane or a status bar outside rcmd
+follows it.
 
 The vocabulary is small on purpose, because `action` is the whole
 keymap: anything rcmd can be told to do by a key can be asked for by
@@ -1179,6 +1225,7 @@ show_cmdline = true        # the command line
 show_keybar = true         # the F1..F10 bar along the bottom
 confirm_delete = true      # ask before F8 / Shift+F8
 notify_done = true         # a long or background job rings when it is done
+kitty_keyboard = true      # the kitty keyboard protocol where the terminal has it
 confirm_overwrite = true   # ask before overwriting during copy/move
 confirm_exit = false       # ask before F10 quits (MC asks; rcmd does not)
 confirm_hotlist_delete = true   # ask before dropping a hotlist entry

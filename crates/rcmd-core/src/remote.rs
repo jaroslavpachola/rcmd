@@ -54,6 +54,21 @@ pub struct ConnectHandle {
 /// only the start directory is resolved and listed. The protocol does
 /// not come into it - whatever dialled the connection, going back to it
 /// is the same two steps.
+/// Every scheme a panel can be on that is not the local filesystem:
+/// the one list the command line, the hotlist, the copy form and the
+/// connection code all ask.
+pub const SCHEMES: &[&str] = &[
+    "sftp", "ftp", "fish", "rclone", "trash", "docker", "podman", "k8s", "adb", "sudo",
+];
+
+/// Whether `target` is a URL for one of [`SCHEMES`] - and not an
+/// archive's `name.zip://inside`, which has a path before its `://`.
+pub fn is_remote_url(target: &str) -> bool {
+    target
+        .split_once("://")
+        .is_some_and(|(scheme, _)| SCHEMES.contains(&scheme))
+}
+
 pub fn spawn_reuse(fs: Arc<dyn RemoteFs>, path: PathBuf, host: String) -> ConnectHandle {
     let (event_tx, event_rx) = std::sync::mpsc::channel();
     let (reply_tx, _reply_rx) = std::sync::mpsc::channel();

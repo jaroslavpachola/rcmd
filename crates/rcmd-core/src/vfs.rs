@@ -36,6 +36,12 @@ pub trait FsProvider: Send + Sync {
     fn writer(&self) -> Option<&dyn FsWrite> {
         None
     }
+    /// The same thing read again from scratch - what a reload of a
+    /// panel inside an archive does, so members added since show up.
+    /// `None` for a provider that is always current.
+    fn reopen(&self) -> Option<io::Result<std::sync::Arc<dyn FsProvider>>> {
+        None
+    }
 }
 
 /// Write operations. Failures are ordinary `io::Error`s so the job

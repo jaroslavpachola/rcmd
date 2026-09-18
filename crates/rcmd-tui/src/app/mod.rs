@@ -146,6 +146,8 @@ impl InputAction {
             InputAction::Chown { .. } => "chown",
             InputAction::HotlistLabel { .. } => "label",
             InputAction::MacroPrompt { .. } => return None,
+            InputAction::RemoteAnswer(_) => return None,
+            InputAction::SaveConnection => "connection",
         })
     }
 }
@@ -164,6 +166,11 @@ pub enum Expanded {
 }
 
 pub enum InputAction {
+    /// A new saved connection: its name and URL, and a key if any.
+    SaveConnection,
+    /// `rcmd --remote prompt QUESTION`: the answer goes back to the
+    /// script that asked; closing the dialog unanswered is its cancel.
+    RemoteAnswer(std::sync::mpsc::Sender<String>),
     /// A `%{question}` from a command template: the answer joins
     /// `before` to what expanding `rest` produces.
     MacroPrompt {
@@ -215,6 +222,12 @@ pub struct ConnectState {
     handle: ConnectHandle,
     panel: usize,
     pub ask: Option<ConnectAsk>,
+    /// A saved connection whose password the keyring keeps: the
+    /// keyring's name for it, whether the keyring was already asked,
+    /// and the password typed, to keep once the login works.
+    pub keyring: Option<String>,
+    keyring_tried: bool,
+    typed: Option<String>,
 }
 
 pub enum ConnectAsk {
@@ -823,6 +836,14 @@ impl ChmodDialog {
     }
 }
 
+/// A list a script raised with `menu`, and where the pick goes.
+pub struct RemoteMenu {
+    pub title: String,
+    pub items: Vec<String>,
+    pub selected: usize,
+    pub reply: std::sync::mpsc::Sender<String>,
+}
+
 /// Something `C-x u` can put back.
 #[derive(Debug, Clone)]
 pub enum UndoStep {
@@ -1305,6 +1326,13 @@ pub enum Dialog {
     /// C-x u: what can be undone, newest first; the payload is the
     /// selected row.
     Undo(usize),
+    /// Alt+X: every action by name.
+    Palette(Box<PaletteDialog>),
+    /// `rcmd --remote menu TITLE`: a script's list to pick from.
+    RemoteMenu(Box<RemoteMenu>),
+    /// F9 > Command > Connections: the saved ones; the payload is the
+    /// selected row.
+    Connections(usize),
     /// C-x c: the chmod bit matrix.
     Chmod(Box<ChmodDialog>),
     /// C-x e: the chattr flags.
@@ -2231,12 +2259,14 @@ mod editor;
 mod exec;
 mod focus;
 mod fuzzy;
+mod palette;
 mod panel;
 mod search;
 mod viewer;
 
 pub use diffview::{DiffPrompt, DiffSide, DiffSource, DiffView};
 pub use exec::{SubshellSession, SubshellStep};
+pub use palette::{PaletteDialog, PaletteRow};
 
 const EDIT_FILE_MENU: &[EditMenuEntry] = &[
     Some(("&Save", "F2", EditMenuAction::Key(EA::Save))),
@@ -2378,6 +2408,56 @@ impl FocusedLine<'_> {
             FocusedLine::Plain(value, cursor) => (value, cursor),
         }
     }
+}
+
+/// The kitty keyboard protocol is on: the terminal said it has it, and
+/// the flags were pushed. Esc is then an Esc and nothing else.
+static KITTY_KEYS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn kitty_keys() -> bool {
+    KITTY_KEYS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Ask for the kitty keyboard protocol where the terminal is one that
+/// might have it, and turn it on when it says it does: Esc stops being
+/// the first byte of every other key, Ctrl+I stops being Tab, and the
+/// Ctrl-digits arrive. Only asked of terminals known to answer - one
+/// that never does would cost two seconds at every start.
+pub fn start_kitty_keys() {
+    let term = std::env::var("TERM").unwrap_or_default();
+    let program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+    let known = term == "xterm-kitty"
+        || term.starts_with("foot")
+        || term == "alacritty"
+        || term == "xterm-ghostty"
+        || matches!(program.as_str(), "WezTerm" | "ghostty");
+    if known
+        && std::env::var_os("TMUX").is_none()
+        && ratatui::crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
+    {
+        KITTY_KEYS.store(true, std::sync::atomic::Ordering::Relaxed);
+        set_keyboard_protocol(true);
+    }
+}
+
+/// The kitty flags pushed or popped - popped whenever the terminal goes
+/// to a shell or a program, which want the keys the old way.
+pub fn set_keyboard_protocol(on: bool) {
+    use ratatui::crossterm::event::{
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    };
+    if !kitty_keys() {
+        return;
+    }
+    let mut out = std::io::stdout();
+    let _ = if on {
+        ratatui::crossterm::execute!(
+            out,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )
+    } else {
+        ratatui::crossterm::execute!(out, PopKeyboardEnhancementFlags)
+    };
 }
 
 /// Bracketed paste on or off. On, a paste arrives as one event rather
@@ -2763,6 +2843,10 @@ pub enum Action {
     Trash,
     /// The cursor file against the last commit's version of it.
     DiffHead,
+    /// Alt+X: every action, found by a few letters of its name.
+    Palette,
+    /// The saved connections.
+    Connections,
     /// M-,: panels side by side, or one above the other.
     ToggleSplit,
     /// mc's "Case sensitive" sort switch.
@@ -2876,6 +2960,8 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Synchroni&ze directories...", "", Action::Sync)),
             Some(("Compare fi&les", "", Action::CompareFiles)),
             Some(("Diff against HEAD", "", Action::DiffHead)),
+            Some(("Command palette...", "M-x", Action::Palette)),
+            Some(("Connections...", "", Action::Connections)),
             Some(("&Open shell", "C-o", Action::Shell)),
             Some(("S&wap panels", "C-u", Action::SwapPanels)),
             Some(("Toggle hidde&n files", "M-.", Action::ToggleHidden)),
@@ -3297,6 +3383,9 @@ pub struct App {
     remote_edit: Option<RemoteEdit>,
     du: Option<DuJob>,
     compare: Option<CompareState>,
+    /// The key a saved connection names, handed to the connect it
+    /// starts.
+    pending_key: Option<PathBuf>,
     /// Synchronize's tree comparison, while it runs.
     sync_scan: Option<rcmd_core::sync::ScanHandle>,
     /// The plan F3 left for a diff, to come back to when it closes.
@@ -3316,6 +3405,10 @@ pub struct App {
     /// The socket other processes drive this instance through; None
     /// when it could not be opened, which is not fatal.
     remote: Option<crate::remote::Server>,
+    /// Scripts listening for what the panels do, each with the kinds
+    /// of event it asked for; and what they were last told.
+    subscribers: Vec<(Vec<String>, std::sync::mpsc::Sender<String>)>,
+    told: (String, String, usize),
     /// Where the panels have been, this session and every one before:
     /// the hotlist's recent half is ranked by it. Merged back into the
     /// state file on the way out.
@@ -3516,10 +3609,13 @@ impl App {
             hidden: None,
             marks_before: [None, None],
             remote: None,
+            subscribers: Vec::new(),
+            told: Default::default(),
             visits: state::load().0.visits,
             visited: [String::new(), String::new()],
             compare_then_sync: false,
             sync_scan: None,
+            pending_key: None,
             sync_return: None,
             screens: Vec::new(),
             current: None,
@@ -4247,7 +4343,9 @@ impl App {
                     return;
                 }
             }
-        } else if key.code == KeyCode::Esc {
+        } else if key.code == KeyCode::Esc && !kitty_keys() {
+            // with the kitty protocol an Esc is only ever an Esc, and
+            // the F-keys arrive as themselves: no prefix to wait for
             self.esc_at = Some(Instant::now());
             self.status = Some(" ESC-  (1..0 = F1..F10, key = Alt+key, Esc = Esc) ".into());
             return;
@@ -4963,28 +5061,72 @@ impl App {
 
     /// Whatever arrived on the socket since the last turn of the loop.
     fn drain_remote(&mut self) {
-        let mut lines = Vec::new();
+        let mut requests = Vec::new();
         if let Some(server) = &self.remote {
             while let Ok(request) = server.requests.try_recv() {
-                lines.push(request);
+                requests.push(request);
             }
         }
-        for request in lines {
-            let answer = self.run_remote(&request.line);
-            let _ = request.reply.send(answer);
+        for request in requests {
+            let reply = request.reply.clone();
+            if let Some(answer) = self.run_remote(request) {
+                let _ = reply.send(answer);
+            }
             self.dirty = true;
         }
+        self.tell_subscribers();
     }
 
-    /// One line from the socket. The vocabulary is deliberately small,
-    /// because the last of them is the whole keymap: anything rcmd can
-    /// be told to do by a key can be asked for by name.
-    fn run_remote(&mut self, line: &str) -> String {
+    /// Tell each subscriber what changed since the last time: where the
+    /// active panel is, what the cursor is on, how many are marked.
+    fn tell_subscribers(&mut self) {
+        if self.subscribers.is_empty() {
+            return;
+        }
+        let panel = &self.panels[self.active];
+        let now = (
+            panel.display_path(),
+            panel
+                .selected()
+                .map(|e| panel.name_of(e))
+                .unwrap_or_default(),
+            panel.marked.len(),
+        );
+        if now == self.told {
+            return;
+        }
+        let mut events = Vec::new();
+        if now.0 != self.told.0 {
+            events.push(("cd", format!("cd {}", now.0)));
+        }
+        if now.1 != self.told.1 || now.0 != self.told.0 {
+            events.push(("cursor", format!("cursor {}", now.1)));
+        }
+        if now.2 != self.told.2 {
+            events.push(("marks", format!("marks {}", now.2)));
+        }
+        self.told = now;
+        // a subscriber that has gone away is found out by the send
+        self.subscribers.retain(|(kinds, tx)| {
+            events
+                .iter()
+                .filter(|(kind, _)| kinds.iter().any(|k| k == kind))
+                .all(|(_, line)| tx.send(line.clone()).is_ok())
+        });
+    }
+
+    /// One request from the socket. The vocabulary is deliberately
+    /// small, because `action` is the whole keymap: anything rcmd can be
+    /// told to do by a key can be asked for by name. `None` = the answer
+    /// comes later - from the person a prompt or a menu asks, or as a
+    /// stream of events.
+    fn run_remote(&mut self, request: crate::remote::Request) -> Option<String> {
+        let line = request.line.as_str();
         let (verb, rest) = match line.split_once(char::is_whitespace) {
             Some((verb, rest)) => (verb, rest.trim()),
             None => (line, ""),
         };
-        match verb {
+        Some(match verb {
             "" => "error: nothing to do".into(),
             "pwd" => self.panels[self.active].display_path(),
             "other" => self.panels[self.active ^ 1].display_path(),
@@ -4992,13 +5134,19 @@ impl App {
                 .selected()
                 .map(|entry| entry.name.to_string_lossy().into_owned())
                 .unwrap_or_default(),
-            "marked" => self.panels[self.active]
-                .targets()
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join("\n")
-                .replace('\n', " "),
+            // one path a line, or with -0 one path a NUL: a name with a
+            // space in it is still one name
+            "marked" => {
+                let paths: Vec<String> = self.panels[self.active]
+                    .targets()
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect();
+                match rest {
+                    "-0" => paths.iter().map(|p| format!("{p}\0")).collect(),
+                    _ => paths.join("\n"),
+                }
+            }
             "cd" if !rest.is_empty() => {
                 self.navigate(rest);
                 "ok".into()
@@ -5024,11 +5172,91 @@ impl App {
                 self.status = Some(format!(" {rest} "));
                 "ok".into()
             }
+            // a list of paths, one a line, becomes the panel's listing
+            "panelize" => {
+                let panel = &mut self.panels[self.active];
+                if !panel.is_local() {
+                    return Some("error: panelize needs a local panel".into());
+                }
+                let cwd = panel.cwd.clone();
+                let entries: Vec<_> = request
+                    .data
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .filter_map(|l| {
+                        let path = cwd.join(l);
+                        let mut entry = rcmd_core::entry::stat(&path).ok()?;
+                        entry.name = path
+                            .strip_prefix(&cwd)
+                            .map(|rel| rel.as_os_str().to_os_string())
+                            .unwrap_or_else(|_| path.clone().into_os_string());
+                        Some(entry)
+                    })
+                    .collect();
+                let count = entries.len();
+                let label = if rest.is_empty() {
+                    "from a script"
+                } else {
+                    rest
+                };
+                panel.panelize(entries, label.to_string());
+                format!("{count}")
+            }
+            "prompt" | "menu" if self.dialog.is_some() || self.fg_job().is_some() => {
+                "error: rcmd is busy with a dialog".into()
+            }
+            "prompt" => {
+                let question = if rest.is_empty() { "Answer" } else { rest };
+                self.dialog = Some(Dialog::Input(InputDialog::new(
+                    format!(" {question} "),
+                    "",
+                    InputAction::RemoteAnswer(request.reply),
+                )));
+                return None;
+            }
+            "menu" => {
+                let items: Vec<String> = request
+                    .data
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .map(str::to_string)
+                    .collect();
+                if items.is_empty() {
+                    return Some("error: a menu needs its items on stdin, one a line".into());
+                }
+                self.dialog = Some(Dialog::RemoteMenu(Box::new(RemoteMenu {
+                    title: if rest.is_empty() {
+                        "Pick one".into()
+                    } else {
+                        rest.into()
+                    },
+                    items,
+                    selected: 0,
+                    reply: request.reply,
+                })));
+                return None;
+            }
+            "subscribe" => {
+                let mut kinds: Vec<String> = rest.split_whitespace().map(str::to_string).collect();
+                if kinds.is_empty() {
+                    kinds = vec!["cd".into(), "cursor".into(), "marks".into()];
+                }
+                if let Some(bad) = kinds
+                    .iter()
+                    .find(|k| !["cd", "cursor", "marks"].contains(&k.as_str()))
+                {
+                    return Some(format!("error: {bad} is not one of cd, cursor, marks"));
+                }
+                self.subscribers.push((kinds, request.reply));
+                // what it would have heard had it been listening all along
+                self.told = Default::default();
+                return None;
+            }
             other => format!(
-                "error: {other} is not one of cd, select, unselect, action, \
-                 status, pwd, other, cursor, marked"
+                "error: {other} is not one of cd, select, unselect, action, status, \
+                 pwd, other, cursor, marked, panelize, prompt, menu, subscribe"
             ),
-        }
+        })
     }
 
     /// Note where the panels are now. A directory counts once per
@@ -5887,9 +6115,7 @@ fn notice_escape(text: &str) -> String {
 
 /// A location that lives on a server rather than on this machine.
 fn is_remote_url(target: &str) -> bool {
-    ["sftp://", "ftp://", "fish://", "rclone://", "trash://"]
-        .iter()
-        .any(|scheme| target.starts_with(scheme))
+    remote::is_remote_url(target)
 }
 
 fn split_vfs_dest(input: &str) -> Option<(PathBuf, PathBuf)> {

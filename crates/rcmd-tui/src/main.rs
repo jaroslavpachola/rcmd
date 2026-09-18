@@ -7,7 +7,8 @@ use rcmd_tui::{app, config, mcimport, remote, state, ui};
 
 struct Args {
     printwd: Option<PathBuf>,
-    /// `--remote LINE`: hand the line to a running instance and exit.
+    /// `--remote CMD...`: hand the rest of the line to a running
+    /// instance and exit.
     remote: Option<String>,
     /// `--to PID`: which instance, when there is more than one.
     remote_to: Option<u32>,
@@ -99,6 +100,9 @@ fn main() -> Result<()> {
         app::set_mouse_capture(true);
     }
     app::set_bracketed_paste(true);
+    if cfg.kitty_keyboard {
+        app::start_kitty_keys();
+    }
     let result = run(args, cfg, warnings, &mut terminal);
     // after run(): the App, and the subshell in it, are gone by now
     rcmd_tui::scratch::cleanup();
@@ -106,6 +110,7 @@ fn main() -> Result<()> {
     // (disabling an inactive capture is a harmless escape sequence).
     app::set_mouse_capture(false);
     app::set_bracketed_paste(false);
+    app::set_keyboard_protocol(false);
     if title {
         print!("\x1b[23;0t");
     }
@@ -208,13 +213,15 @@ fn parse_args() -> Result<Args> {
         };
         match arg.to_str() {
             Some("-P") | Some("--printwd") => printwd = Some(next("-P")?),
+            // the rest of the line is the command: `--remote prompt
+            // "Your name?"` as well as `--remote 'cd /tmp'`
             Some("--remote") => {
-                remote = Some(
-                    it.next()
-                        .context("--remote requires a command")?
-                        .to_string_lossy()
-                        .into_owned(),
-                )
+                let words: Vec<String> = it
+                    .by_ref()
+                    .map(|w| w.to_string_lossy().into_owned())
+                    .collect();
+                anyhow::ensure!(!words.is_empty(), "--remote requires a command");
+                remote = Some(words.join(" "));
             }
             Some("--to") => {
                 remote_to = Some(
@@ -328,7 +335,8 @@ usage: rcmd [OPTIONS] [DIR1 [DIR2]]
   -u, --nosubshell    no persistent subshell
   -U, --subshell      persistent subshell
   -l, --ftplog FILE   log the FTP/fish dialogue to FILE
-      --remote LINE   hand LINE to a running rcmd and exit
+      --remote CMD... hand the rest of the line to a running rcmd and exit
+                      (--to PID before it, where several are running)
       --to PID        which one, when several are running
       --print-config  print every setting at its default, commented,
                       as a config.toml to start from

@@ -669,6 +669,35 @@ impl App {
                     _ => self.dialog = Some(Dialog::Sync(d)),
                 }
             }
+            Dialog::Palette(d) => self.on_palette_key(d, key),
+            Dialog::Connections(row) => self.on_connections_key(row, key),
+            Dialog::RemoteMenu(mut d) => {
+                let last = d.items.len().saturating_sub(1);
+                match key.code {
+                    // dropping the reply unanswered is the script's cancel
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => {
+                        let _ = d.reply.send(d.items[d.selected].clone());
+                    }
+                    KeyCode::Up => {
+                        d.selected = d.selected.saturating_sub(1);
+                        self.dialog = Some(Dialog::RemoteMenu(d));
+                    }
+                    KeyCode::Down => {
+                        d.selected = (d.selected + 1).min(last);
+                        self.dialog = Some(Dialog::RemoteMenu(d));
+                    }
+                    KeyCode::Home => {
+                        d.selected = 0;
+                        self.dialog = Some(Dialog::RemoteMenu(d));
+                    }
+                    KeyCode::End => {
+                        d.selected = last;
+                        self.dialog = Some(Dialog::RemoteMenu(d));
+                    }
+                    _ => self.dialog = Some(Dialog::RemoteMenu(d)),
+                }
+            }
             Dialog::Undo(mut row) => {
                 // newest first on screen, newest last on the stack
                 let last = self.undo_rows().len().saturating_sub(1);
@@ -1574,6 +1603,11 @@ impl App {
     }
 
     fn submit_input(&mut self, dialog: InputDialog) {
+        // a script's question is answered even when the answer is empty
+        if let InputAction::RemoteAnswer(reply) = &dialog.action {
+            let _ = reply.send(dialog.field.value.clone());
+            return;
+        }
         let value = dialog.field.value.trim().to_string();
         if value.is_empty() {
             return;
@@ -1663,6 +1697,9 @@ impl App {
                 rest,
                 quiet,
             } => self.finish_macro(&value, before, rest, quiet),
+            // answered above, before an empty answer could be dropped
+            InputAction::RemoteAnswer(_) => {}
+            InputAction::SaveConnection => self.save_connection(&value),
             InputAction::Chown { paths } => {
                 let remote = self.panels[self.active].is_remote();
                 match parse_owner_spec(value.trim(), remote) {

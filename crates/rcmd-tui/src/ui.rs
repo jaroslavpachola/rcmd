@@ -802,15 +802,24 @@ const HELP_TEXT: &[&str] = &[
     "  C-x r           what the last job skipped, and why",
     "  C-x j           jobs list: Enter foregrounds, p pauses, c cancels; the",
     "                  status line shows aggregate background progress",
-    "  rcmd --remote 'cd /tmp' drives a running instance from a script:",
+    "  rcmd --remote cd /tmp drives a running instance from a script:",
     "                  cd, select, unselect, status, any action by name,",
-    "                  and pwd / other / cursor / marked to ask where it",
-    "                  is. A command rcmd starts gets RCMD_SOCKET, so it",
-    "                  needs no --to PID",
+    "                  pwd / other / cursor / marked to ask where it is,",
+    "                  panelize (a list on stdin), prompt and menu (the",
+    "                  person answers), subscribe (a line per change). A",
+    "                  command rcmd starts gets RCMD_SOCKET: no --to PID",
+    "  M-x             the command palette: every action by a few letters",
+    "                  of its name, with its menu label and its key",
     "  cd rclone://remote[/path]  a panel on anything rclone reaches -",
     "                  S3, Drive, Dropbox, WebDAV and the rest - through",
-    "                  the config rclone already has. Read-only: listing,",
-    "                  F3 and F5 out of it",
+    "                  the config rclone already has, F5 both ways",
+    "  cd docker://box/path  a shell a local command reaches as a panel:",
+    "                  docker, podman, k8s://[ns:]pod, adb://[serial],",
+    "                  sudo://[user] - FISH without the SSH",
+    "  F9>Cmd>Connections  saved ones: Ins adds, Enter connects, F8",
+    "                  forgets, k keeps the password in the keyring",
+    "  [[vfs]] rules   files entered like archives through a list and a",
+    "                  copyout command - mc's extfs scripts work as-is",
     "  C-x a           everywhere a panel can go: the archives and",
     "                  connections the panels are on, and under them",
     "                  what the machine has mounted, with the room left",
@@ -1274,6 +1283,43 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
             Dialog::Jobs(selected) => dialog_rows = draw_jobs(frame, &app.jobs, *selected),
             Dialog::Vfs(d) => draw_vfs(frame, d),
             Dialog::Fuzzy(d) => draw_fuzzy(frame, d),
+            Dialog::Palette(d) => draw_palette(frame, d),
+            Dialog::Connections(selected) => {
+                let saved = app.saved_connections();
+                let rows: Vec<String> = match saved.is_empty() {
+                    true => vec!["(none yet - Insert adds one)".to_string()],
+                    false => saved
+                        .iter()
+                        .rev()
+                        .map(|c| {
+                            format!(
+                                "{:<14} {}{}{}",
+                                c.name,
+                                c.url,
+                                c.key
+                                    .as_deref()
+                                    .map(|k| format!("  key {k}"))
+                                    .unwrap_or_default(),
+                                if c.keyring { "  [keyring]" } else { "" }
+                            )
+                        })
+                        .collect(),
+                };
+                dialog_rows = draw_history(
+                    frame,
+                    " Connections - Enter · Ins add · F8 forget · k keyring ",
+                    &rows,
+                    *selected,
+                    None,
+                )
+            }
+            Dialog::RemoteMenu(d) => {
+                // the history list draws newest first: hand it the items
+                // back to front, and the menu reads top to bottom
+                let items: Vec<String> = d.items.iter().rev().cloned().collect();
+                dialog_rows =
+                    draw_history(frame, &format!(" {} ", d.title), &items, d.selected, None)
+            }
             Dialog::History(selected) => {
                 dialog_rows = draw_history(
                     frame,
@@ -4441,6 +4487,60 @@ fn draw_find_results(frame: &mut Frame, d: &crate::app::FindResults) {
 /// The fuzzy finder: the field on top, the best matches under it with
 /// the letters that made each match lit, and how much of the tree has
 /// been looked at.
+/// Alt+X: the actions matching what is typed, with their menu label and
+/// the key each is on.
+fn draw_palette(frame: &mut Frame, d: &crate::app::PaletteDialog) {
+    let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let area = frame.area();
+    let width = area.width.saturating_sub(8).clamp(30, 96);
+    let height = area.height.saturating_sub(6).clamp(8, 24);
+    let inner = popup(
+        frame,
+        centered(width, height, area),
+        " Command palette ",
+        style,
+    );
+    let line = |y: u16| Rect {
+        x: inner.x + 1,
+        y: inner.y + y,
+        width: inner.width.saturating_sub(2),
+        height: 1,
+    };
+    field_row(frame, line(0), &d.field.value, Some(d.field.cursor));
+    let rows = inner.height.saturating_sub(3) as usize;
+    let first = d.selected.saturating_sub(rows.saturating_sub(1));
+    let w = line(0).width as usize;
+    for (i, &at) in d.shown.iter().skip(first).take(rows).enumerate() {
+        let row = &d.rows[at];
+        let text = format!(
+            "{:<22} {:<34} {}",
+            row.name,
+            fit(&row.label, 34, false),
+            row.keys
+        );
+        let text: String = text.chars().take(w).collect();
+        frame.render_widget(
+            Line::from(format!("{text:<w$}")).style(if first + i == d.selected {
+                sel
+            } else {
+                style
+            }),
+            line(1 + i as u16),
+        );
+    }
+    frame.render_widget(
+        Line::from(format!(
+            "{} of {}   Enter runs it · Esc",
+            d.shown.len(),
+            d.rows.len()
+        ))
+        .centered()
+        .style(style),
+        line(inner.height.saturating_sub(1)),
+    );
+}
+
 fn draw_fuzzy(frame: &mut Frame, d: &crate::app::FuzzyDialog) {
     let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);

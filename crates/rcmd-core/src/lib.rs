@@ -7,6 +7,7 @@ pub mod complete;
 pub mod cpio;
 pub mod diff;
 pub mod entry;
+pub mod extfs;
 pub mod find;
 pub mod fish;
 pub mod fsops;

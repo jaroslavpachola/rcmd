@@ -6,17 +6,18 @@
 //! command-line contract - which is a smaller thing to depend on than
 //! forty protocols, and a much smaller thing to get wrong.
 //!
-//! Read-only: listing, reading and copying *out*. Writing back is a
-//! second question (rclone's own `copyto` answers it) and belongs with
-//! the progress reporting, not with this.
+//! Writing is rclone's too: `rcat` takes a file on its stdin as the
+//! copy streams it, and `mkdir`, `deletefile`, `rmdir` and `moveto` are
+//! the rest of a filesystem. What a cloud store has no notion of - a
+//! mode, an owner, a symlink - says so.
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, SystemTime};
 
 use crate::entry::{Entry, EntryKind};
-use crate::vfs::{FsProvider, RemoteFs};
+use crate::vfs::{FsProvider, FsWrite, RemoteFs};
 
 /// A configured rclone remote, and the panel on it.
 pub struct RcloneFs {
@@ -26,6 +27,8 @@ pub struct RcloneFs {
     /// `rclone://<remote>`, built once because [`RemoteFs::prefix`]
     /// hands out a borrow of it.
     prefix: String,
+    /// The rclone to run: `rclone` from the PATH, or a stand-in.
+    program: String,
 }
 
 /// `rclone://remote/path` - the remote's name, and where in it to open.
@@ -60,7 +63,20 @@ impl RcloneFs {
         RcloneFs {
             remote: remote.to_string(),
             prefix: format!("rclone://{remote}"),
+            program: "rclone".into(),
         }
+    }
+
+    /// The same, run through another program - a test's stand-in.
+    pub fn with_program(remote: &str, program: &str) -> RcloneFs {
+        RcloneFs {
+            program: program.into(),
+            ..RcloneFs::new(remote)
+        }
+    }
+
+    fn command(&self) -> Command {
+        Command::new(&self.program)
     }
 
     /// `remote:path`, which is how rclone names a place. The panel's
@@ -72,7 +88,7 @@ impl RcloneFs {
     }
 
     fn run(&self, args: &[&str]) -> io::Result<String> {
-        let out = Command::new("rclone").args(args).output().map_err(|err| {
+        let out = self.command().args(args).output().map_err(|err| {
             io::Error::new(
                 err.kind(),
                 match err.kind() {
@@ -122,7 +138,8 @@ impl FsProvider for RcloneFs {
     }
 
     fn open_read(&self, path: &Path) -> io::Result<Box<dyn Read + Send>> {
-        let mut child = Command::new("rclone")
+        let mut child = self
+            .command()
             .args(["cat", &self.target(path)])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -138,6 +155,119 @@ impl FsProvider for RcloneFs {
             .take()
             .ok_or_else(|| io::Error::other("rclone gave nothing to read"))?;
         Ok(Box::new(Streamed { child, stdout }))
+    }
+
+    fn writer(&self) -> Option<&dyn FsWrite> {
+        Some(self)
+    }
+}
+
+fn no_such_thing(what: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!("an rclone remote has no {what}"),
+    )
+}
+
+impl FsWrite for RcloneFs {
+    fn mkdir(&self, dir: &Path) -> io::Result<()> {
+        self.run(&["mkdir", &self.target(dir)]).map(drop)
+    }
+
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        self.run(&["deletefile", &self.target(path)]).map(drop)
+    }
+
+    fn remove_dir(&self, dir: &Path) -> io::Result<()> {
+        self.run(&["rmdir", &self.target(dir)]).map(drop)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.run(&["moveto", &self.target(from), &self.target(to)])
+            .map(drop)
+    }
+
+    /// `rclone rcat`, fed as the copy goes; the flush closes its input
+    /// and says how the upload went.
+    fn open_write(&self, path: &Path) -> io::Result<Box<dyn Write + Send>> {
+        let mut child = self
+            .command()
+            .args(["rcat", &self.target(path)])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|err| match err.kind() {
+                io::ErrorKind::NotFound => {
+                    io::Error::new(err.kind(), "rclone is not installed".to_string())
+                }
+                _ => err,
+            })?;
+        let stdin = child.stdin.take();
+        Ok(Box::new(Rcat { child, stdin }))
+    }
+
+    fn set_mode(&self, _path: &Path, _mode: u32) -> io::Result<()> {
+        Err(no_such_thing("permission bits"))
+    }
+
+    fn set_owner(&self, _path: &Path, _uid: Option<u32>, _gid: Option<u32>) -> io::Result<()> {
+        Err(no_such_thing("owners"))
+    }
+
+    /// The upload's own time is what most remotes keep, and rclone has
+    /// no command that sets another on a file already there: a copy
+    /// that preserves times keeps them on the way down, not up.
+    fn set_mtime(&self, _path: &Path, _mtime: SystemTime) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn symlink(&self, _target: &Path, _link: &Path) -> io::Result<()> {
+        Err(no_such_thing("symlinks"))
+    }
+}
+
+/// A running `rclone rcat`: written to as the copy goes, finished - and
+/// judged - when flushed.
+struct Rcat {
+    child: Child,
+    stdin: Option<std::process::ChildStdin>,
+}
+
+impl Write for Rcat {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self.stdin.as_mut() {
+            Some(stdin) => stdin.write(buf),
+            None => Err(io::Error::other("the upload is already finished")),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let Some(stdin) = self.stdin.take() else {
+            return Ok(());
+        };
+        drop(stdin);
+        let mut stderr = String::new();
+        if let Some(mut err) = self.child.stderr.take() {
+            let _ = err.read_to_string(&mut stderr);
+        }
+        match self.child.wait()?.success() {
+            true => Ok(()),
+            false => Err(io::Error::other(
+                stderr
+                    .lines()
+                    .last()
+                    .unwrap_or("rclone failed")
+                    .trim()
+                    .to_string(),
+            )),
+        }
+    }
+}
+
+impl Drop for Rcat {
+    fn drop(&mut self) {
+        let _ = self.flush();
     }
 }
 
@@ -241,6 +371,76 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in rclone over a local directory: enough of `lsf`,
+    /// `cat`, `rcat`, `mkdir`, `deletefile`, `rmdir` and `moveto` to hold
+    /// rcmd to its half of the contract.
+    fn fake_rclone(dir: &Path, root: &Path) -> PathBuf {
+        let script = dir.join("rclone");
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+root='{}'
+p() {{ echo "$root/${{1#demo:}}"; }}
+case "$1" in
+  lsf) d=$(p "$6"); [ -d "$d" ] || exit 1
+       for f in "$d"/*; do [ -e "$f" ] || continue; n=$(basename "$f")
+         if [ -d "$f" ]; then printf '%s/|-1|2026-08-26 09:00:00\n' "$n"
+         else printf '%s|%s|2026-08-26 09:00:00\n' "$n" $(wc -c < "$f"); fi; done ;;
+  cat) cat "$(p "$2")" ;;
+  rcat) cat > "$(p "$2")" ;;
+  mkdir) mkdir -p "$(p "$2")" ;;
+  deletefile) rm "$(p "$2")" ;;
+  rmdir) rmdir "$(p "$2")" ;;
+  moveto) mv "$(p "$2")" "$(p "$3")" ;;
+  *) echo "unknown $1" >&2; exit 1 ;;
+esac
+"#,
+                root.display()
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    #[test]
+    fn a_remote_is_written_through_rclone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("remote");
+        std::fs::create_dir(&root).unwrap();
+        let script = fake_rclone(tmp.path(), &root);
+        let fs = RcloneFs::with_program("demo", &script.to_string_lossy());
+        let w = fs.writer().unwrap();
+        w.mkdir(Path::new("/docs")).unwrap();
+        let mut out = w.open_write(Path::new("/docs/a.txt")).unwrap();
+        out.write_all(b"up it goes").unwrap();
+        out.flush().unwrap();
+        drop(out);
+        assert_eq!(
+            std::fs::read_to_string(root.join("docs/a.txt")).unwrap(),
+            "up it goes"
+        );
+        let names: Vec<_> = fs
+            .read_dir(Path::new("/docs"))
+            .unwrap()
+            .into_iter()
+            .filter(|e| !e.is_parent())
+            .map(|e| e.name)
+            .collect();
+        assert_eq!(names, ["a.txt"]);
+        w.rename(Path::new("/docs/a.txt"), Path::new("/docs/b.txt"))
+            .unwrap();
+        w.remove_file(Path::new("/docs/b.txt")).unwrap();
+        w.remove_dir(Path::new("/docs")).unwrap();
+        assert!(!root.join("docs").exists());
+        assert_eq!(
+            w.set_mode(Path::new("/x"), 0o644).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+    }
 
     #[test]
     fn lsf_lines_become_entries() {

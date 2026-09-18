@@ -141,6 +141,10 @@ pub struct Config {
     /// where the terminal passes one on (the window build sends one of
     /// its own).
     pub notify_done: bool,
+    /// Use the kitty keyboard protocol in the terminals that have it
+    /// (kitty, foot, WezTerm, Ghostty, Alacritty): Esc acts at once,
+    /// Ctrl+I is not Tab, the Ctrl-digits can be bound.
+    pub kitty_keyboard: bool,
     /// Draw the line-number gutter (Alt+N toggles it).
     pub edit_line_numbers: bool,
     /// Keep the previous contents as `file~` on every save.
@@ -168,6 +172,9 @@ pub struct Config {
     /// the internal viewer (`view = "pdftotext %f -"`). Shift+F3 views
     /// the raw bytes. Same shape and matching as `[[open]]`.
     pub view: Vec<OpenRule>,
+    /// `[[vfs]]` - mc's extfs: files that open like archives, read
+    /// through commands of your own or through mc's helper scripts.
+    pub vfs: Vec<VfsRule>,
     /// User commands: the F2 menu, in file order.
     pub commands: Vec<UserCommand>,
     /// Saved panelize commands, in file order.
@@ -226,6 +233,45 @@ pub struct FilterSet {
 pub struct PanelizePreset {
     pub name: String,
     pub run: String,
+}
+
+/// `[[vfs]]` - a kind of file Enter goes into, like an archive: `match`
+/// says which files (a mask list), and either `script` names one of
+/// mc's extfs helpers or `list` and `copyout` are the two commands
+/// (`%f` the file, `%p` the member, `%t` where to write it).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VfsRule {
+    #[serde(rename = "match")]
+    pub pattern: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub script: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub list: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub copyout: String,
+}
+
+impl VfsRule {
+    pub fn matches(&self, name: &str) -> bool {
+        !self.pattern.is_empty()
+            && rcmd_core::pattern::Masks::parse(&self.pattern, true).matches(name)
+    }
+
+    /// The commands, or `None` for a rule that names neither a script
+    /// nor both of them.
+    pub fn rule(&self) -> Option<rcmd_core::extfs::ExtRule> {
+        let home = |s: &str| match s.strip_prefix("~/") {
+            Some(rest) => format!("{}/{rest}", std::env::var("HOME").unwrap_or_default()),
+            None => s.to_string(),
+        };
+        if !self.script.is_empty() {
+            return Some(rcmd_core::extfs::ExtRule::script(&home(&self.script)));
+        }
+        (!self.list.is_empty() && !self.copyout.is_empty()).then(|| rcmd_core::extfs::ExtRule {
+            list: self.list.clone(),
+            copyout: self.copyout.clone(),
+        })
+    }
 }
 
 /// `[[open]]` / `[[view]]` - mc.ext's four matchers and a command.
@@ -548,6 +594,7 @@ impl Default for Config {
             builtin_view: true,
             terminal_title: true,
             notify_done: true,
+            kitty_keyboard: true,
             edit_line_numbers: false,
             edit_backups: false,
             edit_clipboard: true,
@@ -555,6 +602,7 @@ impl Default for Config {
             hotlist: Vec::new(),
             open: Vec::new(),
             view: Vec::new(),
+            vfs: Vec::new(),
             commands: Vec::new(),
             panelize: Vec::new(),
             filter: Vec::new(),

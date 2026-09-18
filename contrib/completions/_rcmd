@@ -17,7 +17,7 @@ _arguments -s \
     '(-u --nosubshell -U --subshell)'{-u,--nosubshell}'[no persistent subshell]' \
     '(-u --nosubshell -U --subshell)'{-U,--subshell}'[persistent subshell]' \
     '(-l --ftplog)'{-l,--ftplog}'[log the FTP dialogue to FILE]:file:_files' \
-    '--remote[hand LINE to a running rcmd]:line:' \
+    '--remote[hand the rest of the line to a running rcmd]:command:' \
     '--to[which running rcmd]:pid:' \
     '--print-config[print every setting at its default]' \
     '--import-mc[print a config built from mc'"'"'s files]:mc config dir:_directories' \

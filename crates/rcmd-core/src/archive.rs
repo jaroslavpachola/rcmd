@@ -877,6 +877,10 @@ impl ArchiveFs {
 }
 
 impl FsProvider for ArchiveFs {
+    fn reopen(&self) -> Option<io::Result<Arc<dyn FsProvider>>> {
+        Some(ArchiveFs::open(&self.path).map(|fs| Arc::new(fs) as Arc<dyn FsProvider>))
+    }
+
     fn read_dir(&self, dir: &Path) -> io::Result<Vec<Entry>> {
         let dir = normalize_rel(dir);
         self.index
