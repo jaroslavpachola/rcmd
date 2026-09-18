@@ -3207,16 +3207,16 @@ def test_copyform():
     scr = s.screen()
     check("copyform: the form opens", "Copy" in scr and "/other" in scr, scr[:200])
     for label in ("Preserve attributes", "Follow links", "Dive into subdirs",
-                  "Stable symlinks", "Verify"):
+                  "Stable symlinks", "Verify", "Sync to disk"):
         check("copyform: %s offered" % label.split()[0].lower(), label in scr, scr[:400])
     check("copyform: rcmd's defaults are the careful ones",
           "[x] Preserve attributes" in scr and "[ ] Follow links" in scr, scr[:400])
     check("copyform: OK/Background/Cancel", "[ Background ]" in scr, scr[:400])
 
     # Cancel really cancels: down to the buttons, along to Cancel, Enter
-    # (the form opens on the destination, with five boxes below it)
+    # (the form opens on the destination, with six boxes below it)
     s.keys(
-        DOWN * 6,
+        DOWN * 7,
         b"\x1b[C" * 2,
         b"\r",
         wait=STEP * 2,
@@ -3245,7 +3245,7 @@ def test_copyform():
         s.send(DOWN, wait=STEP)
     s.send(F5, wait=STEP)
     s.keys(
-        DOWN * 5,
+        DOWN * 7,
         b"\x1b[C",                       # -> Background
         b"\r",
         wait=STEP * 3,
@@ -3254,6 +3254,94 @@ def test_copyform():
     check("copyform: background leaves no dialog up", "[ Background ]" not in scr, scr[:200])
     check("copyform: and the copy still happened",
           os.path.exists(os.path.join(other, "b.txt")))
+    s.quit()
+    shutil.rmtree(root)
+
+
+def lsattr_flags(path):
+    """The file's FS_IOC_GETFLAGS, or None where the filesystem has none."""
+    import array, fcntl
+    buf = array.array("i", [0])
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        fcntl.ioctl(fd, 0x80086601, buf, True)
+        return buf[0]
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def test_copysafety():
+    """PLAN5 S4: a copy says what it skipped and why, keeps holes, and
+    chattr sits beside chmod."""
+    root, play, home = sandbox()
+    other = os.path.join(root, "other")
+    os.makedirs(other)
+    open(os.path.join(play, "a.txt"), "w").write("new\n")
+    open(os.path.join(other, "a.txt"), "w").write("old\n")
+    with open(os.path.join(play, "sparse.img"), "wb") as f:
+        f.write(b"head")
+        f.truncate(32 << 20)
+    s = Session(play, home, args=(play, other))
+
+    # Skip on the overwrite prompt: the status points at the report
+    s.send(DOWN)                            # onto a.txt
+    s.send(F5, wait=STEP)
+    s.send(b"\r", wait=STEP * 2)
+    check("copysafety: the prompt is up", "File exists" in s.screen(), s.screen()[:300])
+    s.keys(
+        b"\x1b[C" * 3,                   # -> Skip
+        b"\r",
+        wait=STEP * 3,
+    )
+    check("copysafety: skip left the old file",
+          open(os.path.join(other, "a.txt")).read() == "old\n")
+    check("copysafety: the status says where the reasons are",
+          "C-x r" in s.screen(), s.screen()[-400:])
+    s.send(b"\x18r", wait=STEP * 2)         # Ctrl+X r
+    scr = s.screen()
+    check("copysafety: the report names the file and why",
+          "a.txt" in scr and "already there, not overwritten" in scr, scr[:600])
+    s.send(b"q", wait=STEP)
+
+    # a sparse file stays sparse
+    s.send(b"\x12", wait=STEP)              # Ctrl+R
+    s.send(HOME_K, wait=STEP)
+    s.send(DOWN * 2, wait=STEP)
+    check("copysafety: on sparse.img", "sparse.img" in status_line(s), status_line(s))
+    s.send(F5, wait=STEP)
+    s.send(b"\r", wait=STEP * 4)
+    copied = os.path.join(other, "sparse.img")
+    check("copysafety: the sparse file was copied",
+          os.path.exists(copied) and os.path.getsize(copied) == 32 << 20)
+    check("copysafety: and its holes stayed holes",
+          os.path.exists(copied) and os.stat(copied).st_blocks * 512 < 1 << 20,
+          str(os.stat(copied).st_blocks if os.path.exists(copied) else "missing"))
+
+    # chattr: the flags as boxes; d (no dump) needs no root
+    target = os.path.join(play, "a.txt")
+    if lsattr_flags(target) is None:
+        print("  (copysafety: no file flags on this filesystem, chattr skipped)")
+    else:
+        s.send(HOME_K, wait=STEP)
+        s.send(DOWN, wait=STEP)             # onto a.txt
+        s.send(b"\x18e", wait=STEP)         # Ctrl+X e
+        scr = s.screen()
+        check("copysafety: chattr opens", "Chattr" in scr and "no dump" in scr, scr[:600])
+        s.keys(
+            DOWN * 2,                    # a, i, -> d
+            b" ",
+        )
+        check("copysafety: space flips a flag", "[x] d no dump" in s.screen(),
+              s.screen()[:800])
+        s.send(b"\r", wait=STEP * 2)        # Set
+        flags = lsattr_flags(target)
+        check("copysafety: Set wrote the flag", flags is not None and flags & 0x40,
+              str(flags))
     s.quit()
     shutil.rmtree(root)
 
@@ -6260,6 +6348,7 @@ def main():
         test_panelmenus,
         test_overwrite,
         test_copyform,
+        test_copysafety,
         test_masks,
         test_chmod,
         test_chown,

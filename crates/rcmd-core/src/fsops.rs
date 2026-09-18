@@ -53,6 +53,9 @@ pub enum JobEvent {
     /// name that was already taken is not reported, since putting the
     /// source back would not bring back what it landed on.
     Moved { from: PathBuf, to: PathBuf },
+    /// Something the job left alone, and why: the lines of the report a
+    /// finished job can show, where a bare count said only how many.
+    Skipped { path: PathBuf, reason: String },
     Done {
         files_done: u64,
         skipped: u64,
@@ -146,6 +149,10 @@ pub struct TransferOpts {
     /// no error" into "the bytes are there" - which is what a failing
     /// stick or a long haul over sftp makes worth having.
     pub verify: bool,
+    /// Push every copy to the disk before calling it done, and the
+    /// directory entry after it: slower, and what a copy to a stick
+    /// about to be pulled out needs.
+    pub fsync: bool,
 }
 
 impl Default for TransferOpts {
@@ -157,6 +164,7 @@ impl Default for TransferOpts {
             stable_symlinks: true,
             overwrite: false,
             verify: false,
+            fsync: false,
         }
     }
 }
@@ -242,6 +250,7 @@ pub fn spawn_copy(
         let sources = filter_sources(sources, rename.as_ref());
         let (files, bytes) = scan(&sources);
         let _ = ctx.tx.send(JobEvent::Total { files, bytes });
+        room_for(ctx, &dest, bytes)?;
         let multiple = sources.len() > 1;
         let into_dir = dest.is_dir() || multiple;
         for src in &sources {
@@ -254,6 +263,70 @@ pub fn spawn_copy(
         }
         Ok(())
     })
+}
+
+/// Before the first byte: whether `need` bytes fit where `dest` is. A
+/// copy that cannot fit is better told now than when the disk fills on
+/// whichever file it had reached. Retry looks again (after something
+/// was freed), Skip copies anyway - an overwrite frees what it
+/// replaces, which this does not count - and Abort stops.
+fn room_for(ctx: &mut Ctx, dest: &Path, need: u64) -> Result<(), Aborted> {
+    loop {
+        let Some(have) = free_bytes(dest) else {
+            return Ok(());
+        };
+        if have >= need {
+            return Ok(());
+        }
+        let message = format!(
+            "not enough space: the copy needs {}, {} is free - Skip copies anyway",
+            human(need),
+            human(have)
+        );
+        match ctx.ask_error(dest, message)? {
+            Decision::Retry => continue,
+            // asked and answered: not a skipped file
+            Decision::Skip => {
+                ctx.skipped = ctx.skipped.saturating_sub(1);
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Bytes an unprivileged user may still write on the filesystem holding
+/// `path` (or its nearest existing ancestor, for a target not made yet).
+fn free_bytes(path: &Path) -> Option<u64> {
+    #[cfg(test)]
+    if let Some(&fake) = FAKE_FREE.lock().unwrap().get(path) {
+        return Some(fake);
+    }
+    let dir = path.ancestors().find(|p| p.exists())?;
+    let c = std::ffi::CString::new(dir.as_os_str().as_encoded_bytes()).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    (unsafe { libc::statvfs(c.as_ptr(), &mut st) } == 0)
+        .then(|| st.f_bavail as u64 * st.f_frsize as u64)
+}
+
+/// The free space a test says a directory has, in place of a disk small
+/// enough to fill.
+#[cfg(test)]
+static FAKE_FREE: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// "1.5G"-style, for a message.
+fn human(bytes: u64) -> String {
+    let mut value = bytes as f64;
+    for unit in ["B", "K", "M", "G", "T"] {
+        if value < 1024.0 || unit == "T" {
+            return match unit {
+                "B" => format!("{bytes}B"),
+                _ => format!("{value:.1}{unit}"),
+            };
+        }
+        value /= 1024.0;
+    }
+    unreachable!()
 }
 
 pub fn spawn_move(
@@ -674,8 +747,24 @@ pub fn spawn_transfer(
     dst_fs: Arc<dyn FsProvider>,
     dest: PathBuf,
     move_mode: bool,
+    opts: TransferOpts,
+    rename: Option<Rename>,
 ) -> JobHandle {
-    spawn(move |ctx| {
+    spawn_with(opts, move |ctx| {
+        let sources = filter_sources(sources, rename.as_ref());
+        let multiple = sources.len() > 1;
+        // where each source lands, the masks and the dive switch asked
+        // of the provider rather than of a local path
+        let target = |src: &Path, into_dir: bool| -> PathBuf {
+            if let Some(name) = rename.as_ref().and_then(|r| r.name_for(src)) {
+                return dest.join(name);
+            }
+            let dir = src_fs.stat(src).map(|e| e.is_dir()).unwrap_or(false);
+            if !multiple && !opts.dive && into_dir && dir {
+                return dest.clone();
+            }
+            target_for(src, &dest, into_dir)
+        };
         if dst_fs.writer().is_none() {
             return ctx.error(&dest, "destination is read-only");
         }
@@ -696,13 +785,7 @@ pub fn spawn_transfer(
                 if ctx.cancelled() {
                     return Err(Aborted);
                 }
-                transfer_move_one(
-                    ctx,
-                    &*src_fs,
-                    src,
-                    &target_for(src, &dest, into_dir),
-                    &mut totals,
-                )?;
+                transfer_move_one(ctx, &*src_fs, src, &target(src, into_dir), &mut totals)?;
             }
         } else {
             let (files, bytes) = scan_provider(&*src_fs, &sources);
@@ -716,7 +799,7 @@ pub fn spawn_transfer(
                     &*src_fs,
                     &*dst_fs,
                     src,
-                    &target_for(src, &dest, into_dir),
+                    &target(src, into_dir),
                     same_fs,
                     move_mode,
                 )?;
@@ -798,7 +881,14 @@ fn transfer_tree(
         return Ok(());
     };
     let writer = dst_fs.writer().expect("checked in spawn_transfer");
-    match entry.kind {
+    // "follow links" copies what a link points at: reading the link's
+    // path through the provider reaches its target
+    let kind = match (entry.kind, ctx.opts.follow_links) {
+        (EntryKind::SymlinkFile, true) => EntryKind::File,
+        (EntryKind::SymlinkDir, true) => EntryKind::Dir,
+        (kind, _) => kind,
+    };
+    match kind {
         EntryKind::Dir => {
             if same_fs && dst.starts_with(src) {
                 return ctx.error(src, "cannot copy a directory into itself");
@@ -824,7 +914,9 @@ fn transfer_tree(
                     move_mode,
                 )?;
             }
-            if let Some(modified) = entry.mtime {
+            if ctx.opts.preserve
+                && let Some(modified) = entry.mtime
+            {
                 let _ = writer.set_mtime(dst, modified);
             }
             if move_mode && let Some(sw) = src_fs.writer() {
@@ -856,10 +948,11 @@ fn transfer_tree(
             if same_fs && src == dst {
                 return ctx.error(src, "source and destination are the same file");
             }
-            if ctx.may_overwrite_fs(dst_fs, FileFacts::of_entry(&entry), dst)? == Overwrite::Skip {
+            let mode = ctx.may_overwrite_fs(dst_fs, FileFacts::of_entry(&entry), dst)?;
+            if mode == Overwrite::Skip {
                 return Ok(());
             }
-            transfer_file(ctx, src_fs, dst_fs, src, dst, &entry, move_mode)?;
+            transfer_file(ctx, src_fs, dst_fs, src, dst, &entry, move_mode, mode)?;
             Ok(())
         }
     }
@@ -874,13 +967,14 @@ fn transfer_file(
     dst: &Path,
     entry: &crate::entry::Entry,
     move_mode: bool,
+    mode: Overwrite,
 ) -> Result<(), Aborted> {
     loop {
         if ctx.cancelled() {
             return Err(Aborted);
         }
         let start = ctx.bytes_done;
-        match try_transfer_file(ctx, src_fs, dst_fs, src, dst, entry) {
+        match try_transfer_file(ctx, src_fs, dst_fs, src, dst, entry, mode) {
             Ok(()) => {
                 ctx.files_done += 1;
                 ctx.bytes_done = start + entry.size;
@@ -902,6 +996,7 @@ fn transfer_file(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn try_transfer_file(
     ctx: &mut Ctx,
     src_fs: &dyn FsProvider,
@@ -909,11 +1004,39 @@ fn try_transfer_file(
     src: &Path,
     dst: &Path,
     entry: &crate::entry::Entry,
+    mode: Overwrite,
 ) -> Result<(), CopyErr> {
     let writer = dst_fs.writer().expect("checked in spawn_transfer");
     ctx.begin_file(entry.size);
-    let mut input = src_fs.open_read(src).map_err(CopyErr::Io)?;
-    let mut output = writer.open_write(dst).map_err(CopyErr::Io)?;
+    // Reget: what is there is taken to be the head of the source
+    let have = match mode {
+        Overwrite::Reget => dst_fs.stat(dst).map(|e| e.size).unwrap_or(0),
+        _ => 0,
+    };
+    if mode == Overwrite::Reget && have >= entry.size {
+        return Ok(());
+    }
+    let fresh = mode == Overwrite::Replace;
+    // a fresh copy over a file already there is written beside it and
+    // put in its place once complete: a copy that fails leaves the old
+    // file as it was, where writing in place had already truncated it
+    let staged = fresh && dst_fs.stat(dst).is_ok();
+    let written = match staged {
+        true => staging_name(dst),
+        false => dst.to_path_buf(),
+    };
+    let mut input = match mode {
+        Overwrite::Reget => src_fs.open_read_at(src, have),
+        _ => src_fs.open_read(src),
+    }
+    .map_err(CopyErr::Io)?;
+    let mut output = match fresh {
+        true => writer.open_write(&written),
+        false => writer.open_append(&written),
+    }
+    .map_err(CopyErr::Io)?;
+    ctx.bytes_done += have;
+    ctx.file_done += have;
     let mut buf = vec![0u8; CHUNK];
     let copied = (|| {
         loop {
@@ -933,19 +1056,44 @@ fn try_transfer_file(
     })();
     drop(output); // remote handles must close before setstat
     if copied.is_err() {
-        // cancelled or failed: don't leave a torso behind
-        let _ = writer.remove_file(dst);
+        // cancelled or failed: don't leave a torso behind - but an
+        // append keeps what it was adding to
+        if fresh {
+            let _ = writer.remove_file(&written);
+        }
         return copied;
     }
-    // across machines a uid means someone else: the special bits do
-    // not travel, the way they do not out of an archive
-    if entry.mode != 0 {
-        let _ = writer.set_mode(dst, entry.mode & 0o777);
+    if staged {
+        // not every server renames over a name that is taken
+        let _ = writer.remove_file(dst);
+        if let Err(err) = writer.rename(&written, dst) {
+            let _ = writer.remove_file(&written);
+            return Err(CopyErr::Io(err));
+        }
     }
-    if let Some(modified) = entry.mtime {
-        let _ = writer.set_mtime(dst, modified);
+    // an appended-to file is the target with more in it, not a copy
+    if fresh {
+        // across machines a uid means someone else: the special bits do
+        // not travel, the way they do not out of an archive
+        if ctx.opts.preserve && entry.mode != 0 {
+            let _ = writer.set_mode(dst, entry.mode & 0o777);
+        }
+        if ctx.opts.preserve
+            && let Some(modified) = entry.mtime
+        {
+            let _ = writer.set_mtime(dst, modified);
+        }
+    }
+    if ctx.opts.verify {
+        verify_fs(src_fs, src, dst_fs, dst).map_err(CopyErr::Io)?;
     }
     Ok(())
+}
+
+/// A hidden name beside `dst` for a provider copy to be staged under.
+fn staging_name(dst: &Path) -> PathBuf {
+    let name = dst.file_name().unwrap_or_default().to_string_lossy();
+    dst.with_file_name(format!(".{name}.rcmd-{}", std::process::id()))
 }
 
 fn delete_tree_fs(ctx: &mut Ctx, fs: &dyn FsProvider, path: &Path) -> Result<(), Aborted> {
@@ -999,6 +1147,10 @@ struct Ctx {
     /// The source currently being copied, so a symlink can tell whether
     /// it points inside the copy or out of it.
     copy_root: Option<PathBuf>,
+    /// Files with more than one name, by device and inode, and where the
+    /// first of those names was copied to: the second becomes a link to
+    /// the copy, as the source's was, instead of a second file.
+    links: std::collections::HashMap<(u64, u64), PathBuf>,
     /// Bytes written of the file in hand, and its size.
     file_done: u64,
     file_total: u64,
@@ -1041,13 +1193,14 @@ impl Ctx {
     fn ask_error(&mut self, path: &Path, message: String) -> Result<Decision, Aborted> {
         if self.skip_all_errors {
             self.skipped += 1;
+            self.report(path, &message);
             return Ok(Decision::Skip);
         }
         if self
             .tx
             .send(JobEvent::AskError {
                 path: path.to_path_buf(),
-                message,
+                message: message.clone(),
             })
             .is_err()
         {
@@ -1057,11 +1210,13 @@ impl Ctx {
             Ok(Reply::Retry) => Ok(Decision::Retry),
             Ok(Reply::Skip) => {
                 self.skipped += 1;
+                self.report(path, &message);
                 Ok(Decision::Skip)
             }
             Ok(Reply::SkipAll) => {
                 self.skip_all_errors = true;
                 self.skipped += 1;
+                self.report(path, &message);
                 Ok(Decision::Skip)
             }
             _ => Err(Aborted),
@@ -1131,8 +1286,10 @@ impl Ctx {
         src: FileFacts,
         dst: &Path,
     ) -> Result<Overwrite, Aborted> {
+        // Append and Reget where this provider can add to a file
+        let can_append = fs.writer().is_some_and(|w| w.can_append());
         match fs.stat(dst) {
-            Ok(entry) => self.decide_overwrite(src, FileFacts::of_entry(&entry), dst, false),
+            Ok(entry) => self.decide_overwrite(src, FileFacts::of_entry(&entry), dst, can_append),
             Err(_) => Ok(Overwrite::Replace),
         }
     }
@@ -1149,9 +1306,9 @@ impl Ctx {
         }
         match self.policy {
             Policy::All => return Ok(Overwrite::Replace),
-            Policy::None => return Ok(self.skip()),
-            Policy::Newer => return Ok(self.sticky(src.newer_than(dst_facts))),
-            Policy::SizeDiffers => return Ok(self.sticky(src.size != dst_facts.size)),
+            Policy::None => return Ok(self.skip(dst)),
+            Policy::Newer => return Ok(self.sticky(src.newer_than(dst_facts), dst)),
+            Policy::SizeDiffers => return Ok(self.sticky(src.size != dst_facts.size, dst)),
             Policy::Ask => {}
         }
         if self
@@ -1177,32 +1334,41 @@ impl Ctx {
             // the sticky answers decide this file too, not just the rest
             Ok(Reply::UpdateAll) => {
                 self.policy = Policy::Newer;
-                Ok(self.sticky(src.newer_than(dst_facts)))
+                Ok(self.sticky(src.newer_than(dst_facts), dst))
             }
             Ok(Reply::SizeDiffersAll) => {
                 self.policy = Policy::SizeDiffers;
-                Ok(self.sticky(src.size != dst_facts.size))
+                Ok(self.sticky(src.size != dst_facts.size, dst))
             }
-            Ok(Reply::Skip) => Ok(self.skip()),
+            Ok(Reply::Skip) => Ok(self.skip(dst)),
             Ok(Reply::SkipAll) => {
                 self.policy = Policy::None;
-                Ok(self.skip())
+                Ok(self.skip(dst))
             }
             _ => Err(Aborted),
         }
     }
 
-    fn sticky(&mut self, replace: bool) -> Overwrite {
+    fn sticky(&mut self, replace: bool, dst: &Path) -> Overwrite {
         if replace {
             Overwrite::Replace
         } else {
-            self.skip()
+            self.skip(dst)
         }
     }
 
-    fn skip(&mut self) -> Overwrite {
+    fn skip(&mut self, dst: &Path) -> Overwrite {
         self.skipped += 1;
+        self.report(dst, "already there, not overwritten");
         Overwrite::Skip
+    }
+
+    /// A line of the skip report.
+    fn report(&self, path: &Path, reason: &str) {
+        let _ = self.tx.send(JobEvent::Skipped {
+            path: path.to_path_buf(),
+            reason: reason.to_string(),
+        });
     }
 }
 
@@ -1230,6 +1396,7 @@ fn spawn_with(
             skip_all_errors: false,
             opts,
             copy_root: None,
+            links: std::collections::HashMap::new(),
             file_done: 0,
             file_total: 0,
         };
@@ -1451,10 +1618,9 @@ fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
         }
         // after the children, so their creation doesn't bump it again
         if ctx.opts.preserve
-            && let Ok(modified) = meta.modified()
             && let Ok(dir) = fs::File::open(dst)
         {
-            let _ = dir.set_times(fs::FileTimes::new().set_modified(modified));
+            preserve_attrs(&dir, src, &meta);
         }
         Ok(())
     } else if meta.is_symlink() {
@@ -1512,7 +1678,31 @@ fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
         if mode == Overwrite::Skip {
             return Ok(());
         }
-        copy_file(ctx, src, dst, meta.len(), mode)
+        // a second name for a file already copied is a second name for
+        // the copy, as it was for the source
+        use std::os::unix::fs::MetadataExt;
+        let key =
+            (meta.nlink() > 1 && mode == Overwrite::Replace).then(|| (meta.dev(), meta.ino()));
+        if let Some(first) = key.and_then(|key| ctx.links.get(&key).cloned()) {
+            let linked = ctx.with_retry(dst, || {
+                let _ = fs::remove_file(dst); // overwrite was approved above
+                fs::hard_link(&first, dst)
+            })?;
+            if linked.is_some() {
+                ctx.files_done += 1;
+                ctx.bytes_done += meta.len();
+                ctx.progress(src);
+            }
+            return Ok(());
+        }
+        let before = ctx.skipped;
+        copy_file(ctx, src, dst, meta.len(), mode)?;
+        if let Some(key) = key
+            && ctx.skipped == before
+        {
+            ctx.links.insert(key, dst.to_path_buf());
+        }
+        Ok(())
     }
 }
 
@@ -1577,6 +1767,41 @@ fn test_gate(ctx: &Ctx) -> Result<(), Aborted> {
         thread::sleep(std::time::Duration::from_millis(20));
     }
     Ok(())
+}
+
+/// The verify pass through providers: both files read back, compared
+/// chunk for chunk, as the local one does.
+fn verify_fs(
+    src_fs: &dyn FsProvider,
+    src: &Path,
+    dst_fs: &dyn FsProvider,
+    dst: &Path,
+) -> io::Result<()> {
+    let (mut a, mut b) = (src_fs.open_read(src)?, dst_fs.open_read(dst)?);
+    let (mut left, mut right) = (vec![0u8; CHUNK], vec![0u8; CHUNK]);
+    let fill = |r: &mut dyn Read, buf: &mut [u8]| -> io::Result<usize> {
+        let mut have = 0;
+        while have < buf.len() {
+            match r.read(&mut buf[have..])? {
+                0 => break,
+                n => have += n,
+            }
+        }
+        Ok(have)
+    };
+    loop {
+        let n = fill(&mut *a, &mut left)?;
+        let m = fill(&mut *b, &mut right)?;
+        if n != m || left[..n] != right[..m] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the copy does not read back the same as the source",
+            ));
+        }
+        if n == 0 {
+            return Ok(());
+        }
+    }
 }
 
 /// Read both files back and compare them. An error here is reported
@@ -1705,9 +1930,10 @@ fn try_copy_file(ctx: &mut Ctx, src: &Path, dst: &Path, mode: Overwrite) -> Resu
     // Append and Reget add to a file that is already there; only a plain
     // copy creates one, and only a plain copy may delete it again.
     let fresh = mode == Overwrite::Replace;
-    let mut output = if fresh {
-        fs::File::create(dst).map_err(CopyErr::Io)?
-    } else {
+    if fresh {
+        return copy_fresh(ctx, &mut input, src, dst, &meta);
+    }
+    let mut output = {
         if mode == Overwrite::Reget {
             // resume: whatever is on disk is taken to be the head of the
             // source, so start reading where the target ends
@@ -1722,14 +1948,210 @@ fn try_copy_file(ctx: &mut Ctx, src: &Path, dst: &Path, mode: Overwrite) -> Resu
             .open(dst)
             .map_err(CopyErr::Io)?
     };
-    let copied = pump(ctx, &mut input, &mut output, src, fresh, &meta);
-    if copied.is_err() && fresh {
+    pump(ctx, &mut input, &mut output, src, false, &meta)?;
+    if ctx.opts.fsync {
+        output.sync_all().map_err(CopyErr::Io)?;
+    }
+    Ok(())
+}
+
+/// A plain copy: into a new file beside the target, renamed over it
+/// once every byte is there. An overwrite that fails part way leaves
+/// the file it was to replace as it was - written in place, the target
+/// was truncated at the first byte - and nothing half-written ever sits
+/// under the target's name. Where a rename would change more than the
+/// contents - the target is a symlink, has other hard links, or belongs
+/// to someone else - the copy writes into it in place, as before.
+fn copy_fresh(
+    ctx: &mut Ctx,
+    input: &mut fs::File,
+    src: &Path,
+    dst: &Path,
+    meta: &fs::Metadata,
+) -> Result<(), CopyErr> {
+    let old = fs::symlink_metadata(dst).ok();
+    let staged = match &old {
+        None => true,
+        Some(old) => {
+            use std::os::unix::fs::MetadataExt;
+            old.is_file() && old.nlink() == 1 && old.uid() == unsafe { libc::geteuid() }
+        }
+    };
+    let (mut output, written) = match staged {
+        true => staging_file(dst).map_err(CopyErr::Io)?,
+        false => (
+            fs::File::create(dst).map_err(CopyErr::Io)?,
+            dst.to_path_buf(),
+        ),
+    };
+    let mut copied = pump(ctx, input, &mut output, src, true, meta);
+    if copied.is_ok() && ctx.opts.fsync {
+        copied = output.sync_all().map_err(CopyErr::Io);
+    }
+    if copied.is_ok() && staged {
+        // the target's own mode stays unless the copy brings the source's
+        if !ctx.opts.preserve
+            && let Some(old) = &old
+        {
+            let _ = output.set_permissions(old.permissions());
+        }
+        drop(output);
+        copied = fs::rename(&written, dst).map_err(CopyErr::Io);
+        if copied.is_err() {
+            let _ = fs::remove_file(&written);
+        } else if ctx.opts.fsync
+            && let Some(dir) = dst.parent()
+            && let Ok(dir) = fs::File::open(dir)
+        {
+            // the rename lives in the directory: that goes to disk too
+            let _ = dir.sync_all();
+        }
+        return copied;
+    }
+    if copied.is_err() {
         // cancelled or failed, a file this copy made is not a copy:
         // don't leave a torso behind looking like one
         drop(output);
-        let _ = fs::remove_file(dst);
+        let _ = fs::remove_file(&written);
     }
     copied
+}
+
+/// A new, empty file beside `dst` to stage a copy in: hidden, named for
+/// the target and this process, never an existing file.
+fn staging_file(dst: &Path) -> io::Result<(fs::File, PathBuf)> {
+    let dir = dst.parent().unwrap_or(Path::new("."));
+    let name = dst.file_name().unwrap_or_default().to_string_lossy();
+    for n in 0..1000 {
+        let path = dir.join(format!(".{name}.rcmd-{}-{n}", std::process::id()));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((file, path)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no free staging name",
+    ))
+}
+
+/// Linux's FICLONE: share the source's blocks, copy-on-write.
+const FICLONE: libc::c_ulong = 0x4004_9409;
+/// How much one copy_file_range call is asked for: the loop's own chunk,
+/// so the bar moves and the cancel is looked at as often as before.
+const RANGE_CHUNK: usize = CHUNK;
+
+/// The copy done by the kernel, where it can be: a reflink (instant and
+/// free on btrfs and xfs), the data ranges alone for a sparse file, or
+/// copy_file_range, which saves the round trip through user space.
+/// `Ok(false)` = none of them applies; the read/write loop does it.
+fn fast_copy(
+    ctx: &mut Ctx,
+    input: &fs::File,
+    output: &fs::File,
+    src: &Path,
+    meta: &fs::Metadata,
+) -> Result<bool, CopyErr> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
+    let (from, to) = (input.as_raw_fd(), output.as_raw_fd());
+    let size = meta.len();
+    let done = |ctx: &mut Ctx, n: u64| {
+        ctx.bytes_done += n;
+        ctx.file_done += n;
+        ctx.progress(src);
+    };
+    if size > 0 && unsafe { libc::ioctl(to, FICLONE, from) } == 0 {
+        done(ctx, size);
+        return Ok(true);
+    }
+    // fewer blocks than bytes: holes, which a copy must not fill
+    if size > 0 && meta.blocks() * 512 < size {
+        return sparse_copy(ctx, input, output, src, size);
+    }
+    let mut total = 0u64;
+    loop {
+        if ctx.cancelled() {
+            return Err(CopyErr::Cancelled);
+        }
+        let n = unsafe {
+            libc::copy_file_range(
+                from,
+                std::ptr::null_mut(),
+                to,
+                std::ptr::null_mut(),
+                RANGE_CHUNK,
+                0,
+            )
+        };
+        match n {
+            // a /proc file says it is empty and says so here too, while
+            // read() hands over its contents: the loop is the one to ask
+            0 if total == 0 => return Ok(false),
+            0 => return Ok(true),
+            n if n > 0 => {
+                total += n as u64;
+                done(ctx, n as u64);
+            }
+            _ if total == 0 => return Ok(false), // not across these two
+            _ => return Err(CopyErr::Io(io::Error::last_os_error())),
+        }
+    }
+}
+
+/// A sparse file's data ranges, and a length set to cover the holes
+/// between and after them.
+fn sparse_copy(
+    ctx: &mut Ctx,
+    input: &fs::File,
+    output: &fs::File,
+    src: &Path,
+    size: u64,
+) -> Result<bool, CopyErr> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::FileExt;
+    let fd = input.as_raw_fd();
+    let mut buf = vec![0u8; CHUNK];
+    let mut pos: i64 = 0;
+    while (pos as u64) < size {
+        let data = unsafe { libc::lseek(fd, pos, libc::SEEK_DATA) };
+        if data < 0 {
+            let err = io::Error::last_os_error();
+            return match err.raw_os_error() {
+                Some(libc::ENXIO) => break, // nothing but a hole from here
+                // no SEEK_DATA here: the plain loop, before anything was
+                // written
+                _ if pos == 0 => Ok(false),
+                _ => Err(CopyErr::Io(err)),
+            };
+        }
+        let hole = unsafe { libc::lseek(fd, data, libc::SEEK_HOLE) };
+        let hole = if hole < 0 { size as i64 } else { hole };
+        let mut at = data as u64;
+        while at < hole as u64 {
+            if ctx.cancelled() {
+                return Err(CopyErr::Cancelled);
+            }
+            let want = ((hole as u64 - at) as usize).min(buf.len());
+            let n = input.read_at(&mut buf[..want], at).map_err(CopyErr::Io)?;
+            if n == 0 {
+                break;
+            }
+            output.write_all_at(&buf[..n], at).map_err(CopyErr::Io)?;
+            at += n as u64;
+            ctx.bytes_done += n as u64;
+            ctx.file_done += n as u64;
+            ctx.progress(src);
+        }
+        pos = hole;
+    }
+    output.set_len(size).map_err(CopyErr::Io)?;
+    Ok(true)
 }
 
 fn pump(
@@ -1740,19 +2162,23 @@ fn pump(
     fresh: bool,
     meta: &fs::Metadata,
 ) -> Result<(), CopyErr> {
-    let mut buf = vec![0u8; CHUNK];
-    loop {
-        if ctx.cancelled() {
-            return Err(CopyErr::Cancelled);
+    // a fresh copy is the kernel's to do where it can; an append or a
+    // resume writes after what is there, which only the loop does
+    if !(fresh && fast_copy(ctx, input, output, src, meta)?) {
+        let mut buf = vec![0u8; CHUNK];
+        loop {
+            if ctx.cancelled() {
+                return Err(CopyErr::Cancelled);
+            }
+            let n = input.read(&mut buf).map_err(CopyErr::Io)?;
+            if n == 0 {
+                break;
+            }
+            output.write_all(&buf[..n]).map_err(CopyErr::Io)?;
+            ctx.bytes_done += n as u64;
+            ctx.file_done += n as u64;
+            ctx.progress(src);
         }
-        let n = input.read(&mut buf).map_err(CopyErr::Io)?;
-        if n == 0 {
-            break;
-        }
-        output.write_all(&buf[..n]).map_err(CopyErr::Io)?;
-        ctx.bytes_done += n as u64;
-        ctx.file_done += n as u64;
-        ctx.progress(src);
     }
     // an appended-to file keeps its own mode and its new mtime: it is
     // not a copy of the source, it is the target with more in it
@@ -1760,11 +2186,77 @@ fn pump(
         output
             .set_permissions(meta.permissions())
             .map_err(CopyErr::Io)?;
-        if let Ok(modified) = meta.modified() {
-            let _ = output.set_times(fs::FileTimes::new().set_modified(modified));
-        }
+        preserve_attrs(output, src, meta);
     }
     Ok(())
+}
+
+/// What Preserve carries over besides the mode bits, onto an open file
+/// or directory: the owner (only root may give a file away, so only
+/// then), the extended attributes - where ACLs and SELinux labels live -
+/// the mode again after them, and both times. Each is done as far as
+/// the target's filesystem allows; a copy is not failed for an xattr.
+fn preserve_attrs(target: &fs::File, src: &Path, meta: &fs::Metadata) {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
+    let fd = target.as_raw_fd();
+    if unsafe { libc::geteuid() } == 0 {
+        unsafe { libc::fchown(fd, meta.uid(), meta.gid()) };
+    }
+    copy_xattrs(src, fd);
+    // a chown takes setuid off; the mode goes back on after it
+    let _ = target.set_permissions(meta.permissions());
+    let mut times = fs::FileTimes::new();
+    if let Ok(modified) = meta.modified() {
+        times = times.set_modified(modified);
+    }
+    if let Ok(accessed) = meta.accessed() {
+        times = times.set_accessed(accessed);
+    }
+    let _ = target.set_times(times);
+}
+
+/// Every extended attribute of `src` onto the open file `fd`, as far as
+/// this user may set them (the `user.` ones always; `security.` and
+/// `trusted.` ones only as root).
+fn copy_xattrs(src: &Path, fd: libc::c_int) {
+    let Ok(path) = std::ffi::CString::new(src.as_os_str().as_encoded_bytes()) else {
+        return;
+    };
+    let size = unsafe { libc::llistxattr(path.as_ptr(), std::ptr::null_mut(), 0) };
+    if size <= 0 {
+        return;
+    }
+    let mut names = vec![0u8; size as usize];
+    let size = unsafe { libc::llistxattr(path.as_ptr(), names.as_mut_ptr().cast(), names.len()) };
+    if size <= 0 {
+        return;
+    }
+    names.truncate(size as usize);
+    for name in names.split(|&b| b == 0).filter(|n| !n.is_empty()) {
+        let Ok(name) = std::ffi::CString::new(name) else {
+            continue;
+        };
+        let len = unsafe { libc::lgetxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0) };
+        if len < 0 {
+            continue;
+        }
+        let mut value = vec![0u8; len as usize];
+        let len = unsafe {
+            libc::lgetxattr(
+                path.as_ptr(),
+                name.as_ptr(),
+                value.as_mut_ptr().cast(),
+                value.len(),
+            )
+        };
+        if len < 0 {
+            continue;
+        }
+        unsafe {
+            libc::fsetxattr(fd, name.as_ptr(), value.as_ptr().cast(), len as usize, 0);
+        }
+    }
 }
 
 fn move_one(ctx: &mut Ctx, src: &Path, dst: &Path, totals: &mut (u64, u64)) -> Result<(), Aborted> {
@@ -1856,10 +2348,9 @@ fn move_across(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
         move_across(ctx, &src.join(&name), &dst.join(&name))?;
     }
     if ctx.opts.preserve
-        && let Ok(modified) = meta.modified()
         && let Ok(dir) = fs::File::open(dst)
     {
-        let _ = dir.set_times(fs::FileTimes::new().set_modified(modified));
+        preserve_attrs(&dir, src, &meta);
     }
     if ctx.skipped == before {
         ctx.with_retry(src, || fs::remove_dir(src))?;
@@ -2940,6 +3431,345 @@ mod tests {
         assert!(
             !tmp.path().join("mem").exists(),
             "the partial copy was left behind"
+        );
+    }
+
+    /// An overwrite that fails part way must leave the file it was to
+    /// replace as it was. Written in place, the target was truncated at
+    /// the first byte - and since a failed copy removes what it wrote,
+    /// the user was left with neither file.
+    #[test]
+    fn a_failed_overwrite_keeps_the_old_file() {
+        let src = PathBuf::from("/proc/self/mem");
+        if !src.exists() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dst = tmp.path().join("mem");
+        fs::write(&dst, b"precious").unwrap();
+        let res = run(
+            spawn_copy(
+                vec![src],
+                tmp.path().to_path_buf(),
+                TransferOpts::default(),
+                None,
+            ),
+            vec![Reply::Overwrite, Reply::Skip],
+        );
+        assert_eq!(res.skipped, 1, "{:?}", res.asks);
+        assert_eq!(fs::read(&dst).unwrap(), b"precious");
+        // and nothing half-written is lying next to it
+        let names: Vec<_> = fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [std::ffi::OsString::from("mem")]);
+    }
+
+    /// A sparse file stays sparse: its holes were written out as zeros.
+    #[test]
+    fn a_sparse_file_stays_sparse() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("sparse.img");
+        let file = fs::File::create(&src).unwrap();
+        file.set_len(64 << 20).unwrap();
+        std::os::unix::fs::FileExt::write_all_at(&file, b"head", 0).unwrap();
+        std::os::unix::fs::FileExt::write_all_at(&file, b"tail", (64 << 20) - 4).unwrap();
+        drop(file);
+        if fs::metadata(&src).unwrap().blocks() * 512 >= 1 << 20 {
+            return; // this filesystem does not do holes
+        }
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+        let res = run(
+            spawn_copy(
+                vec![src.clone()],
+                out.clone(),
+                TransferOpts::default(),
+                None,
+            ),
+            vec![],
+        );
+        assert!(!res.aborted);
+        let copy = out.join("sparse.img");
+        let meta = fs::metadata(&copy).unwrap();
+        assert_eq!(meta.len(), 64 << 20);
+        assert!(
+            meta.blocks() * 512 < 1 << 20,
+            "the copy took {} blocks",
+            meta.blocks()
+        );
+        let data = fs::read(&copy).unwrap();
+        assert_eq!(&data[..4], b"head");
+        assert_eq!(&data[data.len() - 4..], b"tail");
+    }
+
+    /// /proc files say they are empty and are not: whatever fast path
+    /// the copy takes, their contents must arrive.
+    #[test]
+    fn a_proc_file_is_copied_with_its_contents() {
+        let src = PathBuf::from("/proc/self/status");
+        if !src.exists() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let res = run(
+            spawn_copy(
+                vec![src],
+                tmp.path().to_path_buf(),
+                TransferOpts::default(),
+                None,
+            ),
+            vec![],
+        );
+        assert!(!res.aborted);
+        let copied = fs::read_to_string(tmp.path().join("status")).unwrap();
+        assert!(copied.contains("Name:"), "{copied:?}");
+    }
+
+    /// Preserve keeps what mc keeps: a directory's own mode, the access
+    /// time beside the modification time, and two names for one file
+    /// staying one file in the copy.
+    #[test]
+    fn preserve_keeps_directory_modes_access_times_and_hard_links() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("tree");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("a.txt"), b"one file").unwrap();
+        fs::hard_link(src.join("a.txt"), src.join("b.txt")).unwrap();
+        let then = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        fs::File::open(src.join("a.txt"))
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_accessed(then).set_modified(then))
+            .unwrap();
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o700)).unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+
+        let res = run(
+            spawn_copy(vec![src], out.clone(), TransferOpts::default(), None),
+            vec![],
+        );
+        assert!(!res.aborted);
+        let copy = out.join("tree");
+        assert_eq!(
+            fs::metadata(&copy).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let (a, b) = (
+            fs::metadata(copy.join("a.txt")).unwrap(),
+            fs::metadata(copy.join("b.txt")).unwrap(),
+        );
+        assert_eq!(a.ino(), b.ino(), "the two names are one file again");
+        assert_eq!(a.accessed().unwrap(), then);
+        assert_eq!(a.modified().unwrap(), then);
+    }
+
+    /// ...and extended attributes, which is where ACLs live.
+    #[test]
+    fn preserve_keeps_extended_attributes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("tagged.txt");
+        fs::write(&src, b"x").unwrap();
+        let path = std::ffi::CString::new(src.as_os_str().as_encoded_bytes()).unwrap();
+        let name = c"user.rcmd-test";
+        let set =
+            unsafe { libc::setxattr(path.as_ptr(), name.as_ptr(), b"kept".as_ptr().cast(), 4, 0) };
+        if set != 0 {
+            return; // this filesystem takes no user attributes
+        }
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+        let res = run(
+            spawn_copy(vec![src], out.clone(), TransferOpts::default(), None),
+            vec![],
+        );
+        assert!(!res.aborted);
+        let copy =
+            std::ffi::CString::new(out.join("tagged.txt").as_os_str().as_encoded_bytes()).unwrap();
+        let mut value = [0u8; 16];
+        let n =
+            unsafe { libc::getxattr(copy.as_ptr(), name.as_ptr(), value.as_mut_ptr().cast(), 16) };
+        assert_eq!(n, 4, "the attribute did not come along");
+        assert_eq!(&value[..4], b"kept");
+    }
+
+    /// A copy that cannot fit says so before it writes a byte, rather
+    /// than filling the disk and failing on whichever file it reached.
+    #[test]
+    fn a_copy_that_will_not_fit_asks_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("big.bin");
+        fs::write(&src, vec![0u8; 4096]).unwrap();
+        let out = tmp.path().join("small-disk");
+        fs::create_dir(&out).unwrap();
+        FAKE_FREE.lock().unwrap().insert(out.clone(), 100);
+        let res = run(
+            spawn_copy(
+                vec![src.clone()],
+                out.clone(),
+                TransferOpts::default(),
+                None,
+            ),
+            vec![Reply::Abort],
+        );
+        assert!(res.aborted);
+        assert!(
+            res.asks.iter().any(|ask| ask.contains("not enough space")),
+            "{:?}",
+            res.asks
+        );
+        assert!(!out.join("big.bin").exists(), "nothing was written");
+        // Skip is "copy anyway"
+        let res = run(
+            spawn_copy(vec![src], out.clone(), TransferOpts::default(), None),
+            vec![Reply::Skip],
+        );
+        assert!(!res.aborted);
+        assert!(out.join("big.bin").exists());
+    }
+
+    /// A copy through providers - to a server, from one - answers the
+    /// form as a local copy does: Preserve off leaves the time alone, a
+    /// target mask renames. It used to ignore every switch.
+    #[test]
+    fn a_provider_transfer_honours_the_form() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("notes.txt");
+        fs::write(&src, b"x").unwrap();
+        let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        fs::File::open(&src)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+        // two providers, so the copy is the one a remote transfer takes
+        let (from, to): (Arc<dyn FsProvider>, Arc<dyn FsProvider>) =
+            (Arc::new(crate::vfs::LocalFs), Arc::new(crate::vfs::LocalFs));
+        let opts = TransferOpts {
+            preserve: false,
+            verify: true,
+            ..TransferOpts::default()
+        };
+        let rename = Rename::new(Mask::new("*.txt"), Some("*.bak".into()));
+        let res = run(
+            spawn_transfer(from, vec![src], to, out.clone(), false, opts, rename),
+            vec![],
+        );
+        assert!(!res.aborted, "{:?}", res.asks);
+        let copy = out.join("notes.bak");
+        assert!(copy.exists(), "the mask renamed it");
+        assert_ne!(
+            fs::metadata(&copy).unwrap().modified().unwrap(),
+            old,
+            "preserve was off"
+        );
+    }
+
+    /// A skip says what and why, for the report a finished job keeps.
+    #[test]
+    fn every_skip_is_reported_with_its_reason() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("a.txt");
+        fs::write(&src, b"new").unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+        fs::write(out.join("a.txt"), b"old").unwrap();
+        let handle = spawn_copy(vec![src], out.clone(), TransferOpts::default(), None);
+        let mut report = Vec::new();
+        loop {
+            match handle.events.recv().unwrap() {
+                JobEvent::AskOverwrite { .. } => handle.replies.send(Reply::Skip).unwrap(),
+                JobEvent::Skipped { path, reason } => report.push((path, reason)),
+                JobEvent::Done { .. } => break,
+                _ => {}
+            }
+        }
+        assert_eq!(
+            report,
+            [(
+                out.join("a.txt"),
+                "already there, not overwritten".to_string()
+            )]
+        );
+    }
+
+    fn providers() -> (Arc<dyn FsProvider>, Arc<dyn FsProvider>) {
+        (Arc::new(crate::vfs::LocalFs), Arc::new(crate::vfs::LocalFs))
+    }
+
+    /// Reget through a provider: the head already there stays, the rest
+    /// is fetched from where it ends - an interrupted download finished
+    /// rather than started over. It was a local copy's answer only.
+    #[test]
+    fn a_provider_copy_resumes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("big.bin");
+        let body: Vec<u8> = (0..300_000u32).map(|n| n as u8).collect();
+        fs::write(&src, &body).unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+        fs::write(out.join("big.bin"), &body[..100_000]).unwrap();
+        let (from, to) = providers();
+        let handle = spawn_transfer(
+            from,
+            vec![src],
+            to,
+            out.clone(),
+            false,
+            TransferOpts::default(),
+            None,
+        );
+        let mut offered = false;
+        loop {
+            match handle.events.recv().unwrap() {
+                JobEvent::AskOverwrite { can_append, .. } => {
+                    offered = can_append;
+                    handle.replies.send(Reply::Reget).unwrap();
+                }
+                JobEvent::Done { aborted, .. } => {
+                    assert!(!aborted);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(offered, "Reget was not offered");
+        assert_eq!(fs::read(out.join("big.bin")).unwrap(), body);
+    }
+
+    /// ...and a provider overwrite that fails keeps the old file, as a
+    /// local one does now.
+    #[test]
+    fn a_failed_provider_overwrite_keeps_the_old_file() {
+        let src = PathBuf::from("/proc/self/mem");
+        if !src.exists() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("mem"), b"precious").unwrap();
+        let (from, to) = providers();
+        let res = run(
+            spawn_transfer(
+                from,
+                vec![src],
+                to,
+                tmp.path().to_path_buf(),
+                false,
+                TransferOpts::default(),
+                None,
+            ),
+            vec![Reply::Overwrite, Reply::Skip],
+        );
+        assert_eq!(res.skipped, 1, "{:?}", res.asks);
+        assert_eq!(fs::read(tmp.path().join("mem")).unwrap(), b"precious");
+        assert_eq!(
+            fs::read_dir(tmp.path()).unwrap().count(),
+            1,
+            "no staging file left"
         );
     }
 
@@ -4328,6 +5158,8 @@ mod tests {
                 Arc::new(LocalFs),
                 dst.clone(),
                 false,
+                TransferOpts::default(),
+                None,
             ),
             vec![],
         );
@@ -4361,7 +5193,15 @@ mod tests {
         let fs_arc: Arc<dyn FsProvider> = Arc::new(LocalFs);
 
         let out = run(
-            spawn_transfer(fs_arc.clone(), vec![src.clone()], fs_arc, dst.clone(), true),
+            spawn_transfer(
+                fs_arc.clone(),
+                vec![src.clone()],
+                fs_arc,
+                dst.clone(),
+                true,
+                TransferOpts::default(),
+                None,
+            ),
             vec![],
         );
 
@@ -4387,6 +5227,8 @@ mod tests {
                 Arc::new(LocalFs),
                 dst.clone(),
                 true,
+                TransferOpts::default(),
+                None,
             ),
             vec![],
         );
@@ -4413,6 +5255,8 @@ mod tests {
                 Arc::new(LocalFs),
                 dst.clone(),
                 false,
+                TransferOpts::default(),
+                None,
             ),
             vec![Reply::Skip],
         );
@@ -4459,6 +5303,8 @@ mod tests {
                 afs,
                 PathBuf::from("/"),
                 false,
+                TransferOpts::default(),
+                None,
             ),
             vec![Reply::Skip],
         );

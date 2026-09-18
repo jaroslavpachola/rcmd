@@ -1122,6 +1122,32 @@ impl App {
                     }
                 }
             }
+            Dialog::Chattr(mut d) => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Up => {
+                    d.row = d.row.checked_sub(1).unwrap_or(CHATTR_ROWS);
+                    self.dialog = Some(Dialog::Chattr(d));
+                }
+                KeyCode::Down | KeyCode::Tab => {
+                    d.row = if d.row >= CHATTR_ROWS { 0 } else { d.row + 1 };
+                    self.dialog = Some(Dialog::Chattr(d));
+                }
+                KeyCode::Left | KeyCode::Right if d.row == CHATTR_ROWS => {
+                    let count = CHATTR_BUTTONS.len();
+                    d.button = if key.code == KeyCode::Left {
+                        d.button.checked_sub(1).unwrap_or(count - 1)
+                    } else {
+                        (d.button + 1) % count
+                    };
+                    self.dialog = Some(Dialog::Chattr(d));
+                }
+                KeyCode::Char(' ') if d.row < CHATTR_ROWS => {
+                    d.flags ^= rcmd_core::attrs::FLAGS[d.row].1;
+                    self.dialog = Some(Dialog::Chattr(d));
+                }
+                KeyCode::Enter => self.submit_chattr(*d),
+                _ => self.dialog = Some(Dialog::Chattr(d)),
+            },
             Dialog::Transfer(mut d) => {
                 match key.code {
                     KeyCode::Esc => {}
@@ -1610,6 +1636,42 @@ impl App {
             return;
         }
         self.apply_fs_op(&paths, "chmod", |w, p| w.set_mode(p, apply(p)));
+    }
+
+    /// A button on the chattr window, chmod's rules: Set gives every
+    /// entry exactly the boxes, Set marked adds them to what each has,
+    /// Clear marked takes them away. Only the flags the window shows
+    /// are touched - the rest (extents, inline data...) are the
+    /// filesystem's, and it refuses to have them set.
+    fn submit_chattr(&mut self, d: ChattrDialog) {
+        let Some(action) = CHATTR_BUTTONS.get(d.button).map(|label| button_text(label)) else {
+            return;
+        };
+        if action == "Cancel" {
+            return;
+        }
+        let shown: u32 = rcmd_core::attrs::FLAGS.iter().map(|f| f.1).sum();
+        let mut done = 0usize;
+        for path in &d.paths {
+            let result = rcmd_core::attrs::get(path).and_then(|was| {
+                let flags = match action.as_str() {
+                    "Set marked" => was | d.flags,
+                    "Clear marked" => was & !d.flags,
+                    _ => (was & !shown) | (d.flags & shown),
+                };
+                if flags == was {
+                    return Ok(());
+                }
+                rcmd_core::attrs::set(path, flags)
+            });
+            if let Err(err) = result {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                self.status = Some(format!(" chattr {name}: {err} ({done} done) "));
+                return;
+            }
+            done += 1;
+        }
+        self.status = Some(format!(" chattr: {done} item(s) "));
     }
 
     /// OK or Background on the copy/move form. Cancel never gets here.

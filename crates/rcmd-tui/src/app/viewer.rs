@@ -430,6 +430,52 @@ impl App {
         }
     }
 
+    /// The viewer on a file that is not under the panel's cursor - a
+    /// report written to a scratch file, which goes when the viewer does.
+    pub(super) fn open_viewer_on(&mut self, path: &Path) {
+        match FileView::open(path) {
+            Ok(file) => self.open_screen(Screen::Viewer(Box::new(Viewer {
+                hl: None,
+                file,
+                path: path.to_path_buf(),
+                hex: false,
+                wrap: false,
+                follow: false,
+                top: 0,
+                top_seg: 0,
+                left: 0,
+                cols: 1,
+                hex_top: 0,
+                hex_edit: false,
+                hex_cursor: 0,
+                hex_low: false,
+                hex_ascii: false,
+                hex_edits: BTreeMap::new(),
+                hex_hit: None,
+                confirm_quit: None,
+                scratch: true,
+                rows: 1,
+                search: ViewSearch::default(),
+                goto: None,
+                bookmarks: [None; 10],
+                pending_mark: None,
+                ruler: false,
+                charset_pick: None,
+                nroff: false,
+                found: None,
+                prompt: None,
+                source: path.to_path_buf(),
+                source_title: path.to_path_buf(),
+                filter: None,
+                filtered: false,
+                opened_raw: true,
+                note: None,
+                temps: vec![path.to_path_buf()],
+            }))),
+            Err(err) => self.status = Some(format!(" view: {err} ")),
+        }
+    }
+
     /// The cursor file as something on disk: itself on a local panel, a
     /// scratch copy anywhere else. Returns the path, the title to show
     /// for it, and any scratch file the viewer must clean up.
@@ -663,7 +709,7 @@ impl App {
 const DECOMPRESS_CAP: u64 = 1 << 30;
 
 fn decompress_to_scratch(
-    reader: std::io::Result<Box<dyn std::io::Read>>,
+    reader: std::io::Result<Box<dyn std::io::Read + Send>>,
     name: &std::ffi::OsStr,
 ) -> std::io::Result<PathBuf> {
     use std::io::Read as _;

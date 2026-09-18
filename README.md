@@ -53,7 +53,7 @@ bulk rename via the editor, viewer follow mode (tail&nbsp;-f) with
 syntax highlighting and precise search-match highlighting, `[[view]]`
 filters (F3 through `pdftotext` & co.), Tab path completion,
 gitignore-aware find, recent directories in the hotlist, a **job
-queue** with background transfers, chmod/chown/symlink dialogs, editor
+queue** with background transfers, chmod/chattr/chown/symlink dialogs, editor
 soft-wrap + `$1` capture groups + block ops, copy *into* tar, **rar and
 7z browsing** (via 7z/unrar), click-to-sort headers, and an MC alias
 batch (S-F4/S-F5/S-F6, C-x t/p, M-c quick cd…).
@@ -422,7 +422,8 @@ restores the old one-shot execution (also the automatic fallback if the
 shell cannot be spawned).
 
 In dialogs: arrows/Tab move between buttons, Enter confirms, Esc cancels;
-overwrite and error prompts also take hotkeys (o/a/s/S, r/s/S). The
+overwrite and error prompts also take hotkeys (o/a/s/S, r/s/S).
+
 The copy/move form takes MC's **source mask**: `*.tar.gz` with a
 destination of `dir/*.tgz` copies `foo.tar.gz` to `dir/foo.tgz`, and
 files the mask does not match stay where they are. The mask's wildcards
@@ -434,7 +435,27 @@ Bulk rename, which is a better place for it than a one-line field.)
 The overwrite prompt is MC's: both files' size and date on screen, then
 **Overwrite / Append / Reget** for this file and **All / Update / Size
 differs / None** for every remaining one (Up/Down switch rows). Append
-and Reget - MC's resume - need a local file on both sides.
+and Reget - MC's resume - work locally and to and from SFTP and FTP
+(`REST` and `APPE`).
+
+**Copies you can trust.** An overwrite is written to a hidden name
+beside the target and renamed over it at the end, so a copy that fails
+halfway leaves the old file as it was. Inside one btrfs or xfs volume a
+copy is a reflink - instant, and no extra space - and elsewhere the
+kernel copies (`copy_file_range`); sparse files keep their holes. The
+free space is checked before the first byte, not discovered at the
+last. With Preserve attributes on, a copy keeps what `cp -a` keeps:
+owner (as root), mode, both times, directory modes, extended
+attributes and ACLs, and hard links within the tree stay linked. The
+form's switches mean the same on a remote copy as on a local one, and
+**Sync to disk** flushes each file before the next. Every skipped file
+is remembered with its reason; when a job skipped any, **C-x r** shows
+the list.
+
+**C-x e** is mc's chattr window, beside chmod on C-x c: the flags
+`lsattr` shows (append only, immutable, no dump, no copy on write...)
+as check boxes, and chmod's Set / Set marked / Clear marked. Local
+files only; some flags want root.
 
 **Checksums**: F9 → File → *Checksum file (sha256)* writes a
 `sha256sum`-format file for what is marked - `hash  name` lines, the

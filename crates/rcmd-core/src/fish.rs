@@ -16,7 +16,7 @@
 //! command then reads as its own output.
 
 use std::ffi::OsString;
-use std::io::{self, Cursor, Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -234,16 +234,50 @@ impl FsProvider for FishFs {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such file on the server"))
     }
 
+    /// `cat` on the server, its output read as it arrives rather than
+    /// collected whole first: a large file no longer has to fit in
+    /// memory, and a view starts with the first bytes. A `cat` that
+    /// failed says so at the end of its output.
     fn open_read(&self, path: &Path) -> io::Result<Box<dyn Read + Send>> {
-        let out = self.run(&format!("cat -- {}", quote(path)), &[])?;
-        if out.status != 0 {
-            return Err(io::Error::other(first_line(&out.stderr)));
-        }
-        Ok(Box::new(Cursor::new(out.stdout)))
+        let command = format!("cat -- {}", quote(path));
+        crate::vfslog::line(">", &command);
+        let session = self.session.lock().unwrap_or_else(|p| p.into_inner());
+        let mut channel = session.channel_session().map_err(ioerr)?;
+        channel.exec(&command).map_err(ioerr)?;
+        channel.send_eof().map_err(ioerr)?;
+        Ok(Box::new(Streamed {
+            channel,
+            ended: false,
+        }))
     }
 
     fn writer(&self) -> Option<&dyn FsWrite> {
         Some(self)
+    }
+}
+
+/// A command's output on its way in.
+struct Streamed {
+    channel: ssh2::Channel,
+    ended: bool,
+}
+
+impl Read for Streamed {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.ended {
+            return Ok(0);
+        }
+        let n = self.channel.read(buf)?;
+        if n == 0 && !buf.is_empty() {
+            self.ended = true;
+            let mut stderr = String::new();
+            let _ = self.channel.stderr().read_to_string(&mut stderr);
+            self.channel.wait_close().map_err(ioerr)?;
+            if self.channel.exit_status().unwrap_or(-1) != 0 {
+                return Err(io::Error::other(first_line(&stderr)));
+            }
+        }
+        Ok(n)
     }
 }
 

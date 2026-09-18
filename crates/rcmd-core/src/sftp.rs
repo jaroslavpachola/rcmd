@@ -652,6 +652,13 @@ impl FsProvider for SftpFs {
         Ok(Box::new(SftpFile { file }))
     }
 
+    fn open_read_at(&self, path: &Path, offset: u64) -> io::Result<Box<dyn Read + Send>> {
+        use std::io::Seek;
+        let mut file = self.lock().sftp.open(path).map_err(ioerr)?;
+        file.seek(io::SeekFrom::Start(offset))?;
+        Ok(Box::new(SftpFile { file }))
+    }
+
     fn writer(&self) -> Option<&dyn FsWrite> {
         Some(self)
     }
@@ -692,6 +699,28 @@ impl FsWrite for SftpFs {
                 OpenType::File,
             )
             .map_err(ioerr)?;
+        Ok(Box::new(SftpFile { file }))
+    }
+
+    fn can_append(&self) -> bool {
+        true
+    }
+
+    fn open_append(&self, path: &Path) -> io::Result<Box<dyn Write + Send>> {
+        use std::io::Seek;
+        let mut file = self
+            .lock()
+            .sftp
+            .open_mode(
+                path,
+                OpenFlags::WRITE | OpenFlags::APPEND,
+                0o644,
+                OpenType::File,
+            )
+            .map_err(ioerr)?;
+        // not every server honours APPEND; writing from the end does
+        // the same on any of them
+        file.seek(io::SeekFrom::End(0))?;
         Ok(Box::new(SftpFile { file }))
     }
 

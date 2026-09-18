@@ -672,6 +672,7 @@ pub const TRANSFER_OPTS: &[(&str, OptField)] = &[
     ("Dive into subdirs", |o| &mut o.dive),
     ("Stable symlinks", |o| &mut o.stable_symlinks),
     ("Verify (read the copy back)", |o| &mut o.verify),
+    ("Sync to disk as it goes (fsync)", |o| &mut o.fsync),
 ];
 /// Row index of the button line: after the mask, the destination and
 /// the boxes.
@@ -750,6 +751,24 @@ impl ChmodDialog {
         }
     }
 }
+
+/// C-x e: mc's chattr window - the file flags `lsattr` shows, as check
+/// boxes, and what the cursor entry has now in `lsattr`'s letters.
+pub struct ChattrDialog {
+    pub paths: Vec<PathBuf>,
+    /// What the boxes say.
+    pub flags: u32,
+    /// What the cursor entry has, to show beside them.
+    pub was: u32,
+    pub name: String,
+    /// Focused row: one per flag, then the buttons.
+    pub row: usize,
+    pub button: usize,
+}
+
+pub const CHATTR_ROWS: usize = rcmd_core::attrs::FLAGS.len();
+/// chmod's three ways to spend the boxes: exactly, added, taken away.
+pub const CHATTR_BUTTONS: &[&str] = &["&Set", "Set &marked", "&Clear marked", "Ca&ncel"];
 
 /// C-x o: MC's chown window - the system's users and groups as two
 /// pick lists, with what is being changed beside them.
@@ -1023,6 +1042,7 @@ fn focus_button(dialog: &mut Dialog, c: char) -> bool {
         Dialog::Confirm(d) => pick2(YES_NO, &mut d.yes),
         Dialog::RenamePreview(d) => pick2(YES_NO, &mut d.yes),
         Dialog::Chmod(d) => pick(CHMOD_BUTTONS, &mut d.button),
+        Dialog::Chattr(d) => pick(CHATTR_BUTTONS, &mut d.button),
         Dialog::Chown(d) => pick(CHOWN_BUTTONS, &mut d.button),
         Dialog::FindResults(d) => pick(FIND_BUTTONS, &mut d.button),
         // these three only act on their button row, so the focus has to
@@ -1152,6 +1172,8 @@ pub enum Dialog {
     Transfer(Box<TransferDialog>),
     /// C-x c: the chmod bit matrix.
     Chmod(Box<ChmodDialog>),
+    /// C-x e: the chattr flags.
+    Chattr(Box<ChattrDialog>),
     /// C-x o: the chown pick lists.
     Chown(Box<ChownDialog>),
     /// C-x l / s / v / C-s: the link form.
@@ -1700,6 +1722,8 @@ pub struct Job {
     /// move, which is what makes those operations un-undoable rather
     /// than wrongly undoable.
     moved: Vec<(PathBuf, PathBuf)>,
+    /// What the job left alone, and why - the report C-x r shows.
+    skips: Vec<(PathBuf, String)>,
     /// A checksum check, where the count that did not match is the
     /// answer rather than a footnote about skipping.
     checking: bool,
@@ -2588,6 +2612,8 @@ pub enum Action {
     ScreenBottom,
     /// C-x h: the panel's directory into the hotlist, as mc's.
     HotlistAdd,
+    /// C-x r: what the last job skipped, and why, in the viewer.
+    JobReport,
     /// M-,: panels side by side, or one above the other.
     ToggleSplit,
     /// mc's "Case sensitive" sort switch.
@@ -3163,6 +3189,9 @@ pub struct App {
     pub quick_search: Option<QuickSearch>,
     /// M-h inside a text field: that field's history as a list.
     pub field_popup: Option<FieldPopup>,
+    /// The last job that skipped anything: its title, and what it left
+    /// alone with why.
+    pub last_report: Option<(String, Vec<(PathBuf, String)>)>,
     /// The find results a viewer or editor was opened from, which M-.
     /// and M-, walk.
     pub hit_walk: Option<HitWalk>,
@@ -3401,6 +3430,7 @@ impl App {
             cmdline,
             quick_search: None,
             field_popup: None,
+            last_report: None,
             hit_walk: None,
             find: None,
             connect: None,
@@ -3946,6 +3976,12 @@ impl App {
                         job.button = 0;
                         job.background = false;
                     }
+                    JobEvent::Skipped { path, reason } => {
+                        // a report is for reading: past this it is noise
+                        if job.skips.len() < 10_000 {
+                            job.skips.push((path, reason));
+                        }
+                    }
                     JobEvent::Done {
                         files_done,
                         skipped,
@@ -3972,6 +4008,14 @@ impl App {
                 self.undo = Some(std::mem::take(&mut job.moved));
             }
             any_done = true;
+            if !job.skips.is_empty() {
+                self.last_report = Some((job.title.clone(), std::mem::take(&mut job.skips)));
+            }
+            let report = if self.last_report.is_some() && skipped > 0 {
+                " - C-x r says why"
+            } else {
+                ""
+            };
             self.status = Some(match (job.checking, aborted, skipped) {
                 (true, _, 0) => format!(" checked: {files_done} matched "),
                 (true, _, bad) => {
@@ -3980,7 +4024,7 @@ impl App {
                 (false, true, _) => format!(" aborted - {files_done} item(s) processed "),
                 (false, false, 0) => format!(" done - {files_done} item(s) processed "),
                 (false, false, n) => {
-                    format!(" done - {files_done} item(s) processed, {n} skipped ")
+                    format!(" done - {files_done} item(s) processed, {n} skipped{report} ")
                 }
             });
         }
@@ -5088,6 +5132,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            skips: Vec::new(),
             checking,
         });
     }

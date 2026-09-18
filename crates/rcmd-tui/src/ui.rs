@@ -681,6 +681,10 @@ const HELP_TEXT: &[&str] = &[
     "                  others alone. A recurse box under the octal walks",
     "                  into directories - that runs as a job, with progress",
     "                  and a Cancel button",
+    "  C-x e           chattr: the file flags lsattr shows (append only,",
+    "                  immutable, no dump, no copy on write...) as check",
+    "                  boxes, with chmod's Set / Set marked / Clear marked.",
+    "                  Local files only; some flags want root",
     "  C-x o           chown: the system's users and groups as two pick",
     "                  lists, the entry's own owner preselected. Tab walks",
     "                  users > groups > buttons, arrows move, Home/End jump.",
@@ -726,9 +730,13 @@ const HELP_TEXT: &[&str] = &[
     "# File operations  (marked entries, or the cursor entry)",
     "  F5              copy - a form: a source mask, where to, then MC's",
     "                  switches for what a copy means (preserve attributes,",
-    "                  follow links, dive into subdirs, stable symlinks),",
-    "                  then OK / Background / Cancel. Space flips a box,",
-    "                  Up/Down move, Background starts the job detached",
+    "                  follow links, dive into subdirs, stable symlinks,",
+    "                  verify, sync to disk), then OK / Background /",
+    "                  Cancel. Space flips a box, Up/Down move,",
+    "                  Background starts the job detached. An overwrite",
+    "                  goes to a hidden name and is renamed in at the",
+    "                  end; reflinks and holes are kept; free space is",
+    "                  checked first",
     "  Masks rename as they copy: source *.tar.gz with destination",
     "                  dir/*.tgz makes foo.tar.gz into dir/foo.tgz. The",
     "                  mask's wildcards are numbered left to right - * in",
@@ -768,6 +776,7 @@ const HELP_TEXT: &[&str] = &[
     "                  the whole job and a second one for the current file",
     "  b               send the running operation to the background",
     "  C-x !           panelize a command's output (F9 > Command too)",
+    "  C-x r           what the last job skipped, and why",
     "  C-x j           jobs list: Enter foregrounds, c cancels; the",
     "                  status line shows aggregate background progress",
     "  rcmd --remote 'cd /tmp' drives a running instance from a script:",
@@ -1201,6 +1210,7 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
             Dialog::Tree(tree) => draw_tree_dialog(frame, tree),
             Dialog::Transfer(d) => draw_transfer(frame, d, &mut form_hits),
             Dialog::Chmod(d) => draw_chmod(frame, d),
+            Dialog::Chattr(d) => draw_chattr(frame, d),
             Dialog::Chown(d) => draw_chown(frame, d),
             Dialog::Link(d) => draw_link(frame, d, &mut form_hits),
             Dialog::Hotlist(d) => dialog_rows = draw_hotlist(frame, app, d),
@@ -4748,6 +4758,65 @@ fn draw_chown(frame: &mut Frame, d: &crate::app::ChownDialog) {
     frame.render_widget(
         buttons_line(CHOWN_BUTTONS, selected, base, sel),
         row_at(0, inner.width.saturating_sub(2), CHOWN_ROWS as u16 + 2),
+    );
+}
+
+/// C-x e: mc's chattr window. The flags as check boxes, each with its
+/// `lsattr` letter, and the cursor entry's name and flags beside them.
+fn draw_chattr(frame: &mut Frame, d: &crate::app::ChattrDialog) {
+    use crate::app::{CHATTR_BUTTONS, CHATTR_ROWS};
+    use rcmd_core::attrs::{FLAGS, letters};
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    // a heading row, the flags, a blank, the buttons
+    let area = centered(64, CHATTR_ROWS as u16 + 5, frame.area());
+    let inner = popup(frame, area, " Chattr ", base);
+    let row_at = |i: u16| Rect {
+        x: inner.x + 1,
+        y: inner.y + i,
+        width: inner.width.saturating_sub(2),
+        height: 1,
+    };
+    let left = 40usize; // where the File column starts
+    frame.render_widget(
+        Line::from(format!(" {:<w$}{}", "Flags", "File", w = left - 1)).style(head_style()),
+        row_at(0),
+    );
+    let facts = [
+        format!("name  {}", tail(&d.name, 14)),
+        format!("was   {}", letters(d.was)),
+        format!("now   {}", letters(d.flags)),
+    ];
+    for (i, (letter, bit, label)) in FLAGS.iter().enumerate() {
+        let mark = if d.flags & bit != 0 { "[x]" } else { "[ ]" };
+        let row = row_at(i as u16 + 1);
+        frame.render_widget(
+            Line::from(format!(" {mark} {letter} {label:<w$}", w = left - 9))
+                .style(if d.row == i { sel } else { base }),
+            Rect {
+                width: left as u16,
+                ..row
+            },
+        );
+        if let Some(fact) = facts.get(i) {
+            frame.render_widget(
+                Line::from(fact.as_str()).style(base),
+                Rect {
+                    x: row.x + left as u16,
+                    width: row.width.saturating_sub(left as u16),
+                    ..row
+                },
+            );
+        }
+    }
+    let selected = if d.row == CHATTR_ROWS {
+        d.button
+    } else {
+        usize::MAX
+    };
+    frame.render_widget(
+        buttons_line(CHATTR_BUTTONS, selected, base, sel),
+        row_at(CHATTR_ROWS as u16 + 3),
     );
 }
 

@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use flate2::read::GzDecoder;
@@ -106,6 +107,19 @@ pub struct ArchiveFs {
     patch: Option<(String, Vec<patch::Piece>)>,
     /// The same arrangement for an mbox and its messages.
     mbox: Option<(String, Vec<mail::Message>)>,
+    /// A tar's files: where each one's bytes start in the (unwrapped)
+    /// stream, and how many there are - so a member is streamed rather
+    /// than read into memory whole.
+    members: HashMap<PathBuf, (u64, u64)>,
+    /// The unwrapped stream left where the last member read from it
+    /// ended. Members read in the archive's order - which is what an
+    /// extraction does - go on from there, where each used to start the
+    /// decompression over from the first byte.
+    stream: Kept,
+    /// How many times the container was opened and unwrapped from the
+    /// top, for the tests to hold the reading to one pass.
+    #[cfg(test)]
+    opens: std::sync::atomic::AtomicUsize,
 }
 
 /// A run of bytes inside the container, and what it is wrapped in.
@@ -173,6 +187,10 @@ impl ArchiveFs {
             iso: None,
             patch: None,
             mbox: None,
+            members: HashMap::new(),
+            stream: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            opens: std::sync::atomic::AtomicUsize::new(0),
         };
         match kind {
             Kind::Zip => fs.index_zip()?,
@@ -237,6 +255,11 @@ impl ArchiveFs {
                 .map(|secs| UNIX_EPOCH + Duration::from_secs(secs));
             let mode = header.mode().unwrap_or(0) & 0o7777;
             let size = header.size().unwrap_or(0);
+            // a nested tar's positions are in its own stream, not ours
+            if kind == EntryKind::File && prefix.as_os_str().is_empty() {
+                self.members
+                    .insert(normalize_rel(&rel), (member.raw_file_position(), size));
+            }
             self.add(
                 &prefix.join(normalize_rel(&rel)),
                 kind,
@@ -810,7 +833,10 @@ impl ArchiveFs {
         ))
     }
 
-    fn raw_reader(&self) -> io::Result<Box<dyn Read>> {
+    fn raw_reader(&self) -> io::Result<Box<dyn Read + Send>> {
+        #[cfg(test)]
+        self.opens
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let comp = match self.kind {
             Kind::Tar(comp) | Kind::Cpio(comp) | Kind::Patch(comp) | Kind::Mbox(comp) => comp,
             _ => unreachable!("zip, ar, deb and cmd use their own readers"),
@@ -818,8 +844,32 @@ impl ArchiveFs {
         decompress(Box::new(File::open(&self.path)?), comp)
     }
 
+    /// A tar member's bytes, streamed from the unwrapped stream: on from
+    /// where the last member left it when that is not past this one,
+    /// from the top otherwise.
+    fn read_member(&self, at: u64, len: u64) -> io::Result<Box<dyn Read + Send>> {
+        let kept = self.stream.lock().unwrap_or_else(|p| p.into_inner()).take();
+        let (pos, mut stream) = match kept {
+            Some((pos, stream)) if pos <= at => (pos, stream),
+            _ => (0, self.raw_reader()?),
+        };
+        let skip = at - pos;
+        if io::copy(&mut (&mut stream).take(skip), &mut io::sink())? < skip {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the archive ends early",
+            ));
+        }
+        Ok(Box::new(Member {
+            stream: Some(stream),
+            left: len,
+            end: at + len,
+            keep: self.stream.clone(),
+        }))
+    }
+
     /// The bytes of one slice of the container, unwrapped.
-    fn slice_reader(&self, slice: Slice) -> io::Result<Box<dyn Read>> {
+    fn slice_reader(&self, slice: Slice) -> io::Result<Box<dyn Read + Send>> {
         let mut file = File::open(&self.path)?;
         file.seek(SeekFrom::Start(slice.at))?;
         decompress(Box::new(file.take(slice.len)), slice.comp)
@@ -877,6 +927,9 @@ impl FsProvider for ArchiveFs {
                 ))
             }
             _ => {
+                if let Some(&(at, len)) = self.members.get(&rel) {
+                    return self.read_member(at, len);
+                }
                 let mut archive = tar::Archive::new(self.raw_reader()?);
                 for member in archive.entries()? {
                     let mut member = member?;
@@ -891,6 +944,50 @@ impl FsProvider for ArchiveFs {
                     "not found in archive",
                 ))
             }
+        }
+    }
+}
+
+/// The unwrapped stream between members, and where in it it stands.
+type Kept = Arc<Mutex<Option<(u64, Box<dyn Read + Send>)>>>;
+
+/// One tar member being read. Read to its end, it hands the stream
+/// back for the next member to go on from; dropped part way, the stream
+/// goes with it, since where it stands is no longer known.
+struct Member {
+    stream: Option<Box<dyn Read + Send>>,
+    left: u64,
+    end: u64,
+    keep: Kept,
+}
+
+impl Read for Member {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let Some(stream) = self.stream.as_mut() else {
+            return Ok(0);
+        };
+        if self.left == 0 || buf.is_empty() {
+            return Ok(0);
+        }
+        let want = buf.len().min(self.left as usize);
+        let n = stream.read(&mut buf[..want])?;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the archive ends early",
+            ));
+        }
+        self.left -= n as u64;
+        Ok(n)
+    }
+}
+
+impl Drop for Member {
+    fn drop(&mut self) {
+        if self.left == 0
+            && let Some(stream) = self.stream.take()
+        {
+            *self.keep.lock().unwrap_or_else(|p| p.into_inner()) = Some((self.end, stream));
         }
     }
 }
@@ -1058,7 +1155,7 @@ fn parse_datetime(s: &str) -> Option<std::time::SystemTime> {
 
 /// Unwrap a container stream. zstd's decoder is the one that can fail
 /// at construction - it reads the frame header up front.
-fn decompress(reader: Box<dyn Read>, comp: Comp) -> io::Result<Box<dyn Read>> {
+fn decompress(reader: Box<dyn Read + Send>, comp: Comp) -> io::Result<Box<dyn Read + Send>> {
     Ok(match comp {
         Comp::None => reader,
         Comp::Gz => Box::new(GzDecoder::new(reader)),
@@ -1080,7 +1177,7 @@ fn decompress(reader: Box<dyn Read>, comp: Comp) -> io::Result<Box<dyn Read>> {
 /// `notes.txt.gz`, `kern.log.1.xz`. `None` when the name carries no
 /// compression suffix, or when what is inside is a tar or a cpio - a
 /// directory to browse, not a text to read.
-pub fn decompressing(path: &Path) -> Option<io::Result<Box<dyn Read>>> {
+pub fn decompressing(path: &Path) -> Option<io::Result<Box<dyn Read + Send>>> {
     let name = path.file_name()?.to_string_lossy().to_lowercase();
     let (stem, comp) = peel_comp(&name);
     if comp == Comp::None || stem.ends_with(".tar") || stem.ends_with(".cpio") {
@@ -1973,6 +2070,51 @@ From here on it is just body text.
         // a tarball is a directory to browse, and plain text is plain
         assert!(decompressing(&tmp.path().join("x.tar.gz")).is_none());
         assert!(decompressing(&tmp.path().join("notes.txt")).is_none());
+    }
+
+    /// Reading a tar.gz's members in order is one pass through the
+    /// stream - an extraction used to decompress from the first byte
+    /// for every member, which is quadratic in the archive's size.
+    #[test]
+    fn members_read_in_order_are_one_pass() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("many.tar.gz");
+        let gz = GzEncoder::new(File::create(&path).unwrap(), Compression::fast());
+        let mut tar = tar::Builder::new(gz);
+        for n in 0..50 {
+            let body = vec![n as u8; 10_000];
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, format!("f{n:02}.bin"), &body[..])
+                .unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap();
+        let fs = ArchiveFs::open(&path).unwrap();
+        let before = fs.opens.load(std::sync::atomic::Ordering::Relaxed);
+        for n in 0..50 {
+            let mut body = Vec::new();
+            fs.open_read(Path::new(&format!("f{n:02}.bin")))
+                .unwrap()
+                .read_to_end(&mut body)
+                .unwrap();
+            assert_eq!(body, vec![n as u8; 10_000], "member {n}");
+        }
+        let opens = fs.opens.load(std::sync::atomic::Ordering::Relaxed) - before;
+        assert_eq!(
+            opens, 1,
+            "the stream was opened {opens} times for 50 members"
+        );
+        // out of order still works, from the top again
+        let mut body = Vec::new();
+        fs.open_read(Path::new("f03.bin"))
+            .unwrap()
+            .read_to_end(&mut body)
+            .unwrap();
+        assert_eq!(body, vec![3u8; 10_000]);
     }
 
     #[test]

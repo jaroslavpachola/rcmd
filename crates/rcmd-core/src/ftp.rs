@@ -576,10 +576,20 @@ impl FsProvider for FtpFs {
     }
 
     fn open_read(&self, path: &Path) -> io::Result<Box<dyn Read + Send>> {
+        self.open_read_at(path, 0)
+    }
+
+    /// REST before RETR: the server starts where the copy left off.
+    fn open_read_at(&self, path: &Path, offset: u64) -> io::Result<Box<dyn Read + Send>> {
         let path = self.absolute(path);
         let mut control = self.take()?;
         let peer = control.stream.get_ref().peer_addr()?;
         let data = control.data(peer)?;
+        if offset > 0 {
+            control
+                .command(&format!("REST {offset}"))?
+                .expect_ok(&[350])?;
+        }
         control
             .command(&format!("RETR {}", path.to_string_lossy()))?
             .expect_ok(&[125, 150])?;
@@ -592,6 +602,25 @@ impl FsProvider for FtpFs {
 
     fn writer(&self) -> Option<&dyn FsWrite> {
         Some(self)
+    }
+}
+
+impl FtpFs {
+    /// A data connection open for writing to `path` with `verb` - STOR
+    /// to replace it, APPE to add to it.
+    fn upload(&self, path: &Path, verb: &str) -> io::Result<Box<dyn Write + Send>> {
+        let path = self.absolute(path);
+        let mut control = self.take()?;
+        let peer = control.stream.get_ref().peer_addr()?;
+        let data = control.data(peer)?;
+        control
+            .command(&format!("{verb} {}", path.to_string_lossy()))?
+            .expect_ok(&[125, 150])?;
+        Ok(Box::new(Transfer {
+            data: Some(data),
+            control: Some(control),
+            returns: Some(self.returns.clone()),
+        }))
     }
 }
 
@@ -706,18 +735,16 @@ impl FsWrite for FtpFs {
     }
 
     fn open_write(&self, path: &Path) -> io::Result<Box<dyn Write + Send>> {
-        let path = self.absolute(path);
-        let mut control = self.take()?;
-        let peer = control.stream.get_ref().peer_addr()?;
-        let data = control.data(peer)?;
-        control
-            .command(&format!("STOR {}", path.to_string_lossy()))?
-            .expect_ok(&[125, 150])?;
-        Ok(Box::new(Transfer {
-            data: Some(data),
-            control: Some(control),
-            returns: Some(self.returns.clone()),
-        }))
+        self.upload(path, "STOR")
+    }
+
+    fn can_append(&self) -> bool {
+        true
+    }
+
+    /// APPE: the server adds to the end of what is there.
+    fn open_append(&self, path: &Path) -> io::Result<Box<dyn Write + Send>> {
+        self.upload(path, "APPE")
     }
 
     fn set_mode(&self, path: &Path, mode: u32) -> io::Result<()> {

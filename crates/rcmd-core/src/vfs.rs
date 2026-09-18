@@ -15,6 +15,14 @@ pub trait FsProvider: Send + Sync {
     /// lstat semantics: symlinks are reported, not followed.
     fn stat(&self, path: &Path) -> io::Result<Entry>;
     fn open_read(&self, path: &Path) -> io::Result<Box<dyn Read + Send>>;
+    /// The file from `offset` on: what a resumed copy still needs. The
+    /// default reads and drops what comes before, which works anywhere
+    /// and costs the skipped bytes; a provider that can seek does better.
+    fn open_read_at(&self, path: &Path, offset: u64) -> io::Result<Box<dyn Read + Send>> {
+        let mut reader = self.open_read(path)?;
+        io::copy(&mut (&mut reader).take(offset), &mut io::sink())?;
+        Ok(reader)
+    }
     fn is_local(&self) -> bool {
         false
     }
@@ -32,6 +40,18 @@ pub trait FsWrite: Send + Sync {
     fn remove_dir(&self, dir: &Path) -> io::Result<()>;
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
     fn open_write(&self, path: &Path) -> io::Result<Box<dyn Write + Send>>;
+    /// Whether [`FsWrite::open_append`] works here - what decides if the
+    /// overwrite question offers Append and Reget.
+    fn can_append(&self) -> bool {
+        false
+    }
+    /// The file opened to add to its end, for Append and Reget.
+    fn open_append(&self, _path: &Path) -> io::Result<Box<dyn Write + Send>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "cannot append here",
+        ))
+    }
     fn set_mode(&self, path: &Path, mode: u32) -> io::Result<()>;
     /// Change owner and/or group (numeric ids; `None` = leave as is).
     /// Symlinks themselves are changed, not their targets, where the
@@ -107,6 +127,13 @@ impl FsProvider for LocalFs {
         Ok(Box::new(open_regular(path)?))
     }
 
+    fn open_read_at(&self, path: &Path, offset: u64) -> io::Result<Box<dyn Read + Send>> {
+        use std::io::Seek;
+        let mut file = open_regular(path)?;
+        file.seek(io::SeekFrom::Start(offset))?;
+        Ok(Box::new(file))
+    }
+
     fn is_local(&self) -> bool {
         true
     }
@@ -119,6 +146,16 @@ impl FsProvider for LocalFs {
 impl FsWrite for LocalFs {
     fn mkdir(&self, dir: &Path) -> io::Result<()> {
         std::fs::create_dir(dir)
+    }
+
+    fn can_append(&self) -> bool {
+        true
+    }
+
+    fn open_append(&self, path: &Path) -> io::Result<Box<dyn Write + Send>> {
+        Ok(Box::new(
+            std::fs::OpenOptions::new().append(true).open(path)?,
+        ))
     }
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {

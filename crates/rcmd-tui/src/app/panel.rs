@@ -143,7 +143,9 @@ impl App {
                 Some(Dialog::Find(_) | Dialog::FindResults(_)) => "  M-F7",
                 Some(Dialog::Fuzzy(_)) => "  M-/",
                 Some(Dialog::Transfer(_) | Dialog::Confirm(_)) => "# File operations",
-                Some(Dialog::Chmod(_) | Dialog::Chown(_) | Dialog::Link(_)) => "# File operations",
+                Some(Dialog::Chmod(_) | Dialog::Chattr(_) | Dialog::Chown(_) | Dialog::Link(_)) => {
+                    "# File operations"
+                }
                 Some(Dialog::Pattern(_)) => "# Marking",
                 Some(Dialog::Hotlist(_)) => "  C-\\",
                 Some(Dialog::Panelize(_)) => "  C-x !",
@@ -595,6 +597,7 @@ impl App {
             Action::ScreenTop | Action::ScreenMiddle | Action::ScreenBottom => {
                 self.cursor_on_screen(action)
             }
+            Action::JobReport => self.show_job_report(),
             Action::HotlistAdd => {
                 let panel = &self.panels[self.active];
                 let path = match panel.is_remote() {
@@ -1789,6 +1792,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            skips: Vec::new(),
             checking: false,
         });
     }
@@ -1806,29 +1810,30 @@ impl App {
     ) {
         let src_panel = &self.panels[self.active];
         let src_archive = src_panel.archive.is_some();
-        // masks rename local files; the archive and SFTP routes below
-        // build their own targets and would drop one on the floor
-        if rename.is_some()
-            && (is_remote_url(value)
-                || src_panel.is_remote()
-                || src_archive
-                || split_vfs_dest(value).is_some())
-        {
-            self.status = Some(" source masks work on local copies ".into());
+        // masks rename what a copy makes; the archive routes below build
+        // their own targets and would drop one on the floor
+        if rename.is_some() && (src_archive || split_vfs_dest(value).is_some()) {
+            self.status = Some(" source masks work on copies, not archives ".into());
             return;
         }
         // a remote destination (must match before the zip:// syntax -
         // a URL also contains "://")
         if is_remote_url(value) {
             let parsed = if value.starts_with("ftp://") {
-                FtpUrl::parse(value).map(|url| (url.prefix(), url.display(), url.path))
+                FtpUrl::parse(value)
+                    .map(FtpUrl::with_netrc)
+                    .map(|url| (url.prefix(), url.display(), url.path))
             } else {
                 let scheme = if value.starts_with("fish://") {
                     "fish"
                 } else {
                     "sftp"
                 };
-                SftpUrl::parse_as(scheme, value).map(|url| (url.prefix(), url.display(), url.path))
+                // the same identity a connect gave it, ~/.ssh/config and
+                // all, or the connection would not be found
+                SftpUrl::parse_as(scheme, value)
+                    .map(SftpUrl::with_ssh_config)
+                    .map(|url| (url.prefix(), url.display(), url.path))
             };
             let Some((prefix, label, path)) = parsed else {
                 self.status = Some(" bad URL - scheme://[user@]host[:port]/path ".into());
@@ -1847,7 +1852,7 @@ impl App {
                 return;
             };
             let src_fs = self.panels[self.active].fs.clone();
-            self.start_vfs_transfer(src_fs, sources, dst_fs, path, is_move, label);
+            self.start_vfs_transfer(src_fs, sources, dst_fs, path, is_move, label, opts, rename);
             return;
         }
         if src_panel.is_remote() {
@@ -1858,7 +1863,16 @@ impl App {
             let dest = self.resolve(value);
             let src_fs = self.panels[self.active].fs.clone();
             let label = dest.display().to_string();
-            self.start_vfs_transfer(src_fs, sources, Arc::new(LocalFs), dest, is_move, label);
+            self.start_vfs_transfer(
+                src_fs,
+                sources,
+                Arc::new(LocalFs),
+                dest,
+                is_move,
+                label,
+                opts,
+                rename,
+            );
             return;
         }
         // local or archive source, local or zip:// destination
@@ -1892,6 +1906,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_vfs_transfer(
         &mut self,
         src_fs: Arc<dyn FsProvider>,
@@ -1900,11 +1915,13 @@ impl App {
         dest: PathBuf,
         is_move: bool,
         dest_label: String,
+        opts: TransferOpts,
+        rename: Option<Rename>,
     ) {
         let verb = if is_move { "move" } else { "copy" };
         self.jobs.push(Job {
             title: format!(" {verb} {} item(s) to {} ", sources.len(), dest_label),
-            handle: fsops::spawn_transfer(src_fs, sources, dst_fs, dest, is_move),
+            handle: fsops::spawn_transfer(src_fs, sources, dst_fs, dest, is_move, opts, rename),
             total_files: 0,
             total_bytes: 0,
             files_done: 0,
@@ -1920,6 +1937,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            skips: Vec::new(),
             checking: false,
         });
     }
@@ -1952,6 +1970,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            skips: Vec::new(),
             checking: false,
         });
     }
@@ -2012,6 +2031,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            skips: Vec::new(),
             checking: false,
         });
     }
@@ -2037,6 +2057,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            skips: Vec::new(),
             checking: false,
         });
     }
@@ -2113,6 +2134,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            skips: Vec::new(),
             checking: false,
         });
     }
@@ -2148,6 +2170,7 @@ impl App {
             src_panel: self.active,
             background: false,
             moved: Vec::new(),
+            skips: Vec::new(),
             checking: false,
         });
     }
@@ -2211,6 +2234,7 @@ impl App {
                 KeyCode::Char('t' | 'T') => self.run_action(Action::PasteTags),
                 KeyCode::Char('p' | 'P') => self.run_action(Action::PastePath),
                 KeyCode::Char('c' | 'C') => self.open_chmod(),
+                KeyCode::Char('e' | 'E') => self.open_chattr(),
                 KeyCode::Char('o' | 'O') => self.open_chown(),
                 // MC's four: l hard, s absolute, v relative, C-s edit
                 KeyCode::Char('s' | 'S') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -2229,6 +2253,7 @@ impl App {
                 }
                 KeyCode::Char('a' | 'A') => self.run_action(Action::VfsList),
                 KeyCode::Char('h' | 'H') => self.run_action(Action::HotlistAdd),
+                KeyCode::Char('r' | 'R') => self.run_action(Action::JobReport),
                 KeyCode::Char('!') => self.run_action(Action::Panelize),
                 _ => {}
             }
@@ -2238,7 +2263,7 @@ impl App {
             self.prefix_cx = true;
             self.status = Some(
                 " C-x  (d = compare, q = quick view, i = info, c = chmod, \
-                 o = chown, s = symlink, j = jobs, a = active VFS, \
+                 e = chattr, o = chown, s = symlink, j = jobs, a = active VFS, \
                  u = undo, f = filter sets, m = restore marks, \
                  space = size every directory, 0-9 = the numbered \
                  places, ! = panelize, t/p = paste tags/path) "
@@ -2814,6 +2839,38 @@ impl App {
         self.dialog = Some(Dialog::Chmod(Box::new(dialog)));
     }
 
+    /// C-x e: the file flags of the marked entries (or the cursor
+    /// entry). Local files only: no remote protocol carries them.
+    fn open_chattr(&mut self) {
+        if !self.panels[self.active].is_local() {
+            self.status = Some(" chattr works on local files only ".into());
+            return;
+        }
+        let Some(paths) = self.writable_targets() else {
+            return;
+        };
+        let panel = &self.panels[self.active];
+        let Some(entry) = panel.selected() else {
+            return;
+        };
+        let path = panel.cwd.join(&entry.name);
+        let was = match rcmd_core::attrs::get(&path) {
+            Ok(flags) => flags,
+            Err(err) => {
+                self.status = Some(format!(" chattr: {err} "));
+                return;
+            }
+        };
+        self.dialog = Some(Dialog::Chattr(Box::new(ChattrDialog {
+            name: panel.name_of(entry),
+            paths,
+            flags: was,
+            was,
+            row: 0,
+            button: 0,
+        })));
+    }
+
     /// C-x o: chown on the marked entries (or the cursor entry).
     fn open_chown(&mut self) {
         let Some(paths) = self.writable_targets() else {
@@ -3185,5 +3242,28 @@ fn help_search(help: &mut HelpState, from: usize, max_top: usize) {
     match found {
         Some(at) => help.top = at.min(max_top),
         None => help.note = Some(format!(" \"{}\" is not in the help ", help.query)),
+    }
+}
+
+impl App {
+    /// C-x r: the last job's skip report, one line per thing left alone,
+    /// in the viewer - where it can be searched and scrolled like any
+    /// file. The count on the status line said how many; this says what.
+    fn show_job_report(&mut self) {
+        let Some((title, skips)) = &self.last_report else {
+            self.status = Some(" no job has skipped anything ".into());
+            return;
+        };
+        let mut text = format!("{} - {} skipped\n\n", title.trim(), skips.len());
+        for (path, reason) in skips {
+            text.push_str(&format!("{}\n    {reason}\n", path.display()));
+        }
+        let made = crate::scratch::create("job-report.txt").and_then(|(mut out, path)| {
+            std::io::Write::write_all(&mut out, text.as_bytes()).map(|()| path)
+        });
+        match made {
+            Ok(path) => self.open_viewer_on(&path),
+            Err(err) => self.status = Some(format!(" report: {err} ")),
+        }
     }
 }

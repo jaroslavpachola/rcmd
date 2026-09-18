@@ -1,5 +1,6 @@
 pub mod ar;
 pub mod archive;
+pub mod attrs;
 pub mod charset;
 pub mod compare;
 pub mod complete;
