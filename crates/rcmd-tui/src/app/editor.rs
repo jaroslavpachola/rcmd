@@ -46,21 +46,27 @@ impl App {
                 panel.remote.clone().unwrap_or_default(),
                 remote_path.display()
             );
-            let temp = std::env::temp_dir().join(format!(
-                "rcmd-edit-{}-{}",
-                std::process::id(),
-                name.to_string_lossy()
-            ));
-            let fetched = panel.fs.open_read(&remote_path).and_then(|mut reader| {
-                let mut out = std::fs::File::create(&temp)?;
-                std::io::copy(&mut reader, &mut out)?;
-                Ok(())
-            });
-            if let Err(err) = fetched {
-                let _ = std::fs::remove_file(&temp);
-                self.status = Some(format!(" edit: {err} "));
-                return;
-            }
+            let fetched =
+                crate::scratch::create(&name.to_string_lossy()).and_then(|(mut out, temp)| {
+                    let copied = panel
+                        .fs
+                        .open_read(&remote_path)
+                        .and_then(|mut reader| std::io::copy(&mut reader, &mut out));
+                    match copied {
+                        Ok(_) => Ok(temp),
+                        Err(err) => {
+                            let _ = std::fs::remove_file(&temp);
+                            Err(err)
+                        }
+                    }
+                });
+            let temp = match fetched {
+                Ok(temp) => temp,
+                Err(err) => {
+                    self.status = Some(format!(" edit: {err} "));
+                    return;
+                }
+            };
             let hook = RemoteEdit {
                 fs: panel.fs.clone(),
                 remote_path,
@@ -182,11 +188,16 @@ impl App {
         }
         let dir = panel.cwd.clone();
         let buffer = rcmd_core::rename::buffer_for(&names);
-        let temp = std::env::temp_dir().join(format!("rcmd-rename-{}", std::process::id()));
-        if let Err(err) = std::fs::write(&temp, &buffer) {
-            self.status = Some(format!(" bulk rename: {err} "));
-            return;
-        }
+        let written = crate::scratch::create("rename").and_then(|(mut out, temp)| {
+            std::io::Write::write_all(&mut out, buffer.as_bytes()).map(|()| temp)
+        });
+        let temp = match written {
+            Ok(temp) => temp,
+            Err(err) => {
+                self.status = Some(format!(" bulk rename: {err} "));
+                return;
+            }
+        };
         // always the built-in editor - the diff must be processed when
         // the session ends inside rcmd, $EDITOR can't signal that
         let title = format!(

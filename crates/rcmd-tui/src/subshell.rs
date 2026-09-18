@@ -522,10 +522,15 @@ fn build_command(shell: &str, kind: Kind) -> Result<(Option<PathBuf>, Command)> 
     Ok((rcdir, command))
 }
 
+/// Inside the private scratch directory: the rc files are code the
+/// shell runs, so they must not sit where someone else could have put
+/// a directory of their own first.
 fn rc_dir() -> Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("rcmd-subshell-{}", std::process::id()));
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+    let dir = crate::scratch::dir()?.join("subshell");
+    match std::fs::create_dir(&dir) {
+        Err(err) if err.kind() != std::io::ErrorKind::AlreadyExists => Err(err.into()),
+        _ => Ok(dir),
+    }
 }
 
 fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd)> {

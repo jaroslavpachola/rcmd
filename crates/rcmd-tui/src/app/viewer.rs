@@ -416,21 +416,27 @@ impl App {
             return Some((path.clone(), path, Vec::new()));
         }
         let vpath = panel.cwd.join(name);
-        let temp = std::env::temp_dir().join(format!(
-            "rcmd-view-{}-{}",
-            std::process::id(),
-            name.to_string_lossy()
-        ));
-        let fetched = panel.fs.open_read(&vpath).and_then(|mut reader| {
-            let mut out = std::fs::File::create(&temp)?;
-            std::io::copy(&mut reader, &mut out)?;
-            Ok(())
-        });
-        if let Err(err) = fetched {
-            let _ = std::fs::remove_file(&temp);
-            self.status = Some(format!(" view: {err} "));
-            return None;
-        }
+        let fetched =
+            crate::scratch::create(&name.to_string_lossy()).and_then(|(mut out, temp)| {
+                let copied = panel
+                    .fs
+                    .open_read(&vpath)
+                    .and_then(|mut reader| std::io::copy(&mut reader, &mut out));
+                match copied {
+                    Ok(_) => Ok(temp),
+                    Err(err) => {
+                        let _ = std::fs::remove_file(&temp);
+                        Err(err)
+                    }
+                }
+            });
+        let temp = match fetched {
+            Ok(temp) => temp,
+            Err(err) => {
+                self.status = Some(format!(" view: {err} "));
+                return None;
+            }
+        };
         let title = if let Some(prefix) = &panel.remote {
             PathBuf::from(format!("{prefix}{}", vpath.display()))
         } else {
@@ -460,8 +466,8 @@ impl App {
             let err = String::from_utf8_lossy(&output.stderr);
             return Err(err.lines().next().unwrap_or("failed").trim().to_string());
         }
-        let temp = std::env::temp_dir().join(format!("rcmd-view-{}-filtered", std::process::id()));
-        std::fs::write(&temp, &output.stdout).map_err(|err| err.to_string())?;
+        let (mut out, temp) = crate::scratch::create("filtered").map_err(|err| err.to_string())?;
+        std::io::Write::write_all(&mut out, &output.stdout).map_err(|err| err.to_string())?;
         Ok((temp, PathBuf::from(cmd)))
     }
 

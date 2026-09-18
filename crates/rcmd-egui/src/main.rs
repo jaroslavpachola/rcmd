@@ -98,7 +98,7 @@ fn main() -> Result<()> {
             .with_inner_size(gui::window_size(font_size)),
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "rcmd-egui",
         options,
         Box::new(move |cc| {
@@ -110,8 +110,9 @@ fn main() -> Result<()> {
                 startup_keys,
             )?))
         }),
-    )
-    .map_err(|err| anyhow::anyhow!("{err}"))
+    );
+    rcmd_tui::scratch::cleanup();
+    result.map_err(|err| anyhow::anyhow!("{err}"))
 }
 
 /// `$RCMD_EGUI_KEYS` as key events, anything unparseable reported rather

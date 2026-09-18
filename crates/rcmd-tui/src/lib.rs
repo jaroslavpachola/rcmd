@@ -13,6 +13,7 @@ pub mod git;
 pub mod keymap;
 pub mod mcimport;
 pub mod remote;
+pub mod scratch;
 pub mod state;
 pub mod subshell;
 pub mod theme;
