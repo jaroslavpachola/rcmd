@@ -2014,6 +2014,9 @@ pub struct Viewer {
     /// Bytes changed and not yet written, by offset - the file on disk
     /// is untouched until F6.
     pub hex_edits: BTreeMap<u64, u8>,
+    /// The last search hit in the hex view, as (offset, length): the
+    /// hex view shows bytes, so its hit is a byte range, not a line.
+    pub hex_hit: Option<(u64, u64)>,
     /// Leaving with bytes unwritten: Save / Discard / Cancel.
     pub confirm_quit: Option<usize>,
     /// The viewer is on a scratch copy (an archive member, a remote
@@ -4762,9 +4765,18 @@ fn viewer_goto(v: &mut Viewer, input: &str) {
             v.top = line;
             v.top_seg = 0;
             v.found = None;
-            if let rcmd_core::view::Goto::Offset(offset) = goto {
-                // a hex view is where an offset is worth naming
-                v.hex_top = offset - offset % 16;
+            // the hex view goes to the byte itself: an offset names it,
+            // a line or a percentage names where that line starts.
+            // `hex_top` counts rows of sixteen, not bytes.
+            let offset = match goto {
+                rcmd_core::view::Goto::Offset(offset) => offset.min(v.file.size),
+                _ => v.file.offset_of_line(line).unwrap_or(0),
+            };
+            let cap = v.file.size.div_ceil(16).saturating_sub(v.rows as u64);
+            v.hex_top = (offset / 16).min(cap);
+            if v.hex_edit {
+                v.hex_cursor = offset.min(v.file.size.saturating_sub(1));
+                v.hex_low = false;
             }
         }
         Err(err) => v.note = Some(format!(" {err} ")),
@@ -4772,6 +4784,9 @@ fn viewer_goto(v: &mut Viewer, input: &str) {
 }
 
 fn viewer_search(v: &mut Viewer, from: usize, is_next: bool) {
+    if v.hex {
+        return viewer_search_hex(v, is_next);
+    }
     // in nroff mode the search runs over what the overstrikes spell,
     // which is what is on the screen to be looked for
     let search = Search {
@@ -4781,23 +4796,62 @@ fn viewer_search(v: &mut Viewer, from: usize, is_next: bool) {
     match v.file.find(from, &search) {
         Ok(Some(idx)) => {
             v.found = Some(idx);
+            v.hex_hit = None;
             v.top = idx.saturating_sub(2);
             v.top_seg = 0;
-            v.hex = false;
         }
-        Ok(None) => {
-            v.found = None;
-            v.note = Some(
-                if is_next {
-                    " no more matches "
-                } else {
-                    " not found "
-                }
-                .into(),
-            );
-        }
+        Ok(None) => not_found(v, is_next),
         Err(err) => v.note = Some(format!(" {err} ")),
     }
+}
+
+/// A search from the hex view stays in it: the hit is a byte range,
+/// shown where it is, rather than a line in a text view the search
+/// used to switch to. It starts at the cursor, or the top of the view,
+/// and "next" steps past the last hit whichever way it goes.
+fn viewer_search_hex(v: &mut Viewer, is_next: bool) {
+    let search = v.search.to_search();
+    let from = match v.hex_hit {
+        Some((at, _)) if is_next && !search.backwards => at + 1,
+        Some((at, _)) if is_next => at,
+        _ if v.hex_edit => v.hex_cursor,
+        _ => v.hex_top * 16,
+    };
+    match v.file.find_offset(from, &search) {
+        Ok(Some((at, len))) => {
+            v.hex_hit = Some((at, len));
+            v.found = v.file.line_at_offset(at).ok();
+            if let Some(line) = v.found {
+                v.top = line.saturating_sub(2);
+                v.top_seg = 0;
+            }
+            if v.hex_edit {
+                v.hex_cursor = at;
+                v.hex_low = false;
+            }
+            // a couple of rows of context above, as the text view has
+            let row = at / 16;
+            let rows = v.rows.max(1) as u64;
+            if row < v.hex_top || row >= v.hex_top + rows {
+                v.hex_top = row.saturating_sub(2.min(rows - 1));
+            }
+        }
+        Ok(None) => not_found(v, is_next),
+        Err(err) => v.note = Some(format!(" {err} ")),
+    }
+}
+
+fn not_found(v: &mut Viewer, is_next: bool) {
+    v.found = None;
+    v.hex_hit = None;
+    v.note = Some(
+        if is_next {
+            " no more matches "
+        } else {
+            " not found "
+        }
+        .into(),
+    );
 }
 
 /// One position past the cursor, so "search next" skips the current hit.

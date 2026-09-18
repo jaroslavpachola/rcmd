@@ -1850,6 +1850,38 @@ def test_viewgoto():
     shutil.rmtree(root)
 
 
+def test_viewhex():
+    """PLAN5 S0: goto and search inside the hex view. `hex_top` counts
+    rows of sixteen and a goto used to hand it the byte offset itself,
+    landing sixteen times too far; a search used to leave hex mode."""
+    root, play, home = sandbox()
+    # ten bytes a line, so an offset is easy to name
+    body = "".join(f"line {n:04}\n" for n in range(500))
+    open(os.path.join(play, "text.txt"), "w").write(body)
+    s = Session(play, home)
+    s.send(b"\x13text\r", wait=STEP)
+    s.send(F3, wait=STEP * 2)
+    s.send(F4, wait=STEP * 2)
+    check("viewhex: hex mode", "00000000  6C 69 6E 65" in s.screen(), s.screen())
+
+    # 1000 bytes in sits on the row that starts at 0x3E0
+    s.send(F5, wait=STEP)
+    s.send(b"\x150x3e8\r", wait=STEP * 2)
+    scr = s.screen()
+    check("viewhex: goto lands on the offset's row", "000003E0  " in scr, scr)
+
+    # "line 0321" is at 3210, on the row at 0xC80, and the view stays hex
+    s.send(F7, wait=STEP * 2)
+    s.send(b"\x15line 0321\r", wait=STEP * 2)
+    scr = s.screen()
+    check("viewhex: the search found it in hex", "00000C80  " in scr, scr)
+    check("viewhex: and stayed in hex", "line 0321\n" not in scr and "6C 69 6E 65" in scr, scr)
+
+    s.send(b"q", wait=STEP)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_viewfiles():
     """The rest of reading a file in the viewer: nroff formatting, the
     [[view]] filter swapped in and out under the same file, and the next
@@ -5751,6 +5783,7 @@ def main():
         test_viewer,
         test_viewsearch,
         test_viewgoto,
+        test_viewhex,
         test_viewfiles,
         test_hexedit,
         test_archive,

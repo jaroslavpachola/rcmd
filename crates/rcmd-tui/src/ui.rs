@@ -3318,6 +3318,13 @@ fn hex_line(v: &crate::app::Viewer, offset: u64, bytes: &[u8]) -> Line<'static> 
     let at_cursor = |i: usize, ascii: bool| {
         v.hex_edit && v.hex_ascii == ascii && offset + i as u64 == v.hex_cursor
     };
+    let hit = |i: usize| {
+        v.hex_hit
+            .is_some_and(|(at, len)| (at..at + len).contains(&(offset + i as u64)))
+    };
+    let found = Style::new()
+        .fg(th().mark_fg)
+        .add_modifier(Modifier::BOLD | Modifier::REVERSED);
     let mut spans: Vec<Span> = vec![Span::raw(format!("{offset:08X}  "))];
     for i in 0..16 {
         if i == 8 {
@@ -3331,6 +3338,7 @@ fn hex_line(v: &crate::app::Viewer, offset: u64, bytes: &[u8]) -> Line<'static> 
         let style = match (at_cursor(i, false), edit.is_some()) {
             (true, _) => cursor,
             (false, true) => changed,
+            _ if hit(i) => found,
             _ => Style::new(),
         };
         spans.push(Span::styled(format!("{:02X}", edit.unwrap_or(raw)), style));
@@ -3343,6 +3351,7 @@ fn hex_line(v: &crate::app::Viewer, offset: u64, bytes: &[u8]) -> Line<'static> 
         let style = match (at_cursor(i, true), edit.is_some()) {
             (true, _) => cursor,
             (false, true) => changed,
+            _ if hit(i) => found,
             _ => Style::new(),
         };
         let shown = if (0x20..0x7F).contains(&byte) {

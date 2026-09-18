@@ -171,6 +171,26 @@ impl Search {
 }
 
 impl Search {
+    /// The same search for raw bytes, which is what the hex view looks
+    /// at: a match there is a byte offset, not a line. The hit is the
+    /// `hit` group, so a whole-word match does not count the character
+    /// on either side of it.
+    fn compile_bytes(&self) -> Result<regex::bytes::Regex, String> {
+        let body = match self.kind {
+            SearchKind::Regex => self.pattern.clone(),
+            _ => regex::escape(&self.pattern),
+        };
+        let pattern = if self.whole_word {
+            format!(r"(?:^|\W)(?P<hit>{body})(?:$|\W)")
+        } else {
+            format!("(?P<hit>{body})")
+        };
+        regex::bytes::RegexBuilder::new(&pattern)
+            .case_insensitive(!self.case_sensitive)
+            .build()
+            .map_err(|err| err.to_string())
+    }
+
     /// Where this search matches inside one line, as character index
     /// ranges, for painting the hits. A hexadecimal search matches
     /// bytes rather than characters, so it highlights nothing - the
@@ -474,6 +494,75 @@ impl FileView {
             idx += 1;
         }
         Ok(None)
+    }
+
+    /// Find a match as a byte offset and length, for the hex view, which
+    /// shows bytes rather than lines. Forward is the first match at or
+    /// after `from`; backwards the last one that starts before it. A
+    /// text pattern is matched against each line's raw bytes, so what
+    /// comes back is where the match sits in the file.
+    pub fn find_offset(&mut self, from: u64, search: &Search) -> io::Result<Option<(u64, u64)>> {
+        if search.kind == SearchKind::Hex {
+            let needle = parse_hex(&search.pattern).map_err(io::Error::other)?;
+            let len = needle.len() as u64;
+            return Ok(self
+                .find_bytes(from, &needle, search.backwards)?
+                .map(|at| (at, len)));
+        }
+        let re = search.compile_bytes().map_err(io::Error::other)?;
+        let hits = |start: u64, bytes: &[u8]| -> Vec<(u64, u64)> {
+            re.captures_iter(bytes)
+                .filter_map(|caps| caps.name("hit"))
+                .filter(|m| !m.is_empty())
+                .map(|m| (start + m.start() as u64, m.len() as u64))
+                .collect()
+        };
+        if search.backwards {
+            if from == 0 {
+                return Ok(None);
+            }
+            let mut idx = self.line_at_offset(from - 1)?;
+            loop {
+                if let Some((start, bytes)) = self.raw_line(idx)?
+                    && let Some(hit) = hits(start, &bytes)
+                        .into_iter()
+                        .rev()
+                        .find(|(at, _)| *at < from)
+                {
+                    return Ok(Some(hit));
+                }
+                if idx == 0 {
+                    return Ok(None);
+                }
+                idx -= 1;
+            }
+        }
+        let mut idx = self.line_at_offset(from)?;
+        while let Some((start, bytes)) = self.raw_line(idx)? {
+            if let Some(hit) = hits(start, &bytes).into_iter().find(|(at, _)| *at >= from) {
+                return Ok(Some(hit));
+            }
+            idx += 1;
+        }
+        Ok(None)
+    }
+
+    /// One line's bytes as they are on disk, newline stripped, with the
+    /// offset it starts at.
+    fn raw_line(&mut self, idx: usize) -> io::Result<Option<(u64, Vec<u8>)>> {
+        self.ensure_lines(idx + 2)?;
+        let Some(&start) = self.offsets.get(idx) else {
+            return Ok(None);
+        };
+        let end = self.offsets.get(idx + 1).copied().unwrap_or(self.size);
+        let mut buf = self.read_at(start, end.saturating_sub(start) as usize)?;
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+        }
+        Ok(Some((start, buf)))
     }
 
     /// Find a byte sequence, which is what a hexadecimal search is for:
@@ -828,6 +917,30 @@ mod search_tests {
         re.whole_word = true;
         let err = f.find(0, &re).unwrap_err().to_string();
         assert!(!err.contains(r"(?:^|\W)"), "{err}");
+    }
+
+    #[test]
+    fn the_hex_view_finds_a_byte_offset_either_way() {
+        // "first line\n" is 11 bytes, so "second" starts at 11 and its
+        // "LINE" at 18
+        let (_dir, mut f) = view(TEXT);
+        assert_eq!(f.find_offset(0, &search("line")).unwrap(), Some((6, 4)));
+        assert_eq!(f.find_offset(7, &search("line")).unwrap(), Some((18, 4)));
+        assert_eq!(f.find_offset(18, &search("line")).unwrap(), Some((18, 4)));
+
+        let mut back = search("line");
+        back.backwards = true;
+        assert_eq!(f.find_offset(18, &back).unwrap(), Some((6, 4)));
+        assert_eq!(f.find_offset(6, &back).unwrap(), None);
+
+        // a whole word does not count its neighbours as part of the hit
+        let mut word = search("the");
+        word.whole_word = true;
+        assert_eq!(f.find_offset(0, &word).unwrap(), Some((28, 3)));
+
+        let mut hex = search("4c 49 4e 45");
+        hex.kind = SearchKind::Hex;
+        assert_eq!(f.find_offset(0, &hex).unwrap(), Some((18, 4)));
     }
 
     #[test]

@@ -372,6 +372,7 @@ impl App {
                     hex_low: false,
                     hex_ascii: false,
                     hex_edits: BTreeMap::new(),
+                    hex_hit: None,
                     confirm_quit: None,
                     scratch,
                     rows: 1,
