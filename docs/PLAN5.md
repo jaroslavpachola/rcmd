@@ -163,7 +163,15 @@ and Ctrl+Insert puts the names on the clipboard. The fuzzy tree
   that 4.30.8 already built. ORTHODOX-DIFF §3's fuzzy tree is the
   sibling row; decide them together.
 
-### S3 - the first run, and mc's leftovers
+### S3 - the first run, and mc's leftovers - DONE (2026-09-18, 4.34.0)
+
+Shipped as below, with these left: SFTP and FISH reconnect after a
+dropped connection (the keepalive makes it rarer; FTP already logs in
+again), `ProxyJump` and `Include` in `~/.ssh/config`, mouse clicks in
+the dialogs beyond find, copy/move, select and link, and the subshell
+prompt for a shell that has wandered from the panel (the `dir$` form is
+shown then, rather than a prompt naming the wrong place).
+
 
 - **Ship default `[[open]]` / `[[view]]` rules.** All three tables
   default to `Vec::new()` (`config.rs:471-473`), so a fresh install's

@@ -1,5 +1,68 @@
 # Changelog
 
+## 4.34.0 - 2026-09-18
+
+[PLAN5](docs/PLAN5.md)'s S3: what a fresh install gets right, and what
+mc had that rcmd did not.
+
+- **F3 shows what a file says, not its bytes.** A small built-in set
+  of `[[view]]` rules - PDF, PostScript, DjVu, Word, ODT, man pages,
+  tarballs, images and media - each used only where its tool is
+  installed and after your own rules (`builtin_view = false` turns them
+  off). A man page is told by what `file` says, so `syslog.1` stays a
+  log. A lone `.gz`, `.xz`, `.bz2` or `.zst` reads as what it holds.
+
+- **Sorting as mc sorts.** Version sort (`file2` before `file10`),
+  directories mixed with files, and a case-sensitive sort, in the
+  panel menus. Each panel keeps its own hidden, sort and listing
+  settings across sessions. `time_format`, `time_format_old` (the year
+  for anything past six months, as `ls -l` shows it) and `si_units`.
+
+- **mc's keys**: Alt+G / Alt+R / Alt+J to the top, middle and bottom
+  of the screen, Ctrl+X h to add the directory to the hotlist, Alt+,
+  to flip the panels' split.
+
+- **The viewer**: `N` searches back, `n` wraps round past the last
+  hit, the first search says how many lines match, and `rcview -` pages
+  through a pipe.
+
+- **The editor**: a file with both line endings keeps both - every LF
+  line used to come back CRLF on the first save. Saving over a change
+  made on disk since the file was opened asks first. F12 saves as.
+  Replace All is one undo step. Tab and Shift+Tab indent and outdent a
+  selection. Alt+B jumps to the matching bracket, Alt+Tab completes a
+  word from the file's own words. Each file reopens where it was left.
+  F7 is the viewer's search dialog: literal, regular expression or
+  hexadecimal, case, whole words, backwards.
+
+- **Remote**: `~/.ssh/config`'s HostName, User, Port and IdentityFile
+  apply to `sftp://` and `fish://`; `~/.netrc` to `ftp://`; IPv6
+  addresses parse in brackets; an idle SSH connection sends a keepalive
+  every 30 seconds.
+
+- **Help that knows where it is.** F1 in the viewer, the editor, the
+  diff or a dialog opens the help at the part about it, and closing it
+  lands back there. `/` searches the help, `n` goes on.
+
+- **The mouse**: the right button marks, the wheel scrolls list
+  dialogs, and the find, copy/move, select and link dialogs take clicks
+  on their fields, switches and buttons.
+
+- **The shell's own prompt** on the command line while the shell
+  stands where the panel does, and the terminal title (and the
+  window's) says where the active panel is; the old title comes back on
+  exit.
+
+- **The tree**: F5, F6 and F8 act on the selected directory, F7 makes
+  one inside it.
+
+- **Tooling**: `--import-mc` follows `mc.ext.ini`'s `Include=` and
+  reads mc's own files in `/etc/mc` for any you never changed (it
+  used to find nothing on a stock install). `--print-config` prints
+  every setting commented. A config error shows its line and reason on
+  one line. A man page and bash, zsh and fish completions in
+  `contrib/`.
+
 ## 4.33.0 - 2026-09-18
 
 [PLAN5](docs/PLAN5.md)'s S2: find says where, and what it finds lasts.
