@@ -937,8 +937,10 @@ fn try_transfer_file(
         let _ = writer.remove_file(dst);
         return copied;
     }
+    // across machines a uid means someone else: the special bits do
+    // not travel, the way they do not out of an archive
     if entry.mode != 0 {
-        let _ = writer.set_mode(dst, entry.mode);
+        let _ = writer.set_mode(dst, entry.mode & 0o777);
     }
     if let Some(modified) = entry.mtime {
         let _ = writer.set_mtime(dst, modified);
@@ -2000,11 +2002,14 @@ fn try_extract_file(
         ctx.bytes_done += n as u64;
         ctx.progress(src);
     }
+    // setuid, setgid and sticky stay in the archive: a program that
+    // ran as whoever extracted it is not a permission an archive can
+    // grant, and tar drops them for anyone but root too
     #[cfg(unix)]
     if mode != 0 {
         use std::os::unix::fs::PermissionsExt;
         output
-            .set_permissions(std::fs::Permissions::from_mode(mode))
+            .set_permissions(std::fs::Permissions::from_mode(mode & 0o777))
             .map_err(CopyErr::Io)?;
     }
     if let Some(modified) = mtime {
@@ -3714,6 +3719,42 @@ mod tests {
         assert!(!out.aborted);
         assert_eq!(out.files_done, 2);
         assert!(!dir.exists());
+    }
+
+    /// An archive is somebody else's files: a setuid or setgid bit in
+    /// one would make the extracted program run as whoever extracted
+    /// it, which is not a permission the archive can grant. tar drops
+    /// them for anyone but root; so does this.
+    #[test]
+    fn extracting_drops_setuid_and_setgid() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let archive_path = tmp.path().join("a.tar.gz");
+        let gz = GzEncoder::new(
+            fs::File::create(&archive_path).unwrap(),
+            Compression::default(),
+        );
+        let mut tar = tar::Builder::new(gz);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(2);
+        header.set_mode(0o6755);
+        header.set_cksum();
+        tar.append_data(&mut header, "tool", &b"#!"[..]).unwrap();
+        tar.into_inner().unwrap().finish().unwrap();
+
+        let afs = Arc::new(crate::archive::ArchiveFs::open(&archive_path).unwrap());
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+        let result = run(
+            spawn_extract(afs, vec![PathBuf::from("tool")], out.clone()),
+            vec![],
+        );
+        assert!(!result.aborted);
+        let mode = fs::metadata(out.join("tool")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o7777, 0o755, "{mode:o}");
     }
 
     #[test]
