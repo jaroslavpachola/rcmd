@@ -1426,7 +1426,7 @@ fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
         return Ok(());
     };
     if meta.is_dir() {
-        if dst.starts_with(src) {
+        if inside(ctx, dst, src) {
             return ctx.error(src, "cannot copy a directory into itself");
         }
         let created = ctx.with_retry(dst, || match fs::create_dir(dst) {
@@ -1452,7 +1452,7 @@ fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
         Ok(())
     } else if meta.is_symlink() {
         ctx.progress(src);
-        if src == dst {
+        if src == dst || same_file(&meta, dst, false) {
             return ctx.error(src, "source and destination are the same file");
         }
         if ctx.may_overwrite(FileFacts::of_path(src), dst, false)? == Overwrite::Skip {
@@ -1494,7 +1494,9 @@ fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
         Ok(())
     } else {
         ctx.progress(src);
-        if src == dst {
+        // followed: the copy opens `dst` to write, and a symlink there
+        // would take the truncation straight through to the source
+        if src == dst || same_file(&meta, dst, true) {
             return ctx.error(src, "source and destination are the same file");
         }
         // the one place Append and Reget make sense: a local file
@@ -1579,6 +1581,57 @@ fn read_full(file: &mut fs::File, buf: &mut [u8]) -> io::Result<usize> {
         }
     }
     Ok(have)
+}
+
+/// Whether `dst` is the file `src_meta` describes. Comparing names
+/// misses a hard link, and a name reached through a symlink; the
+/// device and inode do not. `follow` says whether a symlink standing at
+/// `dst` counts as what it points at - it does for anything that opens
+/// `dst` to write into it.
+fn same_file(src_meta: &fs::Metadata, dst: &Path, follow: bool) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let dst_meta = if follow {
+        fs::metadata(dst)
+    } else {
+        fs::symlink_metadata(dst)
+    };
+    dst_meta.is_ok_and(|d| d.dev() == src_meta.dev() && d.ino() == src_meta.ino())
+}
+
+/// Whether `dst` lies inside the directory `src`. `link/x`, where
+/// `link` points at `src`, is inside it however the names read, and a
+/// copy there finds its own output and recurses until the names grow
+/// too long. Symlinks are resolved only for the job's top source:
+/// below it the names are as they were read, and the lexical test is
+/// the whole story.
+fn inside(ctx: &Ctx, dst: &Path, src: &Path) -> bool {
+    if dst.starts_with(src) {
+        return true;
+    }
+    if ctx.copy_root.as_deref() != Some(src) {
+        return false;
+    }
+    fs::canonicalize(src).is_ok_and(|real| resolve(dst).starts_with(real))
+}
+
+/// `path` with its symlinks resolved, for a path whose tail need not
+/// exist yet: the deepest ancestor that does is resolved and the rest
+/// put back on.
+fn resolve(path: &Path) -> PathBuf {
+    let mut tail = Vec::new();
+    let mut head = path;
+    loop {
+        if let Ok(real) = fs::canonicalize(head) {
+            return tail.iter().rev().fold(real, |acc, part| acc.join(part));
+        }
+        match (head.parent(), head.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                head = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
 }
 
 fn is_special(meta: &fs::Metadata) -> bool {
@@ -1668,10 +1721,12 @@ fn try_copy_file(ctx: &mut Ctx, src: &Path, dst: &Path, mode: Overwrite) -> Resu
 
 fn move_one(ctx: &mut Ctx, src: &Path, dst: &Path, totals: &mut (u64, u64)) -> Result<(), Aborted> {
     ctx.progress(src);
-    if src == dst {
+    ctx.copy_root = Some(src.to_path_buf());
+    let same = fs::symlink_metadata(src).is_ok_and(|meta| same_file(&meta, dst, false));
+    if src == dst || same {
         return ctx.error(src, "source and destination are the same file");
     }
-    if dst.starts_with(src) {
+    if inside(ctx, dst, src) {
         return ctx.error(src, "cannot move a directory into itself");
     }
     if ctx.may_overwrite(FileFacts::of_path(src), dst, false)? == Overwrite::Skip {
@@ -1701,7 +1756,6 @@ fn move_one(ctx: &mut Ctx, src: &Path, dst: &Path, totals: &mut (u64, u64)) -> R
                     files: totals.0,
                     bytes: totals.1,
                 });
-                ctx.copy_root = Some(src.to_path_buf());
                 let before = ctx.skipped;
                 move_across(ctx, src, dst)?;
                 // a half-moved tree has no single rename that undoes it
@@ -1737,7 +1791,7 @@ fn move_across(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
         }
         return Ok(());
     }
-    if dst.starts_with(src) {
+    if inside(ctx, dst, src) {
         return ctx.error(src, "cannot move a directory into itself");
     }
     let created = ctx.with_retry(dst, || match fs::create_dir(dst) {
@@ -2696,6 +2750,119 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("open_read blocked on a FIFO");
         assert!(refused);
+    }
+
+    /// Overwrite a file with a hard link of itself and the truncating
+    /// create empties both names at once: the source is gone before a
+    /// byte of it is read. Names differ, so only the inode tells.
+    #[test]
+    fn copying_a_file_onto_its_own_hard_link_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.txt");
+        fs::write(&a, b"precious").unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+        fs::hard_link(&a, out.join("a.txt")).unwrap();
+
+        let res = run(
+            spawn_copy(vec![a.clone()], out.clone(), TransferOpts::default(), None),
+            vec![Reply::Skip],
+        );
+        assert_eq!(fs::read(&a).unwrap(), b"precious");
+        assert!(
+            res.asks.iter().any(|ask| ask.contains("same file")),
+            "{:?}",
+            res.asks
+        );
+    }
+
+    /// ...and the same through a symlink standing where the copy lands.
+    #[test]
+    fn copying_a_file_onto_a_symlink_to_itself_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.txt");
+        fs::write(&a, b"precious").unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+        std::os::unix::fs::symlink(&a, out.join("a.txt")).unwrap();
+
+        let res = run(
+            spawn_copy(vec![a.clone()], out.clone(), TransferOpts::default(), None),
+            vec![Reply::Skip],
+        );
+        assert_eq!(fs::read(&a).unwrap(), b"precious");
+        assert!(
+            res.asks.iter().any(|ask| ask.contains("same file")),
+            "{:?}",
+            res.asks
+        );
+    }
+
+    /// `link/inner` where `link` points at the source is inside the
+    /// source: the copy would find its own output and recurse.
+    #[test]
+    fn copying_a_directory_into_itself_through_a_symlink_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path().join("d");
+        fs::create_dir(&d).unwrap();
+        fs::write(d.join("f.txt"), b"f").unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&d, &link).unwrap();
+
+        let res = run(
+            spawn_copy(
+                vec![d.clone()],
+                link.join("inner"),
+                TransferOpts::default(),
+                None,
+            ),
+            vec![Reply::Skip],
+        );
+        assert!(
+            res.asks.iter().any(|ask| ask.contains("into itself")),
+            "{:?}",
+            res.asks
+        );
+        assert!(!d.join("inner").exists());
+
+        let res = run(
+            spawn_move(
+                vec![d.clone()],
+                link.join("inner"),
+                TransferOpts::default(),
+                None,
+            ),
+            vec![Reply::Skip],
+        );
+        assert!(
+            res.asks.iter().any(|ask| ask.contains("into itself")),
+            "{:?}",
+            res.asks
+        );
+        assert!(d.join("f.txt").exists());
+    }
+
+    /// A move onto a hard link of itself: rename() of one inode onto
+    /// itself succeeds and does nothing, which reported a move that
+    /// never happened.
+    #[test]
+    fn moving_a_file_onto_its_own_hard_link_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.txt");
+        fs::write(&a, b"precious").unwrap();
+        let b = tmp.path().join("b.txt");
+        fs::hard_link(&a, &b).unwrap();
+
+        let res = run(
+            spawn_move(vec![a.clone()], b.clone(), TransferOpts::default(), None),
+            vec![Reply::Skip],
+        );
+        assert!(
+            res.asks.iter().any(|ask| ask.contains("same file")),
+            "{:?}",
+            res.asks
+        );
+        assert_eq!(fs::read(&a).unwrap(), b"precious");
     }
 
     /// The cross-device fallback copies and then deletes. Whatever the
