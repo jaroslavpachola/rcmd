@@ -1,5 +1,79 @@
 # Changelog
 
+## 4.31.0 - 2026-09-18
+
+The bug release that opens [PLAN5](docs/PLAN5.md): every item of its S0,
+each with a test that failed before the fix.
+
+- **A move across filesystems no longer deletes what it skipped.** The
+  fallback copied the whole tree and then deleted the whole source, and
+  a file whose copy was answered Skip - an overwrite prompt, an error -
+  never arrived and was deleted anyway. It now removes each source file
+  only once its copy is done, and a directory only when nothing under
+  it was skipped.
+
+- **The editor no longer forgets it is modified.** Typing straight after
+  F2 was merged into the undo step the file was saved at, so the buffer
+  still looked saved: F10 quit without asking and the new text was lost.
+
+- **The same-file and into-itself guards look at the disk.** A copy
+  onto a hard link of the source, or onto a symlink pointing back at it,
+  passed the name comparison, and Overwrite then truncated the source
+  before a byte was read. A directory copied into `link/x`, with `link`
+  pointing at it, recursed into its own output. Device and inode numbers
+  decide now, and the job's top source has its symlinks resolved.
+
+- **A FIFO or device in a copied tree is recreated, not read.** Opening
+  a FIFO blocked the job until a writer came, and a device node was
+  copied as data. They are made again with `mknod`, as mc does, and
+  nothing but a regular file is ever opened for its bytes.
+
+- **A failed copy leaves no partial file.** A read or write error
+  answered Skip, or a Verify pass that did not read back, left a file
+  that looked copied. Only a cancel used to clean up.
+
+- **Window: Ctrl+X, Ctrl+C and Ctrl+V work.** egui turns them into
+  clipboard events and swallows the key, so every mc `C-x` chord was
+  dead in the window build. The events are mapped back to their keys.
+
+- **Hex view: goto and search.** A goto to an offset landed sixteen
+  times too far, and every search hit dropped the viewer back to text.
+  A search from hex now runs over bytes, stays in hex and highlights the
+  hit; a line or percentage goto takes the hex view to that line.
+
+- **No passwords in the history.** `cd ftp://user:pass@host` wrote the
+  password to `state.toml` in the command history, and the field
+  history had the same hole. URL passwords are taken out on the way in,
+  and out of an older state file on the way back.
+
+- **Scratch files live in a private directory.** Remote edit and view
+  copies, the bulk-rename buffer, `[[view]]` output and the subshell's
+  rc files were made at `$TMPDIR/rcmd-<pid>-<name>`: guessable, no
+  `O_EXCL`, symlinks followed. They now sit in one random 0700
+  directory per process, created exclusively, removed on exit.
+
+- **FTP refuses a line break in a command.** A CR or LF in a file
+  name, which a server's own listing can supply, sent the rest of the
+  name as a second command.
+
+- **7z and unrar take member names literally.** A member called
+  `-p.txt` was a switch, `@list` a list file, and `*.txt` a wildcard;
+  they now get `--`, and 7z `-spd`.
+
+- **Extracted files lose setuid, setgid and sticky**, as with tar for
+  anyone but root; so do files transferred to or from another machine.
+
+- **M-n sorts by name again.** The command line took it as a history
+  step even with no walk under way, so the default binding never fired.
+  It steps history only while a walk is under way now.
+
+- **A dialog field's M-n keeps what was typed.** With no walk it wiped a
+  prefilled value, and stepping forward past the newest entry emptied
+  the field instead of putting back what was there.
+
+- **The Panelize Save-as field and the SSH password field keep their
+  cursor**, instead of resetting it to the end on every key.
+
 ## 4.30.8 - 2026-09-17
 
 - **Find file is three to four times faster.** The walk ran on one

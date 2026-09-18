@@ -39,7 +39,7 @@ places where mc stayed down to earth.
 
 ## Phases
 
-### S0 - the bugs (blocks everything; a release of its own)
+### S0 - the bugs (blocks everything; a release of its own) - DONE (2026-09-18, 4.31.0)
 
 - **A cross-device move deletes files it skipped.** [read]
   `move_one`'s fallback is `copy_tree(ctx, src, dst)?;
