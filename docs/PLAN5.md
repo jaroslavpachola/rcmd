@@ -130,7 +130,13 @@ instead of each dialog growing its own.
   actions, and pasted code staircases in the editor. One event, routed
   to whatever has the focus.
 
-### S2 - find, and a panelized listing that lasts
+### S2 - find, and a panelized listing that lasts - DONE (2026-09-18, 4.33.0)
+
+Shipped as below, except saving a panelized listing under a name: the
+external panelize's saved commands (`cat list.txt`) already reload one,
+and Ctrl+Insert puts the names on the clipboard. The fuzzy tree
+(ORTHODOX-DIFF §3) stays Adopt-later; the finder shipped on its own.
+
 
 - **Hits carry their position.** The matchers return a bool at the
   first hit (`find.rs:221-293`) and `FindEvent::Match` carries only an

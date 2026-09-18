@@ -1,5 +1,44 @@
 # Changelog
 
+## 4.33.0 - 2026-09-18
+
+[PLAN5](docs/PLAN5.md)'s S2: find says where, and what it finds lasts.
+
+- **A content hit is a file, a line and the text.** The results window
+  shows `file:line: text`, View and Edit open the file at that line with
+  the search already set, and mc's **First hit** is a switch: off, every
+  matching line of every file is a result of its own. Lines are counted
+  only when there is a hit to number, so a search over files that do not
+  match costs what it did in 4.30.8.
+
+- **Walk the hits from inside the viewer or editor.** Alt+. and Alt+,
+  go to the next and previous result, down the file and on into the next
+  one - a quickfix list, which mc has never had. The editor will not
+  leave a file with unsaved changes to do it.
+
+- **The questions mc never asked.** Directories to ignore (a name
+  anywhere, or a path from the start), a size, an age and a max depth;
+  **Find recursively** off is the start directory alone; and the name
+  and the content have a case switch each, as in mc. The dialog is laid
+  out a field to a row and the switches two to a row, so it still fits
+  24 lines.
+
+- **Operate from the results window.** Insert marks rows, `*` inverts,
+  and F5, F6 and F8 copy, move and delete the marked files - or the one
+  under the cursor - without a trip through Panelize.
+
+- **A panelized listing outlives a job.** Every finished copy, move or
+  delete reloaded both panels, and a reload of a panelized list was the
+  directory again. The files are looked at again instead: what is gone
+  drops out, the rest show their new size. Ctrl+R is still the way
+  back to the directory.
+
+- **A fuzzy finder**, on Alt+/ and in the Command menu: a few letters
+  of a path under the panel, ranked as the tree is walked - the file
+  name favoured over the directories above it, runs and word starts
+  over scattered letters, the matched letters lit. Enter goes there,
+  F3 and F4 view and edit.
+
 ## 4.32.0 - 2026-09-18
 
 [PLAN5](docs/PLAN5.md)'s S1: one text field for every form, so each
