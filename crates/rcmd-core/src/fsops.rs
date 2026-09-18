@@ -1650,9 +1650,11 @@ fn move_one(ctx: &mut Ctx, src: &Path, dst: &Path, totals: &mut (u64, u64)) -> R
                     files: totals.0,
                     bytes: totals.1,
                 });
-                copy_tree(ctx, src, dst)?;
-                delete_tree(ctx, src)?;
-                ctx.moved(clean, src, dst);
+                ctx.copy_root = Some(src.to_path_buf());
+                let before = ctx.skipped;
+                move_across(ctx, src, dst)?;
+                // a half-moved tree has no single rename that undoes it
+                ctx.moved(clean && ctx.skipped == before, src, dst);
                 ctx.progress(src);
                 return Ok(());
             }
@@ -1662,6 +1664,54 @@ fn move_one(ctx: &mut Ctx, src: &Path, dst: &Path, totals: &mut (u64, u64)) -> R
             },
         }
     }
+}
+
+/// The move `rename` could not do: copy, then delete the source - but
+/// only what arrived. A file whose copy was skipped, by an overwrite
+/// answer or an error answer, stays where it was, and so does every
+/// directory above it; the old copy-everything-then-delete-everything
+/// deleted what it had skipped.
+fn move_across(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
+    if ctx.cancelled() {
+        return Err(Aborted);
+    }
+    let Some(meta) = ctx.with_retry(src, || src.symlink_metadata())? else {
+        return Ok(());
+    };
+    let before = ctx.skipped;
+    if !meta.is_dir() {
+        copy_tree(ctx, src, dst)?;
+        if ctx.skipped == before {
+            ctx.with_retry(src, || fs::remove_file(src))?;
+        }
+        return Ok(());
+    }
+    if dst.starts_with(src) {
+        return ctx.error(src, "cannot move a directory into itself");
+    }
+    let created = ctx.with_retry(dst, || match fs::create_dir(dst) {
+        Err(ref e) if e.kind() == io::ErrorKind::AlreadyExists && dst.is_dir() => Ok(()),
+        other => other,
+    })?;
+    if created.is_none() {
+        return Ok(());
+    }
+    let Some(names) = read_names(ctx, src)? else {
+        return Ok(());
+    };
+    for name in names {
+        move_across(ctx, &src.join(&name), &dst.join(&name))?;
+    }
+    if ctx.opts.preserve
+        && let Ok(modified) = meta.modified()
+        && let Ok(dir) = fs::File::open(dst)
+    {
+        let _ = dir.set_times(fs::FileTimes::new().set_modified(modified));
+    }
+    if ctx.skipped == before {
+        ctx.with_retry(src, || fs::remove_dir(src))?;
+    }
+    Ok(())
 }
 
 fn delete_tree(ctx: &mut Ctx, path: &Path) -> Result<(), Aborted> {
@@ -2537,6 +2587,65 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    /// The cross-device fallback copies and then deletes. Whatever the
+    /// copy skipped - an overwrite answered Skip, an error answered
+    /// Skip - never arrived, so it must not be deleted from the source.
+    #[test]
+    fn a_move_across_devices_keeps_what_it_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("a.txt"), b"a").unwrap();
+        fs::write(src.join("b.txt"), b"new-b").unwrap();
+        fs::write(src.join("sub/c.txt"), b"c").unwrap();
+        let dst = tmp.path().join("dst");
+        fs::create_dir(&dst).unwrap();
+        fs::write(dst.join("b.txt"), b"old-b").unwrap();
+
+        let (from, to) = (src.clone(), dst.clone());
+        let out = run(
+            spawn(move |ctx| move_across(ctx, &from, &to)),
+            vec![Reply::Skip],
+        );
+        assert!(!out.aborted);
+        assert_eq!(out.skipped, 1);
+        // what arrived left the source
+        assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"a");
+        assert_eq!(fs::read(dst.join("sub/c.txt")).unwrap(), b"c");
+        assert!(!src.join("a.txt").exists());
+        assert!(!src.join("sub").exists());
+        // what was skipped is still where it was, and so is its directory
+        assert_eq!(fs::read(src.join("b.txt")).unwrap(), b"new-b");
+        assert_eq!(fs::read(dst.join("b.txt")).unwrap(), b"old-b");
+    }
+
+    /// Skip on a copy error is the same story: the file never arrived.
+    #[test]
+    fn a_move_across_devices_keeps_a_file_it_could_not_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("ok.txt"), b"ok").unwrap();
+        let locked = src.join("locked.txt");
+        fs::write(&locked, b"secret").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::File::open(&locked).is_ok() {
+            return; // running as root: nothing is unreadable
+        }
+        let dst = tmp.path().join("dst");
+
+        let (from, to) = (src.clone(), dst.clone());
+        let out = run(
+            spawn(move |ctx| move_across(ctx, &from, &to)),
+            vec![Reply::Skip],
+        );
+        assert!(!out.aborted);
+        assert!(!src.join("ok.txt").exists());
+        assert_eq!(fs::read(dst.join("ok.txt")).unwrap(), b"ok");
+        assert!(locked.exists(), "the unreadable file was deleted");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
     }
 
     #[test]
