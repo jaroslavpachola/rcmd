@@ -65,7 +65,7 @@ signal.alarm(900)  # hard cap for the whole suite (the scale test is slow)
 
 class Session:
     def __init__(self, cwd, home, args=(), shell="/bin/sh", subshell=None, argv0=None,
-                 exec_argv=None):
+                 exec_argv=None, env=None):
         self.buf = b""
         want = SUBSHELL if subshell is None else subshell
         cfg = os.path.join(home, ".config", "rcmd", "config.toml")
@@ -93,6 +93,7 @@ class Session:
             # the binary under test is what `rcmd` means in here - the
             # shipped wrappers call it by name
             os.environ["PATH"] = os.path.dirname(BIN) + ":" + os.environ.get("PATH", "")
+            os.environ.update(env or {})
             if exec_argv:                     # a shell that will run rcmd itself
                 os.execv(exec_argv[0], exec_argv)
             # argv[0] is what picks rcedit/rcview/rcdiff apart from rcmd
@@ -2570,17 +2571,19 @@ def test_cxops():
 
 def test_jobs():
     """R4 job queue: background a job, list it, foreground it, finish.
-    The copy source is a FIFO, so the job blocks deterministically
-    until the test opens the writing end."""
+    A debug build holds every copied file until RCMD_TEST_COPY_GATE
+    exists, so the job runs for exactly as long as the test needs.
+    (A FIFO did this once; a FIFO is recreated now, not read.)"""
     root, play, home = sandbox()
     dest = os.path.join(play, "dest")
     os.makedirs(dest)
-    os.mkfifo(os.path.join(play, "pipe.dat"))
-    s = Session(play, home, args=(play, dest))
+    open(os.path.join(play, "pipe.dat"), "wb").write(b"data!")
+    gate = os.path.join(root, "gate")
+    s = Session(play, home, args=(play, dest), env={"RCMD_TEST_COPY_GATE": gate})
     s.send(b"\x13pipe\r", wait=STEP)        # quick search -> pipe.dat
     s.keys(
         F5,
-        b"\r",            # copy to dest/ - blocks on the fifo
+        b"\r",            # copy to dest/ - held at the gate
         wait=STEP * 2,
     )
     check("jobs: progress dialog", "copy 1 item" in s.screen())
@@ -2595,9 +2598,7 @@ def test_jobs():
     s.send(b"b", wait=STEP)                 # detach again
     s.send(F10, wait=STEP)                  # quit must refuse
     check("jobs: quit refused while running", "still running" in s.screen())
-    fd = os.open(os.path.join(play, "pipe.dat"), os.O_WRONLY)
-    os.write(fd, b"data!")
-    os.close(fd)                            # EOF -> the copy completes
+    open(gate, "w").close()                 # let the copy go
     check("jobs: finishes in background", wait_for(s, "done -"))
     copied = os.path.join(dest, "pipe.dat")
     check("jobs: payload arrived",

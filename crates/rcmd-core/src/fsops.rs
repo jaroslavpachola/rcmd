@@ -1523,6 +1523,8 @@ fn copy_file(
     size: u64,
     mode: Overwrite,
 ) -> Result<(), Aborted> {
+    #[cfg(debug_assertions)]
+    test_gate(ctx)?;
     loop {
         if ctx.cancelled() {
             return Err(Aborted);
@@ -1556,6 +1558,25 @@ fn copy_file(
             }
         }
     }
+}
+
+/// The job tests need a copy that is running for exactly as long as
+/// they say. A debug build holds each file until the path named in
+/// `RCMD_TEST_COPY_GATE` exists - cancel still works while it waits.
+/// (They used to copy from a FIFO, which blocked the same way; a FIFO
+/// is recreated now, never read.)
+#[cfg(debug_assertions)]
+fn test_gate(ctx: &Ctx) -> Result<(), Aborted> {
+    let Some(gate) = std::env::var_os("RCMD_TEST_COPY_GATE") else {
+        return Ok(());
+    };
+    while !Path::new(&gate).exists() {
+        if ctx.cancelled() {
+            return Err(Aborted);
+        }
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    Ok(())
 }
 
 /// Read both files back and compare them. An error here is reported
