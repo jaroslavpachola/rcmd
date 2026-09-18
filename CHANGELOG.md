@@ -1,5 +1,37 @@
 # Changelog
 
+## 4.37.0 - 2026-09-18
+
+[PLAN5](docs/PLAN5.md)'s S6: synchronize, recursively, and a diff worth
+opening.
+
+- **Synchronize walks both trees.** A directory both sides have is
+  compared inside; one only one side has is a single row that copies it
+  whole. The whole plan runs as one job.
+
+- **A server on either side**: SFTP, FTP or FISH - rsync with a
+  preview, on servers that have no rsync.
+
+- **Mirror mode**: `m` makes the right a copy of the left (or the left
+  of the right), and what only the copy has is deleted - into the
+  trash, on a local side. An arrow towards the side that has nothing
+  deletes that one row. `+` and `-` switch the rows matching a mask on
+  or off, and **F3** opens a row's two files in the diff and comes back
+  to the plan.
+
+- **The diff viewer** picks out the words that changed inside a changed
+  line; `w`, `i` and `b` stop whitespace, case and blank lines from
+  counting; F7 searches, `:` goes to a line; F5 and Shift+F5 take one
+  side's version of a difference into the other and F2 saves - mcdiff's
+  merge. Binary files are said to match or not instead of being shown.
+
+- **Diff against HEAD** (F9 → Command): the cursor file beside what the
+  last commit has of it.
+
+- The diff runs on a thread of its own, in linear space: two large,
+  unrelated files used to need a copy of the search state per edit -
+  gigabytes near the old cap - and now need two arrays.
+
 ## 4.36.0 - 2026-09-18
 
 [PLAN5](docs/PLAN5.md)'s S5: the trash as a place, and a queue that is

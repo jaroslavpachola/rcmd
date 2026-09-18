@@ -301,7 +301,15 @@ purges, which only costs the desktop a recount.
   takes it, a desktop notification from the window build, and progress
   in the title.
 
-### S6 - synchronize, recursively, and a diff worth opening
+### S6 - synchronize, recursively, and a diff worth opening - DONE (2026-09-18, 4.37.0)
+
+Shipped as below, with these left: `C-x d` stays mc's one-directory
+compare (the recursion lives in Synchronize, where a plan can show it);
+archives are still refused as a synchronize side; a merge is saved in
+the charset the file was read in, but a file that mixed line endings
+comes back with the one it had most of; and the diff's word highlight
+is by words, not characters.
+
 
 - **Recursive compare and synchronize.** Both filter directories out
   (`compare.rs:65-72`, `app/panel.rs:1509-1548`); the README says so
