@@ -144,6 +144,16 @@ fn default_user() -> String {
         .unwrap_or_else(|_| "root".to_string())
 }
 
+/// A path under the home directory written from `~`, as a prompt
+/// should: the dialog shows a prompt's tail, and a long absolute path
+/// pushes the question itself off the front.
+fn tilde(path: &Path) -> String {
+    match home_dir().and_then(|home| path.strip_prefix(home).ok().map(Path::to_path_buf)) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
@@ -346,7 +356,7 @@ fn authenticate(
             }
             if key_needs_passphrase(&key) {
                 for _ in 0..3 {
-                    let prompt = format!("Enter passphrase for {}:", key.display());
+                    let prompt = format!("Enter passphrase for {}:", tilde(&key));
                     let phrase = ask_secret(tx, rx, prompt, false)?;
                     if phrase.is_empty() {
                         break; // skip this key, try the next method

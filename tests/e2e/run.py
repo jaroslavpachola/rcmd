@@ -187,6 +187,12 @@ class Session:
                     row, col = int(m.group(1)) - 1, int(m.group(2)) - 1
                     i += m.end()
                     continue
+                # OSC (a window title, a hyperlink) runs to BEL or ST: its
+                # text is for the terminal, not for the screen
+                m = re.match(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", text[i:])
+                if m:
+                    i += m.end()
+                    continue
                 m = re.match(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[()][A-Z0-9]|\x1b.", text[i:])
                 i += m.end() if m else 1
                 continue
