@@ -1,5 +1,47 @@
 # Changelog
 
+## 4.35.0 - 2026-09-18
+
+[PLAN5](docs/PLAN5.md)'s S4: copies you can trust.
+
+- **An overwrite that fails leaves the old file.** A copy over an
+  existing file is written to a hidden name beside it and renamed in
+  at the end, locally and on remote panels alike, and a failed copy
+  removes only what it wrote.
+
+- **The kernel copies.** Inside one btrfs or xfs volume a copy is a
+  reflink - instant, and no extra space. Elsewhere it is
+  `copy_file_range`, and sparse files keep their holes where they used
+  to be filled in.
+
+- **Free space is checked before the first byte.** A copy that will
+  not fit says how much it needs and how much there is, and asks.
+
+- **Preserve keeps what `cp -a` keeps**: the owner (as root), both
+  times, directory modes, extended attributes and ACLs, and hard links
+  within the copied tree stay linked.
+
+- **Remote copies honour the form.** Preserve, follow links, dive and
+  the masks meant nothing on a copy to or from SFTP, FTP, FISH or
+  rclone; now they do. Reget and Append resume on SFTP and FTP (`REST`,
+  `APPE`), where they were local-only.
+
+- **A report, not a count.** Every skipped file is remembered with its
+  reason, and **C-x r** shows the last job's list.
+
+- **Streaming**: FISH downloads and tar members stream rather than
+  being read into memory whole, and extracting a `.tar.gz` reads it
+  once instead of once per member.
+
+- **Sync to disk** on the copy form flushes each file, and its
+  directory, before the next.
+
+- **C-x e** is mc's chattr window: the flags `lsattr` shows as check
+  boxes, with chmod's Set / Set marked / Clear marked.
+
+- A remote destination typed into the copy form gets `~/.ssh/config`
+  and `~/.netrc`, as one typed into `cd` does.
+
 ## 4.34.0 - 2026-09-18
 
 [PLAN5](docs/PLAN5.md)'s S3: what a fresh install gets right, and what

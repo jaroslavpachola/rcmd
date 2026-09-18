@@ -228,7 +228,15 @@ shown then, rather than a prompt naming the wrong place).
   `open_diff` carries a "Quick compare" comment and `run_panelize`
   says "Synchronous" above a streaming body.
 
-### S4 - copies you can trust
+### S4 - copies you can trust - DONE (2026-09-18, 4.35.0)
+
+Shipped as below, with these left: zip members are still read into
+memory whole (the zip crate wants a seekable reader per member, and
+only tar members stream), FISH uploads still buffer the file before
+sending it, and reflinks are only tried for a local-to-local copy.
+ACLs travel as the `system.posix_acl_*` xattrs they are; there is no
+separate ACL code.
+
 
 mc copies with a read/write loop onto the final name. So does rcmd
 (`fsops.rs:1571,1587-1604`, 256 KiB). This is where being written in
