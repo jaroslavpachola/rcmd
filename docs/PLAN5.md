@@ -375,7 +375,13 @@ its disambiguating flag is used; the keyring is reached through
 - **Saved connections** (ORTHODOX-DIFF §5, Adopt-later), with
   passwords in the desktop keyring or nowhere.
 
-### S8 - the window
+### S8 - the window - DONE (2026-09-18, 4.39.0)
+
+Shipped as below, with these left: dragging files *out* of the window,
+which egui has no way to start; hover beyond what the drop target
+says; and pictures load on a thread of their own, so the first frame
+of one is a spinner. The title already named the directory (S3).
+
 
 `rcmd-egui` paints the grid, draws a menu bar, picks a font and hosts a
 terminal pane. It handles text, key press, pointer press and wheel

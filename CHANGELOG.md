@@ -1,5 +1,27 @@
 # Changelog
 
+## 4.39.0 - 2026-09-18
+
+[PLAN5](docs/PLAN5.md)'s S8: the window.
+
+- **Pictures**: F3 and the quick view on a PNG, JPEG, GIF, WebP or BMP
+  show the picture in `rcmd-egui`, as large as fits. The terminal build
+  still shows bytes, for the reasons MC-DIFF gave.
+
+- **Drop files on a panel** to copy them there: the copy form opens with
+  that panel as the destination.
+
+- **A right-click menu** over the file under the pointer: view, edit,
+  copy, move, delete, mark, pack, checksum, diff against HEAD, info.
+
+- **The clipboard is egui's**, not `wl-copy`'s; **the window's size and
+  place are remembered**; **an input method** composes into the command
+  line and the editor.
+
+- **The wheel** scrolls by what a touchpad moved instead of a page per
+  flick, and **dragging with the left button selects in the editor** -
+  in the window, and in a terminal with mouse reporting.
+
 ## 4.38.0 - 2026-09-18
 
 [PLAN5](docs/PLAN5.md)'s S7: reach.
