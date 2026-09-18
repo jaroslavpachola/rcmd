@@ -67,6 +67,33 @@ pub trait RemoteFs: FsProvider {
 
 pub struct LocalFs;
 
+/// Open a file to read its bytes - and only a regular file. A FIFO
+/// blocks the open until a writer turns up, a device hands out data
+/// that has nothing to do with a copy (and opening a tape rewinds it),
+/// so both are refused here rather than hanging a job or a viewer on
+/// them. The type is checked before the open, and again on the handle,
+/// in case the name was swapped in between.
+pub fn open_regular(path: &Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let not_regular = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file (a FIFO, socket or device has no contents to copy)",
+        )
+    };
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(not_regular());
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(not_regular());
+    }
+    Ok(file)
+}
+
 impl FsProvider for LocalFs {
     fn read_dir(&self, dir: &Path) -> io::Result<Vec<Entry>> {
         entry::read_dir(dir)
@@ -77,7 +104,7 @@ impl FsProvider for LocalFs {
     }
 
     fn open_read(&self, path: &Path) -> io::Result<Box<dyn Read + Send>> {
-        Ok(Box::new(std::fs::File::open(path)?))
+        Ok(Box::new(open_regular(path)?))
     }
 
     fn is_local(&self) -> bool {

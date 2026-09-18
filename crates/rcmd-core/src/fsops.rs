@@ -1475,6 +1475,23 @@ fn copy_tree(ctx: &mut Ctx, src: &Path, dst: &Path) -> Result<(), Aborted> {
             ctx.progress(src);
         }
         Ok(())
+    } else if is_special(&meta) {
+        // mc's way: a FIFO, socket or device is made again at the
+        // target, never opened and read - a FIFO would block the job
+        // until a writer came, and a device is not its contents
+        ctx.progress(src);
+        if ctx.may_overwrite(FileFacts::of_path(src), dst, false)? == Overwrite::Skip {
+            return Ok(());
+        }
+        let done = ctx.with_retry(src, || {
+            let _ = fs::remove_file(dst); // overwrite was approved above
+            make_node(dst, &meta)
+        })?;
+        if done.is_some() {
+            ctx.files_done += 1;
+            ctx.progress(src);
+        }
+        Ok(())
     } else {
         ctx.progress(src);
         if src == dst {
@@ -1531,7 +1548,10 @@ fn copy_file(
 /// copy that did not arrive is a copy that failed, whatever the write
 /// said at the time.
 fn verify_copy(src: &Path, dst: &Path) -> io::Result<()> {
-    let (mut a, mut b) = (fs::File::open(src)?, fs::File::open(dst)?);
+    let (mut a, mut b) = (
+        crate::vfs::open_regular(src)?,
+        crate::vfs::open_regular(dst)?,
+    );
     let (mut left, mut right) = (vec![0u8; CHUNK], vec![0u8; CHUNK]);
     loop {
         let n = read_full(&mut a, &mut left)?;
@@ -1561,8 +1581,39 @@ fn read_full(file: &mut fs::File, buf: &mut [u8]) -> io::Result<usize> {
     Ok(have)
 }
 
+fn is_special(meta: &fs::Metadata) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    let kind = meta.file_type();
+    kind.is_fifo() || kind.is_socket() || kind.is_char_device() || kind.is_block_device()
+}
+
+/// Make a FIFO, socket or device node like the one `meta` describes.
+/// A device needs privileges an ordinary user lacks; the error says so
+/// and the usual Retry / Skip / Abort decides.
+fn make_node(dst: &Path, meta: &fs::Metadata) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let path = std::ffi::CString::new(dst.as_os_str().as_encoded_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a NUL in the name"))?;
+    let rc = unsafe {
+        libc::mknod(
+            path.as_ptr(),
+            meta.mode() as libc::mode_t,
+            meta.rdev() as libc::dev_t,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        let err = io::Error::last_os_error();
+        Err(io::Error::new(
+            err.kind(),
+            format!("cannot create the special file: {err}"),
+        ))
+    }
+}
+
 fn try_copy_file(ctx: &mut Ctx, src: &Path, dst: &Path, mode: Overwrite) -> Result<(), CopyErr> {
-    let mut input = fs::File::open(src).map_err(CopyErr::Io)?;
+    let mut input = crate::vfs::open_regular(src).map_err(CopyErr::Io)?;
     let meta = input.metadata().map_err(CopyErr::Io)?;
     // Append and Reget add to a file that is already there; only a plain
     // copy creates one, and only a plain copy may delete it again.
@@ -2587,6 +2638,64 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    /// A FIFO is recreated, not read: opening one for its "contents"
+    /// blocks until a writer turns up, and nothing ever did, with the
+    /// cancel flag unchecked all the while.
+    #[test]
+    fn a_fifo_in_a_copied_tree_is_recreated_not_read() {
+        use std::os::unix::fs::FileTypeExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("a.txt"), b"a").unwrap();
+        let fifo = src.join("pipe");
+        let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0);
+        let dst = tmp.path().join("dst");
+
+        let handle = spawn_copy(vec![src], dst.clone(), TransferOpts::default(), None);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match handle.events.recv_timeout(left) {
+                Ok(JobEvent::Done {
+                    aborted, skipped, ..
+                }) => {
+                    assert!(!aborted);
+                    assert_eq!(skipped, 0);
+                    break;
+                }
+                Ok(JobEvent::AskError { message, .. }) => panic!("asked: {message}"),
+                Ok(_) => {}
+                Err(_) => {
+                    handle.cancel.store(true, Ordering::Relaxed);
+                    panic!("the copy hung on the FIFO");
+                }
+            }
+        }
+        assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"a");
+        let made = fs::symlink_metadata(dst.join("pipe")).unwrap();
+        assert!(made.file_type().is_fifo(), "{:?}", made.file_type());
+    }
+
+    #[test]
+    fn open_read_refuses_what_is_not_a_regular_file() {
+        use crate::vfs::LocalFs;
+        let tmp = tempfile::tempdir().unwrap();
+        let fifo = tmp.path().join("pipe");
+        let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0);
+        let (tx, rx) = mpsc::channel();
+        let path = fifo.clone();
+        thread::spawn(move || {
+            let _ = tx.send(LocalFs.open_read(&path).is_err());
+        });
+        let refused = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("open_read blocked on a FIFO");
+        assert!(refused);
     }
 
     /// The cross-device fallback copies and then deletes. Whatever the
