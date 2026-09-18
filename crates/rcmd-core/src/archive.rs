@@ -718,6 +718,7 @@ impl ArchiveFs {
                     CmdFlavor::SevenZip => &["l", "-ba", "-slt"][..],
                     CmdFlavor::Unrar => &["vt", "-p-"][..],
                 })
+                .arg("--")
                 .arg(&self.path)
                 .env("LC_ALL", "C")
                 .stdin(std::process::Stdio::null())
@@ -759,9 +760,12 @@ impl ArchiveFs {
             .cmd
             .ok_or_else(|| io::Error::other("archive tool went away"))?;
         let output = std::process::Command::new(backend.program)
+            // `--`: a member named `-p.txt` or `@list` is a name, not a
+            // switch or a list file. `-spd`: nor is `*.txt` a wildcard,
+            // or one member's view would stream several
             .args(match backend.flavor {
-                CmdFlavor::SevenZip => &["x", "-so"][..],
-                CmdFlavor::Unrar => &["p", "-inul", "-p-"][..],
+                CmdFlavor::SevenZip => &["x", "-so", "-spd", "--"][..],
+                CmdFlavor::Unrar => &["p", "-inul", "-p-", "--"][..],
             })
             .arg(&self.path)
             .arg(rel)
@@ -2026,5 +2030,41 @@ From here on it is just body text.
         assert_eq!(content, "hello 7z\n");
         let entry = fs.stat(Path::new("hello.txt")).unwrap();
         assert_eq!(entry.size, 9);
+    }
+
+    /// A member name is a name: not a switch, not a list file, not a
+    /// wildcard that streams its neighbours along with it.
+    #[test]
+    fn sevenz_member_names_are_taken_literally() {
+        let Some(packer) = ["7za", "7z", "7zz"]
+            .into_iter()
+            .find(|tool| tool_available(tool, "-h"))
+        else {
+            eprintln!("skipping: no 7z binary");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let names = ["-p.txt", "@list", "*.txt", "plain.txt"];
+        for name in names {
+            std::fs::write(tmp.path().join(name), format!("I am {name}\n")).unwrap();
+        }
+        let status = std::process::Command::new(packer)
+            .args(["a", "-bd", "box.7z", "--"])
+            .args(names)
+            .current_dir(tmp.path())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let fs = ArchiveFs::open(&tmp.path().join("box.7z")).unwrap();
+        for name in names {
+            let mut content = String::new();
+            fs.open_read(Path::new(name))
+                .unwrap()
+                .read_to_string(&mut content)
+                .unwrap();
+            assert_eq!(content, format!("I am {name}\n"));
+        }
     }
 }

@@ -184,6 +184,7 @@ impl Control {
     }
 
     fn command(&mut self, line: &str) -> io::Result<Reply> {
+        safe_line(line)?;
         crate::vfslog::line(">", crate::vfslog::redact(line));
         self.stream.get_mut().write_all(line.as_bytes())?;
         self.stream.get_mut().write_all(b"\r\n")?;
@@ -440,6 +441,21 @@ impl FtpFs {
             Ok(parse_list(&String::from_utf8_lossy(&bytes)))
         })
     }
+}
+
+/// A command is one line, ended by the CRLF `command` adds. A CR or LF
+/// inside it - a file name holding one, which the server's own listing
+/// can hand us - would end it early and send whatever follows as a
+/// second command of the name's choosing. NUL is refused along with
+/// them: RFC 959 has no use for it and some servers cut the line there.
+fn safe_line(line: &str) -> io::Result<()> {
+    if line.contains(['\r', '\n', '\0']) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a name with a line break or NUL in it cannot be sent over FTP",
+        ));
+    }
+    Ok(())
 }
 
 impl FsProvider for FtpFs {
@@ -861,6 +877,14 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_cannot_smuggle_a_second_command() {
+        assert!(safe_line("RETR /pub/readme.txt").is_ok());
+        assert!(safe_line("DELE /pub/x\r\nRMD /important").is_err());
+        assert!(safe_line("RETR a\nb").is_err());
+        assert!(safe_line("STOR a\0b").is_err());
+    }
 
     #[test]
     fn parses_urls_the_way_people_write_them() {
