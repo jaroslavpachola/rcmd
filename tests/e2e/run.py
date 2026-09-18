@@ -1518,6 +1518,95 @@ def test_sync():
     shutil.rmtree(root)
 
 
+def test_syncdeep():
+    """PLAN5 S6: synchronize walks both trees, can make one side a mirror
+    of the other, shows a row's two files with F3, and works with a
+    server on one side."""
+    root, play, home = sandbox()
+    left, right = os.path.join(play, "left"), os.path.join(play, "right")
+    for side in (left, right):
+        os.makedirs(os.path.join(side, "sub", "deep"))
+        open(os.path.join(side, "same.txt"), "w").write("same\n")
+    open(os.path.join(left, "sub", "deep", "changed.txt"), "w").write("one\n")
+    open(os.path.join(right, "sub", "deep", "changed.txt"), "w").write("three\n")
+    open(os.path.join(left, "sub", "new.txt"), "w").write("new\n")
+    os.makedirs(os.path.join(right, "extra"))
+    open(os.path.join(right, "extra", "only.txt"), "w").write("only\n")
+
+    s = Session(left, home, args=(left, right))
+    s.send(b"\x1b[20~", wait=STEP)
+    s.send(b"cz", wait=STEP)
+    s.send(b"q", wait=STEP * 3)
+    scr = s.screen()
+    check("syncdeep: the plan reaches into the trees",
+          "sub/deep/changed.txt" in scr and "sub/new.txt" in scr, scr)
+    check("syncdeep: a directory only one side has is one row",
+          "extra/" in scr and "only.txt" not in scr, scr)
+
+    # F3 on the changed file: its two versions, then back to the plan
+    s.send(DOWN, wait=STEP)                  # extra/ -> sub/deep/changed.txt
+    s.send(F3, wait=STEP * 2)
+    check("syncdeep: F3 shows the pair", wait_for(s, "difference(s)")
+          and "three" in s.screen(), s.screen())
+    s.send(b"q", wait=STEP)
+    check("syncdeep: and the plan is back", "Synchronize directories" in s.screen(),
+          s.screen())
+
+    # m: the right becomes a mirror of the left
+    s.send(b"m", wait=STEP)
+    check("syncdeep: mirror says what goes",
+          "mirror -->" in s.screen() and "only on the right - goes" in s.screen(),
+          s.screen())
+    s.send(b"\r", wait=STEP * 4)
+    check("syncdeep: it ran", wait_for(s, "done -"))
+    check("syncdeep: the new file went right",
+          os.path.exists(os.path.join(right, "sub", "new.txt")))
+    check("syncdeep: the changed one was replaced",
+          open(os.path.join(right, "sub", "deep", "changed.txt")).read() == "one\n")
+    check("syncdeep: and what the mirror did not have went (to the trash)",
+          not os.path.exists(os.path.join(right, "extra")))
+    s.quit()
+
+    # a server on the right
+    remote = os.path.join(root, "remote")
+    os.makedirs(remote)
+    open(os.path.join(remote, "server_only.txt"), "w").write("from the server\n")
+    local = os.path.join(root, "local")
+    os.makedirs(local)
+    open(os.path.join(local, "local_only.txt"), "w").write("from here\n")
+    server = subprocess.Popen(
+        ["python3", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "ftp_server.py"), remote],
+        stdout=subprocess.PIPE,
+    )
+    try:
+        line = server.stdout.readline().decode().split()
+        port = line[1]
+        s = Session(local, home, args=(local, local))
+        s.send(b"\t", wait=STEP)
+        s.send(f"cd ftp://tester@127.0.0.1:{port}/\r".encode(), wait=STEP * 2)
+        wait_for(s, "password")
+        s.send(b"secret\r", wait=STEP)
+        check("syncdeep: the right panel is on the server",
+              wait_for(s, "ftp://tester@127.0.0.1"))
+        s.send(b"\x1b[20~", wait=STEP)
+        s.send(b"cz", wait=STEP)
+        s.send(b"q", wait=STEP * 3)
+        check("syncdeep: a plan against a server",
+              wait_for(s, "server_only.txt") and "local_only.txt" in s.screen(),
+              s.screen())
+        s.send(b"\r", wait=STEP * 4)
+        check("syncdeep: it ran against the server", wait_for(s, "done -"))
+        check("syncdeep: uploaded", os.path.exists(os.path.join(remote, "local_only.txt")))
+        check("syncdeep: downloaded",
+              os.path.exists(os.path.join(local, "server_only.txt")))
+        s.quit()
+    finally:
+        server.terminate()
+        server.wait()
+    shutil.rmtree(root)
+
+
 def test_undo():
     """F6 puts a file somewhere else; C-x u puts it back, and a second
     C-x u is the redo."""
@@ -5686,6 +5775,81 @@ def test_diff():
     shutil.rmtree(root)
 
 
+def test_diffmerge():
+    """PLAN5 S6: the diff takes a hunk from one side into the other and
+    saves it, ignores what it is told to, searches, and compares a file
+    with what the last commit has of it."""
+    root, play, home = sandbox()
+    left = os.path.join(play, "left")
+    right = os.path.join(play, "right")
+    os.makedirs(left)
+    os.makedirs(right)
+    open(os.path.join(left, "poem.txt"), "w").write(
+        "roses are red\nviolets are blue\nthis line goes\nthe end\n")
+    open(os.path.join(right, "poem.txt"), "w").write(
+        "roses are red\nVIOLETS ARE BLUE\nthe end\nand a new one\n")
+    s = Session(play, home, args=(left, right))
+    s.send(DOWN, wait=STEP)
+    s.send(b"\t", wait=STEP)
+    s.send(DOWN, wait=STEP)
+    s.send(b"\t", wait=STEP)
+    s.keys(b"\x1b[20~", b"\x1b[C" * 2, wait=STEP)
+    s.send(b"l", wait=STEP * 2)
+    check("diffmerge: two differences", wait_for(s, "2 difference(s)"), s.screen())
+
+    # F5: the left's version of the first hunk goes into the right
+    s.send(b"\x1b[15~", wait=STEP * 2)
+    check("diffmerge: one difference left after the merge",
+          wait_for(s, "1 difference(s)"), s.screen())
+    check("diffmerge: the right side is marked changed", "poem.txt (modified)" in s.screen(),
+          s.screen()[:300])
+    s.send(b"q", wait=STEP)
+    check("diffmerge: quitting with a merge unsaved asks", "not saved" in s.screen(),
+          s.screen()[:300])
+    s.send(b"\x1b[12~", wait=STEP * 2)      # F2
+    check("diffmerge: F2 saved it",
+          open(os.path.join(right, "poem.txt")).read()
+          == "roses are red\nviolets are blue\nthis line goes\nthe end\nand a new one\n",
+          repr(open(os.path.join(right, "poem.txt")).read()))
+
+    # w: whitespace does not count, and the title says so
+    s.send(b"w", wait=STEP * 2)
+    check("diffmerge: w shows its flag", "[-w]" in s.screen(), s.screen()[:300])
+    # F7 searches
+    s.send(b"\x1b[18~", wait=STEP)
+    check("diffmerge: F7 asks what to search", "Search:" in s.screen(), s.screen()[-300:])
+    s.send(b"new one\r", wait=STEP)
+    check("diffmerge: and finds it", "and a new one" in s.screen(), s.screen())
+    s.send(b"q", wait=STEP * 2)
+    check("diffmerge: closed", "Modify time" in s.screen(), s.screen())
+    s.quit()
+
+    # against HEAD
+    repo = os.path.join(play, "repo")
+    os.makedirs(repo)
+    git = lambda *a: subprocess.run(["git", "-C", repo, *a], capture_output=True,
+                                    env=dict(os.environ, HOME=home))
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    open(os.path.join(repo, "f.txt"), "w").write("committed line\nsame\n")
+    git("add", "f.txt")
+    git("commit", "-qm", "c")
+    open(os.path.join(repo, "f.txt"), "w").write("edited line\nsame\n")
+    s = Session(repo, home)
+    s.send(b"\x13f.txt\r", wait=STEP)
+    env = dict(os.environ, HOME=home, XDG_RUNTIME_DIR=home)
+    env.pop("XDG_CONFIG_HOME", None)
+    subprocess.run([BIN, "--remote", "action diff-head"], env=env,
+                   capture_output=True, text=True, timeout=10)
+    check("diffmerge: HEAD's version on the left",
+          wait_for(s, "HEAD:f.txt") and "committed line" in s.screen()
+          and "edited line" in s.screen(), s.screen())
+    s.send(b"q", wait=STEP)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_cli():
     """PLAN4 S7: the personalities - `-e` / `-v` and the rcedit /
     rcview / rcdiff argv[0] aliases, each coming up on one screen
@@ -6445,6 +6609,7 @@ def main():
         test_undo,
         test_trash,
         test_sync,
+        test_syncdeep,
         test_bulkundo,
         test_rclone,
         test_shortcutsandfiles,
@@ -6509,6 +6674,7 @@ def main():
         test_findwindow,
         test_panelize,
         test_diff,
+        test_diffmerge,
         test_cli,
         test_dialogmanners,
         test_usersyntax,

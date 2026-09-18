@@ -889,6 +889,92 @@ pub fn spawn_transfer(
     })
 }
 
+/// One step of a synchronize plan, for the path both roots have under
+/// them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncStep {
+    ToRight,
+    ToLeft,
+    DeleteLeft,
+    DeleteRight,
+}
+
+/// Run a synchronize plan between two roots, each on its own provider.
+/// A copy replaces what it lands on - opening the plan and leaving the
+/// row on was the answer to that question. A delete on a local side
+/// goes to the trash, where C-x u can fetch it; a server has no trash,
+/// and deletes for good.
+pub fn spawn_sync(
+    left: (Arc<dyn FsProvider>, PathBuf),
+    right: (Arc<dyn FsProvider>, PathBuf),
+    steps: Vec<(PathBuf, SyncStep)>,
+) -> JobHandle {
+    let opts = TransferOpts {
+        overwrite: true,
+        ..TransferOpts::default()
+    };
+    spawn_with(opts, move |ctx| {
+        let side = |to_right: bool| match to_right {
+            true => (&left, &right),
+            false => (&right, &left),
+        };
+        let (mut files, mut bytes) = (0u64, 0u64);
+        for (rel, step) in &steps {
+            match step {
+                SyncStep::ToRight | SyncStep::ToLeft => {
+                    let ((fs, root), _) = side(*step == SyncStep::ToRight);
+                    let (f, b) = scan_provider(&**fs, &[root.join(rel)]);
+                    files += f;
+                    bytes += b;
+                }
+                _ => files += 1,
+            }
+        }
+        let _ = ctx.tx.send(JobEvent::Total { files, bytes });
+        for (rel, step) in &steps {
+            if ctx.cancelled() {
+                return Err(Aborted);
+            }
+            match step {
+                SyncStep::ToRight | SyncStep::ToLeft => {
+                    let ((src_fs, src_root), (dst_fs, dst_root)) = side(*step == SyncStep::ToRight);
+                    let (src, dst) = (src_root.join(rel), dst_root.join(rel));
+                    if dst_fs.writer().is_none() {
+                        ctx.error(&dst, "that side is read-only")?;
+                        continue;
+                    }
+                    if src_fs.is_local() && dst_fs.is_local() {
+                        ctx.copy_root = Some(src.clone());
+                        copy_tree(ctx, &src, &dst)?;
+                    } else {
+                        transfer_tree(ctx, &**src_fs, &**dst_fs, &src, &dst, false, false)?;
+                    }
+                }
+                SyncStep::DeleteLeft | SyncStep::DeleteRight => {
+                    let (fs, root) = match step {
+                        SyncStep::DeleteLeft => &left,
+                        _ => &right,
+                    };
+                    let path = root.join(rel);
+                    ctx.progress(&path);
+                    if fs.is_local() {
+                        if ctx.with_retry(&path, || trash::delete(&path))?.is_some() {
+                            ctx.files_done += 1;
+                            let _ = ctx.tx.send(JobEvent::Trashed { path: path.clone() });
+                        }
+                    } else if fs.writer().is_none() {
+                        ctx.error(&path, "that side is read-only")?;
+                    } else {
+                        delete_tree_fs(ctx, &**fs, &path)?;
+                    }
+                    ctx.progress(&path);
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
 /// Delete through a provider's write half (always permanent - there is
 /// no remote trash).
 pub fn spawn_delete_fs(fs: Arc<dyn FsProvider>, paths: Vec<PathBuf>) -> JobHandle {
@@ -3766,6 +3852,42 @@ mod tests {
     }
 
     /// A skip says what and why, for the report a finished job keeps.
+    #[test]
+    fn a_sync_plan_copies_both_ways_and_deletes_into_the_trash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+        fs::create_dir_all(a.join("sub")).unwrap();
+        fs::create_dir_all(b.join("sub")).unwrap();
+        fs::write(a.join("sub/new.txt"), "from a").unwrap();
+        fs::write(a.join("sub/both.txt"), "a wins").unwrap();
+        fs::write(b.join("sub/both.txt"), "b loses").unwrap();
+        fs::create_dir_all(b.join("only_b/x")).unwrap();
+        fs::write(b.join("only_b/x/y"), "y").unwrap();
+        let local: Arc<dyn FsProvider> = Arc::new(crate::vfs::LocalFs);
+        let handle = spawn_sync(
+            (local.clone(), a.clone()),
+            (local, b.clone()),
+            vec![
+                (PathBuf::from("sub/new.txt"), SyncStep::ToRight),
+                (PathBuf::from("sub/both.txt"), SyncStep::ToRight),
+                (PathBuf::from("only_b"), SyncStep::ToLeft),
+            ],
+        );
+        let outcome = run(handle, vec![]);
+        assert!(!outcome.aborted, "{:?}", outcome.asks);
+        assert_eq!(fs::read_to_string(b.join("sub/new.txt")).unwrap(), "from a");
+        assert_eq!(
+            fs::read_to_string(b.join("sub/both.txt")).unwrap(),
+            "a wins"
+        );
+        assert_eq!(fs::read_to_string(a.join("only_b/x/y")).unwrap(), "y");
+        assert!(
+            outcome.asks.is_empty(),
+            "a sync does not ask: {:?}",
+            outcome.asks
+        );
+    }
+
     #[test]
     fn a_held_job_waits_and_a_paused_one_stops() {
         let tmp = tempfile::tempdir().unwrap();

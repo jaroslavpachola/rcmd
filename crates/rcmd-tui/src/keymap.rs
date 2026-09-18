@@ -302,6 +302,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "hotlist-add" => Action::HotlistAdd,
         "job-report" => Action::JobReport,
         "trash" => Action::Trash,
+        "diff-head" => Action::DiffHead,
         "toggle-split" => Action::ToggleSplit,
         "sort-case" => Action::SortCase,
         "menu" => Action::Menu,

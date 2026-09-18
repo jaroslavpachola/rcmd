@@ -24,6 +24,31 @@ pub fn scan(_dir: &Path) -> Option<GitStatus> {
     None
 }
 
+/// What the last commit has of a file - its bytes, and its path in the
+/// repository - for a diff against HEAD. `None` outside a work tree,
+/// or for a file the commit does not have.
+#[cfg(not(feature = "git"))]
+pub fn head_blob(_path: &Path) -> Option<(Vec<u8>, String)> {
+    None
+}
+
+#[cfg(feature = "git")]
+pub fn head_blob(path: &Path) -> Option<(Vec<u8>, String)> {
+    let path = path.canonicalize().ok()?;
+    let repo = git2::Repository::discover(path.parent()?).ok()?;
+    let workdir = repo.workdir()?.canonicalize().ok()?;
+    let rel = path.strip_prefix(&workdir).ok()?;
+    let tree = repo.head().ok()?.peel_to_tree().ok()?;
+    let blob = tree
+        .get_path(rel)
+        .ok()?
+        .to_object(&repo)
+        .ok()?
+        .peel_to_blob()
+        .ok()?;
+    Some((blob.content().to_vec(), rel.to_string_lossy().into_owned()))
+}
+
 /// A skip predicate for find (R3): true for gitignored paths and the
 /// `.git` directory itself. `None` when `root` is not inside a work
 /// tree (or the feature is off) - find then walks everything.

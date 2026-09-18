@@ -600,6 +600,7 @@ impl App {
             }
             Action::JobReport => self.show_job_report(),
             Action::Trash => self.connect_remote(rcmd_core::trashcan::PREFIX),
+            Action::DiffHead => self.open_diff_head(),
             Action::HotlistAdd => {
                 let panel = &self.panels[self.active];
                 let path = match panel.is_remote() {
@@ -1499,76 +1500,6 @@ impl App {
         });
     }
 
-    /// F9 > Command > Compare files: the cursor file of each panel,
-    /// paired up line by line.
-    pub(super) fn open_diff(&mut self) {
-        const MAX_BYTES: u64 = 8 * 1024 * 1024;
-        let mut sides = Vec::new();
-        for side in [0, 1] {
-            let panel = &self.panels[side];
-            let Some(entry) = panel.selected().filter(|e| !e.is_parent()) else {
-                self.status = Some(" both panels need a file under the cursor ".into());
-                return;
-            };
-            if entry.is_dir() {
-                self.status = Some(" compare files: that is a directory ".into());
-                return;
-            }
-            if entry.size > MAX_BYTES {
-                self.status = Some(format!(
-                    " {} is too big to diff (over {} MB) ",
-                    panel.name_of(entry),
-                    MAX_BYTES / (1024 * 1024)
-                ));
-                return;
-            }
-            let path = panel.cwd.join(&entry.name);
-            let read = panel.fs.open_read(&path).and_then(|mut reader| {
-                let mut bytes = Vec::new();
-                std::io::Read::read_to_end(&mut reader, &mut bytes)?;
-                Ok(bytes)
-            });
-            match read {
-                Ok(bytes) => {
-                    let text = rcmd_core::charset::decode(&bytes, panel.charset);
-                    let lines: Vec<String> = text.lines().map(str::to_string).collect();
-                    sides.push((panel.display_path() + "/" + &panel.name_of(entry), lines));
-                }
-                Err(err) => {
-                    self.status = Some(format!(" compare files: {err} "));
-                    return;
-                }
-            }
-        }
-        let (right_title, right) = sides.pop().expect("two sides");
-        let (left_title, left) = sides.pop().expect("two sides");
-        let rows = rcmd_core::diff::rows(&left, &right);
-        let blocks = rcmd_core::diff::blocks(&rows);
-        let note = match blocks.len() {
-            0 => Some(" the files are identical ".into()),
-            n => Some(format!(" {n} difference(s) - n and p walk them ")),
-        };
-        self.open_screen(Screen::Diff(Box::new(DiffView {
-            left_title,
-            right_title,
-            left,
-            right,
-            rows,
-            blocks,
-            top: 0,
-            col: 0,
-            height: 1,
-            note,
-        })));
-        // open on the first difference rather than on whatever the two
-        // files happen to agree about at the top
-        if let Some(d) = self.diff_mut()
-            && let Some((start, _)) = d.blocks.first().copied()
-        {
-            d.top = start.saturating_sub(2);
-        }
-    }
-
     /// C-x d: ask how, then compare. mc asks every time, and the
     /// answer matters - "the same size and date" and "the same bytes"
     /// are different questions.
@@ -1590,10 +1521,6 @@ impl App {
             self.status = Some(" cannot synchronize inside an archive ".into());
             return;
         }
-        if self.panels[0].is_remote() || self.panels[1].is_remote() {
-            self.status = Some(" synchronize is between two local directories ".into());
-            return;
-        }
         self.compare_then_sync = true;
         self.dialog = Some(Dialog::Compare(0));
     }
@@ -1604,104 +1531,121 @@ impl App {
         self.compare_then_sync
     }
 
-    /// What the comparison marked, as a plan: which way each difference
-    /// would be copied, and why it is a difference at all.
-    fn sync_plan(&self) -> Vec<SyncRow> {
-        let mut names: Vec<std::ffi::OsString> = self.panels[0]
-            .marked
-            .iter()
-            .chain(self.panels[1].marked.iter())
-            .cloned()
-            .collect();
-        names.sort();
-        names.dedup();
-        let side = |at: usize, name: &std::ffi::OsString| {
-            self.panels[at]
-                .entries
-                .iter()
-                .find(|e| &e.name == name && !e.is_dir())
-        };
-        names
-            .into_iter()
-            .filter_map(|name| {
-                let (to_right, note) = match (side(0, &name), side(1, &name)) {
-                    (Some(_), None) => (true, "only on the left"),
-                    (None, Some(_)) => (false, "only on the right"),
-                    // both have it and it differs: the newer one is the
-                    // one to keep, and a tie is left pointing right
-                    // rather than guessed at
-                    (Some(l), Some(r)) => match (l.mtime, r.mtime) {
-                        (Some(a), Some(b)) if a > b => (true, "newer on the left"),
-                        (Some(a), Some(b)) if b > a => (false, "newer on the right"),
-                        _ => (true, "differs"),
-                    },
-                    (None, None) => return None,
-                };
-                Some(SyncRow {
-                    name,
-                    to_right,
-                    on: true,
-                    note,
-                })
-            })
-            .collect()
+    /// Synchronize's comparison: the two trees, walked on a thread,
+    /// through whatever each panel is on.
+    fn start_sync_scan(&mut self, mode: rcmd_core::compare::Mode) {
+        self.compare_then_sync = false;
+        let side = |p: &Panel| (p.fs.clone(), p.cwd.clone());
+        let handle =
+            rcmd_core::sync::spawn_scan(side(&self.panels[0]), side(&self.panels[1]), mode);
+        self.sync_scan = Some(handle);
+        self.status = Some(" comparing the two trees… Esc cancels ".into());
     }
 
-    /// Open the plan, or say there is nothing to do.
-    fn open_sync_plan(&mut self) {
-        self.compare_then_sync = false;
-        let rows = self.sync_plan();
-        if rows.is_empty() {
-            self.status = Some(" the two directories agree ".into());
+    pub(super) fn drain_sync_scan(&mut self) {
+        let Some(scan) = self.sync_scan.as_ref() else {
             return;
+        };
+        let mut done = None;
+        while let Ok(event) = scan.events.try_recv() {
+            match event {
+                rcmd_core::sync::ScanEvent::At(rel) => {
+                    self.status = Some(format!(
+                        " comparing {}… Esc cancels ",
+                        if rel.as_os_str().is_empty() {
+                            ".".to_string()
+                        } else {
+                            rel.display().to_string()
+                        }
+                    ));
+                }
+                rcmd_core::sync::ScanEvent::Done(result) => done = Some(result),
+            }
         }
+        let Some(result) = done else {
+            return;
+        };
+        self.sync_scan = None;
+        self.dirty = true;
+        match result {
+            Ok(diffs) if diffs.is_empty() => {
+                self.status = Some(" the two directories agree ".into());
+            }
+            Ok(diffs) => self.open_sync_plan(diffs),
+            Err(err) => self.status = Some(format!(" synchronize: {err} ")),
+        }
+    }
+
+    /// The plan, from what the comparison found.
+    fn open_sync_plan(&mut self, diffs: Vec<rcmd_core::sync::Difference>) {
+        let rows = diffs
+            .iter()
+            .map(|d| SyncRow::plan(d, Mirror::Off))
+            .collect();
+        self.status = None;
         self.dialog = Some(Dialog::Sync(Box::new(SyncDialog {
             rows,
+            diffs,
+            mirror: Mirror::Off,
             cursor: 0,
             top: 0,
-            left: self.panels[0].local_cwd().display().to_string(),
-            right: self.panels[1].local_cwd().display().to_string(),
+            left: self.panels[0].display_path(),
+            right: self.panels[1].display_path(),
+            mask: None,
         })));
     }
 
-    /// Run the plan: one copy job per direction, each told to replace
-    /// what it lands on - that question was answered by opening this
-    /// dialog and leaving the row on.
+    /// Run the plan: one job for all of it, copying each way and
+    /// deleting where a row says so.
     pub(super) fn start_sync(&mut self, d: &SyncDialog) {
-        let (mut rightward, mut leftward) = (Vec::new(), Vec::new());
-        for row in d.rows.iter().filter(|r| r.on) {
-            match row.to_right {
-                true => rightward.push(self.panels[0].local_cwd().join(&row.name)),
-                false => leftward.push(self.panels[1].local_cwd().join(&row.name)),
-            }
-        }
-        if rightward.is_empty() && leftward.is_empty() {
+        let steps: Vec<(PathBuf, fsops::SyncStep)> = d
+            .rows
+            .iter()
+            .filter(|r| r.on)
+            .map(|r| (r.rel.clone(), r.step))
+            .collect();
+        if steps.is_empty() {
             self.status = Some(" nothing left switched on ".into());
             return;
         }
-        let opts = TransferOpts {
-            overwrite: true,
-            ..TransferOpts::default()
+        let side = |p: &Panel| (p.fs.clone(), p.cwd.clone());
+        let title = format!(" synchronize {} item(s) ", steps.len());
+        let handle = fsops::spawn_sync(side(&self.panels[0]), side(&self.panels[1]), steps);
+        self.push_job(title, handle);
+    }
+
+    /// F3 on a plan row: the two files it is about, side by side, and
+    /// back to the plan when the diff closes.
+    pub(super) fn sync_row_diff(&mut self, d: Box<SyncDialog>) {
+        let Some(row) = d.rows.get(d.cursor).filter(|r| r.two_files()) else {
+            self.status = Some(" F3 shows a row that has a file on both sides ".into());
+            self.dialog = Some(Dialog::Sync(d));
+            return;
         };
-        for (sources, dest) in [
-            (rightward, self.panels[1].local_cwd()),
-            (leftward, self.panels[0].local_cwd()),
-        ] {
-            if sources.is_empty() {
-                continue;
-            }
-            let title = format!(
-                " synchronize {} item(s) to {} ",
-                sources.len(),
-                dest.display()
-            );
-            let handle = fsops::spawn_copy(sources, dest, opts, None);
-            self.push_job(title, handle);
+        let rel = row.rel.clone();
+        let source = |p: &Panel, entry: Option<&rcmd_core::entry::Entry>| DiffSource {
+            fs: p.fs.clone(),
+            path: p.cwd.join(&rel),
+            title: format!("{}/{}", p.display_path(), rel.display()),
+            charset: p.charset,
+            size: entry.map_or(0, |e| e.size),
+        };
+        let diff = d.diffs.iter().find(|x| x.rel == rel);
+        let left = source(&self.panels[0], diff.and_then(|x| x.left.as_ref()));
+        let right = source(&self.panels[1], diff.and_then(|x| x.right.as_ref()));
+        if self.open_diff_pair(left, right) {
+            self.sync_return = Some(d);
+        } else {
+            self.dialog = Some(Dialog::Sync(d));
         }
     }
 
     pub(super) fn compare_dirs(&mut self, mode: rcmd_core::compare::Mode) {
         use rcmd_core::compare;
+        if self.compare_then_sync {
+            self.start_sync_scan(mode);
+            return;
+        }
         if let Some(running) = self.compare.take() {
             running.handle.cancel();
         }
@@ -1719,10 +1663,6 @@ impl App {
         }
         let known = diff.count();
         if diff.undecided.is_empty() {
-            if self.compare_then_sync {
-                self.open_sync_plan();
-                return;
-            }
             self.status = Some(format!(" {known} difference(s) marked "));
             return;
         }
@@ -1739,7 +1679,6 @@ impl App {
             handle,
             total,
             done: 0,
-            sync: std::mem::take(&mut self.compare_then_sync),
         });
     }
 
@@ -1770,14 +1709,10 @@ impl App {
             .map(|c| (c.total, c.done))
             .unwrap_or((0, 0));
         if finished {
-            let sync = self.compare.take().is_some_and(|c| c.sync);
+            self.compare = None;
             let marked = self.panels[0].marked.len().max(self.panels[1].marked.len());
             self.status = Some(format!(" {marked} difference(s) marked ({total} read) "));
             self.dirty = true;
-            if sync {
-                self.compare_then_sync = true;
-                self.open_sync_plan();
-            }
         } else {
             self.status = Some(format!(" comparing… {done} differ so far - Esc cancels "));
         }
@@ -2260,6 +2195,11 @@ impl App {
         // a thorough compare reads files: Esc stops it, as it stops a
         // find, rather than waiting for the last pair
         if key.code == KeyCode::Esc {
+            if let Some(running) = self.sync_scan.take() {
+                running.cancel();
+                self.status = Some(" synchronize cancelled ".into());
+                return;
+            }
             if let Some(running) = self.compare.take() {
                 running.handle.cancel();
                 self.status = Some(" compare cancelled ".into());

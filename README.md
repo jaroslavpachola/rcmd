@@ -699,24 +699,42 @@ It asks the same Quick / Size only / Thorough question, runs the same
 comparison, and then shows the **plan** instead of stopping at marks:
 one row per difference, an arrow saying which way it would be copied -
 the newer side wins, and a file only one side has crosses over - and a
-note saying why the row is there. **Space** skips a row, **←/→** turn
-one round, **a** switches them all off and on, **Enter** runs it as
-ordinary copy jobs, one per direction. What it copies replaces what it
-lands on *without* asking, because that is the question the plan
-answered; a row left switched off is not copied at all. Marking the
-differences and leaving F5 to guess the direction is where mc stops,
-and that guess is wrong exactly when the differences run both ways.
-Both sides have to be local, and directories are left alone - the
-comparison has always been about the files in one directory, not the
-tree under it.
+note saying why the row is there. It walks **both trees**: a directory
+both sides have is compared inside, and one only one side has is a
+single row that copies it whole. Either side can be on a server -
+SFTP, FTP or FISH - which makes it rsync with a preview, on a server
+that has no rsync. **Space** skips a row, **←/→** turn one round (an
+arrow towards the side that has nothing deletes the thing where it is),
+**m** makes one side a **mirror** of the other - the right a copy of
+the left, then the other way, then back - so what only the copy has
+goes, **+** and **-** switch the rows matching a mask on or off, **F3**
+opens the diff of a row's two files and comes back to the plan, **a**
+switches them all off and on, and **Enter** runs it as one job. What it
+copies replaces what it lands on *without* asking, because that is the
+question the plan answered; a row left switched off is not touched. A
+delete on a local side goes to the trash, where `Ctrl+X u` finds it; a
+server has no trash. Marking the differences and leaving F5 to guess the
+direction is where mc stops, and that guess is wrong exactly when the
+differences run both ways. `Ctrl+X d` itself stays mc's: the files of
+one directory, marked.
 
 **Compare files** (F9 → Command) puts the cursor file of each panel
 side by side, lined up by a Myers diff: changed lines are highlighted
-on both sides, a line only one file has shows opposite a `~~~` gap, and
-`n` and `p` walk from one difference to the next (it opens on the first
-one). `q` closes it. It is a screen like the viewer and the editor, so
-``Alt+` `` lists it and you can leave it open while you do something
-else.
+on both sides with the words that changed picked out, a line only one
+file has shows opposite a `~~~` gap, and `n` and `p` walk from one
+difference to the next (it opens on the first one). **w**, **i** and
+**b** stop whitespace, case and blank lines from counting, as `diff
+-w -i -B` do; **F7** searches both sides, **:** goes to a line.
+**F5** takes the left's version of the difference on screen into the
+right file, **Shift+F5** the right's into the left, and **F2** saves
+what a merge changed - mcdiff's merge. Binary files are said to be the
+same or not rather than shown. The diff is worked out on a thread of
+its own, in memory that grows with the files rather than with how much
+changed, so two big, unrelated files do not freeze anything. **Diff
+against HEAD** (F9 → Command) shows the cursor file beside what the
+last commit has of it. `q` closes it. It is a screen like the viewer
+and the editor, so ``Alt+` `` lists it and you can leave it open while
+you do something else.
 
 **Mouse**: click focuses a panel and moves the cursor, double-click
 enters, the right button marks what it is on (as mc's does), the wheel

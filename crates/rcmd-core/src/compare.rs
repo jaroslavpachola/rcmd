@@ -33,7 +33,7 @@ pub enum Mode {
 /// difference anyone means.
 const MTIME_SLACK: Duration = Duration::from_secs(2);
 
-fn same_time(a: Option<SystemTime>, b: Option<SystemTime>) -> bool {
+pub(crate) fn same_time(a: Option<SystemTime>, b: Option<SystemTime>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => a.duration_since(b).unwrap_or_else(|e| e.duration()) <= MTIME_SLACK,
         // an unknown time is no evidence of a difference
@@ -155,7 +155,7 @@ pub fn spawn_content_compare(
 }
 
 /// Byte for byte, in chunks, stopping at the first difference.
-fn contents_differ(
+pub(crate) fn contents_differ(
     left_fs: &dyn FsProvider,
     left: &Path,
     right_fs: &dyn FsProvider,

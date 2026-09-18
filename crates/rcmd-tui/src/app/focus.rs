@@ -75,7 +75,13 @@ impl App {
                 _ => None,
             };
         }
-        if self.diff().is_some() || self.menu.is_some() || self.quick_search.is_some() {
+        if self.diff().is_some() {
+            return match self.diff_mut()?.prompt.as_mut()? {
+                DiffPrompt::Search(field) => Some(FocusedLine::Field(field)),
+                DiffPrompt::Goto(value, cursor) => Some(FocusedLine::Plain(value, cursor)),
+            };
+        }
+        if self.menu.is_some() || self.quick_search.is_some() {
             return None;
         }
         if !self.config.show_cmdline {

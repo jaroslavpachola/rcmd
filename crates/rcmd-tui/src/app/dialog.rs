@@ -565,9 +565,34 @@ impl App {
             }
             Dialog::Sync(mut d) => {
                 let last = d.rows.len().saturating_sub(1);
+                // `+` or `-` asked for a mask: the keys are its
+                if let Some((field, on)) = d.mask.as_mut() {
+                    match key.code {
+                        KeyCode::Esc => d.mask = None,
+                        KeyCode::Enter => {
+                            let (mask, on) = (Mask::new(&field.value), *on);
+                            let field = std::mem::replace(field, TextField::new(""));
+                            d.mask = None;
+                            for row in &mut d.rows {
+                                let name =
+                                    row.rel.file_name().unwrap_or_default().to_string_lossy();
+                                if mask.matches(&name) || mask.matches(&row.rel.to_string_lossy()) {
+                                    row.on = on;
+                                }
+                            }
+                            self.remember(&field);
+                        }
+                        _ => {
+                            field.key(key);
+                        }
+                    }
+                    self.dialog = Some(Dialog::Sync(d));
+                    return;
+                }
                 match key.code {
                     KeyCode::Esc => {}
                     KeyCode::Enter => self.start_sync(&d),
+                    KeyCode::F(3) => self.sync_row_diff(d),
                     KeyCode::Up => {
                         d.cursor = d.cursor.saturating_sub(1);
                         self.dialog = Some(Dialog::Sync(d));
@@ -602,9 +627,18 @@ impl App {
                         d.cursor = (d.cursor + 1).min(last);
                         self.dialog = Some(Dialog::Sync(d));
                     }
+                    // an arrow towards the side that has it copies it
+                    // there; towards the side that has nothing, it
+                    // deletes it where it is
                     KeyCode::Left | KeyCode::Right => {
+                        use fsops::SyncStep::*;
                         if let Some(row) = d.rows.get_mut(d.cursor) {
-                            row.to_right = key.code == KeyCode::Right;
+                            row.step = match (key.code == KeyCode::Right, row.left, row.right) {
+                                (true, Some(_), _) => ToRight,
+                                (true, None, _) => DeleteRight,
+                                (false, _, Some(_)) => ToLeft,
+                                (false, _, None) => DeleteLeft,
+                            };
                             row.on = true;
                         }
                         self.dialog = Some(Dialog::Sync(d));
@@ -614,6 +648,22 @@ impl App {
                         for row in &mut d.rows {
                             row.on = !all_on;
                         }
+                        self.dialog = Some(Dialog::Sync(d));
+                    }
+                    // m: no preference, the right a mirror of the left,
+                    // the left a mirror of the right - planned afresh
+                    KeyCode::Char('m' | 'M') => {
+                        d.mirror = match d.mirror {
+                            Mirror::Off => Mirror::Right,
+                            Mirror::Right => Mirror::Left,
+                            Mirror::Left => Mirror::Off,
+                        };
+                        d.rows = d.diffs.iter().map(|x| SyncRow::plan(x, d.mirror)).collect();
+                        self.dialog = Some(Dialog::Sync(d));
+                    }
+                    KeyCode::Char(c @ ('+' | '-')) => {
+                        let field = TextField::new("*").with_history("sync-mask");
+                        d.mask = Some((field, c == '+'));
                         self.dialog = Some(Dialog::Sync(d));
                     }
                     _ => self.dialog = Some(Dialog::Sync(d)),

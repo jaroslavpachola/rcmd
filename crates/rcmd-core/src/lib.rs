@@ -26,6 +26,7 @@ pub mod rename;
 pub mod rpm;
 pub mod sftp;
 pub mod sshconfig;
+pub mod sync;
 pub mod trashcan;
 pub mod tree;
 pub mod usermenu;

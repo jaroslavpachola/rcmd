@@ -569,21 +569,30 @@ const HELP_TEXT: &[&str] = &[
     "                  view and edit it",
     "  F9>Cmd>Compare files: the cursor file of each panel side by",
     "     side, lined up by the diff - n and p walk the differences,",
-    "     a gap marked ~~~ is a line only one of them has, q closes",
+    "     a gap marked ~~~ is a line only one of them has, q closes.",
+    "     w / i / b: whitespace, case, blank lines do not count;",
+    "     F7 search, : go to a line; F5 takes the left's version of",
+    "     the difference on screen into the right, S-F5 the other",
+    "     way, F2 saves. F9>Cmd>Diff against HEAD: the cursor file",
+    "     beside what the last commit has of it",
     "  C-x d           compare directories, mc's three ways: Quick (size",
     "                  and date), Size only, or Thorough - which reads",
     "                  the files and is the only one that can tell two",
     "                  files with the same size and date apart. Marks",
     "                  what differs on both sides; Esc stops a thorough",
     "                  run part way.",
-    "  F9>Cmd>Synchronize: the same comparison, and then what it means -",
-    "                  a plan with one row per difference, an arrow",
-    "                  saying which way it goes (the newer side wins, a",
-    "                  file only one side has crosses over), Space",
-    "                  skipping a row, ←/→ turning one round, a for all",
-    "                  of them, Enter running it. What it copies",
+    "  F9>Cmd>Synchronize: the same comparison over both trees - a",
+    "                  server on either side is fine - and then what",
+    "                  it means: a plan with one row per difference, an",
+    "                  arrow saying which way it goes (the newer side",
+    "                  wins, a file only one side has crosses over),",
+    "                  Space skipping a row, ←/→ turning one round (an",
+    "                  arrow at the empty side deletes), m a mirror of",
+    "                  one side, +/- rows by mask, F3 the row's diff, a",
+    "                  for all of them, Enter running it. What it copies",
     "                  replaces what it lands on without asking: that is",
-    "                  the question the plan already answered.",
+    "                  the question the plan already answered. A local",
+    "                  delete goes to the trash.",
     "  F9>Left/Right>Panelize: a command's output becomes the listing.",
     "     Saved commands sit above the field - Tab moves between them,",
     "     C-s saves what you typed under a name, F8 drops one. The",
@@ -2634,55 +2643,80 @@ fn draw_diff(frame: &mut Frame, app: &mut App) {
     let width = content.width as usize;
     let half = width.saturating_sub(1) / 2;
 
-    let changed = Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD);
+    let changed = Style::new().fg(th().mark_fg);
+    // the words that changed inside a changed line
+    let word = changed.add_modifier(Modifier::BOLD | Modifier::REVERSED);
     let missing = Style::new().fg(th().header_fg).bg(th().panel_bg);
     let plain = Style::new().fg(th().panel_fg).bg(th().panel_bg);
-    // a note (no more differences, ...) takes the end of the right
-    // title, which is the one part of the line nothing else needs
-    let note = d.note.clone().unwrap_or_default();
+    // the mark goes at the end: a long title loses its front
+    let title = |side: &crate::app::DiffSide| match side.modified {
+        true => format!("{} (modified)", side.title),
+        false => side.title.clone(),
+    };
+    // a note (no more differences, ...) and what the options ignore
+    // take the end of the right title, which nothing else needs
+    let note = match (d.is_pending(), d.note.clone(), d.flags()) {
+        (true, _, _) => " comparing… ".to_string(),
+        (false, Some(note), flags) if !flags.is_empty() => format!("{note}[{flags}] "),
+        (false, Some(note), _) => note,
+        (false, None, flags) if !flags.is_empty() => format!(" [{flags}] "),
+        (false, None, _) => String::new(),
+    };
+    let right_title = title(&d.right);
     let right = if note.is_empty() {
-        tail(&d.right_title, half)
+        tail(&right_title, half)
     } else {
         let room = half.saturating_sub(note.chars().count() + 1);
-        format!("{:<room$} {note}", tail(&d.right_title, room))
+        format!("{:<room$} {note}", tail(&right_title, room))
     };
     frame.render_widget(
         Line::from(format!(
             "{:<half$} {:<half$}",
-            tail(&d.left_title, half),
+            tail(&title(&d.left), half),
             right
         ))
         .style(bar),
         title_area,
     );
     frame.render_widget(ratatui::widgets::Block::new().style(plain), content);
+    let current = d.current.and_then(|at| d.blocks.get(at)).copied();
     for row in 0..content.height as usize {
         let at = d.top + row;
         let Some(entry) = d.rows.get(at).copied() else {
             break;
         };
-        let cell = |text: Option<&str>| -> (String, Style) {
-            match text {
+        let (ltext, rtext) = (d.line(at, false), d.line(at, true));
+        // a line changed on both sides says which words changed
+        let (lwords, rwords) = match (entry.same, ltext, rtext) {
+            (false, Some(l), Some(r)) => rcmd_core::diff::inline(l, r),
+            _ => (Vec::new(), Vec::new()),
+        };
+        let cell = |text: Option<&str>, words: &[std::ops::Range<usize>]| -> Vec<Span<'static>> {
+            let Some(text) = text else {
                 // the filler is what says "this line is not here",
                 // which is different from "this line is empty"
-                None => ("~".repeat(half), missing),
-                Some(text) => {
-                    let shown: String = expand_line(text).chars().skip(d.col).take(half).collect();
-                    (
-                        format!("{shown:<half$}"),
-                        if entry.same { plain } else { changed },
-                    )
-                }
-            }
+                return vec![Span::styled("~".repeat(half), missing)];
+            };
+            let base = if entry.same { plain } else { changed };
+            let highlight = |i: usize| match words.iter().any(|w| w.contains(&i)) {
+                true => word,
+                false => base,
+            };
+            diff_cells(text, highlight, d.col, half, base)
         };
-        let (left, left_style) = cell(d.line(at, false));
-        let (right, right_style) = cell(d.line(at, true));
+        let in_current = current.is_some_and(|(start, end)| (start..end).contains(&at));
+        let mut spans = cell(ltext, &lwords);
+        spans.push(Span::styled(
+            if in_current { "┃" } else { "│" },
+            if in_current {
+                changed.add_modifier(Modifier::BOLD)
+            } else {
+                plain
+            },
+        ));
+        spans.extend(cell(rtext, &rwords));
         frame.render_widget(
-            Line::from(vec![
-                Span::styled(left, left_style),
-                Span::styled("│", plain),
-                Span::styled(right, right_style),
-            ]),
+            Line::from(spans),
             Rect {
                 y: content.y + row as u16,
                 height: 1,
@@ -2690,11 +2724,78 @@ fn draw_diff(frame: &mut Frame, app: &mut App) {
             },
         );
     }
-    draw_keybar_labels(
-        frame,
-        bottom,
-        &["", "", "Quit", "", "", "", "Prev", "Next", "", "Quit"],
-    );
+    let prompt = match &d.prompt {
+        Some(crate::app::DiffPrompt::Search(field)) => {
+            Some(("Search: ", &field.value, field.cursor))
+        }
+        Some(crate::app::DiffPrompt::Goto(value, cursor)) => Some(("Go to line: ", value, *cursor)),
+        None => None,
+    };
+    match prompt {
+        Some((label, value, cursor)) => {
+            frame.render_widget(Line::from(format!("{label}{value}")).style(bar), bottom);
+            let x = bottom.x + (label.len() + cursor) as u16;
+            frame.set_cursor_position((x.min(bottom.right().saturating_sub(1)), bottom.y));
+        }
+        None => draw_keybar_labels(
+            frame,
+            bottom,
+            &[
+                "Help", "Save", "Quit", "", "Merge", "", "Search", "Next", "", "Quit",
+            ],
+        ),
+    }
+}
+
+/// One side of a diff row as styled cells: tabs expanded the way the
+/// viewer expands them, each character keeping the style its place in
+/// the raw line has, then the part the horizontal scroll shows,
+/// padded to the column.
+fn diff_cells(
+    text: &str,
+    style_at: impl Fn(usize) -> Style,
+    skip: usize,
+    width: usize,
+    pad: Style,
+) -> Vec<Span<'static>> {
+    let mut cells: Vec<(char, Style)> = Vec::with_capacity(text.len());
+    let mut col = 0usize;
+    for (i, c) in text.chars().enumerate() {
+        let style = style_at(i);
+        match c {
+            '\t' => {
+                let n = 8 - col % 8;
+                cells.extend(std::iter::repeat_n((' ', style), n));
+                col += n;
+            }
+            c if (c as u32) < 0x20 => {
+                cells.push(('·', style));
+                col += 1;
+            }
+            c => {
+                cells.push((c, style));
+                col += 1;
+            }
+        }
+    }
+    let shown: Vec<(char, Style)> = cells.into_iter().skip(skip).take(width).collect();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_style = pad;
+    for (c, style) in &shown {
+        if *style != run_style && !run.is_empty() {
+            spans.push(Span::styled(std::mem::take(&mut run), run_style));
+        }
+        run_style = *style;
+        run.push(*c);
+    }
+    if !run.is_empty() {
+        spans.push(Span::styled(run, run_style));
+    }
+    if shown.len() < width {
+        spans.push(Span::styled(" ".repeat(width - shown.len()), pad));
+    }
+    spans
 }
 
 /// A pick list in a popup: the rows that fit around the selected one,
@@ -5537,7 +5638,10 @@ fn draw_sync(frame: &mut Frame, d: &crate::app::SyncDialog) -> Option<crate::app
     let block = Block::bordered()
         .title(" Synchronize directories ")
         .title_bottom(
-            Line::from(" Space skip · ←/→ direction · a all · Enter run · Esc cancel ").centered(),
+            Line::from(
+                " Space skip · ←/→ way · m mirror · +/- mask · F3 diff · a all · Enter run ",
+            )
+            .centered(),
         )
         .style(base);
     let inner = block.inner(area);
@@ -5545,23 +5649,52 @@ fn draw_sync(frame: &mut Frame, d: &crate::app::SyncDialog) -> Option<crate::app
     let on = d.rows.iter().filter(|r| r.on).count();
     // the two directories and how much of the plan is switched on, in
     // the room that is left after the counts
-    let room = (inner.width as usize).saturating_sub(24) / 2;
-    frame.render_widget(
-        Line::from(format!(
-            " {on} of {} on   {} --> <-- {}",
+    let mirror = match d.mirror {
+        crate::app::Mirror::Off => "",
+        crate::app::Mirror::Right => "  mirror -->",
+        crate::app::Mirror::Left => "  mirror <--",
+    };
+    let room = (inner.width as usize).saturating_sub(24 + mirror.len()) / 2;
+    let header = match &d.mask {
+        Some((field, on)) => format!(
+            " {} rows matching: {}",
+            if *on { "switch on" } else { "switch off" },
+            field.value
+        ),
+        None => format!(
+            " {on} of {} on{mirror}   {} --> <-- {}",
             d.rows.len(),
             fit(&d.left, room, false).trim_end(),
             fit(&d.right, room, false).trim_end(),
-        ))
-        .style(base),
-        Rect { height: 1, ..inner },
-    );
+        ),
+    };
+    frame.render_widget(Line::from(header).style(base), Rect { height: 1, ..inner });
+    if let Some((field, on)) = &d.mask {
+        let label = if *on {
+            " switch on rows matching: "
+        } else {
+            " switch off rows matching: "
+        };
+        let x = inner.x + (label.chars().count() + field.cursor) as u16;
+        frame.set_cursor_position((x.min(inner.right().saturating_sub(1)), inner.y));
+    }
     // keep the cursor row inside the window whatever `top` says
     let top = d
         .top
         .min(d.cursor)
         .max((d.cursor + 1).saturating_sub(shown));
-    let name_width = (inner.width as usize).saturating_sub(28);
+    // the notes are the reason for each row: they get the room they
+    // need, and the path the rest
+    let note_width = d
+        .rows
+        .iter()
+        .map(|r| r.note.len())
+        .max()
+        .unwrap_or(0)
+        .min(44);
+    let name_width = (inner.width as usize)
+        .saturating_sub(13 + note_width)
+        .max(10);
     for i in 0..shown {
         let Some(row) = d.rows.get(top + i) else {
             break;
@@ -5576,11 +5709,21 @@ fn draw_sync(frame: &mut Frame, d: &crate::app::SyncDialog) -> Option<crate::app
             (false, true) => base,
             (false, false) => off,
         };
+        let way = match row.step {
+            rcmd_core::fsops::SyncStep::ToRight => "-->",
+            rcmd_core::fsops::SyncStep::ToLeft => "<--",
+            rcmd_core::fsops::SyncStep::DeleteLeft => "del <",
+            rcmd_core::fsops::SyncStep::DeleteRight => "> del",
+        };
+        let dir = if row.left.or(row.right) == Some(true) {
+            "/"
+        } else {
+            ""
+        };
         let text = format!(
-            " [{}] {} {} {}",
+            " [{}] {} {way:<5} {}",
             if row.on { "x" } else { " " },
-            fit(&row.name.to_string_lossy(), name_width, false),
-            if row.to_right { "-->" } else { "<--" },
+            fit(&format!("{}{dir}", row.rel.display()), name_width, false),
             row.note,
         );
         frame.render_widget(

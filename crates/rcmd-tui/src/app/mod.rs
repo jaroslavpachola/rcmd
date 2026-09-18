@@ -566,8 +566,6 @@ enum PanelizeEvent {
 /// apart, being read on a worker thread.
 struct CompareState {
     handle: rcmd_core::compare::CompareHandle,
-    /// Open the synchronize plan when this finishes.
-    sync: bool,
     /// How many pairs it was given, for the progress line.
     total: usize,
     done: usize,
@@ -576,24 +574,97 @@ struct CompareState {
 /// One row of the synchronize plan: a file the comparison called a
 /// difference, and which way copying it would settle that.
 pub struct SyncRow {
-    pub name: std::ffi::OsString,
-    /// Copy from the left panel to the right; false is the other way.
-    pub to_right: bool,
-    /// Off with Space: the row stays visible and is not copied.
+    /// The path under both directories.
+    pub rel: PathBuf,
+    /// What happens to it: a copy one way, or a delete on one side.
+    pub step: fsops::SyncStep,
+    /// Off with Space: the row stays visible and is not run.
     pub on: bool,
     /// Why the row is here, in the words the list shows.
     pub note: &'static str,
+    /// Which sides have something here, and whether each is a
+    /// directory - what the arrows may choose between, and whether F3
+    /// has two files to show.
+    pub left: Option<bool>,
+    pub right: Option<bool>,
+}
+
+impl SyncRow {
+    /// The row for a difference, as a plan with no preference, or one
+    /// that makes one side a mirror of the other.
+    pub fn plan(d: &rcmd_core::sync::Difference, mirror: Mirror) -> SyncRow {
+        use fsops::SyncStep::*;
+        let (left, right) = (
+            d.left.as_ref().map(|e| e.is_dir()),
+            d.right.as_ref().map(|e| e.is_dir()),
+        );
+        let (step, on, note) = match (&d.left, &d.right, mirror) {
+            _ if d.clash() => (
+                ToRight,
+                false,
+                "a file on one side, a directory on the other",
+            ),
+            // both are directories, and one of them would not list
+            (Some(l), Some(_), _) if l.is_dir() => (ToRight, false, "could not be read"),
+            (Some(_), None, Mirror::Left) => (DeleteLeft, true, "only on the left - goes"),
+            (Some(_), None, _) => (ToRight, true, "only on the left"),
+            (None, Some(_), Mirror::Right) => (DeleteRight, true, "only on the right - goes"),
+            (None, Some(_), _) => (ToLeft, true, "only on the right"),
+            (Some(_), Some(_), Mirror::Right) => (ToRight, true, "differs"),
+            (Some(_), Some(_), Mirror::Left) => (ToLeft, true, "differs"),
+            // both have it and it differs: the newer one is the one to
+            // keep, and a tie is left pointing right rather than
+            // guessed at
+            (Some(l), Some(r), Mirror::Off) => match (l.mtime, r.mtime) {
+                (Some(a), Some(b)) if a > b => (ToRight, true, "newer on the left"),
+                (Some(a), Some(b)) if b > a => (ToLeft, true, "newer on the right"),
+                _ => (ToRight, true, "differs"),
+            },
+            (None, None, _) => (ToRight, false, ""),
+        };
+        SyncRow {
+            rel: d.rel.clone(),
+            step,
+            on,
+            note,
+            left,
+            right,
+        }
+    }
+
+    /// Both sides have a file here.
+    pub fn two_files(&self) -> bool {
+        self.left == Some(false) && self.right == Some(false)
+    }
+}
+
+/// Which way a plan leans: each difference on its own merits, or one
+/// side made the other's copy - what is only on the copy goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mirror {
+    Off,
+    /// The right becomes a copy of the left.
+    Right,
+    /// The left becomes a copy of the right.
+    Left,
 }
 
 /// F9 > Command > Synchronize: what the comparison found, as a plan
 /// that can be read, flipped row by row and run.
 pub struct SyncDialog {
     pub rows: Vec<SyncRow>,
+    /// What the comparison found, for planning again when the mirror
+    /// changes.
+    pub diffs: Vec<rcmd_core::sync::Difference>,
+    pub mirror: Mirror,
     pub cursor: usize,
     /// First row drawn, so a long plan scrolls.
     pub top: usize,
     pub left: String,
     pub right: String,
+    /// `+` / `-` typed: a mask, and whether the rows it matches go on
+    /// or off.
+    pub mask: Option<(TextField, bool)>,
 }
 
 /// A running Ctrl+Space directory-size scan.
@@ -2155,6 +2226,7 @@ use keymap::EditorAction as EA;
 
 mod connect;
 mod dialog;
+mod diffview;
 mod editor;
 mod exec;
 mod focus;
@@ -2163,6 +2235,7 @@ mod panel;
 mod search;
 mod viewer;
 
+pub use diffview::{DiffPrompt, DiffSide, DiffSource, DiffView};
 pub use exec::{SubshellSession, SubshellStep};
 
 const EDIT_FILE_MENU: &[EditMenuEntry] = &[
@@ -2688,6 +2761,8 @@ pub enum Action {
     JobReport,
     /// The `trash://` panel.
     Trash,
+    /// The cursor file against the last commit's version of it.
+    DiffHead,
     /// M-,: panels side by side, or one above the other.
     ToggleSplit,
     /// mc's "Case sensitive" sort switch.
@@ -2800,6 +2875,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Compare directories", "C-x d", Action::CompareDirs)),
             Some(("Synchroni&ze directories...", "", Action::Sync)),
             Some(("Compare fi&les", "", Action::CompareFiles)),
+            Some(("Diff against HEAD", "", Action::DiffHead)),
             Some(("&Open shell", "C-o", Action::Shell)),
             Some(("S&wap panels", "C-u", Action::SwapPanels)),
             Some(("Toggle hidde&n files", "M-.", Action::ToggleHidden)),
@@ -2961,65 +3037,6 @@ pub enum Screen {
     Diff(Box<DiffView>),
 }
 
-/// Two files side by side, mc's Compare files. The rows are the two
-/// files paired up by the diff; a row missing one side is a line that
-/// only one of them has.
-pub struct DiffView {
-    pub left_title: String,
-    pub right_title: String,
-    pub left: Vec<String>,
-    pub right: Vec<String>,
-    pub rows: Vec<rcmd_core::diff::Row>,
-    /// Where the changes are, for "next difference".
-    pub blocks: Vec<(usize, usize)>,
-    pub top: usize,
-    /// Horizontal scroll, in characters, shared by both sides.
-    pub col: usize,
-    /// Rows on screen; updated on every draw, drives paging.
-    pub height: usize,
-    pub note: Option<String>,
-}
-
-impl DiffView {
-    pub fn line(&self, row: usize, right: bool) -> Option<&str> {
-        let row = self.rows.get(row)?;
-        let (at, side) = match right {
-            true => (row.right?, &self.right),
-            false => (row.left?, &self.left),
-        };
-        side.get(at).map(String::as_str)
-    }
-
-    fn scroll(&mut self, delta: isize) {
-        let last = self.rows.len().saturating_sub(1) as isize;
-        self.top = (self.top as isize + delta).clamp(0, last.max(0)) as usize;
-    }
-
-    /// The next (or previous) run of changed rows, put at the top with
-    /// a couple of lines of context above it.
-    fn jump(&mut self, forward: bool) {
-        let here = self.top;
-        let found = match forward {
-            true => self
-                .blocks
-                .iter()
-                .find(|(start, _)| *start > here + 2)
-                .copied(),
-            false => self
-                .blocks
-                .iter()
-                .rev()
-                .find(|(start, _)| *start + 2 < here)
-                .copied(),
-        };
-        match found {
-            Some((start, _)) => self.top = start.saturating_sub(2),
-            None if self.blocks.is_empty() => self.note = Some(" the files are identical ".into()),
-            None => self.note = Some(" no more differences that way ".into()),
-        }
-    }
-}
-
 impl Screen {
     /// The row the screen list shows for it: what kind it is, and what
     /// it is on.
@@ -3031,7 +3048,7 @@ impl Screen {
                 if st.ed.modified() { " [+]" } else { "" }
             ),
             Screen::Viewer(v) => format!("View  {}", v.path.display()),
-            Screen::Diff(d) => format!("Diff  {} | {}", d.left_title, d.right_title),
+            Screen::Diff(d) => format!("Diff  {} | {}", d.left.title, d.right.title),
         }
     }
 }
@@ -3280,6 +3297,10 @@ pub struct App {
     remote_edit: Option<RemoteEdit>,
     du: Option<DuJob>,
     compare: Option<CompareState>,
+    /// Synchronize's tree comparison, while it runs.
+    sync_scan: Option<rcmd_core::sync::ScanHandle>,
+    /// The plan F3 left for a diff, to come back to when it closes.
+    sync_return: Option<Box<SyncDialog>>,
     /// Which `[[filter]]` sets each panel is under, in config order.
     filter_sets_on: [Vec<bool>; 2],
     /// Files the viewer and the editor have opened, newest last.
@@ -3498,6 +3519,8 @@ impl App {
             visits: state::load().0.visits,
             visited: [String::new(), String::new()],
             compare_then_sync: false,
+            sync_scan: None,
+            sync_return: None,
             screens: Vec::new(),
             current: None,
             screen_list: None,
@@ -3595,6 +3618,10 @@ impl App {
         self.drain_connect();
         self.drain_du();
         self.drain_compare();
+        self.drain_sync_scan();
+        if self.poll_diff() {
+            self.dirty = true;
+        }
         self.drain_panelize();
         self.poll_loads();
         self.update_watches();
@@ -3624,6 +3651,7 @@ impl App {
         // progress, a listing still arriving, a followed file
         !self.jobs.is_empty()
             || self.compare.is_some()
+            || self.sync_scan.is_some()
             || self.panelize.is_some()
             || self.find.is_some()
             || (fuzzy && matches!(&self.dialog, Some(Dialog::Fuzzy(d)) if d.walking.is_some()))
@@ -3634,6 +3662,7 @@ impl App {
             || self.esc_at.is_some()
             || self.subshell.as_ref().is_some_and(|s| !s.ready())
             || self.viewer().is_some_and(|v| v.follow)
+            || self.diff().is_some_and(DiffView::is_pending)
     }
 
     /// The session is over: quit was asked for, or the last screen of a
@@ -5239,34 +5268,21 @@ impl App {
     }
 
     /// One key in the diff view.
-    fn on_diff_key(&mut self, key: KeyEvent) {
-        let Some(d) = self.diff_mut() else { return };
-        d.note = None;
-        let page = d.height.saturating_sub(1).max(1) as isize;
-        match key.code {
-            KeyCode::Esc | KeyCode::F(10) | KeyCode::F(3) | KeyCode::Char('q') => {
-                self.close_screen()
-            }
-            KeyCode::Up => d.scroll(-1),
-            KeyCode::Down => d.scroll(1),
-            KeyCode::PageUp => d.scroll(-page),
-            KeyCode::PageDown => d.scroll(page),
-            KeyCode::Home => d.top = 0,
-            KeyCode::End => d.top = d.rows.len().saturating_sub(1),
-            KeyCode::Left => d.col = d.col.saturating_sub(8),
-            KeyCode::Right => d.col += 8,
-            KeyCode::Char('n') | KeyCode::Tab | KeyCode::F(8) => d.jump(true),
-            KeyCode::Char('p') | KeyCode::BackTab | KeyCode::F(7) => d.jump(false),
-            _ => {}
-        }
-    }
-
     /// Close whatever screen is on top, cleaning up after a viewer.
     fn close_screen(&mut self) {
-        if let Some(Screen::Viewer(v)) = self.take_current_screen() {
-            for temp in v.temps {
-                let _ = std::fs::remove_file(temp);
+        match self.take_current_screen() {
+            Some(Screen::Viewer(v)) => {
+                for temp in v.temps {
+                    let _ = std::fs::remove_file(temp);
+                }
             }
+            // a diff opened from the synchronize plan goes back to it
+            Some(Screen::Diff(_)) => {
+                if let Some(plan) = self.sync_return.take() {
+                    self.dialog = Some(Dialog::Sync(plan));
+                }
+            }
+            _ => {}
         }
     }
 
