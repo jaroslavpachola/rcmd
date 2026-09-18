@@ -1,5 +1,44 @@
 # Changelog
 
+## 4.32.0 - 2026-09-18
+
+[PLAN5](docs/PLAN5.md)'s S1: one text field for every form, so each
+dialog gets all of it at once instead of growing its own.
+
+- **History in every field.** Only the one-line dialogs kept one. Now
+  the F5/F6 destination and source mask, find's start, name and
+  content, the select and filter patterns with their size and age, the
+  link form, panelize, and the editor's and viewer's searches all
+  remember what was typed and walk it with Alt+P / Alt+N. The history
+  is read once per field, not from `state.toml` on every key.
+
+- **Alt+H lists a field's history** to pick from, over whatever form
+  the field is in: mc's history button, without the button.
+
+- **Find opens on the last question**, in the next session too: the
+  name, the content and every switch. The start is where the panel is.
+
+- **A shell's line-editing keys, in every field and on the command
+  line**: Alt+B/F and Ctrl+←/→ by word, Ctrl+W back to the last space,
+  Alt+Backspace and Alt+D a word, Ctrl+K to the end, Ctrl+U the line,
+  and Ctrl+Y puts back the last thing cut - in any field, which makes
+  it a way to carry text from one form to another.
+
+- **Completion beyond paths.** The first word of a command line
+  completes from `$PATH`, `$NAME` from the environment, `~user` from the
+  password file. Alt+Tab completes in any field, Tab in the one-line
+  dialogs. Several candidates open a list to pick from instead of the
+  first 76 characters of them on the status line.
+
+- **Bracketed paste.** A paste arrived as keystrokes: a multi-line paste
+  ran line by line, a leading `+` on an empty command line opened
+  Select group, and pasted code staircased in the editor's auto-indent.
+  It is one event now, routed to whatever has the keyboard: a field or
+  the command line takes it as text with its line breaks flattened, the
+  editor takes it whole as one undo step. The window build's Ctrl+V does
+  the same, and its shell pane forwards a paste bracketed when the shell
+  asked for it.
+
 ## 4.31.0 - 2026-09-18
 
 The bug release that opens [PLAN5](docs/PLAN5.md): every item of its S0,

@@ -98,7 +98,7 @@ places where mc stayed down to earth.
     cursor on every key (`app/dialog.rs:398`, `app/connect.rs:234`).
   - Extracted members keep setuid/setgid bits (`mode & 0o7777`).
 
-### S1 - the field (the row that started this plan)
+### S1 - the field (the row that started this plan) - DONE (2026-09-18, 4.32.0)
 
 One text-field widget, so that every form gets all of it at once
 instead of each dialog growing its own.
