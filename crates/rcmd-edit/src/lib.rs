@@ -555,9 +555,13 @@ impl Editor {
         self.sticky = false;
         self.redo.clear();
 
-        // coalesce bursts of typing / deleting into one undo step
+        // coalesce bursts of typing / deleting into one undo step - but
+        // never into the group the file was saved at, or the save point
+        // moves with the typing and the buffer never looks modified
+        let saved_id = self.saved_id;
         if kind != Kind::Other
             && let Some(group) = self.undo.last_mut()
+            && group.id != saved_id
             && group.kind == kind
             && group.edits.len() == 1
         {
@@ -1306,6 +1310,31 @@ mod tests {
         e.undo();
         e.insert("2"); // new branch: same stack depth, different content
         assert!(e.modified());
+    }
+
+    /// Typing straight after a save used to merge into the saved undo
+    /// group, so its id - and `modified()` - never changed: F10 then
+    /// quit without asking and the new text was lost.
+    #[test]
+    fn typing_after_a_save_is_a_modification() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("m.txt");
+        std::fs::write(&path, "base").unwrap();
+        let mut e = Editor::open(&path).unwrap();
+        e.move_bottom(false);
+        e.insert("a");
+        e.insert("b");
+        e.save().unwrap();
+        assert!(!e.modified());
+        e.insert("c");
+        assert!(e.modified(), "typing after a save left the buffer clean");
+        e.save().unwrap();
+        e.backspace();
+        assert!(e.modified(), "backspacing after a save left it clean");
+        e.save().unwrap();
+        e.undo();
+        assert!(e.modified());
+        assert_eq!(e.text(), "baseabc");
     }
 
     #[test]
