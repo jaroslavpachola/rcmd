@@ -22,6 +22,7 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("f6", "move"),
     ("f7", "mkdir"),
     ("alt+f5", "pack"),            // NC/VC: pack the marked files into an archive
+    ("alt+f6", "extract"),         // ...and its other half: unpack into the other panel
     ("alt+delete", "wipe"),        // Far: overwrite, then delete
     ("ctrl+g", "apply"),           // Far: one command per marked file
     ("ctrl+insert", "copy-names"), // Far: the names on the clipboard
@@ -307,6 +308,7 @@ pub const ACTIONS: &[(&str, Action)] = &[
     ("diff-head", Action::DiffHead),
     ("palette", Action::Palette),
     ("connections", Action::Connections),
+    ("extract", Action::Extract),
     ("toggle-split", Action::ToggleSplit),
     ("sort-case", Action::SortCase),
     ("menu", Action::Menu),

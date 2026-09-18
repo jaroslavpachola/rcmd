@@ -59,6 +59,30 @@ fn open(path: &Path) -> io::Result<std::fs::File> {
         .open(path)
 }
 
+/// The extended attributes a file carries, by name - `user.*`,
+/// `security.selinux`, and the POSIX ACLs, which live here as
+/// `system.posix_acl_access` and `system.posix_acl_default`.
+pub fn xattr_names(path: &Path) -> Vec<String> {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return Vec::new();
+    };
+    let size = unsafe { libc::llistxattr(c.as_ptr(), std::ptr::null_mut(), 0) };
+    if size <= 0 {
+        return Vec::new();
+    }
+    let mut buf = vec![0u8; size as usize];
+    let got = unsafe { libc::llistxattr(c.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+    if got <= 0 {
+        return Vec::new();
+    }
+    buf[..got as usize]
+        .split(|b| *b == 0)
+        .filter(|name| !name.is_empty())
+        .map(|name| String::from_utf8_lossy(name).into_owned())
+        .collect()
+}
+
 /// The flags as `lsattr` writes them: a letter where one is set, a dash
 /// where it is not, in [`FLAGS`]' order.
 pub fn letters(flags: u32) -> String {
@@ -71,6 +95,27 @@ pub fn letters(flags: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extended_attributes_are_listed_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("f");
+        std::fs::write(&path, b"x").unwrap();
+        let c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        let set = unsafe {
+            libc::setxattr(
+                c.as_ptr(),
+                c"user.rcmd".as_ptr(),
+                b"1".as_ptr().cast(),
+                1,
+                0,
+            )
+        };
+        if set != 0 {
+            return; // this filesystem takes no user xattrs
+        }
+        assert!(xattr_names(&path).contains(&"user.rcmd".to_string()));
+    }
 
     #[test]
     fn a_flag_set_is_a_flag_read_back() {

@@ -30,6 +30,7 @@ rcmd-tui-core = { path = "../rcmd-core", version = "4.39.0" }
 rcmd-tui-edit = { path = "../rcmd-edit", version = "4.39.0" }
 anyhow.workspace = true
 ratatui.workspace = true
+unicode-width.workspace = true
 chrono.workspace = true
 libc.workspace = true
 serde.workspace = true

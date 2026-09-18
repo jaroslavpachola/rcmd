@@ -2010,6 +2010,37 @@ def test_editdrag():
     shutil.rmtree(root)
 
 
+def test_extract():
+    """PLAN5 S9: Alt+F6 unpacks the archive under the cursor into the
+    other panel, in a directory named after it."""
+    import tarfile
+    root, play, home = sandbox()
+    other = os.path.join(root, "other")
+    os.makedirs(other)
+    src = os.path.join(root, "src")
+    os.makedirs(os.path.join(src, "inner"))
+    open(os.path.join(src, "top.txt"), "w").write("top\n")
+    open(os.path.join(src, "inner", "deep.txt"), "w").write("deep\n")
+    with tarfile.open(os.path.join(play, "bundle.tar.gz"), "w:gz") as tar:
+        tar.add(os.path.join(src, "top.txt"), "top.txt")
+        tar.add(os.path.join(src, "inner"), "inner")
+    s = Session(play, home, args=(play, other))
+    s.send(b"\x13bundle\r", wait=STEP)
+    s.send(b"\x1b[17;3~", wait=STEP * 3)       # Alt+F6
+    check("extract: it ran", wait_for(s, "done -"), s.screen())
+    out = os.path.join(other, "bundle")
+    check("extract: into a directory named after it",
+          os.path.isfile(os.path.join(out, "top.txt"))
+          and open(os.path.join(out, "inner", "deep.txt")).read() == "deep\n",
+          str(os.listdir(other)))
+    s.send(b"\x1b[17;3~", wait=STEP * 3)       # again: a new name, not an overwrite
+    wait_for(s, "done -")
+    check("extract: a second time goes beside the first",
+          os.path.isdir(os.path.join(other, "bundle-1")), str(os.listdir(other)))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_pack():
     """M-F5 packs into an archive that is not there yet: the name says
     the container, and the other panel's directory is where it lands."""
@@ -2481,6 +2512,14 @@ def test_hexedit():
     # column every printable key is a byte, "q" included, which is why
     # Esc is the way out of editing before "q" can mean quit again
     s.send(b"\t", wait=STEP)
+    # PLAN5 S9: the inspector reads the bytes under the cursor, and a
+    # byte change is one Ctrl+Z from gone
+    scr = s.screen()
+    check("hexedit: the inspector reads both ways",
+          "LE  u8" in scr and "BE  u8" in scr, scr)
+    s.send(b"7A", wait=STEP)
+    s.send(b"\x1a", wait=STEP)              # Ctrl+Z
+    check("hexedit: Ctrl+Z takes the change back", "6C 6C 6F" in s.screen(), s.screen())
     s.send(b"7A", wait=STEP)                # "z" over the first "l"
     check("hexedit: the hex column again", "7A 6C 6F" in s.screen(), s.screen())
     s.send(b"\x1b\x1b", wait=STEP * 2)      # Esc: stop editing
@@ -2823,6 +2862,9 @@ def test_mcdepth():
     scr = s.screen()
     check("mcdepth: info pane opens", "Inode:" in scr and "regular file" in scr)
     check("mcdepth: info owner resolved", getpass.getuser() in scr)
+    # PLAN5 S9: what the filesystem is, and what the file carries
+    check("mcdepth: info says where it is mounted",
+          "Mounted:" in scr and "Device:" in scr and "Xattrs:" in scr, scr)
     s.send(b"\x18i")                   # off
 
     # long listing via F9 -> Left (the panel menu F9 opens on)
@@ -6899,6 +6941,7 @@ def main():
         test_vfslist,
         test_archive_write,
         test_pack,
+        test_extract,
         test_undo,
         test_palette,
         test_editdrag,

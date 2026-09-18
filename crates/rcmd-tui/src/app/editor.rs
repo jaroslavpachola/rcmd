@@ -123,7 +123,7 @@ impl App {
                 let len = std::fs::metadata(path)
                     .map(|m| m.len() as usize)
                     .unwrap_or(0);
-                ed.prefs = self.config.edit_prefs();
+                ed.prefs = crate::editorconfig::for_file(&ed, self.config.edit_prefs());
                 // back where it was left, for a file of the user's own
                 // (a scratch copy or a rename buffer has no past)
                 if follow_up.is_none()
@@ -1013,7 +1013,8 @@ impl App {
                         let (path, charset) = (st.ed.path.clone(), charset_at(to));
                         match rcmd_edit::Editor::open_in(&path, charset) {
                             Ok(mut ed) => {
-                                ed.prefs = self.config.edit_prefs();
+                                ed.prefs =
+                                    crate::editorconfig::for_file(&ed, self.config.edit_prefs());
                                 if let Some(st) = self.editor_mut() {
                                     st.ed = ed;
                                     st.top = 0;
@@ -1128,10 +1129,14 @@ impl App {
         cfg.edit_line_numbers = d.line_numbers;
         cfg.edit_backups = d.backups;
         cfg.edit_clipboard = d.clipboard;
-        ui::set_tab_size(d.tab_size as usize);
+        cfg.edit_trim_trailing = d.trim_trailing;
+        cfg.edit_final_newline = d.final_newline;
+        cfg.edit_show_whitespace = d.show_whitespace;
+        cfg.edit_margin = d.margin;
+        ui::set_editor_look(&self.config);
         let prefs = self.config.edit_prefs();
         if let Some(st) = self.editor_mut() {
-            st.ed.prefs = prefs;
+            st.ed.prefs = crate::editorconfig::for_file(&st.ed, prefs);
             st.wrap_column = d.wrap_column as usize;
             st.line_numbers = d.line_numbers;
             st.note = Some(" options saved ".into());
@@ -1139,7 +1144,17 @@ impl App {
         let (tab, fill, indent) = (d.tab_size, d.fill_tabs, d.auto_indent);
         let (bstab, wrap) = (d.backspace_tabs, d.wrap_column);
         let (numbers, backups, clip) = (d.line_numbers, d.backups, d.clipboard);
+        let (trim, final_nl, ws, margin) = (
+            d.trim_trailing,
+            d.final_newline,
+            d.show_whitespace,
+            d.margin,
+        );
         if let Err(err) = state::update(move |s| {
+            s.edit_trim_trailing = Some(trim);
+            s.edit_final_newline = Some(final_nl);
+            s.edit_show_whitespace = Some(ws);
+            s.edit_margin = Some(margin);
             s.edit_tab_size = Some(tab);
             s.edit_fill_tabs = Some(fill);
             s.edit_auto_indent = Some(indent);
@@ -1241,6 +1256,10 @@ impl App {
             line_numbers: cfg.edit_line_numbers,
             backups: cfg.edit_backups,
             clipboard: cfg.edit_clipboard,
+            trim_trailing: cfg.edit_trim_trailing,
+            final_newline: cfg.edit_final_newline,
+            show_whitespace: cfg.edit_show_whitespace,
+            margin: cfg.edit_margin,
             cursor: 0,
             ok: true,
         };

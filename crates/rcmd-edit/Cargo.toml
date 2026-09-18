@@ -21,6 +21,7 @@ default = []
 syntax = ["dep:syntect"]
 
 [dependencies]
+unicode-width.workspace = true
 ropey.workspace = true
 encoding_rs.workspace = true
 regex.workspace = true

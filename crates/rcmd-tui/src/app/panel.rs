@@ -603,6 +603,7 @@ impl App {
             Action::DiffHead => self.open_diff_head(),
             Action::Palette => self.open_palette(),
             Action::Connections => self.open_connections(),
+            Action::Extract => self.extract_archives(),
             Action::HotlistAdd => {
                 let panel = &self.panels[self.active];
                 let path = match panel.is_remote() {
@@ -2171,6 +2172,64 @@ impl App {
         });
     }
 
+    /// Alt+F6: each marked archive (or the cursor's) unpacked into the
+    /// other panel, in a directory of its own named after it - an
+    /// archive whose top level is forty files does not spill them over
+    /// what is already there.
+    fn extract_archives(&mut self) {
+        if !self.panels[self.active].is_local() || !self.panels[self.active ^ 1].is_local() {
+            self.status = Some(" extract works between two local panels ".into());
+            return;
+        }
+        let archives: Vec<PathBuf> = self.panels[self.active]
+            .targets()
+            .into_iter()
+            .filter(|p| p.file_name().is_some_and(rcmd_core::vfs::is_archive_name))
+            .collect();
+        if archives.is_empty() {
+            self.status = Some(" no archive marked or under the cursor ".into());
+            return;
+        }
+        let dest_dir = self.panels[self.active ^ 1].local_cwd();
+        for archive in archives {
+            let name = archive.file_name().unwrap_or_default();
+            let stem = rcmd_core::vfs::archive_stem(name).unwrap_or_else(|| "extracted".into());
+            // a name already taken gets a number, never an overwrite
+            let target = (0..)
+                .map(|n| match n {
+                    0 => dest_dir.join(&stem),
+                    n => dest_dir.join(format!("{stem}-{n}")),
+                })
+                .find(|p| std::fs::symlink_metadata(p).is_err())
+                .expect("some name is free");
+            let fs = match rcmd_core::archive::ArchiveFs::open(&archive) {
+                Ok(fs) => fs,
+                Err(err) => {
+                    self.status = Some(format!(" {}: {err} ", name.to_string_lossy()));
+                    continue;
+                }
+            };
+            let sources: Vec<PathBuf> = match fs.read_dir(Path::new("")) {
+                Ok(entries) => entries
+                    .into_iter()
+                    .filter(|e| !e.is_parent())
+                    .map(|e| PathBuf::from(e.name))
+                    .collect(),
+                Err(err) => {
+                    self.status = Some(format!(" {}: {err} ", name.to_string_lossy()));
+                    continue;
+                }
+            };
+            if let Err(err) = std::fs::create_dir(&target) {
+                self.status = Some(format!(" {}: {err} ", target.display()));
+                continue;
+            }
+            let title = format!(" extract {} ", name.to_string_lossy());
+            let handle = fsops::spawn_extract(Arc::new(fs), sources, target);
+            self.push_job(title, handle);
+        }
+    }
+
     /// Enter on a file a `[[vfs]]` rule claims: into it, like an
     /// archive. False = no rule has it, and Enter goes on as usual.
     fn enter_user_vfs(&mut self) -> bool {
@@ -2796,7 +2855,7 @@ impl App {
             self.open_internal_editor(&path, title);
         } else {
             let mut ed = rcmd_edit::Editor::create(&path);
-            ed.prefs = self.config.edit_prefs();
+            ed.prefs = crate::editorconfig::for_file(&ed, self.config.edit_prefs());
             self.open_screen(Screen::Editor(Box::new(EditorState {
                 hl: rcmd_edit::Highlighter::new(&path, 0),
                 ed,

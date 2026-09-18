@@ -149,6 +149,14 @@ pub struct Config {
     pub edit_line_numbers: bool,
     /// Keep the previous contents as `file~` on every save.
     pub edit_backups: bool,
+    /// Take the blanks off the ends of lines when saving.
+    pub edit_trim_trailing: bool,
+    /// End every saved file with a newline.
+    pub edit_final_newline: bool,
+    /// Show tabs as `→` and trailing blanks as `·`.
+    pub edit_show_whitespace: bool,
+    /// A right margin drawn at this column; 0 = none.
+    pub edit_margin: u16,
     /// Copy and cut also reach the desktop clipboard, and paste reads
     /// it - through wl-copy / xclip / xsel / pbcopy, whichever is
     /// there. Off = the editor's own clipboard only.
@@ -597,6 +605,10 @@ impl Default for Config {
             kitty_keyboard: true,
             edit_line_numbers: false,
             edit_backups: false,
+            edit_trim_trailing: false,
+            edit_final_newline: false,
+            edit_show_whitespace: false,
+            edit_margin: 0,
             edit_clipboard: true,
             keys: BTreeMap::new(),
             hotlist: Vec::new(),
@@ -620,6 +632,8 @@ impl Config {
             auto_indent: self.edit_auto_indent,
             backspace_tabs: self.edit_backspace_tabs,
             backup: self.edit_backups,
+            trim_trailing: self.edit_trim_trailing,
+            final_newline: self.edit_final_newline,
         }
     }
 }

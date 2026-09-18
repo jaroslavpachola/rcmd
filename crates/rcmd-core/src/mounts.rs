@@ -32,6 +32,77 @@ pub fn mounts() -> Vec<Mount> {
     parse_df(&String::from_utf8_lossy(&out.stdout))
 }
 
+/// What the filesystem a path is on is: where it is mounted, what
+/// from, as what, the device number, and how many inodes are left - the
+/// info panel's lower half.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FsFacts {
+    pub point: String,
+    pub source: String,
+    pub fstype: String,
+    /// `major:minor`.
+    pub device: String,
+    pub inodes_free: u64,
+    pub inodes_total: u64,
+}
+
+/// The facts for `path`, from `/proc/self/mounts` (the longest mount
+/// point that holds it) and a `statvfs`. `None` where there is no
+/// `/proc`, or the path cannot be stat'ed.
+pub fn facts(path: &std::path::Path) -> Option<FsFacts> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(path).ok()?;
+    let real = std::fs::canonicalize(path).ok()?;
+    let text = std::fs::read_to_string("/proc/self/mounts").ok()?;
+    let (point, source, fstype) = text
+        .lines()
+        .filter_map(|line| {
+            let mut f = line.split(' ');
+            let (source, point, fstype) = (f.next()?, f.next()?, f.next()?);
+            let point = unescape(point);
+            real.starts_with(&point)
+                .then(|| (point, unescape(source), fstype.to_string()))
+        })
+        .max_by_key(|(point, _, _)| point.len())?;
+    let c = std::ffi::CString::new(real.as_os_str().as_encoded_bytes()).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    let ok = unsafe { libc::statvfs(c.as_ptr(), &mut st) } == 0;
+    let dev = meta.dev();
+    Some(FsFacts {
+        point,
+        source,
+        fstype,
+        device: format!("{}:{}", libc::major(dev), libc::minor(dev)),
+        inodes_free: if ok { st.f_favail as u64 } else { 0 },
+        inodes_total: if ok { st.f_files as u64 } else { 0 },
+    })
+}
+
+/// `/proc/mounts` writes a space as `\040`, and a tab, a newline and a
+/// backslash the same way.
+fn unescape(field: &str) -> String {
+    let bytes = field.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let octal = bytes
+            .get(i + 1..i + 4)
+            .and_then(|d| std::str::from_utf8(d).ok())
+            .and_then(|d| u8::from_str_radix(d, 8).ok());
+        match (bytes[i], octal) {
+            (b'\\', Some(byte)) => {
+                out.push(byte);
+                i += 4;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// `df -P` promises one line per filesystem and the mount point last,
 /// which is the only reason a mount point with a space in it survives
 /// this.
@@ -61,6 +132,18 @@ fn parse_df(text: &str) -> Vec<Mount> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_knows_the_filesystem_it_is_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(facts) = facts(tmp.path()) else {
+            return; // no /proc here
+        };
+        assert!(tmp.path().canonicalize().unwrap().starts_with(&facts.point));
+        assert!(!facts.fstype.is_empty());
+        assert!(facts.device.contains(':'));
+        assert_eq!(unescape("/media/my\\040disk"), "/media/my disk");
+    }
 
     #[test]
     fn df_output_becomes_mounts() {

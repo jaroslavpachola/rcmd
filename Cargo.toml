@@ -21,6 +21,9 @@ strip = true
 [workspace.dependencies]
 anyhow = "1"
 ratatui = "0.29"
+# how many cells a character takes: the same crate and version ratatui
+# measures with, so a wide character is two cells to both
+unicode-width = "0.2"
 chrono = "0.4"
 tempfile = "3"
 trash = "5"

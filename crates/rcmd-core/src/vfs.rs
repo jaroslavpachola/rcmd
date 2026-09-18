@@ -241,50 +241,88 @@ impl FsWrite for LocalFs {
 
 /// Filenames Enter will try to open as an archive.
 pub fn is_archive_name(name: &OsStr) -> bool {
+    archive_suffix(name).is_some()
+}
+
+/// An archive's name without the suffix that made it one: what a
+/// directory it is extracted into is called - `src.tar.gz` gives `src`.
+pub fn archive_stem(name: &OsStr) -> Option<String> {
+    let suffix = archive_suffix(name)?;
+    let name = name.to_string_lossy();
+    let stem = &name[..name.len() - suffix.len()];
+    (!stem.is_empty()).then(|| stem.to_string())
+}
+
+/// The archive suffix a name ends in, the longest one - `.tar.gz`, not
+/// `.gz`.
+fn archive_suffix(name: &OsStr) -> Option<&'static str> {
     let name = name.to_string_lossy().to_lowercase();
-    [
-        ".zip",
-        ".tar",
-        ".tar.gz",
-        ".tgz",
-        ".tar.xz",
-        ".txz",
-        ".tar.bz2",
-        ".tbz2",
-        ".tbz",
-        ".cpio",
-        ".cpio.gz",
-        ".cpio.xz",
-        ".cpio.bz2",
-        ".cpio.zst",
-        ".tar.zst",
-        ".tzst",
-        ".deb",
-        ".udeb",
-        ".rpm",
-        ".iso",
-        ".patch",
-        ".patch.gz",
-        ".patch.xz",
-        ".patch.bz2",
-        ".diff",
-        ".diff.gz",
-        ".diff.xz",
-        ".diff.bz2",
-        ".mbox",
-        ".mbox.gz",
-        ".mbox.xz",
-        ".mbox.bz2",
-        ".mbx",
-        ".a",
-        ".ar",
-        ".rar",
-        ".7z",
-        ".lha",
-        ".lzh",
-        ".arj",
-        ".cab",
-    ]
-    .iter()
-    .any(|ext| name.ends_with(ext))
+    ARCHIVE_SUFFIXES
+        .iter()
+        .filter(|ext| name.ends_with(*ext))
+        .max_by_key(|ext| ext.len())
+        .copied()
+}
+
+const ARCHIVE_SUFFIXES: &[&str] = &[
+    ".zip",
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+    ".tar.xz",
+    ".txz",
+    ".tar.bz2",
+    ".tbz2",
+    ".tbz",
+    ".cpio",
+    ".cpio.gz",
+    ".cpio.xz",
+    ".cpio.bz2",
+    ".cpio.zst",
+    ".tar.zst",
+    ".tzst",
+    ".deb",
+    ".udeb",
+    ".rpm",
+    ".iso",
+    ".patch",
+    ".patch.gz",
+    ".patch.xz",
+    ".patch.bz2",
+    ".diff",
+    ".diff.gz",
+    ".diff.xz",
+    ".diff.bz2",
+    ".mbox",
+    ".mbox.gz",
+    ".mbox.xz",
+    ".mbox.bz2",
+    ".mbx",
+    ".a",
+    ".ar",
+    ".rar",
+    ".7z",
+    ".lha",
+    ".lzh",
+    ".arj",
+    ".cab",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_archive_stem_loses_its_whole_suffix() {
+        use std::ffi::OsStr;
+        assert_eq!(
+            archive_stem(OsStr::new("src.tar.gz")).as_deref(),
+            Some("src")
+        );
+        assert_eq!(
+            archive_stem(OsStr::new("Photos.ZIP")).as_deref(),
+            Some("Photos")
+        );
+        assert_eq!(archive_stem(OsStr::new("notes.txt")), None);
+    }
 }

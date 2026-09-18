@@ -81,6 +81,11 @@ pub struct Prefs {
     /// Keep the previous contents as `file~` on every save - mc's
     /// "Do backups", with mc's `~` suffix.
     pub backup: bool,
+    /// Take the blanks off the ends of lines when saving.
+    pub trim_trailing: bool,
+    /// End the file with a newline when saving, if it has text and
+    /// does not.
+    pub final_newline: bool,
 }
 
 impl Default for Prefs {
@@ -93,6 +98,8 @@ impl Default for Prefs {
             auto_indent: true,
             backspace_tabs: false,
             backup: false,
+            trim_trailing: false,
+            final_newline: false,
         }
     }
 }
@@ -103,12 +110,20 @@ pub fn screen_col(text: &str, col: usize, tab: usize) -> usize {
     let tab = tab.max(1);
     let mut scol = 0usize;
     for c in text.chars().take(col) {
-        scol += match c {
-            '\t' => tab - scol % tab,
-            _ => 1,
-        };
+        scol += cell_width(c, scol, tab);
     }
     scol
+}
+
+/// How many cells a character takes at screen column `scol`: a tab to
+/// the next stop, a control character one (it is drawn as a dot), a
+/// wide CJK or emoji character two, a combining mark none.
+pub fn cell_width(c: char, scol: usize, tab: usize) -> usize {
+    match c {
+        '\t' => tab - scol % tab,
+        c if (c as u32) < 0x20 => 1,
+        c => unicode_width::UnicodeWidthChar::width(c).unwrap_or(1),
+    }
 }
 
 /// The inverse: which character's cell covers screen column `target`.
@@ -116,8 +131,8 @@ pub fn col_at_screen(text: &str, target: usize, tab: usize) -> usize {
     let tab = tab.max(1);
     let mut scol = 0usize;
     for (i, c) in text.chars().enumerate() {
-        let width = if c == '\t' { tab - scol % tab } else { 1 };
-        if scol + width > target {
+        let width = cell_width(c, scol, tab);
+        if width > 0 && scol + width > target {
             return i;
         }
         scol += width;
@@ -260,6 +275,9 @@ impl Editor {
     /// Atomic save: write to a temp file next to the target, keep the
     /// original permissions, rename over. Symlinks are followed.
     pub fn save(&mut self) -> io::Result<()> {
+        if self.prefs.trim_trailing || self.prefs.final_newline {
+            self.tidy();
+        }
         let target = std::fs::canonicalize(&self.path).unwrap_or_else(|_| self.path.clone());
         let dir = target.parent().unwrap_or_else(|| Path::new("."));
         let name = target.file_name().unwrap_or_default().to_string_lossy();
@@ -341,6 +359,89 @@ impl Editor {
 
     fn top_id(&self) -> u64 {
         self.undo.last().map(|g| g.id).unwrap_or(0)
+    }
+
+    /// What the prefs ask of a file on its way to disk - trailing
+    /// blanks off, a final newline on - as one undo step, so what the
+    /// save changed is one Ctrl+Z away. True = something changed.
+    pub fn tidy(&mut self) -> bool {
+        let (trim, final_nl) = (self.prefs.trim_trailing, self.prefs.final_newline);
+        let cursor = self.cursor;
+        let changed = self.batch(|ed| {
+            let mut changed = false;
+            if trim {
+                for line in (0..ed.line_count()).rev() {
+                    let text = ed.line(line);
+                    let kept = text.trim_end_matches([' ', '\t']).chars().count();
+                    let len = text.chars().count();
+                    if kept < len {
+                        let at = ed.char_idx(Pos { line, col: kept });
+                        ed.splice(at, len - kept, "", Kind::Other);
+                        changed = true;
+                    }
+                }
+            }
+            let len = ed.rope.len_chars();
+            if final_nl && len > 0 && ed.rope.char(len - 1) != '\n' {
+                ed.splice(len, 0, "\n", Kind::Other);
+                changed = true;
+            }
+            changed
+        });
+        // tidying is not moving: the cursor stays where it was, as far
+        // as the line it was on still reaches
+        let line = cursor.line.min(self.line_count().saturating_sub(1));
+        self.cursor = Pos {
+            line,
+            col: cursor.col.min(self.line_len(line)),
+        };
+        self.desired_col = self.cursor.col;
+        changed
+    }
+
+    /// `LF` or `CRLF`: what the lines end in, and what a save writes.
+    pub fn line_ending(&self) -> &'static str {
+        if self.crlf { "CRLF" } else { "LF" }
+    }
+
+    /// How the file is indented, from its first thousand indented
+    /// lines: `Some((false, _))` with tabs, `Some((true, n))` with `n`
+    /// spaces a level, `None` when it does not say.
+    pub fn guess_indent(&self) -> Option<(bool, usize)> {
+        let (mut tabs, mut spaces) = (0usize, 0usize);
+        let mut widths = [0usize; 9];
+        let mut last = 0usize;
+        for line in (0..self.line_count()).take(5000) {
+            let text = self.line(line);
+            match text.chars().next() {
+                Some('\t') => tabs += 1,
+                Some(' ') => {
+                    let n = text.chars().take_while(|c| *c == ' ').count();
+                    // the step from the line above says how wide a level is
+                    let step = n.abs_diff(last);
+                    if (1..=8).contains(&step) && !text.trim().is_empty() {
+                        widths[step] += 1;
+                    }
+                    spaces += 1;
+                    last = n;
+                }
+                _ => last = 0,
+            }
+            if tabs + spaces >= 1000 {
+                break;
+            }
+        }
+        if tabs + spaces < 3 {
+            return None;
+        }
+        if tabs >= spaces {
+            return Some((false, 0));
+        }
+        let width = [2usize, 4, 8, 3]
+            .into_iter()
+            .max_by_key(|w| widths[*w])
+            .filter(|w| widths[*w] > 0)?;
+        Some((true, width))
     }
 
     pub fn modified(&self) -> bool {
@@ -1222,6 +1323,41 @@ fn expand_replacement(caps: &regex::Captures, replacement: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tidy_trims_and_ends_with_a_newline_as_one_step() {
+        let mut ed = Editor::create(Path::new("/nonexistent/x"));
+        ed.insert("a  \nb\t\nc");
+        ed.prefs.trim_trailing = true;
+        ed.prefs.final_newline = true;
+        assert!(ed.tidy());
+        assert_eq!(ed.text(), "a\nb\nc\n");
+        assert!(!ed.tidy(), "a tidy file stays as it is");
+        ed.undo();
+        assert_eq!(ed.text(), "a  \nb\t\nc");
+    }
+
+    #[test]
+    fn the_indent_is_guessed_from_the_file() {
+        let mut ed = Editor::create(Path::new("/nonexistent/x"));
+        ed.insert("fn a() {\n    if x {\n        y();\n    }\n    z();\n}\n");
+        assert_eq!(ed.guess_indent(), Some((true, 4)));
+        let mut ed = Editor::create(Path::new("/nonexistent/y"));
+        ed.insert("a:\n\tb\n\tc\n\t\td\n");
+        assert_eq!(ed.guess_indent(), Some((false, 0)));
+        assert_eq!(ed.line_ending(), "LF");
+    }
+
+    #[test]
+    fn wide_characters_take_two_cells() {
+        // 日本 is four cells, then the x; a tab from column 4 goes to 8
+        assert_eq!(screen_col("日本x", 2, 8), 4);
+        assert_eq!(screen_col("日本\tx", 3, 8), 8);
+        assert_eq!(col_at_screen("日本x", 3, 8), 1);
+        assert_eq!(col_at_screen("日本x", 4, 8), 2);
+        // a combining mark adds no cell
+        assert_eq!(screen_col("e\u{301}x", 2, 8), 1);
+    }
 
     fn ed(text: &str) -> Editor {
         Editor::with_rope(Rope::from_str(text), PathBuf::from("/t.txt"), false)

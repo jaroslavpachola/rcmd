@@ -604,6 +604,10 @@ column, where a character stands for itself; arrows, PgUp/PgDn and
 Home/End move it; **F6** writes the changed bytes into the file and Esc
 stops editing. Nothing reaches the file until F6, changed bytes are
 marked until then, and leaving with any still unwritten asks first.
+**Ctrl+Z** takes the last changed byte back. Under the bytes, the
+**data inspector** reads what the cursor is on as every kind of number
+- u8 to u64 and their signed twins, f32, f64, and a Unix time where four
+bytes make one - little-endian on one row and big-endian on the next.
 Bytes are replaced, never inserted or deleted, so the file's length
 never moves - which is what makes writing a handful of bytes into a
 multi-GB file instant. Editing needs the file itself: on an archive
@@ -886,8 +890,10 @@ alone, so `printf '%%s'` needs its percent doubled like everywhere else.
 **File properties**: the info panel (Ctrl+X i) turns the other panel
 into a live stat display of the file under the cursor - type, size,
 permissions, owner and group (resolved locally, numeric on SFTP),
-hard links, inode, and all three timestamps - plus the filesystem's
-free space, which also shows in every local panel's footer. Listing
+hard links, inode, and all three timestamps; its extended attributes,
+whether it carries an ACL, and its chattr flags; and the filesystem it
+is on - the device, where it is mounted and as what, the free space
+(which also shows in every local panel's footer) and the free inodes. Listing
 formats are switchable per panel from F9 → Left/Right: *brief* (names only,
 full width), *full* (the classic name/size/mtime), and *long*
 (ls-style perms/owner/group/size/name). A long listing needs room, so
@@ -897,9 +903,11 @@ other panel is hidden - MC's one-panel view; Tab to the other panel
 in the config (`listing`).
 
 **Git awareness**: inside a git work tree the panel title shows the
-branch (`[main]`) and each entry gets a one-cell status column -
-`M` modified, `A` added, `?` untracked, `!` ignored (ignored entries
-are dimmed); changes deep inside a subdirectory mark the subdirectory.
+branch (`[main ↑2 ↓1]` - how far ahead of and behind its upstream it
+is) and each entry gets a one-cell status column - `U` in conflict, `M`
+changed in the work tree, `S` changed and staged, `A` added, `?`
+untracked, `!` ignored (ignored entries are dimmed); changes deep inside
+a subdirectory mark the subdirectory, the loudest winning.
 Statuses are computed on a background thread so huge repositories never
 block the UI. Built behind the default-on `git` cargo feature;
 `git = false` in the config disables it at runtime.
@@ -1038,6 +1046,12 @@ already an archive is added to rather than replaced, which is the same
 thing F5 into an open one does. Anything rcmd cannot write itself says
 so rather than producing an empty file.
 
+**Alt+F6 extracts**: the marked archives (or the one under the cursor)
+unpack into the other panel, each into a directory named after it -
+`src.tar.gz` into `src/`, and `src-1/` if that is taken - so an archive
+whose top level is forty loose files does not spill them over what is
+already there. Anything rcmd can browse, it can extract.
+
 Inside a `.zip` or `.tar`, **F8 deletes**, **F6 renames** (type a bare
 name - an absolute one would mean leaving the archive, which is a copy)
 and **F7 makes a directory**. Each batch rewrites the container once, so
@@ -1069,10 +1083,19 @@ whole stop rather than one space of it) and the **wrap column** the
 soft wrap folds at - `window` means the window's width, which is mc's
 dynamic wrapping. Left/Right nudge the numbers, Space ticks the
 switches, and OK applies them to the open editor and remembers them for
-the next session. They are `edit_tab_size`, `edit_fill_tabs`,
-`edit_auto_indent`, `edit_backspace_tabs`, `edit_wrap_column`,
-`edit_line_numbers`, `edit_backups` and `edit_clipboard` in the config
-file. **Options > Syntax** picks the highlighting by hand - every
+the next session. The same dialog trims **trailing blanks on save**,
+**ends the file with a newline**, **shows tabs and trailing blanks**
+(`→` and `·`) and draws a **right margin** at a column of your choosing.
+They are `edit_tab_size`, `edit_fill_tabs`, `edit_auto_indent`,
+`edit_backspace_tabs`, `edit_wrap_column`, `edit_line_numbers`,
+`edit_backups`, `edit_clipboard`, `edit_trim_trailing`,
+`edit_final_newline`, `edit_show_whitespace` and `edit_margin` in the
+config file. A file brings its own settings on top of those: how it is
+indented (tabs, or how many spaces) is read from the file itself, and an
+**`.editorconfig`** above it has the last word on `indent_style`,
+`indent_size`, `tab_width`, `trim_trailing_whitespace` and
+`insert_final_newline`. The title row says whether the lines end in LF
+or CRLF. **Options > Syntax** picks the highlighting by hand - every
 syntax syntect knows, or plain text - for a file whose name does not
 say what it is.
 

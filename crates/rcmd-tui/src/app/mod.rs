@@ -2117,6 +2117,11 @@ pub struct EditOptions {
     pub line_numbers: bool,
     pub backups: bool,
     pub clipboard: bool,
+    pub trim_trailing: bool,
+    pub final_newline: bool,
+    pub show_whitespace: bool,
+    /// 0 = no margin.
+    pub margin: u16,
     /// Focused row: an index into [`EDIT_OPTION_ROWS`], or its length
     /// for the OK/Cancel row.
     pub cursor: usize,
@@ -2135,6 +2140,10 @@ pub enum EditOpt {
     LineNumbers,
     Backups,
     Clipboard,
+    TrimTrailing,
+    FinalNewline,
+    ShowWhitespace,
+    Margin,
 }
 
 pub const EDIT_OPTION_ROWS: &[(EditOpt, &str)] = &[
@@ -2146,6 +2155,10 @@ pub const EDIT_OPTION_ROWS: &[(EditOpt, &str)] = &[
     (EditOpt::LineNumbers, "Show line numbers"),
     (EditOpt::Backups, "Keep a file~ backup on save"),
     (EditOpt::Clipboard, "Share the system clipboard"),
+    (EditOpt::TrimTrailing, "Trim trailing blanks on save"),
+    (EditOpt::FinalNewline, "End the file with a newline"),
+    (EditOpt::ShowWhitespace, "Show tabs and trailing blanks"),
+    (EditOpt::Margin, "Right margin"),
 ];
 
 impl EditOptions {
@@ -2157,6 +2170,9 @@ impl EditOptions {
             EditOpt::LineNumbers => self.line_numbers,
             EditOpt::Backups => self.backups,
             EditOpt::Clipboard => self.clipboard,
+            EditOpt::TrimTrailing => self.trim_trailing,
+            EditOpt::FinalNewline => self.final_newline,
+            EditOpt::ShowWhitespace => self.show_whitespace,
             _ => false,
         }
     }
@@ -2171,6 +2187,10 @@ impl EditOptions {
                 0 => "window".to_string(),
                 n => format!("{n:>6}"),
             },
+            EditOpt::Margin => match self.margin {
+                0 => "none".to_string(),
+                n => format!("{n:>6}"),
+            },
             _ => String::new(),
         }
     }
@@ -2183,6 +2203,9 @@ impl EditOptions {
             Some(EditOpt::LineNumbers) => self.line_numbers = !self.line_numbers,
             Some(EditOpt::Backups) => self.backups = !self.backups,
             Some(EditOpt::Clipboard) => self.clipboard = !self.clipboard,
+            Some(EditOpt::TrimTrailing) => self.trim_trailing = !self.trim_trailing,
+            Some(EditOpt::FinalNewline) => self.final_newline = !self.final_newline,
+            Some(EditOpt::ShowWhitespace) => self.show_whitespace = !self.show_whitespace,
             _ => {}
         }
     }
@@ -2209,6 +2232,14 @@ impl EditOptions {
                 } else {
                     next as u16
                 };
+                true
+            }
+            // none, then the columns people set a margin at
+            Some(EditOpt::Margin) => {
+                const STOPS: &[u16] = &[0, 72, 79, 80, 100, 120];
+                let at = STOPS.iter().position(|m| *m >= self.margin).unwrap_or(0) as i32;
+                let next = (at + step.signum()).clamp(0, STOPS.len() as i32 - 1);
+                self.margin = STOPS[next as usize];
                 true
             }
             _ => false,
@@ -2534,6 +2565,9 @@ pub struct Viewer {
     /// Bytes changed and not yet written, by offset - the file on disk
     /// is untouched until F6.
     pub hex_edits: BTreeMap<u64, u8>,
+    /// Each byte change and what the byte was before it (`None` = as it
+    /// is on disk): Ctrl+Z walks back through them.
+    pub hex_undo: Vec<(u64, Option<u8>)>,
     /// The last search hit in the hex view, as (offset, length): the
     /// hex view shows bytes, so its hit is a byte range, not a line.
     pub hex_hit: Option<(u64, u64)>,
@@ -2847,6 +2881,8 @@ pub enum Action {
     Palette,
     /// The saved connections.
     Connections,
+    /// Alt+F6: the marked archives unpacked into the other panel.
+    Extract,
     /// M-,: panels side by side, or one above the other.
     ToggleSplit,
     /// mc's "Case sensitive" sort switch.
@@ -2923,6 +2959,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Move/rename...", "F6", Action::Move)),
             Some(("&Bulk rename (editor)...", "", Action::BulkRename)),
             Some(("&Pack into archive...", "M-F5", Action::Pack)),
+            Some(("Extract to the other panel", "M-F6", Action::Extract)),
             Some(("Undo &last move", "C-x u", Action::Undo)),
             Some(("Ma&ke directory...", "F7", Action::Mkdir)),
             Some(("&Delete (trash)", "F8", Action::Delete)),
@@ -3593,6 +3630,8 @@ impl App {
         // command history survives sessions (it lives in the state file)
         let mut cmdline = CmdLine::default();
         cmdline.restore_history(state::load().0.cmd_history);
+        // both front ends: the window never sets these any other way
+        ui::set_editor_look(&config);
         Ok(App {
             panels: [left, right],
             table_states: [TableState::default(), TableState::default()],
@@ -5718,6 +5757,7 @@ fn hex_save(v: &mut Viewer) {
         Ok(()) => {
             v.note = Some(format!(" {} bytes written ", edits.len()));
             v.hex_edits.clear();
+            v.hex_undo.clear();
             // the text under the hex changed too
             if let Some(hl) = v.hl.as_mut() {
                 hl.invalidate_from(0);
@@ -5756,6 +5796,21 @@ fn hex_edit_key(v: &mut Viewer, key: KeyEvent, rows: usize) -> bool {
             v.hex_ascii = !v.hex_ascii;
             v.hex_low = false;
         }
+        // Ctrl+Z: the last byte change taken back, and the cursor on it
+        KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            match v.hex_undo.pop() {
+                Some((at, before)) => {
+                    match before {
+                        Some(byte) => v.hex_edits.insert(at, byte),
+                        None => v.hex_edits.remove(&at),
+                    };
+                    v.hex_cursor = at;
+                    v.hex_low = false;
+                    hex_follow(v, rows);
+                }
+                None => v.note = Some(" nothing to undo ".into()),
+            }
+        }
         KeyCode::Left | KeyCode::Backspace => step(v, -1),
         KeyCode::Right => step(v, 1),
         KeyCode::Up => step(v, -16),
@@ -5787,7 +5842,8 @@ fn hex_edit_key(v: &mut Viewer, key: KeyEvent, rows: usize) -> bool {
                     v.note = Some(" one byte per character here: type it in hex ".into());
                     return true;
                 }
-                v.hex_edits.insert(at, c as u8);
+                let before = v.hex_edits.insert(at, c as u8);
+                v.hex_undo.push((at, before));
                 step(v, 1);
             } else if let Some(digit) = c.to_digit(16) {
                 // the hex column takes the two halves in turn
@@ -5796,7 +5852,11 @@ fn hex_edit_key(v: &mut Viewer, key: KeyEvent, rows: usize) -> bool {
                 } else {
                     (old & 0x0f) | (digit as u8) << 4
                 };
-                v.hex_edits.insert(at, byte);
+                let before = v.hex_edits.insert(at, byte);
+                // a byte is one step back, whichever half was typed last
+                if !v.hex_low {
+                    v.hex_undo.push((at, before));
+                }
                 if v.hex_low {
                     step(v, 1);
                 } else {

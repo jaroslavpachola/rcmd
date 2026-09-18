@@ -2824,6 +2824,7 @@ dependencies = [
  "serde",
  "tempfile",
  "toml",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]
@@ -2856,6 +2857,7 @@ dependencies = [
  "ropey",
  "syntect",
  "tempfile",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

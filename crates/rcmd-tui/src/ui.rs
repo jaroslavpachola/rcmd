@@ -675,12 +675,15 @@ const HELP_TEXT: &[&str] = &[
     "  C-x q           quick view: the other panel previews the cursor",
     "                  file live (Tab focuses it for scrolling; again = off)",
     "  C-x i           info panel: the other panel shows the full stat of",
-    "                  the cursor file (owner, times, inode...; again = off)",
+    "                  the cursor file (owner, times, inode, xattrs, ACL,",
+    "                  flags, the filesystem and its mount; again = off)",
     "  M-i             other panel switches to this panel's directory",
     "  M-o             other panel opens the directory under the cursor",
     "  M-y / M-u       history back / forward (same as M-Left/Right)",
     "  M-c             quick cd dialog   M-?  find file   C-l  redraw",
     "  C-x t / p       paste tagged names / the panel path to the cmdline",
+    "  M-F6            extract the marked archives into the other panel,",
+    "                  each into a directory named after it",
     "  C-x c           chmod: MC's bit matrix - the twelve attribute bits",
     "                  as check boxes with the octal beside them (Space",
     "                  flips a box, typing an octal moves the boxes), the",
@@ -1585,25 +1588,6 @@ fn draw_panel(
     let header = Row::new(labels.iter().map(|l| Cell::from(Line::from(*l).centered())))
         .style(Style::new().fg(th().header_fg));
 
-    let remote = panel.is_remote();
-    let rows = panel.entries.iter().enumerate().map(|(i, entry)| {
-        let git_mark = git.map(|g| g.marks.get(&entry.name).copied());
-        entry_row(
-            entry,
-            panel.is_marked(entry),
-            active && i == panel.cursor,
-            git_mark,
-            panel.list_mode,
-            remote,
-            panel.charset,
-        )
-    });
-
-    let table = Table::new(rows, constraints)
-        .header(header)
-        .column_spacing(1)
-        .style(Style::new().fg(th().panel_fg).bg(th().panel_bg));
-
     // The frame is drawn first so the table can be given a smaller area
     // when the mini status claims the last row inside it.
     let inner = block.inner(area);
@@ -1614,8 +1598,52 @@ fn draw_panel(
             .saturating_sub(MINI_STATUS_ROWS * u16::from(mini.is_some())),
         ..inner
     };
+
+    // Only the rows on screen are built: a row formats a date, looks up
+    // an owner and matches the highlight rules, and a directory of a
+    // hundred thousand entries shows forty of them. The scroll is kept
+    // the way the table would keep it - the cursor stays in view, and
+    // moves the window only when it would leave it.
+    let shown = (listing.height as usize).saturating_sub(1).max(1);
+    let len = panel.entries.len();
+    let mut offset = state.offset();
+    if panel.cursor < offset {
+        offset = panel.cursor;
+    } else if panel.cursor >= offset + shown {
+        offset = panel.cursor + 1 - shown;
+    }
+    offset = offset.min(len.saturating_sub(shown));
+    let remote = panel.is_remote();
+    let rows = panel
+        .entries
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(shown)
+        .map(|(i, entry)| {
+            let git_mark = git.map(|g| g.marks.get(&entry.name).copied());
+            entry_row(
+                entry,
+                panel.is_marked(entry),
+                active && i == panel.cursor,
+                git_mark,
+                panel.list_mode,
+                remote,
+                panel.charset,
+            )
+        });
+
+    let table = Table::new(rows, constraints)
+        .header(header)
+        .column_spacing(1)
+        .style(Style::new().fg(th().panel_fg).bg(th().panel_bg));
+    let mut window = TableState::default()
+        .with_selected(panel.cursor.checked_sub(offset))
+        .with_offset(0);
+    frame.render_stateful_widget(table, listing, &mut window);
+    // what the mouse and the next frame read the scroll from
+    *state.offset_mut() = offset;
     state.select(Some(panel.cursor));
-    frame.render_stateful_widget(table, listing, state);
 
     if let Some(line) = mini.clone() {
         draw_mini_status(frame, inner, line);
@@ -1666,10 +1694,26 @@ fn field_text(
 
 /// Clip or pad `text` to exactly `width` columns, on the side the field
 /// wants it.
+/// `text` in exactly `width` cells: cut, or padded on the left or the
+/// right. Cells, not characters - a CJK name takes two a character,
+/// and a column that counted characters would push the next one over.
 fn fit(text: &str, width: usize, right: bool) -> String {
-    let len = text.chars().count();
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let len = text.width();
     if len > width {
-        return text.chars().take(width).collect();
+        let mut out = String::new();
+        let mut used = 0;
+        for c in text.chars() {
+            let w = c.width().unwrap_or(0);
+            if used + w > width {
+                break;
+            }
+            used += w;
+            out.push(c);
+        }
+        // a wide character that would straddle the edge leaves a blank
+        out.push_str(&" ".repeat(width - used));
+        return out;
     }
     let pad = " ".repeat(width - len);
     if right {
@@ -2123,8 +2167,9 @@ fn entry_row(
                 style
             } else {
                 match mark {
+                    Some('U') => Style::new().fg(th().error_fg).add_modifier(Modifier::BOLD),
                     Some('M') => Style::new().fg(th().mark_fg).add_modifier(Modifier::BOLD),
-                    Some('A') => Style::new().fg(th().exec_fg).add_modifier(Modifier::BOLD),
+                    Some('A' | 'S') => Style::new().fg(th().exec_fg).add_modifier(Modifier::BOLD),
                     // untracked and ignored are the common case in a
                     // working tree, so they whisper; a change shouts
                     Some('?') | Some('!') => style.add_modifier(Modifier::DIM),
@@ -2241,6 +2286,42 @@ fn draw_info(
             lines.push(format!("Modified:  {}", time(&e.mtime)));
             lines.push(format!("Accessed:  {}", time(&e.extra.atime)));
             lines.push(format!("Changed:   {}", time(&e.extra.ctime)));
+            // what only a local file can say: its extended attributes,
+            // its chattr flags, and the filesystem it is on
+            if browse.is_local() {
+                let path = browse.cwd.join(&e.name);
+                let names = rcmd_core::attrs::xattr_names(&path);
+                let acl = names.iter().any(|n| n.starts_with("system.posix_acl"));
+                let xattrs: Vec<&str> = names
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|n| !n.starts_with("system.posix_acl"))
+                    .collect();
+                lines.push(String::new());
+                lines.push(format!(
+                    "Xattrs:    {}",
+                    if xattrs.is_empty() {
+                        "none".to_string()
+                    } else {
+                        xattrs.join(", ")
+                    }
+                ));
+                lines.push(format!("ACL:       {}", if acl { "yes" } else { "no" }));
+                if let Ok(flags) = rcmd_core::attrs::get(&path) {
+                    lines.push(format!("Flags:     {}", rcmd_core::attrs::letters(flags)));
+                }
+                if let Some(fs) = rcmd_core::mounts::facts(&path) {
+                    lines.push(String::new());
+                    lines.push(format!("Device:    {} ({})", fs.device, fs.source));
+                    lines.push(format!("Mounted:   {} ({})", fs.point, fs.fstype));
+                    if fs.inodes_total > 0 {
+                        lines.push(format!(
+                            "Inodes:    {} of {} free",
+                            fs.inodes_free, fs.inodes_total
+                        ));
+                    }
+                }
+            }
         }
         _ => lines.push("(parent directory)".into()),
     }
@@ -2661,6 +2742,28 @@ pub fn screen_col(text: &str, col: usize) -> usize {
 /// functions and every one of them has to agree.
 static TAB_SIZE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(8);
 
+/// Tabs and trailing blanks drawn as `→` and `·`, and the right
+/// margin's column (0 = none): editor looks, global as the tab size is.
+static SHOW_WHITESPACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static MARGIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The editor's looks from the options: tab width, whitespace, margin.
+pub fn set_editor_look(config: &crate::config::Config) {
+    set_tab_size(config.edit_tab_size as usize);
+    SHOW_WHITESPACE.store(
+        config.edit_show_whitespace,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    MARGIN.store(
+        config.edit_margin as usize,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+fn show_whitespace() -> bool {
+    SHOW_WHITESPACE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn set_tab_size(size: usize) {
     TAB_SIZE.store(size.clamp(1, 16), std::sync::atomic::Ordering::Relaxed);
 }
@@ -3016,6 +3119,10 @@ fn editor_line(
             out.push(Span::styled(std::mem::take(run), style));
         }
     };
+    // where the trailing blanks start, for showing them
+    let show_ws = show_whitespace();
+    let trailing_from = text.trim_end_matches([' ', '\t']).chars().count();
+    let line_chars = text.chars().count();
     for (idx, c) in text.chars().chain(std::iter::once(' ')).enumerate() {
         // the trailing space stands in for the newline cell so a
         // selection that spans lines shows on the line end
@@ -3042,21 +3149,36 @@ fn editor_line(
             flush(&mut run, run_style, &mut out);
             run_style = style;
         }
-        let width = match c {
-            '\t' => tab_size() - scol % tab_size(),
-            _ => 1,
-        };
-        for k in 0..width {
-            if scol + k >= left && scol + k < left + cols {
-                run.push(match c {
-                    '\t' => ' ',
-                    c if (c as u32) < 0x20 => '\u{b7}',
-                    c => c,
-                });
-                if c != '\t' && (c as u32) >= 0x20 {
-                    break; // normal chars occupy one cell
+        let width = rcmd_edit::cell_width(c, scol, tab_size());
+        let visible = |at: usize| at >= left && at < left + cols;
+        match c {
+            // a tab shown: an arrow in its first cell
+            '\t' if show_ws => run.extend(
+                (0..width)
+                    .filter(|k| visible(scol + k))
+                    .map(|k| if k == 0 { '\u{2192}' } else { ' ' }),
+            ),
+            ' ' if show_ws && idx >= trailing_from && idx < line_chars => {
+                if visible(scol) {
+                    run.push('\u{b7}');
                 }
             }
+            '\t' => run.extend((0..width).filter(|k| visible(scol + k)).map(|_| ' ')),
+            c if (c as u32) < 0x20 => {
+                if visible(scol) {
+                    run.push('\u{b7}');
+                }
+            }
+            // a combining mark rides on the cell before it
+            _ if width == 0 => {
+                if scol > left && scol <= left + cols {
+                    run.push(c);
+                }
+            }
+            // a wide character cut by either edge shows as the half
+            // that is on screen: blank cells, so nothing after it moves
+            c if (0..width).all(|k| visible(scol + k)) => run.push(c),
+            _ => run.extend((0..width).filter(|k| visible(scol + k)).map(|_| ' ')),
         }
         scol += width;
     }
@@ -3105,10 +3227,11 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
         Some(enc) => format!("  [{}]", rcmd_core::charset::label_of(enc)),
     };
     let pos = format!(
-        "{charset} {}:{}  {} lines ",
+        "{charset} {}:{}  {} lines  {} ",
         st.ed.cursor.line + 1,
         st.ed.cursor.col + 1,
         st.ed.line_count(),
+        st.ed.line_ending(),
     );
     // a note (saved, search wrapped, ...) follows the title, where the
     // eye already is; the button bar below is mc's and stays put
@@ -3237,6 +3360,17 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
                 content.x + (scol - st.left) as u16,
                 content.y + (st.ed.cursor.line - st.top) as u16,
             ));
+        }
+    }
+
+    // the right margin: a tinted column at its place, where the text
+    // is not wrapped (wrapped text has no one column to mark)
+    let margin = MARGIN.load(std::sync::atomic::Ordering::Relaxed);
+    if margin > 0 && !st.wrap && margin >= st.left && margin - st.left < content.width as usize {
+        let x = content.x + (margin - st.left) as u16;
+        let buf = frame.buffer_mut();
+        for y in content.y..content.y + content.height {
+            buf[(x, y)].set_bg(th().header_fg);
         }
     }
 
@@ -3426,7 +3560,11 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
         Constraint::Length(1),
     ])
     .areas(frame.area());
-    v.rows = content.height as usize;
+    // editing hex, the last two rows are the data inspector's
+    v.rows = match v.hex && v.hex_edit {
+        true => content.height.saturating_sub(2).max(1) as usize,
+        false => content.height as usize,
+    };
     let width = content.width as usize;
     v.cols = width.max(1);
 
@@ -3574,6 +3712,9 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
                 if row_offset >= v.file.size {
                     break;
                 }
+                if v.hex_edit && row as usize >= v.rows {
+                    break;
+                }
                 let bytes = v.file.read_at(row_offset, 16).unwrap_or_default();
                 frame.render_widget(hex_line(v, row_offset, &bytes), row_area);
             } else {
@@ -3621,6 +3762,26 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
     };
     draw_keybar_labels(frame, bottom, &labels);
 
+    if v.hex && v.hex_edit && content.height > 2 {
+        let bytes: Vec<u8> = (0..8).map_while(|i| v.byte_at(v.hex_cursor + i)).collect();
+        let head = Style::new().fg(th().header_fg).bg(th().panel_bg);
+        for (i, text) in hex_inspect(&bytes).into_iter().enumerate() {
+            frame.render_widget(
+                Line::from(format!(
+                    " {:<w$}",
+                    fit(&text, content.width.saturating_sub(1) as usize, false),
+                    w = content.width.saturating_sub(1) as usize
+                ))
+                .style(head),
+                Rect {
+                    y: content.y + content.height - 2 + i as u16,
+                    height: 1,
+                    ..content
+                },
+            );
+        }
+    }
+
     if let Some(dialog) = &v.prompt {
         draw_view_search(frame, dialog);
     }
@@ -3661,6 +3822,55 @@ fn draw_viewer(frame: &mut Frame, app: &mut App) {
             row(3),
         );
     }
+}
+
+/// The data inspector: the bytes at the hex cursor read as each kind of
+/// number, little-endian on the first row and big-endian on the second,
+/// with a Unix time where four bytes make one this century.
+pub fn hex_inspect(bytes: &[u8]) -> [String; 2] {
+    let take = |n: usize| (bytes.len() >= n).then(|| &bytes[..n]);
+    let row = |little: bool| -> String {
+        let int = |n: usize| -> Option<u64> {
+            let b = take(n)?;
+            let mut v = 0u64;
+            for i in 0..n {
+                let byte = if little { b[n - 1 - i] } else { b[i] };
+                v = (v << 8) | byte as u64;
+            }
+            Some(v)
+        };
+        let mut parts = vec![if little { "LE" } else { "BE" }.to_string()];
+        if let Some(v) = int(1) {
+            parts.push(format!("u8 {v} i8 {}", v as u8 as i8));
+        }
+        if let Some(v) = int(2) {
+            parts.push(format!("u16 {v} i16 {}", v as u16 as i16));
+        }
+        if let Some(v) = int(4) {
+            parts.push(format!(
+                "u32 {v} i32 {} f32 {}",
+                v as u32 as i32,
+                f32::from_bits(v as u32)
+            ));
+            // a plausible Unix time: 1990 to 2100
+            if (631_152_000..4_102_444_800).contains(&v) {
+                let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(v);
+                parts.push(format!(
+                    "time {}",
+                    DateTime::<Local>::from(t).format("%Y-%m-%d %H:%M:%S")
+                ));
+            }
+        }
+        if let Some(v) = int(8) {
+            parts.push(format!(
+                "u64 {v} i64 {} f64 {}",
+                v as i64,
+                f64::from_bits(v)
+            ));
+        }
+        parts.join("  ")
+    };
+    [row(true), row(false)]
 }
 
 /// One row of the hex view: the offset, sixteen bytes and their text,
@@ -4093,16 +4303,25 @@ fn popup(frame: &mut Frame, area: Rect, title: &str, style: Style) -> Rect {
 }
 
 /// Keep the tail of long paths visible; the tail is the interesting part.
+/// The end of `text` in at most `max` cells, with an ellipsis where
+/// the front was cut.
 pub fn tail(text: &str, max: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= max {
-        text.to_string()
-    } else {
-        let cut: String = chars[chars.len() - max.saturating_sub(1)..]
-            .iter()
-            .collect();
-        format!("…{cut}")
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if text.width() <= max {
+        return text.to_string();
     }
+    let room = max.saturating_sub(1);
+    let mut used = 0;
+    let mut start = text.len();
+    for (at, c) in text.char_indices().rev() {
+        let w = c.width().unwrap_or(0);
+        if used + w > room {
+            break;
+        }
+        used += w;
+        start = at;
+    }
+    format!("…{}", &text[start..])
 }
 
 /// A row of dialog buttons, with mc's **underlined hotkey**: the letter
@@ -4174,18 +4393,25 @@ fn draw_field(frame: &mut Frame, inner: Rect, value: &str, cursor: usize) {
 
 /// One editable line; the terminal cursor is placed only when focused.
 fn field_row(frame: &mut Frame, field: Rect, value: &str, cursor: Option<usize>) {
+    use unicode_width::UnicodeWidthChar;
     let width = field.width as usize;
-    let cur = cursor.unwrap_or(0);
     let chars: Vec<char> = value.chars().collect();
-    let start = cur.saturating_sub(width.saturating_sub(1));
-    let visible: String = chars[start..].iter().take(width).collect();
+    let cur = cursor.unwrap_or(0).min(chars.len());
+    let cells = |c: &char| c.width().unwrap_or(0);
+    // scrolled just far enough that the cursor's cell is on screen
+    let mut start = cur;
+    let mut before = 0;
+    while start > 0 && before + cells(&chars[start - 1]) < width {
+        start -= 1;
+        before += cells(&chars[start]);
+    }
+    let visible = fit(&chars[start..].iter().collect::<String>(), width, false);
     frame.render_widget(
-        Line::from(format!("{visible:<width$}"))
-            .style(Style::new().fg(th().select_fg).bg(th().select_bg)),
+        Line::from(visible).style(Style::new().fg(th().select_fg).bg(th().select_bg)),
         field,
     );
-    if let Some(cur) = cursor {
-        frame.set_cursor_position((field.x + (cur - start) as u16, field.y));
+    if cursor.is_some() {
+        frame.set_cursor_position((field.x + before as u16, field.y));
     }
 }
 
@@ -6049,6 +6275,34 @@ fn draw_ask(frame: &mut Frame, ask: &Ask, button: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_inspector_reads_both_ways() {
+        let [le, be] = hex_inspect(&[0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x3f]);
+        assert!(le.contains("u16 1 ") && le.contains("u32 1 "), "{le}");
+        assert!(le.contains("f64 1"), "{le}");
+        assert!(
+            be.contains("u16 256 ") && be.contains("u32 16777216 "),
+            "{be}"
+        );
+        // fewer bytes than a width asks for: that width is left out
+        let [short, _] = hex_inspect(&[0xff, 0xff]);
+        assert!(
+            short.contains("i16 -1") && !short.contains("u32"),
+            "{short}"
+        );
+    }
+
+    #[test]
+    fn fit_and_tail_count_cells_not_characters() {
+        use unicode_width::UnicodeWidthStr;
+        assert_eq!(fit("日本語", 6, false), "日本語");
+        assert_eq!(fit("日本", 6, false).width(), 6);
+        // cut through the middle of a wide character: a blank, not half
+        assert_eq!(fit("日本語", 5, false), "日本 ");
+        assert_eq!(tail("abc日本語", 5), "…本語");
+        assert_eq!(tail("日本語", 6), "日本語");
+    }
 
     #[test]
     fn an_old_time_shows_its_year_and_a_new_one_its_time() {
