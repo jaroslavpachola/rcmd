@@ -565,6 +565,35 @@ impl FileView {
         Ok(Some((start, buf)))
     }
 
+    /// How many lines `search` matches, reading the whole file - the
+    /// caller decides whether it is small enough for that. A byte search
+    /// counts its hits instead, lines being no unit for it.
+    pub fn count_matching(&mut self, search: &Search) -> io::Result<usize> {
+        let matcher = search.compile().map_err(io::Error::other)?;
+        if let Matcher::Bytes(needle) = &matcher {
+            let mut count = 0;
+            let mut at = 0;
+            while let Some(hit) = self.find_bytes(at, needle, false)? {
+                count += 1;
+                at = hit + 1;
+            }
+            return Ok(count);
+        }
+        let mut count = 0;
+        let mut idx = 0;
+        while let Some(line) = self.line(idx)? {
+            let line = match search.nroff {
+                true => nroff_line(&line).0,
+                false => line,
+            };
+            if matcher.matches(&line) {
+                count += 1;
+            }
+            idx += 1;
+        }
+        Ok(count)
+    }
+
     /// Find a byte sequence, which is what a hexadecimal search is for:
     /// the bytes it names may not be text at all.
     pub fn find_bytes(&self, from: u64, needle: &[u8], backwards: bool) -> io::Result<Option<u64>> {

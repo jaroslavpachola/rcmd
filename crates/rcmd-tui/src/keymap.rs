@@ -67,6 +67,10 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("alt+i", "other-same-dir"),
     ("alt+o", "other-open-dir"),
     ("alt+.", "toggle-hidden"),
+    ("alt+g", "screen-top"),    // MC: M-g / M-r / M-j, top / middle /
+    ("alt+r", "screen-middle"), // bottom of the screen
+    ("alt+j", "screen-bottom"),
+    ("alt+,", "toggle-split"), // MC: M-, flips the panels' split
     ("alt+n", "sort-name"),
     // MC hands own these: M-s = quick search, M-t = cycle listing,
     // C-u = swap panels (sort by ext/size/mtime lives in F9 > Sort).
@@ -290,6 +294,14 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "sort-group" => Action::Sort(SortKey::Group),
         "sort-unsorted" => Action::Sort(SortKey::Unsorted),
         "sort-reverse" => Action::SortReverse,
+        "sort-version" => Action::Sort(SortKey::Version),
+        "sort-mix" => Action::SortMix,
+        "screen-top" => Action::ScreenTop,
+        "screen-middle" => Action::ScreenMiddle,
+        "screen-bottom" => Action::ScreenBottom,
+        "hotlist-add" => Action::HotlistAdd,
+        "toggle-split" => Action::ToggleSplit,
+        "sort-case" => Action::SortCase,
         "menu" => Action::Menu,
         "mark" => Action::Mark,
         "quick-search" => Action::QuickSearch,
@@ -469,6 +481,8 @@ pub enum ViewerAction {
     ToggleHex,
     Search,
     SearchNext,
+    /// N: the same search, the other way.
+    SearchPrev,
     Follow,
     /// The goto prompt: a line, a byte offset or a percentage.
     Goto,
@@ -530,6 +544,12 @@ pub enum EditorAction {
     ToggleLineNumbers,
     /// M-e: which codepage the file is in.
     Charset,
+    /// F12 / C-F2: save under another name.
+    SaveAs,
+    /// M-b: to the bracket matching the one at the cursor.
+    MatchBracket,
+    /// M-Tab: complete the word from the buffer's own words.
+    Complete,
     /// M-. / M-,: the next / previous result of the find this editor
     /// was opened from.
     NextHit,
@@ -548,6 +568,7 @@ const VIEWER_DEFAULTS: &[(&str, &str)] = &[
     ("f7", "search"),
     ("/", "search"),
     ("n", "search-next"),
+    ("N", "search-prev"),
     ("f", "follow"),
     ("f5", "goto"),
     ("alt+l", "goto"),
@@ -592,6 +613,10 @@ const EDITOR_DEFAULTS: &[(&str, &str)] = &[
     ("alt+o", "bookmark-clear"),
     ("alt+n", "line-numbers"),
     ("alt+e", "charset"),
+    ("f12", "save-as"), // mc's two keys for it
+    ("ctrl+f2", "save-as"),
+    ("alt+b", "match-bracket"),
+    ("alt+tab", "complete"),
     ("alt+.", "next-hit"),
     ("alt+,", "prev-hit"),
 ];
@@ -603,6 +628,7 @@ pub fn parse_viewer_action(name: &str) -> Option<ViewerAction> {
         "hex" => ViewerAction::ToggleHex,
         "search" => ViewerAction::Search,
         "search-next" => ViewerAction::SearchNext,
+        "search-prev" => ViewerAction::SearchPrev,
         "follow" => ViewerAction::Follow,
         "goto" => ViewerAction::Goto,
         "set-mark" => ViewerAction::SetMark,
@@ -648,6 +674,9 @@ pub fn parse_editor_action(name: &str) -> Option<EditorAction> {
         "line-numbers" => EditorAction::ToggleLineNumbers,
         "charset" => EditorAction::Charset,
         "next-hit" => EditorAction::NextHit,
+        "save-as" => EditorAction::SaveAs,
+        "match-bracket" => EditorAction::MatchBracket,
+        "complete" => EditorAction::Complete,
         "prev-hit" => EditorAction::PrevHit,
         _ => return None,
     })

@@ -267,32 +267,25 @@ impl App {
     fn go_to_hit(&mut self, query: &FindDialog, line: u64) {
         let text = query.content.value.trim().to_string();
         let line = line.saturating_sub(1) as usize;
-        if self.editor().is_some() {
-            // the editor's search is a regular expression
-            let mut pattern = match query.regex {
-                true => text,
-                false => regex::escape(&text),
-            };
-            if !query.case_sensitive {
-                pattern = format!("(?i){pattern}");
-            }
-            if let Some(st) = self.editor_mut() {
-                st.ed.search = pattern.clone();
-            }
-            self.editor_find(&pattern, rcmd_edit::Pos { line, col: 0 });
+        let search = ViewSearch {
+            field: TextField::new(text.clone()).with_history("view-search"),
+            kind: if query.regex {
+                SearchKind::Regex
+            } else {
+                SearchKind::Normal
+            },
+            case_sensitive: query.case_sensitive,
+            whole_word: query.whole_words,
+            backwards: false,
+            row: 0,
+        };
+        if let Some(st) = self.editor_mut() {
+            st.ed.search = text;
+            st.search = search;
+            st.ed.goto(rcmd_edit::Pos { line, col: 0 }, false);
+            self.editor_search(false);
         } else if let Some(v) = self.viewer_mut() {
-            v.search = ViewSearch {
-                field: TextField::new(text).with_history("view-search"),
-                kind: if query.regex {
-                    SearchKind::Regex
-                } else {
-                    SearchKind::Normal
-                },
-                case_sensitive: query.case_sensitive,
-                whole_word: query.whole_words,
-                backwards: false,
-                row: 0,
-            };
+            v.search = search;
             viewer_search(v, line, false);
         }
     }

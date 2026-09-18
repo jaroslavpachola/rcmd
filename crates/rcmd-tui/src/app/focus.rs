@@ -55,9 +55,11 @@ impl App {
         }
         if self.editor().is_some() {
             return match self.editor_mut()?.prompt.as_mut()? {
-                EditPrompt::Search(field) | EditPrompt::ReplaceFind(field) => {
-                    Some(FocusedLine::Field(field))
+                EditPrompt::Search(d) if d.row == VIEW_SEARCH_FIELD => {
+                    Some(FocusedLine::Field(&mut d.field))
                 }
+                EditPrompt::ReplaceFind(field) => Some(FocusedLine::Field(field)),
+                EditPrompt::SaveAs(field) => Some(FocusedLine::Field(field)),
                 EditPrompt::ReplaceWith { field, .. } => Some(FocusedLine::Field(field)),
                 EditPrompt::Goto { value, cursor } => Some(FocusedLine::Plain(value, cursor)),
                 _ => None,

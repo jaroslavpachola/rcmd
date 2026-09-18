@@ -181,6 +181,12 @@ pub struct Editor {
     next_id: u64,
     /// Undo-group id the file was last saved at (0 = pristine).
     saved_id: u64,
+    /// While a batch runs, the group its edits all go into: `Some(None)`
+    /// until the first edit makes one.
+    batch: Option<Option<u64>>,
+    /// The file's modification time as it was read or last written, to
+    /// tell a change made by someone else before it is saved over.
+    disk_mtime: Option<std::time::SystemTime>,
     clipboard: String,
     pub search: String,
     pub prefs: Prefs,
@@ -208,7 +214,11 @@ impl Editor {
             None => String::from_utf8_lossy(&bytes).into_owned(),
             Some(enc) => enc.decode(&bytes).0.into_owned(),
         };
-        let crlf = text.contains("\r\n");
+        // CRLF only when every line break is one: a file with both kinds
+        // keeps its bytes as they are, rather than every LF line coming
+        // back as CRLF on the first save
+        let breaks = text.matches('\n').count();
+        let crlf = breaks > 0 && text.matches("\r\n").count() == breaks;
         let rope = if crlf {
             Rope::from_str(&text.replace("\r\n", "\n"))
         } else {
@@ -216,6 +226,7 @@ impl Editor {
         };
         let mut ed = Editor::with_rope(rope, path.to_path_buf(), crlf);
         ed.charset = charset;
+        ed.disk_mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         Ok(ed)
     }
 
@@ -238,6 +249,8 @@ impl Editor {
             redo: Vec::new(),
             next_id: 1,
             saved_id: 0,
+            batch: None,
+            disk_mtime: None,
             clipboard: String::new(),
             search: String::new(),
             prefs: Prefs::default(),
@@ -292,8 +305,38 @@ impl Editor {
             let _ = std::fs::remove_file(&tmp);
         } else {
             self.saved_id = self.top_id();
+            self.disk_mtime = std::fs::metadata(&target).and_then(|m| m.modified()).ok();
         }
         result
+    }
+
+    /// Save under another name, which is this buffer's name from then
+    /// on. On failure the old name stays.
+    pub fn save_as(&mut self, path: &Path) -> io::Result<()> {
+        let old = std::mem::replace(&mut self.path, path.to_path_buf());
+        let result = self.save();
+        if result.is_err() {
+            self.path = old;
+        }
+        result
+    }
+
+    /// Whether the file on disk was changed by someone else since it was
+    /// read or last saved - what a save would silently overwrite.
+    pub fn changed_on_disk(&self) -> bool {
+        let now = std::fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok();
+        self.disk_mtime.is_some() && now.is_some() && now != self.disk_mtime
+    }
+
+    /// Run `f` with every edit it makes going into one undo group, so a
+    /// Replace All or a block indent is one Ctrl+Z and not a hundred.
+    pub fn batch<R>(&mut self, f: impl FnOnce(&mut Editor) -> R) -> R {
+        let outer = self.batch.replace(None);
+        let out = f(self);
+        self.batch = outer;
+        out
     }
 
     fn top_id(&self) -> u64 {
@@ -342,7 +385,7 @@ impl Editor {
         self.rope.line_to_char(pos.line) + pos.col.min(self.line_len(pos.line))
     }
 
-    fn pos_at(&self, idx: usize) -> Pos {
+    pub fn pos_at(&self, idx: usize) -> Pos {
         let line = self.rope.char_to_line(idx);
         Pos {
             line,
@@ -560,6 +603,7 @@ impl Editor {
         // moves with the typing and the buffer never looks modified
         let saved_id = self.saved_id;
         if kind != Kind::Other
+            && self.batch.is_none()
             && let Some(group) = self.undo.last_mut()
             && group.id != saved_id
             && group.kind == kind
@@ -602,8 +646,24 @@ impl Editor {
                 return;
             }
         }
+        // inside a batch, the batch's group takes every edit
+        if let Some(Some(id)) = self.batch
+            && let Some(group) = self.undo.last_mut()
+            && group.id == id
+        {
+            group.edits.push(Edit {
+                at,
+                removed,
+                inserted: insert.to_string(),
+            });
+            group.after = after;
+            return;
+        }
         let id = self.next_id;
         self.next_id += 1;
+        if let Some(batch) = self.batch.as_mut() {
+            *batch = Some(id);
+        }
         self.undo.push(EditGroup {
             id,
             kind,
@@ -647,8 +707,15 @@ impl Editor {
 
     /// Tab: a tab character, or spaces up to the next stop where tabs
     /// are filled with spaces - the point of the option being that the
-    /// file has no tabs in it, not that Tab moves a fixed distance.
+    /// file has no tabs in it, not that Tab moves a fixed distance. With
+    /// lines selected, every one of them is indented instead of the
+    /// selection being replaced by a tab.
     pub fn insert_tab(&mut self) {
+        if let Some((first, last)) = self.sel_line_range()
+            && first != last
+        {
+            return self.indent_lines(first, last, true);
+        }
         if !self.prefs.fill_tabs {
             self.insert("\t");
             return;
@@ -656,6 +723,149 @@ impl Editor {
         let tab = self.prefs.tab_size.max(1);
         let at = screen_col(&self.line(self.cursor.line), self.cursor.col, tab);
         self.insert(&" ".repeat(tab - at % tab));
+    }
+
+    /// Shift+Tab: one indent level off the selected lines, or off the
+    /// cursor's line.
+    pub fn unindent(&mut self) {
+        let (first, last) = self
+            .sel_line_range()
+            .unwrap_or((self.cursor.line, self.cursor.line));
+        self.indent_lines(first, last, false);
+    }
+
+    /// One indent level on (or off) lines `first..=last`, as one undo
+    /// step, the selection kept over the same lines.
+    fn indent_lines(&mut self, first: usize, last: usize, add: bool) {
+        let tab = self.prefs.tab_size.max(1);
+        let unit = if self.prefs.fill_tabs {
+            " ".repeat(tab)
+        } else {
+            "\t".to_string()
+        };
+        let (anchor, sticky) = (self.anchor, self.sticky);
+        self.batch(|ed| {
+            for line in first..=last {
+                let text = ed.line(line);
+                if text.is_empty() && add {
+                    continue;
+                }
+                let at = ed.char_idx(Pos { line, col: 0 });
+                if add {
+                    ed.splice(at, 0, &unit, Kind::Other);
+                } else {
+                    // a tab, or up to a tab stop's worth of spaces
+                    let strip = match text.chars().next() {
+                        Some('\t') => 1,
+                        _ => text.chars().take(tab).take_while(|c| *c == ' ').count(),
+                    };
+                    if strip > 0 {
+                        ed.splice(at, strip, "", Kind::Other);
+                    }
+                }
+            }
+        });
+        // splice drops the selection; indenting it is not moving it
+        if first != last {
+            self.anchor = anchor.map(|_| Pos {
+                line: first,
+                col: 0,
+            });
+            self.sticky = sticky;
+            self.cursor = Pos {
+                line: last,
+                col: self.line_len(last),
+            };
+        }
+    }
+
+    /// The bracket matching the one at the cursor (or just before it),
+    /// counting nesting, within the buffer. `None` when the cursor is on
+    /// no bracket or it is unmatched.
+    pub fn matching_bracket(&self) -> Option<Pos> {
+        let pairs = [('(', ')'), ('[', ']'), ('{', '}'), ('<', '>')];
+        let here = self.char_idx(self.cursor);
+        let char_at = |i: usize| (i < self.rope.len_chars()).then(|| self.rope.char(i));
+        let (at, c) = [Some(here), here.checked_sub(1)]
+            .into_iter()
+            .flatten()
+            .find_map(|i| {
+                let c = char_at(i)?;
+                pairs
+                    .iter()
+                    .any(|(o, e)| c == *o || c == *e)
+                    .then_some((i, c))
+            })?;
+        let (open, close, forward) = pairs.iter().find_map(|&(o, e)| {
+            (c == o)
+                .then_some((o, e, true))
+                .or((c == e).then_some((o, e, false)))
+        })?;
+        let mut depth = 0usize;
+        let len = self.rope.len_chars();
+        let mut i = at;
+        loop {
+            let c = self.rope.char(i);
+            if c == open {
+                depth = if forward {
+                    depth + 1
+                } else {
+                    depth.checked_sub(1)?
+                };
+            } else if c == close {
+                depth = if forward {
+                    depth.checked_sub(1)?
+                } else {
+                    depth + 1
+                };
+            }
+            if depth == 0 {
+                return Some(self.pos_at(i));
+            }
+            if forward {
+                i += 1;
+                if i >= len {
+                    return None;
+                }
+            } else {
+                i = i.checked_sub(1)?;
+            }
+        }
+    }
+
+    /// The word the cursor is at the end of, for completion.
+    pub fn word_before_cursor(&self) -> String {
+        let line = self.line(self.cursor.line);
+        let head: Vec<char> = line.chars().take(self.cursor.col).collect();
+        let start = head
+            .iter()
+            .rposition(|c| !(c.is_alphanumeric() || *c == '_'))
+            .map_or(0, |i| i + 1);
+        head[start..].iter().collect()
+    }
+
+    /// Every other word in the buffer that starts with `prefix`, nearest
+    /// the cursor first - mc's word completion.
+    pub fn completions(&self, prefix: &str) -> Vec<String> {
+        if prefix.is_empty() {
+            return Vec::new();
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut found: Vec<(usize, String)> = Vec::new();
+        let here = self.cursor.line;
+        for line in 0..self.line_count() {
+            let text = self.line(line);
+            for word in text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+                if word.len() > prefix.len()
+                    && word.starts_with(prefix)
+                    && seen.insert(word.to_string())
+                {
+                    found.push((line.abs_diff(here), word.to_string()));
+                }
+            }
+        }
+        found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        found.into_iter().map(|(_, w)| w).collect()
     }
 
     pub fn backspace(&mut self) {
@@ -895,6 +1105,37 @@ impl Editor {
             },
             len: m.as_str().chars().count(),
         })
+    }
+
+    /// The last match starting before `start`, wrapping around once -
+    /// the search backwards.
+    pub fn find_back(&self, start: Pos, re: &regex::Regex) -> Option<Match> {
+        let lines = self.line_count();
+        for step in 0..=lines {
+            let line = (start.line + 2 * lines - step) % lines;
+            let text = self.line(line);
+            // the start line counts only what is before the cursor, until
+            // the wrap comes back round to it
+            let limit = match step {
+                0 => text
+                    .char_indices()
+                    .nth(start.col)
+                    .map(|(b, _)| b)
+                    .unwrap_or(text.len()),
+                _ => text.len() + 1,
+            };
+            let last = re.find_iter(&text).take_while(|m| m.start() < limit).last();
+            if let Some(m) = last {
+                return Some(Match {
+                    pos: Pos {
+                        line,
+                        col: text[..m.start()].chars().count(),
+                    },
+                    len: m.as_str().chars().count(),
+                });
+            }
+        }
+        None
     }
 
     /// Replace one found match with a literal string; cursor lands after
@@ -1335,6 +1576,107 @@ mod tests {
         e.undo();
         assert!(e.modified());
         assert_eq!(e.text(), "baseabc");
+    }
+
+    /// A file with both line endings used to come back CRLF throughout
+    /// after one save: its LF lines were rewritten without a word.
+    #[test]
+    fn mixed_line_endings_are_left_as_they_are() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("mixed.txt");
+        std::fs::write(&path, "one\r\ntwo\nthree\r\n").unwrap();
+        let mut e = Editor::open(&path).unwrap();
+        e.move_bottom(false);
+        e.insert("x");
+        e.save().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"one\r\ntwo\nthree\r\nx");
+        // an all-CRLF file is still read and written as CRLF
+        std::fs::write(&path, "a\r\nb\r\n").unwrap();
+        let mut e = Editor::open(&path).unwrap();
+        e.move_bottom(false);
+        e.insert("c");
+        e.save().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"a\r\nb\r\nc");
+    }
+
+    #[test]
+    fn a_change_on_disk_is_noticed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("f.txt");
+        std::fs::write(&path, "mine").unwrap();
+        let mut e = Editor::open(&path).unwrap();
+        assert!(!e.changed_on_disk());
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(later))
+            .unwrap();
+        assert!(e.changed_on_disk());
+        e.save().unwrap();
+        assert!(!e.changed_on_disk(), "a save is the new baseline");
+    }
+
+    #[test]
+    fn save_as_takes_the_new_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("old.txt");
+        std::fs::write(&path, "text").unwrap();
+        let mut e = Editor::open(&path).unwrap();
+        let copy = tmp.path().join("new.txt");
+        e.save_as(&copy).unwrap();
+        assert_eq!(e.path, copy);
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "text");
+        assert!(!e.modified());
+    }
+
+    #[test]
+    fn a_batch_is_one_undo() {
+        let mut e = ed("a a a");
+        let re = Editor::compile("a").unwrap();
+        e.batch(|e| {
+            while let Some(m) = e.find_from(Pos { line: 0, col: 0 }, &re) {
+                e.replace_match(m, "b");
+            }
+        });
+        assert_eq!(e.text(), "b b b");
+        e.undo();
+        assert_eq!(e.text(), "a a a", "one step undid all three");
+    }
+
+    #[test]
+    fn tab_indents_a_selection_and_shift_tab_takes_it_back() {
+        let mut e = ed("one\ntwo\nthree");
+        e.goto(Pos { line: 0, col: 0 }, false);
+        e.goto(Pos { line: 1, col: 2 }, true);
+        e.insert_tab();
+        assert_eq!(e.text(), "\tone\n\ttwo\nthree");
+        assert!(e.has_selection(), "the lines stay selected");
+        e.unindent();
+        assert_eq!(e.text(), "one\ntwo\nthree");
+        e.undo();
+        assert_eq!(e.text(), "\tone\n\ttwo\nthree", "the unindent was one step");
+    }
+
+    #[test]
+    fn brackets_find_their_partner() {
+        let mut e = ed("f(a[1], (b))");
+        e.goto(Pos { line: 0, col: 1 }, false);
+        assert_eq!(e.matching_bracket(), Some(Pos { line: 0, col: 11 }));
+        e.goto(Pos { line: 0, col: 11 }, false);
+        assert_eq!(e.matching_bracket(), Some(Pos { line: 0, col: 1 }));
+        e.goto(Pos { line: 0, col: 0 }, false);
+        assert_eq!(e.matching_bracket(), None);
+    }
+
+    #[test]
+    fn words_complete_from_the_buffer() {
+        let mut e = ed("alpha alphabet beta\nalp");
+        e.move_bottom(false);
+        e.move_end(false);
+        assert_eq!(e.word_before_cursor(), "alp");
+        assert_eq!(e.completions("alp"), ["alpha", "alphabet"]);
     }
 
     #[test]

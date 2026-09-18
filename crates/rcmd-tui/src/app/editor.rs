@@ -124,6 +124,15 @@ impl App {
                     .map(|m| m.len() as usize)
                     .unwrap_or(0);
                 ed.prefs = self.config.edit_prefs();
+                // back where it was left, for a file of the user's own
+                // (a scratch copy or a rename buffer has no past)
+                if follow_up.is_none()
+                    && let Some((line, col)) = state::position_of(path)
+                {
+                    let line = line.min(ed.line_count().saturating_sub(1));
+                    let col = col.min(ed.line_len(line));
+                    ed.goto(rcmd_edit::Pos { line, col }, false);
+                }
                 let hl = rcmd_edit::Highlighter::new(path, len);
                 // the syntax set is built on first use, so a broken
                 // user syntax file is only knowable once something has
@@ -139,6 +148,7 @@ impl App {
                     wrap: false,
                     rows: 1,
                     cols: 1,
+                    search: ViewSearch::default(),
                     prompt: None,
                     note,
                     wrap_column: self.config.edit_wrap_column as usize,
@@ -159,7 +169,13 @@ impl App {
 
     pub(super) fn close_editor(&mut self) {
         let follow_up = match self.take_current_screen() {
-            Some(Screen::Editor(st)) => st.follow_up,
+            Some(Screen::Editor(st)) => {
+                if st.follow_up.is_none() && st.ed.path.exists() {
+                    let at = st.ed.cursor;
+                    let _ = state::remember_position(&st.ed.path, at.line, at.col);
+                }
+                st.follow_up
+            }
             _ => None,
         };
         match follow_up {
@@ -274,6 +290,12 @@ impl App {
         let Some(st) = self.editor_mut() else {
             return false;
         };
+        // someone else wrote the file since it was read: ask before this
+        // save throws their change away
+        if st.ed.changed_on_disk() {
+            st.prompt = Some(EditPrompt::Clobber { button: 1 });
+            return false;
+        }
         match st.ed.save() {
             Ok(()) => {
                 st.note = Some(" saved ".into());
@@ -298,23 +320,35 @@ impl App {
     }
 
     /// Search from just after `from`; select the match so it is visible.
-    pub(super) fn editor_find(&mut self, pattern: &str, from: rcmd_edit::Pos) {
+    /// Search with the dialog's answers: forward from just past the
+    /// cursor, or backwards from the start of what is selected - which
+    /// is the last hit, so "next" never finds the same one twice.
+    pub(super) fn editor_search(&mut self, is_next: bool) {
         let Some(st) = self.editor_mut() else {
             return;
         };
-        let re = match rcmd_edit::Editor::compile(pattern) {
+        let re = match st.search.to_regex() {
             Ok(re) => re,
             Err(err) => {
-                let first = err.to_string();
-                st.note = Some(format!(
-                    " {} ",
-                    first.lines().last().unwrap_or("bad pattern")
-                ));
+                st.note = Some(format!(" {} ", err.lines().last().unwrap_or("bad pattern")));
                 return;
             }
         };
-        st.ed.search = pattern.to_string();
-        match st.ed.find_from(from, &re) {
+        let found = if st.search.backwards {
+            let from = st
+                .ed
+                .sel_range()
+                .map_or(st.ed.cursor, |(a, _)| st.ed.pos_at(a));
+            st.ed.find_back(from, &re)
+        } else {
+            let from = if is_next {
+                next_pos(&st.ed)
+            } else {
+                st.ed.cursor
+            };
+            st.ed.find_from(from, &re)
+        };
+        match found {
             Some(m) => select_match(&mut st.ed, m),
             None => st.note = Some(" not found ".into()),
         }
@@ -430,6 +464,7 @@ impl App {
             }
             KeyCode::Enter => st.ed.newline(),
             KeyCode::Tab => st.ed.insert_tab(),
+            KeyCode::BackTab => st.ed.unindent(),
             KeyCode::Backspace => st.ed.backspace(),
             KeyCode::Delete => st.ed.delete_forward(),
             KeyCode::Esc => {
@@ -466,6 +501,28 @@ impl App {
                 self.step_hit(if action == EA::NextHit { 1 } else { -1 });
                 return;
             }
+            EA::SaveAs => {
+                if let Some(st) = self.editor_mut() {
+                    let path = st.ed.path.display().to_string();
+                    st.prompt = Some(EditPrompt::SaveAs(
+                        TextField::new(path).with_history("save-as"),
+                    ));
+                }
+                return;
+            }
+            EA::MatchBracket => {
+                if let Some(st) = self.editor_mut() {
+                    match st.ed.matching_bracket() {
+                        Some(pos) => st.ed.goto(pos, false),
+                        None => st.note = Some(" no bracket here to match ".into()),
+                    }
+                }
+                return;
+            }
+            EA::Complete => {
+                self.editor_complete();
+                return;
+            }
             EA::Goto => {
                 if let Some(st) = self.editor_mut() {
                     let at = (st.ed.cursor.line + 1).to_string();
@@ -488,17 +545,13 @@ impl App {
                 return;
             }
             EA::SearchNext => {
-                let Some(st) = self.editor() else {
+                let Some(st) = self.editor_mut() else {
                     return;
                 };
-                let pattern = st.ed.search.clone();
-                let from = next_pos(&st.ed);
-                if pattern.is_empty() {
-                    if let Some(st) = self.editor_mut() {
-                        st.prompt = Some(EditPrompt::Search(search_field("")));
-                    }
+                if st.search.is_empty() {
+                    st.prompt = Some(EditPrompt::Search(Box::new(search_dialog(&st.search))));
                 } else {
-                    self.editor_find(&pattern, from);
+                    self.editor_search(true);
                 }
                 return;
             }
@@ -523,7 +576,10 @@ impl App {
             | EA::Menu
             | EA::Goto
             | EA::NextHit
-            | EA::PrevHit => {
+            | EA::PrevHit
+            | EA::SaveAs
+            | EA::MatchBracket
+            | EA::Complete => {
                 unreachable!("handled above")
             }
             EA::Mark => {
@@ -535,7 +591,7 @@ impl App {
                 return;
             }
             EA::Search => {
-                st.prompt = Some(EditPrompt::Search(search_field(&st.ed.search)));
+                st.prompt = Some(EditPrompt::Search(Box::new(search_dialog(&st.search))));
                 return;
             }
             EA::BlockCopy | EA::BlockMove => {
@@ -660,19 +716,16 @@ impl App {
             return;
         };
         match prompt {
-            EditPrompt::Search(mut field) => match key.code {
-                KeyCode::Esc => {}
-                KeyCode::Enter => {
-                    let pattern = field.value.trim().to_string();
-                    if !pattern.is_empty() {
-                        remember_in(st, &field);
-                        let from = next_pos(&st.ed);
-                        self.editor_find(&pattern, from);
+            EditPrompt::Search(mut dialog) => match dialog.key(key) {
+                None => st.prompt = Some(EditPrompt::Search(dialog)),
+                Some(false) => {}
+                Some(true) => {
+                    if !dialog.is_empty() {
+                        remember_in(st, &dialog.field);
+                        st.ed.search = dialog.field.value.trim().to_string();
+                        st.search = *dialog;
+                        self.editor_search(false);
                     }
-                }
-                _ => {
-                    field.key(key);
-                    st.prompt = Some(EditPrompt::Search(field));
                 }
             },
             EditPrompt::ReplaceFind(mut field) => match key.code {
@@ -804,25 +857,101 @@ impl App {
                         }
                     }
                     Act::All => {
-                        let mut m = m;
-                        loop {
-                            if let Some(hl) = st.hl.as_mut() {
-                                hl.invalidate_from(m.pos.line);
-                            }
-                            st.ed.replace_match_with_groups(m, &re, &replacement);
-                            count += 1;
-                            if count > 1_000_000 {
-                                break;
-                            }
-                            match st.ed.find_from(st.ed.cursor, &re) {
-                                Some(next) if next.pos >= st.ed.cursor => m = next,
-                                _ => break,
-                            }
+                        // every later match is below this one
+                        if let Some(hl) = st.hl.as_mut() {
+                            hl.invalidate_from(m.pos.line);
                         }
+                        // one undo step for the lot, not one per match
+                        count += st.ed.batch(|ed| {
+                            let (mut m, mut done) = (m, 0);
+                            loop {
+                                ed.replace_match_with_groups(m, &re, &replacement);
+                                done += 1;
+                                if done > 1_000_000 {
+                                    break;
+                                }
+                                match ed.find_from(ed.cursor, &re) {
+                                    Some(next) if next.pos >= ed.cursor => m = next,
+                                    _ => break,
+                                }
+                            }
+                            done
+                        });
                         finish(st, count);
                     }
                 }
             }
+            EditPrompt::SaveAs(mut field) => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => {
+                    let path = PathBuf::from(field.value.trim());
+                    if path.as_os_str().is_empty() {
+                        return;
+                    }
+                    let _ = field.remember();
+                    match st.ed.save_as(&path) {
+                        Ok(()) => {
+                            st.title = path.display().to_string();
+                            st.note = Some(" saved ".into());
+                        }
+                        Err(err) => st.note = Some(format!(" save failed: {err} ")),
+                    }
+                }
+                _ => {
+                    field.key(key);
+                    st.prompt = Some(EditPrompt::SaveAs(field));
+                }
+            },
+            EditPrompt::Clobber { mut button } => match key.code {
+                KeyCode::Esc | KeyCode::Char('c' | 'C') => {}
+                KeyCode::Char('o' | 'O') => clobber(st),
+                KeyCode::Enter => {
+                    if button == 0 {
+                        clobber(st);
+                    }
+                }
+                KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                    button ^= 1;
+                    st.prompt = Some(EditPrompt::Clobber { button });
+                }
+                _ => st.prompt = Some(EditPrompt::Clobber { button }),
+            },
+            EditPrompt::Complete {
+                words,
+                mut selected,
+                typed,
+            } => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter | KeyCode::Tab => {
+                    if let Some(word) = words.get(selected) {
+                        let rest: String = word.chars().skip(typed).collect();
+                        st.ed.insert(&rest);
+                    }
+                }
+                KeyCode::Up => {
+                    selected = selected.saturating_sub(1);
+                    st.prompt = Some(EditPrompt::Complete {
+                        words,
+                        selected,
+                        typed,
+                    });
+                }
+                KeyCode::Down => {
+                    selected = (selected + 1).min(words.len().saturating_sub(1));
+                    st.prompt = Some(EditPrompt::Complete {
+                        words,
+                        selected,
+                        typed,
+                    });
+                }
+                _ => {
+                    st.prompt = Some(EditPrompt::Complete {
+                        words,
+                        selected,
+                        typed,
+                    })
+                }
+            },
             EditPrompt::ConfirmQuit { mut button } => match key.code {
                 KeyCode::Esc | KeyCode::Char('c') => {}
                 KeyCode::Char('s') => {
@@ -1195,10 +1324,54 @@ fn search_field(last: &str) -> TextField {
     TextField::new(last).with_history("edit-search")
 }
 
+/// F7's dialog, opening on the last search's answers.
+fn search_dialog(last: &ViewSearch) -> ViewSearch {
+    ViewSearch {
+        field: search_field(&last.field.value),
+        row: VIEW_SEARCH_FIELD,
+        ..last.clone()
+    }
+}
+
 /// Keep what was asked, saying so on the editor's own note line when
 /// the state file cannot be written.
 fn remember_in(st: &mut EditorState, field: &TextField) {
     if let Err(err) = field.remember() {
         st.note = Some(format!(" could not save state: {err} "));
+    }
+}
+
+/// Overwrite, the change on disk notwithstanding: the user said so.
+fn clobber(st: &mut EditorState) {
+    match st.ed.save() {
+        Ok(()) => st.note = Some(" saved over the change on disk ".into()),
+        Err(err) => st.note = Some(format!(" save failed: {err} ")),
+    }
+}
+
+impl App {
+    /// M-Tab: the word before the cursor, completed from the buffer's
+    /// own words - at once when one fits, from a list when several do.
+    fn editor_complete(&mut self) {
+        let Some(st) = self.editor_mut() else {
+            return;
+        };
+        let prefix = st.ed.word_before_cursor();
+        let words = st.ed.completions(&prefix);
+        let typed = prefix.chars().count();
+        match words.len() {
+            0 => st.note = Some(" no word to complete it with ".into()),
+            1 => {
+                let rest: String = words[0].chars().skip(typed).collect();
+                st.ed.insert(&rest);
+            }
+            _ => {
+                st.prompt = Some(EditPrompt::Complete {
+                    words,
+                    selected: 0,
+                    typed,
+                })
+            }
+        }
     }
 }

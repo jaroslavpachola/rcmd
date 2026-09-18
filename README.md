@@ -374,6 +374,9 @@ window was left in is where the next terminal session starts.
 | Ctrl+X q | Quick view: other panel previews the cursor file |
 | Ctrl+X i | Info panel: other panel shows the cursor file's full stat |
 | Alt+i / Alt+o | Other panel: same directory / directory under cursor |
+| Alt+G / Alt+R / Alt+J | Cursor to the top / middle / bottom of the screen, as in mc |
+| Ctrl+X h | Add this directory to the hotlist |
+| Alt+, | Panels side by side, or one above the other |
 | Ctrl+Space | Directory size (background scan into the Size column) |
 | Ctrl+R | Reload panel (also restores listing after find/panelize) |
 | Esc | Cancel dialog / running operation / clear command line |
@@ -1116,6 +1119,12 @@ edit_auto_indent = true    # Enter copies the line's leading whitespace
 edit_backspace_tabs = false  # in an indent, Backspace takes a whole stop
 edit_wrap_column = 0       # column the soft wrap folds at; 0 = the window
 find_window = true         # find file: matches in a window of their own
+builtin_view = true        # F3 on a PDF, man page, tarball, image or video
+                           # shows what pdftotext, man, tar, exiftool or
+                           # mediainfo say, where they are installed
+time_format = "%b %e %H:%M"      # the listing's times, as strftime -
+time_format_old = "%b %e  %Y"    # this one past six months, as ls -l
+si_units = false           # sizes in powers of 1000 instead of 1024
 desktop_open = true        # Enter on a file no [[open]] rule claims: xdg-open
                            # (open on macOS) when there is a display
                            # (false = straight into the panel listing)
@@ -1124,7 +1133,7 @@ edit_backups = false       # keep the previous contents as file~ on save
 edit_clipboard = true      # share the desktop clipboard (wl-copy/xclip/...)
 show_hidden = true
 sort_key = "name"   # name | ext | size | mtime | atime | ctime
-                    # | owner | group | unsorted
+                    # | owner | group | unsorted | version
 sort_reverse = false
 listing = "full"    # brief | full | long | tree | user
 # "user" draws listing_format: a panel size (half/full), an optional

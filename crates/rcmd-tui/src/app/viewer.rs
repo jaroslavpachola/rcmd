@@ -100,9 +100,10 @@ impl App {
             return;
         }
         if let Some(dialog) = v.prompt.as_mut() {
-            match key.code {
-                KeyCode::Esc => v.prompt = None,
-                KeyCode::Enter => {
+            match dialog.key(key) {
+                None => {}
+                Some(false) => v.prompt = None,
+                Some(true) => {
                     let asked = dialog.clone();
                     v.prompt = None;
                     if !asked.is_empty() {
@@ -118,18 +119,6 @@ impl App {
                         viewer_search(v, from, false);
                     }
                 }
-                KeyCode::Tab | KeyCode::Down => {
-                    dialog.row = (dialog.row + 1) % VIEW_SEARCH_ROWS;
-                }
-                KeyCode::BackTab | KeyCode::Up => {
-                    dialog.row = (dialog.row + VIEW_SEARCH_ROWS - 1) % VIEW_SEARCH_ROWS;
-                }
-                KeyCode::Char(' ') if dialog.row != VIEW_SEARCH_FIELD => dialog.toggle(),
-                KeyCode::Left | KeyCode::Right if dialog.row == VIEW_SEARCH_KIND => dialog.toggle(),
-                _ if dialog.row == VIEW_SEARCH_FIELD => {
-                    dialog.field.key(key);
-                }
-                _ => {}
             }
             return;
         }
@@ -213,16 +202,23 @@ impl App {
                 dialog.row = VIEW_SEARCH_FIELD;
                 v.prompt = Some(dialog);
             }
-            VA::SearchNext => {
+            VA::SearchNext | VA::SearchPrev => {
                 if !v.search.is_empty() {
+                    let flip = action == VA::SearchPrev;
                     // step past the current hit, whichever way we go
-                    let from = match (v.found, v.search.backwards) {
-                        (Some(0), true) => return,
+                    let from = match (v.found, v.search.backwards ^ flip) {
+                        (Some(0), true) => usize::MAX,
                         (Some(found), true) => found - 1,
                         (Some(found), false) => found + 1,
                         (None, _) => v.top,
                     };
-                    viewer_search(v, from, true);
+                    // from the first line backwards: straight round to
+                    // the end, which is where the wrap would land
+                    let from = match from {
+                        usize::MAX => v.file.total_lines().unwrap_or(1).saturating_sub(1),
+                        from => from,
+                    };
+                    viewer_search_way(v, from, true, flip);
                 }
             }
             VA::Goto => {
@@ -335,9 +331,16 @@ impl App {
                         .get_or_insert_with(|| crate::config::file_type_of(&path))
                         .clone()
                 };
+                // the user's rules first; rcmd's own after them, and
+                // only while they are not switched off
+                let builtin = match self.config.builtin_view {
+                    true => crate::config::builtin_view_rules(),
+                    false => &[],
+                };
                 self.config
                     .view
                     .iter()
+                    .chain(builtin)
                     .find(|rule| rule.matches(&plain, &dir, &mut file_type))
                     .cloned()
             })
@@ -350,6 +353,20 @@ impl App {
             match self.run_view_filter(rule) {
                 Ok(pair) => filtered = Some(pair),
                 Err(err) => self.status = Some(format!(" view filter: {err} - showing raw ")),
+            }
+        }
+        // a lone compressed file is read as what it holds, as zless
+        // would; Shift+F3 is still the bytes
+        if !raw
+            && filtered.is_none()
+            && let Some(reader) = rcmd_core::archive::decompressing(&source)
+        {
+            match decompress_to_scratch(reader, &name) {
+                Ok(temp) => {
+                    let title = PathBuf::from(format!("{} (decompressed)", source_title.display()));
+                    filtered = Some((temp, title));
+                }
+                Err(err) => self.status = Some(format!(" decompress: {err} - showing raw ")),
             }
         }
         let (open_path, title_path, is_filtered) = match filtered {
@@ -638,4 +655,28 @@ impl App {
             }
         }
     }
+}
+
+/// The most a view decompresses into its scratch copy: past this the
+/// file is not something to read on a screen, and the disk is worth
+/// more than the rest of it.
+const DECOMPRESS_CAP: u64 = 1 << 30;
+
+fn decompress_to_scratch(
+    reader: std::io::Result<Box<dyn std::io::Read>>,
+    name: &std::ffi::OsStr,
+) -> std::io::Result<PathBuf> {
+    use std::io::Read as _;
+    let reader = reader?;
+    let stem = Path::new(name)
+        .file_stem()
+        .unwrap_or(name)
+        .to_string_lossy()
+        .into_owned();
+    let (mut out, temp) = crate::scratch::create(&stem)?;
+    if let Err(err) = std::io::copy(&mut reader.take(DECOMPRESS_CAP), &mut out) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(err);
+    }
+    Ok(temp)
 }

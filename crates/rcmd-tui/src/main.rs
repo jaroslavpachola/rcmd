@@ -39,7 +39,14 @@ struct Overrides {
 }
 
 fn main() -> Result<()> {
-    let args = parse_args()?;
+    let mut args = parse_args()?;
+    // `cmd | rcview -`: what the pipe says, read before the terminal is
+    // taken over - the keys come from /dev/tty, as they do for less
+    if let Startup::View(file) = &args.startup
+        && file.as_os_str() == "-"
+    {
+        args.startup = Startup::View(read_stdin()?);
+    }
     if let Some(line) = &args.remote {
         return remote::send(args.remote_to, line);
     }
@@ -73,6 +80,7 @@ fn main() -> Result<()> {
         warnings.push(format!("cannot write {}: {err}", path.display()));
     }
     ui::set_tab_size(cfg.edit_tab_size as usize);
+    ui::set_formats(&cfg.time_format, &cfg.time_format_old, cfg.si_units);
     // the editor's own syntax files, alongside the themes
     if let Some(config) = config::config_path()
         && let Some(dir) = config.parent()
@@ -297,7 +305,7 @@ usage: rcmd [OPTIONS] [DIR1 [DIR2]]
        rcmd --import-mc [MC_CONFIG_DIR]
 
   -e, --edit FILE     start in the editor on FILE (repeatable)
-  -v, --view FILE     start in the viewer on FILE
+  -v, --view FILE     start in the viewer on FILE (- reads standard input)
   -P, --printwd FILE  write the last active directory to FILE on exit
   -S, --skin NAME     theme: mc, dark, bw
   -b, --nocolor       black and white
@@ -316,6 +324,14 @@ usage: rcmd [OPTIONS] [DIR1 [DIR2]]
 
 DIR1/DIR2 are the starting directories for the left/right panel.
 ";
+
+/// Standard input into a scratch file, for the viewer to page through.
+fn read_stdin() -> Result<PathBuf> {
+    let (mut out, path) =
+        rcmd_tui::scratch::create("stdin").context("cannot make a scratch file")?;
+    std::io::copy(&mut std::io::stdin().lock(), &mut out).context("cannot read standard input")?;
+    Ok(path)
+}
 
 #[cfg(test)]
 mod tests {

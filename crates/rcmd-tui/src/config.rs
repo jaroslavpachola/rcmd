@@ -100,6 +100,15 @@ pub struct Config {
     /// stops - what a tab is worth on screen and how far one Tab key
     /// gets you when tabs are filled with spaces.
     pub edit_tab_size: u16,
+    /// How the listing writes a time, as strftime: mc's `%b %e %H:%M`
+    /// for anything from the last six months...
+    pub time_format: String,
+    /// ...and for anything older, or in the future, where the year says
+    /// more than the minute - the rule `ls -l` and mc both follow.
+    pub time_format_old: String,
+    /// Sizes in powers of 1000 (k, M, G) rather than 1024 - mc's "Use
+    /// SI size units".
+    pub si_units: bool,
     /// Tab inserts spaces up to the next stop instead of a tab.
     pub edit_fill_tabs: bool,
     /// Enter copies the current line's leading whitespace.
@@ -118,6 +127,11 @@ pub struct Config {
     /// desktop (`xdg-open`, or `open` on macOS) when there is a display
     /// to open it on. Off: such an Enter does nothing, as before 4.9.
     pub desktop_open: bool,
+    /// F3 on a PDF, a man page, an image or a tarball shows what it
+    /// says rather than its bytes, through rcmd's own small set of
+    /// `[[view]]` rules - each used only when its tool is installed,
+    /// and always after the user's. Off: only the user's rules.
+    pub builtin_view: bool,
     /// Draw the line-number gutter (Alt+N toggles it).
     pub edit_line_numbers: bool,
     /// Keep the previous contents as `file~` on every save.
@@ -275,8 +289,6 @@ fn regex_matches(re: &str, text: &str) -> bool {
     regex::Regex::new(re).is_ok_and(|re| re.is_match(text))
 }
 
-/// What `file -b` says about a path, for `type =` rules; empty when
-/// there is no `file` to ask.
 /// The desktop's own opener, if this session has a desktop: `open` on
 /// macOS, `xdg-open` under X or Wayland. `None` over a bare ssh, where
 /// spawning a browser would happen on the wrong machine, if at all.
@@ -289,11 +301,69 @@ pub fn desktop_opener() -> Option<&'static str> {
     } else {
         return None;
     };
-    let on_path = std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(candidate).is_file()));
-    on_path.then_some(candidate)
+    on_path(candidate).then_some(candidate)
 }
 
+/// Whether `tool` is a file somewhere on `$PATH`.
+fn on_path(tool: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(tool).is_file()))
+}
+
+/// rcmd's own `[[view]]` rules, for a fresh install whose F3 on a PDF
+/// would otherwise show bytes: mc ships `mc.ext` with hundreds, this is
+/// the handful that matter, each kept only when its tool is installed.
+/// A man page is told by what `file` says rather than by `*.1` alone,
+/// or `syslog.1` would be run through `man`.
+pub fn builtin_view_rules() -> &'static [OpenRule] {
+    static RULES: std::sync::OnceLock<Vec<OpenRule>> = std::sync::OnceLock::new();
+    RULES.get_or_init(|| {
+        let man = (1..=9)
+            .map(|n| format!("*.{n},*.{n}.gz"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let table: Vec<(String, Option<&str>, &str, &str)> = vec![
+            ("*.pdf".into(), None, "pdftotext", "pdftotext -layout %f -"),
+            ("*.ps,*.eps".into(), None, "ps2ascii", "ps2ascii %f"),
+            ("*.djvu".into(), None, "djvutxt", "djvutxt %f"),
+            ("*.doc".into(), None, "antiword", "antiword %f"),
+            ("*.docx".into(), None, "docx2txt", "docx2txt %f -"),
+            ("*.odt".into(), None, "odt2txt", "odt2txt %f"),
+            (man, Some("troff"), "man", "man -l %f"),
+            (
+                "*.tar,*.tar.gz,*.tgz,*.tar.bz2,*.tbz,*.tbz2,*.tar.xz,*.txz,*.tar.zst".into(),
+                None,
+                "tar",
+                "tar -tvf %f",
+            ),
+            (
+                "*.jpg,*.jpeg,*.png,*.gif,*.webp,*.tif,*.tiff,*.heic,*.bmp".into(),
+                None,
+                "exiftool",
+                "exiftool %f",
+            ),
+            (
+                "*.mp3,*.flac,*.ogg,*.opus,*.m4a,*.wav,*.mp4,*.mkv,*.webm,*.avi,*.mov".into(),
+                None,
+                "mediainfo",
+                "mediainfo %f",
+            ),
+        ];
+        table
+            .into_iter()
+            .filter(|(_, _, tool, _)| on_path(tool))
+            .map(|(pattern, kind, _, run)| OpenRule {
+                pattern: Some(pattern),
+                kind: kind.map(str::to_string),
+                run: run.to_string(),
+                ..OpenRule::default()
+            })
+            .collect()
+    })
+}
+
+/// What `file -b` says about a path, for `type =` rules; empty when
+/// there is no `file` to ask.
 pub fn file_type_of(path: &Path) -> String {
     std::process::Command::new("file")
         .args(["-b", "--"])
@@ -457,12 +527,16 @@ impl Default for Config {
             confirm_execute: false,
             esc_timeout_ms: crate::app::ESC_TIMEOUT_MS,
             edit_tab_size: 8,
+            time_format: "%b %e %H:%M".into(),
+            time_format_old: "%b %e  %Y".into(),
+            si_units: false,
             edit_fill_tabs: false,
             edit_auto_indent: true,
             edit_backspace_tabs: false,
             edit_wrap_column: 0,
             find_window: true,
             desktop_open: true,
+            builtin_view: true,
             edit_line_numbers: false,
             edit_backups: false,
             edit_clipboard: true,
@@ -558,6 +632,7 @@ pub fn sort_key_from_name(name: &str) -> SortKey {
         "owner" => SortKey::Owner,
         "group" => SortKey::Group,
         "unsorted" => SortKey::Unsorted,
+        "version" => SortKey::Version,
         _ => SortKey::Name,
     }
 }
@@ -573,11 +648,35 @@ pub fn sort_key_name(key: SortKey) -> &'static str {
         SortKey::Owner => "owner",
         SortKey::Group => "group",
         SortKey::Unsorted => "unsorted",
+        SortKey::Version => "version",
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_builtin_view_rules_need_their_tools() {
+        let rules = builtin_view_rules();
+        // tar is everywhere a test runs; a tool nobody has is nowhere
+        let has_tar = std::env::var_os("PATH")
+            .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("tar").is_file()));
+        let tarball = rules.iter().any(|r| r.run.starts_with("tar "));
+        assert_eq!(tarball, has_tar);
+        let mut no_type = String::new;
+        if has_tar {
+            let rule = rules.iter().find(|r| r.run.starts_with("tar ")).unwrap();
+            assert!(rule.matches("backup.tar.gz", Path::new("/tmp"), &mut no_type));
+            assert!(!rule.matches("notes.txt", Path::new("/tmp"), &mut no_type));
+        }
+        // a man page is what file(1) says it is, not a rotated log
+        if let Some(man) = rules.iter().find(|r| r.run.starts_with("man ")) {
+            let mut log = || "ASCII text".to_string();
+            assert!(!man.matches("syslog.1", Path::new("/var/log"), &mut log));
+            let mut troff = || "troff or preprocessor input, ASCII text".to_string();
+            assert!(man.matches("ls.1", Path::new("/tmp"), &mut troff));
+        }
+    }
+
     #[test]
     fn open_rules_match_by_name_type_and_place() {
         use super::OpenRule;

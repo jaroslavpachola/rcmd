@@ -52,6 +52,20 @@ pub enum SortKey {
     /// listing that order *is* the answer - `git ls-files -m` says what
     /// changed and in which order - and sorting it throws that away.
     Unsorted,
+    /// mc's version sort: the name, with runs of digits compared as
+    /// numbers, so `file2` comes before `file10`.
+    Version,
+}
+
+/// How a listing is ordered: the key, and mc's switches beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Order {
+    pub key: SortKey,
+    pub reverse: bool,
+    /// mc's "Mix all files": directories among the files, not ahead.
+    pub mix_dirs: bool,
+    /// Names compared as they are spelled; off, case is folded.
+    pub case_sensitive: bool,
 }
 
 /// Panel listing format: name-only, the classic three columns, an
@@ -87,6 +101,8 @@ pub struct Panel {
     pub marked: HashSet<OsString>,
     pub sort_key: SortKey,
     pub sort_reverse: bool,
+    pub mix_dirs: bool,
+    pub sort_case: bool,
     pub show_hidden: bool,
     pub list_mode: ListMode,
     /// MC's "filter": which entries the listing shows at all, as the
@@ -122,6 +138,8 @@ impl Panel {
             marked: HashSet::new(),
             sort_key: SortKey::Name,
             sort_reverse: false,
+            mix_dirs: false,
+            sort_case: false,
             show_hidden: true,
             list_mode: ListMode::Full,
             filter: None,
@@ -157,21 +175,13 @@ impl Panel {
         let dir = target.clone();
         let show_hidden = self.show_hidden;
         let filter = self.filter.clone();
-        let (sort_key, sort_reverse) = (self.sort_key, self.sort_reverse);
+        let order = self.order();
         let charset = self.charset;
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let result = prepare_listing(
-                &*fs,
-                &dir,
-                show_hidden,
-                filter.as_ref(),
-                sort_key,
-                sort_reverse,
-                charset,
-            );
+            let result = prepare_listing(&*fs, &dir, show_hidden, filter.as_ref(), order, charset);
             if !flag.load(AtomicOrdering::Relaxed) {
                 let _ = tx.send(result);
             }
@@ -386,8 +396,7 @@ impl Panel {
             raw,
             self.show_hidden,
             self.filter.as_ref(),
-            self.sort_key,
-            self.sort_reverse,
+            self.order(),
             self.charset,
         );
         self.cwd = start;
@@ -468,14 +477,14 @@ impl Panel {
         if let Some(archive) = &self.archive {
             self.fs = Arc::new(ArchiveFs::open(archive)?);
         }
+        let order = self.order();
         let listing = |dir: &Path, fs: &dyn FsProvider| {
             prepare_listing(
                 fs,
                 dir,
                 self.show_hidden,
                 self.filter.as_ref(),
-                self.sort_key,
-                self.sort_reverse,
+                order,
                 self.charset,
             )
         };
@@ -673,6 +682,16 @@ impl Panel {
         Ok(())
     }
 
+    /// The order this panel lists in.
+    pub fn order(&self) -> Order {
+        Order {
+            key: self.sort_key,
+            reverse: self.sort_reverse,
+            mix_dirs: self.mix_dirs,
+            case_sensitive: self.sort_case,
+        }
+    }
+
     /// Same sort key again toggles reverse, like MC's sort dialog.
     pub fn set_sort(&mut self, key: SortKey) {
         if self.sort_key == key {
@@ -693,12 +712,8 @@ impl Panel {
             .first()
             .is_some_and(Entry::is_parent)
             .then(|| self.entries.remove(0));
-        sort_entries(
-            &mut self.entries,
-            self.sort_key,
-            self.sort_reverse,
-            self.charset,
-        );
+        let order = self.order();
+        sort_entries(&mut self.entries, order, self.charset);
         if let Some(parent) = parent {
             self.entries.insert(0, parent);
         }
@@ -889,16 +904,14 @@ fn prepare_listing(
     dir: &Path,
     show_hidden: bool,
     filter: Option<&crate::pattern::Pattern>,
-    key: SortKey,
-    reverse: bool,
+    order: Order,
     charset: Option<&'static crate::charset::Encoding>,
 ) -> io::Result<Vec<Entry>> {
     Ok(shape_listing(
         fs.read_dir(dir)?,
         show_hidden,
         filter,
-        key,
-        reverse,
+        order,
         charset,
     ))
 }
@@ -909,8 +922,7 @@ fn shape_listing(
     mut entries: Vec<Entry>,
     show_hidden: bool,
     filter: Option<&crate::pattern::Pattern>,
-    key: SortKey,
-    reverse: bool,
+    order: Order,
     charset: Option<&'static crate::charset::Encoding>,
 ) -> Vec<Entry> {
     if !show_hidden {
@@ -929,19 +941,20 @@ fn shape_listing(
                 || matcher.accepts(e, &crate::charset::decode_name(&e.name, charset))
         });
     }
-    sort_entries(&mut entries, key, reverse, charset);
+    sort_entries(&mut entries, order, charset);
     entries
 }
 
-/// Directories always group first (even reversed); ties broken bytewise so
-/// ordering is total even for names differing only in case. The lowercase
-/// sort key is computed once per entry, which matters at 100k entries.
+/// Directories group first (even reversed) unless the order mixes
+/// them in; ties broken bytewise so ordering is total even for names
+/// differing only in case. The sort key is computed once per entry,
+/// which matters at 100k entries.
 fn sort_entries(
     entries: &mut Vec<Entry>,
-    key: SortKey,
-    reverse: bool,
+    order: Order,
     charset: Option<&'static crate::charset::Encoding>,
 ) {
+    let Order { key, reverse, .. } = order;
     // Unsorted means what it says, down to not grouping the directories
     // first: the order the listing arrived in is the whole of it. The
     // parent entry is put in front by the loader, and stays there.
@@ -955,8 +968,12 @@ fn sort_entries(
     let mut decorated: Vec<(bool, String, Entry)> = std::mem::take(entries)
         .into_iter()
         .map(|e| {
-            let key = crate::charset::decode_name(&e.name, charset).to_lowercase();
-            (!e.is_dir(), key, e)
+            let name = crate::charset::decode_name(&e.name, charset);
+            let key = match order.case_sensitive {
+                true => name,
+                false => name.to_lowercase(),
+            };
+            (!e.is_dir() && !order.mix_dirs, key, e)
         })
         .collect();
     decorated.sort_by(|a, b| {
@@ -966,6 +983,7 @@ fn sort_entries(
         }
         let ord = match key {
             SortKey::Name | SortKey::Unsorted => name_cmp(a, b),
+            SortKey::Version => natural_cmp(&a.1, &b.1).then_with(|| a.2.name.cmp(&b.2.name)),
             SortKey::Ext => a.2.ext().cmp(&b.2.ext()).then_with(|| name_cmp(a, b)),
             SortKey::Size => a.2.size.cmp(&b.2.size).then_with(|| name_cmp(a, b)),
             SortKey::Mtime => a.2.mtime.cmp(&b.2.mtime).then_with(|| name_cmp(a, b)),
@@ -1012,6 +1030,43 @@ fn group_of(entry: &Entry) -> String {
         .unwrap_or_default()
 }
 
+/// Names with their runs of digits compared as numbers: `file2` before
+/// `file10`, `v1.9` before `v1.10`. Equal numbers with more leading
+/// zeros go after, so the order stays total.
+pub fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let (mut a, mut b) = (a, b);
+    loop {
+        match (a.chars().next(), b.chars().next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let run = |s: &str| s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+                let (ra, rb) = (run(a), run(b));
+                let (na, nb) = (
+                    a[..ra].trim_start_matches('0'),
+                    b[..rb].trim_start_matches('0'),
+                );
+                let ord = na
+                    .len()
+                    .cmp(&nb.len())
+                    .then_with(|| na.cmp(nb))
+                    .then_with(|| ra.cmp(&rb));
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+                (a, b) = (&a[ra..], &b[rb..]);
+            }
+            (Some(x), Some(y)) => {
+                if x != y {
+                    return x.cmp(&y);
+                }
+                (a, b) = (&a[x.len_utf8()..], &b[y.len_utf8()..]);
+            }
+        }
+    }
+}
+
 fn name_cmp(a: &(bool, String, Entry), b: &(bool, String, Entry)) -> Ordering {
     a.1.cmp(&b.1).then_with(|| a.2.name.cmp(&b.2.name))
 }
@@ -1020,6 +1075,42 @@ fn name_cmp(a: &(bool, String, Entry), b: &(bool, String, Entry)) -> Ordering {
 mod tests {
     use super::*;
     use std::fs;
+
+    fn order(key: SortKey, reverse: bool) -> Order {
+        Order {
+            key,
+            reverse,
+            mix_dirs: false,
+            case_sensitive: false,
+        }
+    }
+
+    #[test]
+    fn version_sort_counts_the_numbers() {
+        let mut names = ["file10", "file2", "file1", "v1.10", "v1.9", "file02"];
+        names.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(
+            names,
+            ["file1", "file2", "file02", "file10", "v1.9", "v1.10"]
+        );
+    }
+
+    #[test]
+    fn mixed_and_case_sensitive_orders() {
+        let dir = make_tree();
+        let mut panel = Panel::new(dir.path().to_path_buf()).unwrap();
+        panel.sort_case = true;
+        panel.mix_dirs = true;
+        panel.resort();
+        let names: Vec<_> = panel
+            .entries
+            .iter()
+            .filter(|e| !e.is_parent())
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect();
+        // capitals before small letters, and the directories among them
+        assert_eq!(names, [".hidden", "Docs", "README.md", "cargo.lock", "src"]);
+    }
 
     fn make_tree() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -1124,10 +1215,10 @@ mod tests {
             },
         ];
         let before = names(&panel);
-        sort_entries(&mut panel.entries, SortKey::Unsorted, false, None);
+        sort_entries(&mut panel.entries, order(SortKey::Unsorted, false), None);
         assert_eq!(names(&panel), before, "nothing moved");
         // reversed, everything but the parent turns round
-        sort_entries(&mut panel.entries, SortKey::Unsorted, true, None);
+        sort_entries(&mut panel.entries, order(SortKey::Unsorted, true), None);
         assert_eq!(names(&panel), ["..", "first", "third"]);
     }
 
@@ -1162,7 +1253,7 @@ mod tests {
         }
         let order = |key: SortKey, entries: &[Entry]| {
             let mut copy = entries.to_vec();
-            sort_entries(&mut copy, key, false, None);
+            sort_entries(&mut copy, order(key, false), None);
             copy.iter()
                 .map(|e| e.name.to_string_lossy().into_owned())
                 .collect::<Vec<_>>()

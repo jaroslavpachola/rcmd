@@ -4005,6 +4005,8 @@ def test_editor():
     # R4: F5/F6 block ops - duplicate the first line, then cut one copy
     s.send(F4, wait=STEP * 2)
     s.keys(
+        b"\x1b[1;5H",               # Ctrl+Home: the editor reopens where
+                                     # it was left, and line 1 is wanted
         F5,                          # no selection: duplicate line 1
         F6,                          # cut the duplicate (clipboard)
         b"\x16",                     # Ctrl+V pastes it back
@@ -5104,6 +5106,111 @@ def test_findhits():
     shutil.rmtree(root)
 
 
+def test_firstrun():
+    """PLAN5 S3: what a fresh install gets right - a lone .gz reads as
+    its text and a tarball as its listing; version sort, mixed
+    directories; each panel keeps its own sort; the viewer's N, wrap and
+    count; `rcview -` reads a pipe; the editor keeps mixed line endings,
+    remembers where it was, and indents a block with Tab."""
+    import gzip
+    root, play, home = sandbox()
+    cfgdir = os.path.join(home, ".config", "rcmd")
+    os.makedirs(cfgdir)
+    open(os.path.join(cfgdir, "config.toml"), "w").write(
+        '[keys]\n"alt+v" = "sort-version"\n"alt+x" = "sort-mix"\n')
+    with gzip.open(os.path.join(play, "notes.log.gz"), "wb") as out:
+        out.write(b"plain words inside the gzip\n")
+    for name in ("file10", "file2", "file1"):
+        open(os.path.join(play, name), "w").write("x\n")
+    os.makedirs(os.path.join(play, "mdir"))
+    s = Session(play, home)
+
+    s.send(b"\x13notes\r", wait=STEP)
+    s.send(F3, wait=STEP * 2)
+    scr = s.screen()
+    check("firstrun: a .gz is read as its text",
+          "plain words inside the gzip" in scr and "(decompressed)" in scr, scr)
+    s.send(b"q", wait=STEP)
+
+    # the left panel's rows only: the right one lists the same directory
+    def left():
+        return [l.split("│")[1] if l.count("│") > 2 else "" for l in s.screen().split("\n")]
+
+    def at(rows, name):
+        return next(i for i, l in enumerate(rows) if name in l)
+
+    # version sort: file2 before file10
+    s.send(b"\x1bv", wait=STEP)
+    rows = left()
+    check("firstrun: version sort puts file2 before file10",
+          at(rows, "file2 ") < at(rows, "file10"), s.screen())
+    # mixed: the directory sorts among the files, after file10
+    s.send(b"\x1bx", wait=STEP)
+    rows = left()
+    check("firstrun: directories mixed in", at(rows, "mdir") > at(rows, "file10"), s.screen())
+    # the other panel keeps its own order, and both survive a restart
+    s.quit()
+    s = Session(play, home)
+    rows = [l.split("│")[1] if l.count("│") > 2 else "" for l in s.screen().split("\n")]
+    left = [i for i, l in enumerate(rows) if "mdir" in l]
+    check("firstrun: the sort came back after a restart",
+          bool(left) and any("file10" in l for l in rows[:left[0]]), s.screen())
+    s.quit()
+
+    # the viewer: count, N back, and n wrapping round
+    open(os.path.join(play, "hits.txt"), "w").write(
+        "".join(f"{'hit' if n % 50 == 0 else 'filler'} {n}\n" for n in range(200)))
+    s = Session(play, home)
+    s.send(b"\x13hits\r", wait=STEP)
+    s.send(F3, wait=STEP * 2)
+    s.send(F7, wait=STEP)
+    s.send(b"\x15hit\r", wait=STEP * 2)
+    check("firstrun: the viewer counts the matches", "4 lines match" in s.screen(), s.screen())
+    for _ in range(3):
+        s.send(b"n", wait=STEP)
+    s.send(b"n", wait=STEP * 2)
+    check("firstrun: n wraps round past the last",
+          "search wrapped around" in s.screen(), s.screen())
+    s.send(b"N", wait=STEP * 2)
+    check("firstrun: N goes back", "hit 150" in s.screen(), s.screen())
+    s.send(b"q", wait=STEP)
+    s.quit()
+
+    # the editor keeps a file's mixed line endings
+    mixed = os.path.join(play, "mixed.txt")
+    open(mixed, "wb").write(b"one\r\ntwo\nthree\r\n")
+    s = Session(play, home)
+    s.send(b"\x13mixed\r", wait=STEP)
+    s.send(F4, wait=STEP * 2)
+    s.send(b"x", wait=STEP)
+    s.send(F2, wait=STEP * 2)
+    check("firstrun: mixed line endings survive a save",
+          open(mixed, "rb").read() == b"xone\r\ntwo\nthree\r\n", repr(open(mixed, "rb").read()))
+    # Tab on a selection indents it; the editor then reopens there
+    s.send(b"\x1b[1;5H", wait=STEP)           # Ctrl+Home
+    s.send(b"\x1b[1;2B", wait=STEP)           # Shift+Down: two lines
+    s.send(b"\t", wait=STEP)
+    s.send(F2, wait=STEP * 2)
+    check("firstrun: Tab indented the selected lines",
+          open(mixed, "rb").read().startswith(b"\txone\r\n\ttwo\n"), repr(open(mixed, "rb").read()))
+    s.send(b"\x1b[B\x1b[B", wait=STEP)       # from line 2 down to line 4
+    s.send(F10, wait=STEP * 2)
+    s.send(F4, wait=STEP * 2)
+    check("firstrun: the editor reopens where it was left",
+          " 4:1 " in s.screen().split("\n")[0], s.screen().split("\n")[0])
+    s.send(F10, wait=STEP * 2)
+    s.quit()
+
+    # rcview - reads a pipe
+    viewer = os.path.join(root, "rcview")
+    os.symlink(BIN, viewer)
+    s = Session(play, home, exec_argv=["/bin/sh", "-c", f"printf 'from the pipe\\n' | {viewer} -"])
+    check("firstrun: rcview - shows what the pipe said",
+          wait_for(s, "from the pipe"), s.screen())
+    s.send(b"q", wait=STEP)
+    shutil.rmtree(root)
+
+
 def test_findwindow():
     """PLAN4 S6: mc's find results window - the matches in a list of
     their own, with Chdir, Again, Panelize, View and Edit."""
@@ -6099,6 +6206,7 @@ def main():
         test_finddialog,
         test_fields,
         test_findhits,
+        test_firstrun,
         test_findwindow,
         test_panelize,
         test_diff,

@@ -1730,6 +1730,8 @@ pub struct EditorState {
     /// Text area size; updated on every draw.
     pub rows: usize,
     pub cols: usize,
+    /// What the last search asked, answers and all, for Shift+F7.
+    pub search: ViewSearch,
     pub prompt: Option<EditPrompt>,
     pub note: Option<String>,
     /// Fixed soft-wrap column from the editor options; 0 = the window
@@ -1761,7 +1763,10 @@ impl EditorState {
 }
 
 pub enum EditPrompt {
-    Search(TextField),
+    /// F7: mc's search dialog, the viewer's own - a literal pattern, a
+    /// regular expression or hexadecimal bytes, case, whole words,
+    /// backwards.
+    Search(Box<ViewSearch>),
     ReplaceFind(TextField),
     ReplaceWith {
         pattern: String,
@@ -1785,6 +1790,19 @@ pub enum EditPrompt {
     Goto {
         value: String,
         cursor: usize,
+    },
+    /// F12: the name to save under.
+    SaveAs(TextField),
+    /// A save would overwrite a change someone else made on disk.
+    Clobber {
+        button: usize,
+    },
+    /// M-Tab with several words to choose from: which one.
+    Complete {
+        words: Vec<String>,
+        selected: usize,
+        /// How much of each word is already typed.
+        typed: usize,
     },
     /// Options > Syntax: which syntax to highlight as, whatever the
     /// file is called. Row 0 is plain text.
@@ -2053,6 +2071,7 @@ pub use exec::{SubshellSession, SubshellStep};
 
 const EDIT_FILE_MENU: &[EditMenuEntry] = &[
     Some(("&Save", "F2", EditMenuAction::Key(EA::Save))),
+    Some(("Save &as...", "F12", EditMenuAction::Key(EA::SaveAs))),
     None,
     Some(("Screen &list...", "M-`", EditMenuAction::ScreenList)),
     Some(("&Quit", "F10", EditMenuAction::Key(EA::Quit))),
@@ -2079,6 +2098,12 @@ const EDIT_SEARCH_MENU: &[EditMenuEntry] = &[
     Some(("&Replace", "F4", EditMenuAction::Key(EA::Replace))),
     None,
     Some(("&Go to line", "M-l", EditMenuAction::Key(EA::Goto))),
+    Some((
+        "Matching &bracket",
+        "M-b",
+        EditMenuAction::Key(EA::MatchBracket),
+    )),
+    Some(("Complete &word", "M-Tab", EditMenuAction::Key(EA::Complete))),
     Some((
         "&Toggle bookmark",
         "M-k",
@@ -2378,6 +2403,61 @@ impl ViewSearch {
         self.field.value.trim().is_empty()
     }
 
+    /// One key in the dialog. `Some(true)` = Enter, search; `Some(false)`
+    /// = Esc, never mind; `None` = the dialog goes on.
+    pub fn key(&mut self, key: KeyEvent) -> Option<bool> {
+        match key.code {
+            KeyCode::Esc => return Some(false),
+            KeyCode::Enter => return Some(true),
+            KeyCode::Tab | KeyCode::Down => self.row = (self.row + 1) % VIEW_SEARCH_ROWS,
+            KeyCode::BackTab | KeyCode::Up => {
+                self.row = (self.row + VIEW_SEARCH_ROWS - 1) % VIEW_SEARCH_ROWS
+            }
+            KeyCode::Char(' ') if self.row != VIEW_SEARCH_FIELD => self.toggle(),
+            KeyCode::Left | KeyCode::Right if self.row == VIEW_SEARCH_KIND => self.toggle(),
+            _ if self.row == VIEW_SEARCH_FIELD => {
+                self.field.key(key);
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// The same question as a regular expression over a line of text,
+    /// which is what the editor searches: a literal pattern escaped, a
+    /// hexadecimal one spelled out as the text its bytes make, whole
+    /// words bounded where the pattern begins and ends in a word.
+    pub fn to_regex(&self) -> Result<regex::Regex, String> {
+        let text = self.field.value.trim();
+        let body = match self.kind {
+            SearchKind::Regex => text.to_string(),
+            SearchKind::Normal => regex::escape(text),
+            SearchKind::Hex => {
+                let bytes: Vec<u8> = text
+                    .split_whitespace()
+                    .flat_map(|w| {
+                        let w = w.trim_start_matches("0x");
+                        (0..w.len() / 2)
+                            .filter_map(move |i| u8::from_str_radix(&w[i * 2..i * 2 + 2], 16).ok())
+                    })
+                    .collect();
+                regex::escape(&String::from_utf8_lossy(&bytes))
+            }
+        };
+        let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let pattern = if self.whole_word {
+            let lead = if word(text.chars().next()) { r"\b" } else { "" };
+            let tail = if word(text.chars().last()) { r"\b" } else { "" };
+            format!("{lead}(?:{body}){tail}")
+        } else {
+            body
+        };
+        regex::RegexBuilder::new(&pattern)
+            .case_insensitive(!self.case_sensitive)
+            .build()
+            .map_err(|err| err.to_string())
+    }
+
     /// Space on a row: the kind cycles, the rest tick.
     pub fn toggle(&mut self) {
         match self.row {
@@ -2492,6 +2572,19 @@ pub enum Action {
     EditConfig,
     Sort(SortKey),
     SortReverse,
+    /// mc's "Mix all files": directories among the files, or first.
+    SortMix,
+    /// M-g / M-r / M-j: the cursor to the top, the middle or the bottom
+    /// of what the panel shows, as in mc.
+    ScreenTop,
+    ScreenMiddle,
+    ScreenBottom,
+    /// C-x h: the panel's directory into the hotlist, as mc's.
+    HotlistAdd,
+    /// M-,: panels side by side, or one above the other.
+    ToggleSplit,
+    /// mc's "Case sensitive" sort switch.
+    SortCase,
     /// S-F4: open the editor on a file that need not exist yet.
     EditNew,
     /// S-F5 / S-F6: copy / rename the cursor file in place - the
@@ -2663,10 +2756,18 @@ const PANEL_MENU: &[MenuEntry] = &[
     // already spoken for above, and shadowing Right to save an arrow
     // key would be a bad trade
     Some(("Sort by group", "", Action::Sort(SortKey::Group))),
+    // no letter either: every one in "version" is spoken for
+    Some((
+        "Sort by version (2 < 10)",
+        "",
+        Action::Sort(SortKey::Version),
+    )),
     // no letter: u is the full listing's, and every other letter in
     // the label is spoken for by an entry above or a menu title
     Some(("Unsorted (as listed)", "", Action::Sort(SortKey::Unsorted))),
     Some(("Re&verse sort", "", Action::SortReverse)),
+    Some(("Mi&x directories and files", "", Action::SortMix)),
+    Some(("Case sensitive sort", "", Action::SortCase)),
     None,
     // "Filter" cannot take a letter of its own here: f, i, l, t, e and
     // r are all spoken for by an entry above or by a menu title, and a
@@ -3169,11 +3270,20 @@ impl App {
             .with_context(|| format!("cannot read directory {}", left_dir.display()))?;
         let mut right = Panel::new(right_dir.clone())
             .with_context(|| format!("cannot read directory {}", right_dir.display()))?;
-        for panel in [&mut left, &mut right] {
-            panel.show_hidden = config.show_hidden;
-            panel.sort_key = config::sort_key_from_name(&config.sort_key);
-            panel.sort_reverse = config.sort_reverse;
-            panel.list_mode = config::list_mode_from_name(&config.listing);
+        // each panel as it was left, where the state file says; the
+        // shared settings where it does not (a first run, or a state
+        // file older than per-panel looks)
+        let looks = state::load().0.panels;
+        for (i, panel) in [&mut left, &mut right].into_iter().enumerate() {
+            match looks.get(i) {
+                Some(look) => look.put_on(panel),
+                None => {
+                    panel.show_hidden = config.show_hidden;
+                    panel.sort_key = config::sort_key_from_name(&config.sort_key);
+                    panel.sort_reverse = config.sort_reverse;
+                    panel.list_mode = config::list_mode_from_name(&config.listing);
+                }
+            }
             let _ = panel.reload();
         }
         for (panel, name) in [&mut left, &mut right].into_iter().zip(&cursors) {
@@ -4729,7 +4839,7 @@ impl App {
     }
 
     /// Ask for a label - to add, to name a group, or to rename.
-    fn ask_hotlist_label(
+    pub(super) fn ask_hotlist_label(
         &mut self,
         title: &str,
         value: String,
@@ -5063,33 +5173,72 @@ fn viewer_goto(v: &mut Viewer, input: &str) {
 }
 
 fn viewer_search(v: &mut Viewer, from: usize, is_next: bool) {
+    viewer_search_way(v, from, is_next, false);
+}
+
+/// ...the other way from the one the dialog asked: `N` after `n`.
+fn viewer_search_way(v: &mut Viewer, from: usize, is_next: bool, flip: bool) {
     if v.hex {
-        return viewer_search_hex(v, is_next);
+        return viewer_search_hex(v, is_next, flip);
     }
     // in nroff mode the search runs over what the overstrikes spell,
     // which is what is on the screen to be looked for
-    let search = Search {
+    let mut search = Search {
         nroff: v.nroff,
         ..v.search.to_search()
     };
-    match v.file.find(from, &search) {
+    search.backwards ^= flip;
+    let mut found = v.file.find(from, &search);
+    // past the last hit, round to the other end once, as less does
+    let mut wrapped = false;
+    if is_next && matches!(found, Ok(None)) {
+        let restart = if search.backwards {
+            v.file.total_lines().unwrap_or(0).saturating_sub(1)
+        } else {
+            0
+        };
+        found = v.file.find(restart, &search);
+        wrapped = true;
+    }
+    match found {
         Ok(Some(idx)) => {
             v.found = Some(idx);
             v.hex_hit = None;
             v.top = idx.saturating_sub(2);
             v.top_seg = 0;
+            if wrapped {
+                v.note = Some(" search wrapped around ".into());
+            } else if !is_next {
+                v.note = match_count(v, &search);
+            }
         }
         Ok(None) => not_found(v, is_next),
         Err(err) => v.note = Some(format!(" {err} ")),
     }
 }
 
+/// How many lines the search matches, said once when it first finds
+/// one - for a file small enough to read through without making the
+/// search itself wait.
+fn match_count(v: &mut Viewer, search: &Search) -> Option<String> {
+    const COUNTABLE: u64 = 32 * 1024 * 1024;
+    if v.file.size > COUNTABLE {
+        return None;
+    }
+    let count = v.file.count_matching(search).ok()?;
+    Some(match count {
+        1 => " 1 line matches ".into(),
+        n => format!(" {n} lines match - n next, N previous "),
+    })
+}
+
 /// A search from the hex view stays in it: the hit is a byte range,
 /// shown where it is, rather than a line in a text view the search
 /// used to switch to. It starts at the cursor, or the top of the view,
 /// and "next" steps past the last hit whichever way it goes.
-fn viewer_search_hex(v: &mut Viewer, is_next: bool) {
-    let search = v.search.to_search();
+fn viewer_search_hex(v: &mut Viewer, is_next: bool, flip: bool) {
+    let mut search = v.search.to_search();
+    search.backwards ^= flip;
     let from = match v.hex_hit {
         Some((at, _)) if is_next && !search.backwards => at + 1,
         Some((at, _)) if is_next => at,

@@ -1076,6 +1076,19 @@ fn decompress(reader: Box<dyn Read>, comp: Comp) -> io::Result<Box<dyn Read>> {
     })
 }
 
+/// What a single compressed file holds, decompressed as it is read:
+/// `notes.txt.gz`, `kern.log.1.xz`. `None` when the name carries no
+/// compression suffix, or when what is inside is a tar or a cpio - a
+/// directory to browse, not a text to read.
+pub fn decompressing(path: &Path) -> Option<io::Result<Box<dyn Read>>> {
+    let name = path.file_name()?.to_string_lossy().to_lowercase();
+    let (stem, comp) = peel_comp(&name);
+    if comp == Comp::None || stem.ends_with(".tar") || stem.ends_with(".cpio") {
+        return None;
+    }
+    Some(File::open(path).and_then(|file| decompress(Box::new(io::BufReader::new(file)), comp)))
+}
+
 /// Split a trailing compression suffix off a lowercased filename, so
 /// "x.cpio.gz" and "x.tar.bz2" reach the same table as their plain
 /// forms.
@@ -1938,6 +1951,28 @@ From here on it is just body text.
         assert_eq!(members[0].size, 10);
         assert_eq!(members[0].mode, 0o664);
         assert_eq!(members[1].kind, EntryKind::Dir);
+    }
+
+    #[test]
+    fn a_lone_compressed_file_reads_as_what_it_holds() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::io::Write as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("kern.log.1.gz");
+        let mut gz = GzEncoder::new(std::fs::File::create(&log).unwrap(), Compression::default());
+        gz.write_all(b"booted\n").unwrap();
+        gz.finish().unwrap();
+        let mut text = String::new();
+        decompressing(&log)
+            .expect("a .gz is one")
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert_eq!(text, "booted\n");
+        // a tarball is a directory to browse, and plain text is plain
+        assert!(decompressing(&tmp.path().join("x.tar.gz")).is_none());
+        assert!(decompressing(&tmp.path().join("notes.txt")).is_none());
     }
 
     #[test]

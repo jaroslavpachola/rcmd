@@ -55,6 +55,7 @@ fn main() -> Result<()> {
         warnings.extend(ui::set_color_spec(spec));
     }
     ui::set_tab_size(cfg.edit_tab_size as usize);
+    ui::set_formats(&cfg.time_format, &cfg.time_format_old, cfg.si_units);
     if let Some(path) = config::config_path()
         && let Some(dir) = path.parent()
     {

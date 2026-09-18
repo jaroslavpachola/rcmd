@@ -606,6 +606,12 @@ const HELP_TEXT: &[&str] = &[
     "  (watch = false in config disables). Slow directories load in the",
     "  background: old listing + spinner stay up, Esc cancels the load.",
     "  M-.             show/hide dotfiles",
+    "  M-g / M-r / M-j cursor to the top / middle / bottom of the screen",
+    "  M-,             panels side by side, or one above the other",
+    "  C-x h           add this directory to the hotlist",
+    "  Sort (F9 > Left/Right): by version too (file2 before file10), with",
+    "                  directories mixed in, or names case-sensitively;",
+    "                  each panel keeps its own order across sessions",
     "  M-e             the codepage this panel's filenames are written",
     "                  in (Left/Right menu > Character set). Unix names",
     "                  are bytes; this is where you say what they mean,",
@@ -884,8 +890,15 @@ const HELP_TEXT: &[&str] = &[
     "                  Hexadecimal bytes (7f454c46 or 7f 45 4c 46),",
     "                  plus Case sensitive, Whole words and Backwards.",
     "                  Tab/arrows move, Space ticks, Enter searches.",
-    "                  n repeats it, options and all; matches are",
+    "                  n repeats it, options and all, and wraps round",
+    "                  past the last; N goes the other way. The first",
+    "                  search says how many lines match; matches are",
     "                  highlighted and the found line is marked.",
+    "  A lone .gz, .xz, .bz2 or .zst reads as what it holds; a PDF, a",
+    "  man page, a tarball, an image or a video as what pdftotext,",
+    "  man, tar, exiftool or mediainfo say - where they are installed",
+    "  (builtin_view = false: only your own [[view]] rules)",
+    "  rcview - (or rcmd -v -) pages through a pipe: cmd | rcview -",
     "  Files with a known syntax (≤2 MB) get syntax colors, like F4",
     "  Left/Right      horizontal scroll",
     "  F5 / M-l / :    goto: a line (201), a byte offset (0x3e8 or",
@@ -909,13 +922,20 @@ const HELP_TEXT: &[&str] = &[
     "                  follows, since it reads what you can see.",
     "",
     "# Editor (F4, built-in)",
-    "  F2 save (atomic, keeps permissions and CRLF)   F10/Esc quit",
+    "  F2 save (atomic, keeps permissions and the line endings - a file",
+    "     with both kinds keeps both)   F12 save as   F10/Esc quit",
+    "  A file changed on disk since it was opened is not saved over",
+    "     without asking; the editor reopens a file where it was left",
     "  F3 mark (select; S-arrows also select)     F8 delete line",
     "  F5 copy the block (no block: duplicate line)   F6 move (cut) it",
     "  M-w toggle soft-wrap (long lines fold instead of scrolling)",
     "  C-c/x/v copy/cut/paste   C-z undo   C-y redo",
-    "  C-a select all   C-arrows word hop   Tab inserts a tab",
-    "  F7 search (regex, smartcase), S-F7 next match",
+    "  C-a select all   C-arrows word hop   Tab inserts a tab, or",
+    "     indents the selected lines; S-Tab takes an indent off",
+    "  F7 search: the viewer's dialog - Normal, a Regular expression or",
+    "     Hexadecimal, case, whole words, backwards; S-F7 again",
+    "  M-b the bracket matching this one   M-Tab complete the word from",
+    "     the file's own words (a list when several fit)",
     "  F4 replace: pattern, replacement, then Replace/Skip/All/Quit",
     "  M-`             the screen list: several editors and viewers can",
     "                  be open at once, and this is how you move",
@@ -1490,10 +1510,7 @@ fn field_text(
     remote: bool,
     charset: Option<&'static rcmd_core::charset::Encoding>,
 ) -> String {
-    let time = |t: Option<std::time::SystemTime>| {
-        t.map(|t| DateTime::<Local>::from(t).format("%b %e %H:%M").to_string())
-            .unwrap_or_default()
-    };
+    let time = |t: Option<std::time::SystemTime>| t.map(format_time).unwrap_or_default();
     let number = |n: Option<u64>| n.map(|n| n.to_string()).unwrap_or_default();
     match field {
         Field::Name => rcmd_core::charset::decode_name(&entry.name, charset),
@@ -1967,10 +1984,7 @@ fn entry_row(
     } else {
         format_size(entry.size)
     };
-    let mtime = entry
-        .mtime
-        .map(|t| DateTime::<Local>::from(t).format("%b %e %H:%M").to_string())
-        .unwrap_or_default();
+    let mtime = entry.mtime.map(format_time).unwrap_or_default();
 
     let name_text = format!(
         "{marker}{}",
@@ -2130,17 +2144,63 @@ fn draw_info(
     }
 }
 
-/// "58.2G"-style human size (1024-based), one decimal below 100.
+static SI_UNITS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static TIME_FORMATS: std::sync::RwLock<Option<(String, String)>> = std::sync::RwLock::new(None);
+
+/// The listing's time formats and size base, from the config.
+pub fn set_formats(time: &str, time_old: &str, si_units: bool) {
+    SI_UNITS.store(si_units, std::sync::atomic::Ordering::Relaxed);
+    *TIME_FORMATS.write().unwrap_or_else(|e| e.into_inner()) =
+        Some((time.to_string(), time_old.to_string()));
+}
+
+/// 1000 with SI units on, 1024 without.
+fn size_base() -> u64 {
+    match SI_UNITS.load(std::sync::atomic::Ordering::Relaxed) {
+        true => 1000,
+        false => 1024,
+    }
+}
+
+/// A time as the listing writes it: the recent format for the last six
+/// months, the old one - with the year - for anything before that or
+/// in the future, as `ls -l` and mc do.
+pub fn format_time(t: std::time::SystemTime) -> String {
+    const HALF_YEAR: std::time::Duration = std::time::Duration::from_secs(183 * 24 * 3600);
+    let formats = TIME_FORMATS.read().unwrap_or_else(|e| e.into_inner());
+    let (recent, old) = match formats.as_ref() {
+        Some((recent, old)) => (recent.as_str(), old.as_str()),
+        None => ("%b %e %H:%M", "%b %e  %Y"),
+    };
+    let fresh = std::time::SystemTime::now()
+        .duration_since(t)
+        .is_ok_and(|age| age < HALF_YEAR);
+    let format = if fresh { recent } else { old };
+    let mut out = String::new();
+    // a format chrono cannot read writes nothing rather than panicking
+    if std::fmt::Write::write_fmt(
+        &mut out,
+        format_args!("{}", DateTime::<Local>::from(t).format(format)),
+    )
+    .is_err()
+    {
+        out.clear();
+    }
+    out
+}
+
+/// "58.2G"-style human size, one decimal below 100.
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["K", "M", "G", "T"];
     if bytes < 1000 {
         return format!("{bytes}B");
     }
+    let base = size_base() as f64;
     let mut val = bytes as f64;
     let mut unit = 0;
-    val /= 1024.0;
+    val /= base;
     while val >= 1000.0 && unit + 1 < UNITS.len() {
-        val /= 1024.0;
+        val /= base;
         unit += 1;
     }
     if val >= 100.0 {
@@ -2210,15 +2270,16 @@ fn format_size(size: u64) -> String {
     if size < 10_000_000 {
         return size.to_string();
     }
-    let kb = size / 1024;
+    let base = size_base();
+    let kb = size / base;
     if kb < 10_000_000 {
         return format!("{kb}K");
     }
-    let mb = kb / 1024;
+    let mb = kb / base;
     if mb < 10_000_000 {
         return format!("{mb}M");
     }
-    format!("{}G", mb / 1024)
+    format!("{}G", mb / base)
 }
 
 /// mc's quick search field: a box of its own on the active panel's
@@ -2954,16 +3015,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
 
     match &st.prompt {
         None => {}
-        Some(EditPrompt::Search(field)) => {
-            let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
-            let inner = popup(
-                frame,
-                centered(50, 5, frame.area()),
-                " Search (regex) ",
-                style,
-            );
-            draw_field(frame, inner, &field.value, field.cursor);
-        }
+        Some(EditPrompt::Search(dialog)) => draw_view_search(frame, dialog),
         Some(EditPrompt::ReplaceFind(field)) => {
             let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
             let inner = popup(
@@ -3015,6 +3067,45 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
             draw_pick_list(frame, " Codepage ", &crate::app::CHARSET_ROWS, *row, 0);
         }
         Some(EditPrompt::Options(d)) => draw_edit_options(frame, d),
+        Some(EditPrompt::SaveAs(field)) => {
+            let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+            let inner = popup(frame, centered(64, 5, frame.area()), " Save as ", style);
+            draw_field(frame, inner, &field.value, field.cursor);
+        }
+        Some(EditPrompt::Clobber { button }) => {
+            let style = Style::new().fg(th().error_fg).bg(th().error_bg);
+            let sel = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+            let inner = popup(
+                frame,
+                centered(60, 7, frame.area()),
+                " Changed on disk ",
+                style,
+            );
+            let row = |offset: u16| Rect {
+                x: inner.x + 1,
+                y: inner.y + offset,
+                width: inner.width.saturating_sub(2),
+                height: 1,
+            };
+            frame.render_widget(
+                Line::from("The file was changed on disk since it was opened.").centered(),
+                row(1),
+            );
+            frame.render_widget(
+                Line::from("Saving now throws that change away.").centered(),
+                row(2),
+            );
+            frame.render_widget(
+                buttons_line(&["Overwrite", "Cancel"], *button, style, sel),
+                row(4),
+            );
+        }
+        Some(EditPrompt::Complete {
+            words, selected, ..
+        }) => {
+            let rows: Vec<&str> = words.iter().map(String::as_str).collect();
+            draw_pick_list(frame, " Complete ", &rows, *selected, 0);
+        }
         Some(EditPrompt::ConfirmQuit { button }) => {
             let style = Style::new().fg(th().error_fg).bg(th().error_bg);
             let sel = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
@@ -5446,10 +5537,7 @@ fn draw_ask(frame: &mut Frame, ask: &Ask, button: usize) {
     let width = area.width.saturating_sub(4) as usize;
 
     let facts = |label: &str, f: &FileFacts| {
-        let when = f
-            .mtime
-            .map(|t| DateTime::<Local>::from(t).format("%b %e %H:%M").to_string())
-            .unwrap_or_else(|| "unknown".into());
+        let when = f.mtime.map(format_time).unwrap_or_else(|| "unknown".into());
         format!("{label} {:>9}  {when}", human_size(f.size))
     };
     let (title, lines) = match ask {
@@ -5497,6 +5585,14 @@ fn draw_ask(frame: &mut Frame, ask: &Ask, button: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_old_time_shows_its_year_and_a_new_one_its_time() {
+        let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        assert!(format_time(old).ends_with("2001"), "{}", format_time(old));
+        let now = std::time::SystemTime::now();
+        assert!(format_time(now).contains(':'), "{}", format_time(now));
+    }
     use crate::config::HighlightRule;
 
     fn rule(pattern: Option<&str>, kind: Option<&str>, color: &str) -> HighlightRule {

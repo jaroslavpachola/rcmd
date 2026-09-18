@@ -13,6 +13,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use std::path::Path;
+
 use crate::config::{Config, HotEntry};
 
 /// Every field optional: `None` = "rcmd never changed this", so the
@@ -126,6 +128,85 @@ pub struct State {
     /// answers for the session, this keeps them for the next one too.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub find: Option<FindMemory>,
+    /// How each panel looked, left then right: mc keeps one set per
+    /// panel in panels.ini. The top-level `show_hidden`, `sort_key`,
+    /// `sort_reverse` and `listing` are still written, from the active
+    /// panel, for an older rcmd reading the same file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub panels: Vec<PanelLook>,
+    /// Where the editor was in each recently edited file, newest last:
+    /// mc's "save file position".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edit_positions: Vec<EditPosition>,
+}
+
+/// One file's place in the editor.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditPosition {
+    pub path: String,
+    pub line: usize,
+    pub col: usize,
+}
+
+/// How many files' positions are kept.
+const EDIT_POSITIONS: usize = 200;
+
+/// Remember where the editor was in `path`.
+pub fn remember_position(path: &Path, line: usize, col: usize) -> Result<()> {
+    let path = path.display().to_string();
+    update(move |s| {
+        s.edit_positions.retain(|p| p.path != path);
+        s.edit_positions.push(EditPosition { path, line, col });
+        let over = s.edit_positions.len().saturating_sub(EDIT_POSITIONS);
+        s.edit_positions.drain(..over);
+    })
+}
+
+/// Where the editor was in `path` last time, if it was.
+pub fn position_of(path: &Path) -> Option<(usize, usize)> {
+    let path = path.display().to_string();
+    load()
+        .0
+        .edit_positions
+        .into_iter()
+        .rev()
+        .find(|p| p.path == path)
+        .map(|p| (p.line, p.col))
+}
+
+/// One panel's own settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PanelLook {
+    pub show_hidden: bool,
+    pub sort_key: String,
+    pub sort_reverse: bool,
+    pub mix_dirs: bool,
+    pub sort_case: bool,
+    pub listing: String,
+}
+
+impl PanelLook {
+    pub fn of(panel: &rcmd_core::panel::Panel) -> PanelLook {
+        PanelLook {
+            show_hidden: panel.show_hidden,
+            sort_key: crate::config::sort_key_name(panel.sort_key).to_string(),
+            sort_reverse: panel.sort_reverse,
+            mix_dirs: panel.mix_dirs,
+            sort_case: panel.sort_case,
+            listing: crate::config::list_mode_name(panel.list_mode).to_string(),
+        }
+    }
+
+    pub fn put_on(&self, panel: &mut rcmd_core::panel::Panel) {
+        panel.show_hidden = self.show_hidden;
+        panel.sort_key = crate::config::sort_key_from_name(&self.sort_key);
+        panel.sort_reverse = self.sort_reverse;
+        panel.mix_dirs = self.mix_dirs;
+        panel.sort_case = self.sort_case;
+        panel.list_mode = crate::config::list_mode_from_name(&self.listing);
+    }
 }
 
 /// The find dialog's answers, less the start directory: that is where
@@ -297,6 +378,7 @@ pub fn save_session(app: &crate::app::App) -> Result<()> {
     let (show_hidden, sort_reverse) = (panel.show_hidden, panel.sort_reverse);
     let sort_key = crate::config::sort_key_name(panel.sort_key).to_string();
     let listing = crate::config::list_mode_name(panel.list_mode).to_string();
+    let looks: Vec<PanelLook> = app.panels.iter().map(PanelLook::of).collect();
     let history: Vec<String> = app.cmdline.history().to_vec();
     // the visit log is merged rather than written: another instance has
     // been going places too, and its counts are as real as ours
@@ -316,6 +398,7 @@ pub fn save_session(app: &crate::app::App) -> Result<()> {
         s.sort_key = Some(sort_key);
         s.sort_reverse = Some(sort_reverse);
         s.listing = Some(listing);
+        s.panels = looks;
         s.cmd_history = history;
         if let Some(dir) = other_dir {
             s.other_dir = Some(dir);

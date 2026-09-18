@@ -542,6 +542,51 @@ impl App {
                 panel.sort_reverse = !panel.sort_reverse;
                 panel.resort();
             }
+            Action::ScreenTop | Action::ScreenMiddle | Action::ScreenBottom => {
+                self.cursor_on_screen(action)
+            }
+            Action::HotlistAdd => {
+                let panel = &self.panels[self.active];
+                let path = match panel.is_remote() {
+                    true => panel.display_path(),
+                    false => panel.local_cwd().display().to_string(),
+                };
+                let label = Path::new(&path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.clone());
+                self.ask_hotlist_label(" Add to hotlist ", label, Vec::new(), None, path);
+            }
+            Action::ToggleSplit => {
+                let horizontal = !self.config.horizontal_split();
+                self.config.split = if horizontal { "horizontal" } else { "vertical" }.into();
+                let split = self.config.split.clone();
+                if let Err(err) = state::update(move |s| s.split = Some(split)) {
+                    self.status = Some(format!(" could not save state: {err} "));
+                }
+            }
+            Action::SortMix => {
+                let panel = self.panel();
+                panel.mix_dirs = !panel.mix_dirs;
+                panel.resort();
+                let now = if panel.mix_dirs {
+                    " directories mixed with the files "
+                } else {
+                    " directories first "
+                };
+                self.status = Some(now.into());
+            }
+            Action::SortCase => {
+                let panel = self.panel();
+                panel.sort_case = !panel.sort_case;
+                panel.resort();
+                let now = if panel.sort_case {
+                    " names sorted case-sensitively "
+                } else {
+                    " names sorted in any case "
+                };
+                self.status = Some(now.into());
+            }
             Action::EditNew => self.open_edit_new(),
             Action::CopyHere => self.open_transfer_here(false),
             Action::MoveHere => self.open_transfer_here(true),
@@ -2135,6 +2180,7 @@ impl App {
                     self.run_action(Action::Shortcut(digit as u8 - b'0'))
                 }
                 KeyCode::Char('a' | 'A') => self.run_action(Action::VfsList),
+                KeyCode::Char('h' | 'H') => self.run_action(Action::HotlistAdd),
                 KeyCode::Char('!') => self.run_action(Action::Panelize),
                 _ => {}
             }
@@ -2635,6 +2681,7 @@ impl App {
                 wrap: false,
                 rows: 1,
                 cols: 1,
+                search: ViewSearch::default(),
                 prompt: None,
                 note: None,
                 wrap_column: self.config.edit_wrap_column as usize,
@@ -3021,5 +3068,32 @@ impl App {
         if let Err(err) = op(self.panel()) {
             self.status = Some(format!(" {err} "));
         }
+    }
+}
+
+impl App {
+    /// M-g / M-r / M-j: the first, the middle or the last row the panel
+    /// has on screen - mc's way of getting across a screenful without
+    /// counting.
+    fn cursor_on_screen(&mut self, spot: Action) {
+        let side = self.active;
+        let offset = self.table_states[side].offset();
+        let columns = match self.panels[side].list_mode {
+            ListMode::Brief => usize::from(self.config.columns()),
+            ListMode::User => usize::from(self.listing_format.repeat.max(1)),
+            _ => 1,
+        };
+        let shown = self.panel_rows.max(1) * columns;
+        let panel = &mut self.panels[side];
+        let len = panel.entries.len();
+        if len == 0 {
+            return;
+        }
+        let last = (offset + shown).min(len) - 1;
+        panel.cursor = match spot {
+            Action::ScreenTop => offset.min(last),
+            Action::ScreenMiddle => offset + (last.saturating_sub(offset)) / 2,
+            _ => last,
+        };
     }
 }
