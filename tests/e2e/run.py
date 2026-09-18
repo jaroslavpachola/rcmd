@@ -88,6 +88,12 @@ class Session:
             # never reaches a real rcmd of the user's
             os.environ["XDG_RUNTIME_DIR"] = home
             os.environ.pop("SSH_AUTH_SOCK", None)  # keep sftp auth deterministic
+            # no desktop: a test must neither read the user's clipboard
+            # nor overwrite it (the editor shares it through wl-copy /
+            # xclip when there is one), and a test that wants a display
+            # asks for one through `env`
+            os.environ.pop("DISPLAY", None)
+            os.environ.pop("WAYLAND_DISPLAY", None)
             os.environ["SHELL"] = shell
             os.environ["TERM"] = "xterm-256color"
             # the binary under test is what `rcmd` means in here - the
@@ -2757,10 +2763,9 @@ def test_extensibility():
     os.chmod(fake, 0o755)
     open(os.path.join(play, "slides.pdf"), "w").write("%PDF\n")
     saved = dict(os.environ)
-    os.environ["DISPLAY"] = os.environ.get("DISPLAY", ":0")
     os.environ["PATH"] = bindir + ":" + os.environ["PATH"]
     s.quit()
-    s2 = Session(play, home)
+    s2 = Session(play, home, env={"DISPLAY": ":0"})
     os.environ.clear(); os.environ.update(saved)
     s2.send(b"\x13slides\r", wait=STEP)
     s2.send(b"\r", wait=STEP * 3)
