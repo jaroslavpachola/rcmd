@@ -915,23 +915,28 @@ fn try_transfer_file(
     let mut input = src_fs.open_read(src).map_err(CopyErr::Io)?;
     let mut output = writer.open_write(dst).map_err(CopyErr::Io)?;
     let mut buf = vec![0u8; CHUNK];
-    loop {
-        if ctx.cancelled() {
-            drop(output);
-            let _ = writer.remove_file(dst); // don't leave a torso behind
-            return Err(CopyErr::Cancelled);
+    let copied = (|| {
+        loop {
+            if ctx.cancelled() {
+                return Err(CopyErr::Cancelled);
+            }
+            let n = input.read(&mut buf).map_err(CopyErr::Io)?;
+            if n == 0 {
+                break;
+            }
+            output.write_all(&buf[..n]).map_err(CopyErr::Io)?;
+            ctx.bytes_done += n as u64;
+            ctx.file_done += n as u64;
+            ctx.progress(src);
         }
-        let n = input.read(&mut buf).map_err(CopyErr::Io)?;
-        if n == 0 {
-            break;
-        }
-        output.write_all(&buf[..n]).map_err(CopyErr::Io)?;
-        ctx.bytes_done += n as u64;
-        ctx.file_done += n as u64;
-        ctx.progress(src);
-    }
-    output.flush().map_err(CopyErr::Io)?;
+        output.flush().map_err(CopyErr::Io)
+    })();
     drop(output); // remote handles must close before setstat
+    if copied.is_err() {
+        // cancelled or failed: don't leave a torso behind
+        let _ = writer.remove_file(dst);
+        return copied;
+    }
     if entry.mode != 0 {
         let _ = writer.set_mode(dst, entry.mode);
     }
@@ -1523,7 +1528,13 @@ fn copy_file(
         let start = ctx.bytes_done;
         ctx.begin_file(size);
         match try_copy_file(ctx, src, dst, mode).and_then(|()| match ctx.opts.verify {
-            true => verify_copy(src, dst).map_err(CopyErr::Io),
+            true => verify_copy(src, dst).map_err(|err| {
+                // a copy that does not read back is no copy either
+                if mode == Overwrite::Replace {
+                    let _ = fs::remove_file(dst);
+                }
+                CopyErr::Io(err)
+            }),
             false => Ok(()),
         }) {
             Ok(()) => {
@@ -1688,13 +1699,27 @@ fn try_copy_file(ctx: &mut Ctx, src: &Path, dst: &Path, mode: Overwrite) -> Resu
             .open(dst)
             .map_err(CopyErr::Io)?
     };
+    let copied = pump(ctx, &mut input, &mut output, src, fresh, &meta);
+    if copied.is_err() && fresh {
+        // cancelled or failed, a file this copy made is not a copy:
+        // don't leave a torso behind looking like one
+        drop(output);
+        let _ = fs::remove_file(dst);
+    }
+    copied
+}
+
+fn pump(
+    ctx: &mut Ctx,
+    input: &mut fs::File,
+    output: &mut fs::File,
+    src: &Path,
+    fresh: bool,
+    meta: &fs::Metadata,
+) -> Result<(), CopyErr> {
     let mut buf = vec![0u8; CHUNK];
     loop {
         if ctx.cancelled() {
-            drop(output);
-            if fresh {
-                let _ = fs::remove_file(dst); // don't leave a torso behind
-            }
             return Err(CopyErr::Cancelled);
         }
         let n = input.read(&mut buf).map_err(CopyErr::Io)?;
@@ -2863,6 +2888,33 @@ mod tests {
             res.asks
         );
         assert_eq!(fs::read(&a).unwrap(), b"precious");
+    }
+
+    /// A copy that fails part way, answered Skip, used to leave its
+    /// torso at the target - a file that looks copied and is not.
+    /// `/proc/self/mem` opens as a regular file and fails on the first
+    /// read, which is a mid-copy error without a broken disk.
+    #[test]
+    fn a_failed_copy_leaves_no_partial_file() {
+        let src = PathBuf::from("/proc/self/mem");
+        if !src.exists() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let res = run(
+            spawn_copy(
+                vec![src],
+                tmp.path().to_path_buf(),
+                TransferOpts::default(),
+                None,
+            ),
+            vec![Reply::Skip],
+        );
+        assert_eq!(res.skipped, 1, "{:?}", res.asks);
+        assert!(
+            !tmp.path().join("mem").exists(),
+            "the partial copy was left behind"
+        );
     }
 
     /// The cross-device fallback copies and then deletes. Whatever the
