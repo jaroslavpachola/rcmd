@@ -75,9 +75,69 @@ pub fn redact(line: &str) -> &str {
     }
 }
 
+/// Every `scheme://user:password@host` in `text` with the password
+/// taken out. `cd ftp://me:secret@host` is a fine thing to type and a
+/// bad thing to keep: the command history and the field history are
+/// written to the state file, which is plain text in the home
+/// directory. Without the password the entry still connects - it asks.
+pub fn redact_urls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let (head, tail) = rest.split_at(at + 3);
+        out.push_str(head);
+        // the authority runs to the path, or to the end of the word
+        let end = tail
+            .find(|c: char| c == '/' || c.is_whitespace())
+            .unwrap_or(tail.len());
+        let authority = &tail[..end];
+        match authority.rfind('@').and_then(|user_end| {
+            let colon = authority[..user_end].find(':')?;
+            Some((colon, user_end))
+        }) {
+            Some((colon, user_end)) => {
+                out.push_str(&authority[..colon]);
+                out.push_str(&authority[user_end..]);
+            }
+            None => out.push_str(authority),
+        }
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_url_password_is_not_kept() {
+        assert_eq!(
+            redact_urls("cd ftp://me:hunter2@example.com/pub"),
+            "cd ftp://me@example.com/pub"
+        );
+        assert_eq!(
+            redact_urls("sftp://me:p%40ss@host:2222"),
+            "sftp://me@host:2222"
+        );
+        // a password may hold a colon; the user name may not
+        assert_eq!(redact_urls("ftp://me:a:b@host"), "ftp://me@host");
+        // two on one line, and nothing to take from the rest
+        assert_eq!(
+            redact_urls("x ftp://a:1@h y fish://b:2@k/z"),
+            "x ftp://a@h y fish://b@k/z"
+        );
+        for kept in [
+            "cd ftp://me@host",
+            "cd ftp://host:21/dir",
+            "ls /tmp",
+            "echo a://b",
+            "sftp://host/a:b@c",
+        ] {
+            assert_eq!(redact_urls(kept), kept);
+        }
+    }
 
     #[test]
     fn control_bytes_cannot_rearrange_the_log() {

@@ -2628,8 +2628,10 @@ impl CmdLine {
     }
 
     fn push_history(&mut self, cmd: &str) {
-        if self.history.last().map(String::as_str) != Some(cmd) {
-            self.history.push(cmd.to_string());
+        // the history is written to the state file: no passwords in it
+        let cmd = rcmd_core::vfslog::redact_urls(cmd);
+        if self.history.last() != Some(&cmd) {
+            self.history.push(cmd);
         }
         if self.history.len() > HISTORY_CAP {
             let drop = self.history.len() - HISTORY_CAP;
@@ -2644,7 +2646,12 @@ impl CmdLine {
 
     /// Seed from the state file at startup (oldest first).
     fn restore_history(&mut self, history: Vec<String>) {
-        self.history = history;
+        // an older state file may still hold a password; the next save
+        // writes it out without
+        self.history = history
+            .iter()
+            .map(|cmd| rcmd_core::vfslog::redact_urls(cmd))
+            .collect();
         if self.history.len() > HISTORY_CAP {
             let drop = self.history.len() - HISTORY_CAP;
             self.history.drain(..drop);

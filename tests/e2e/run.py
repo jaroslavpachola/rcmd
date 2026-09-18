@@ -1671,7 +1671,16 @@ def test_ftp():
         check("ftp: listed in the active VFS list",
               "Active VFS" in scr and "ftp://tester@127.0.0.1" in scr and "sftp" in scr)
         s.send(b"\x1b", wait=STEP)
+
+        # a password written into the URL connects, and is not kept:
+        # the command history goes to the state file in plain text
+        s.send(f"cd ftp://tester:secret@127.0.0.1:{port}/docs\r".encode(), wait=STEP * 2)
+        check("ftp: a password in the URL connects", wait_for(s, "deep.txt"))
         s.quit()
+        state = open(os.path.join(home, ".local", "state", "rcmd", "state.toml")).read()
+        check("ftp: the history keeps the URL without the password",
+              "secret" not in state and f"ftp://tester@127.0.0.1:{port}/docs" in state,
+              state)
     finally:
         server.kill()
         server.wait()

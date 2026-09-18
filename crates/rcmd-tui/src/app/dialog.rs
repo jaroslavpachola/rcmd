@@ -1421,7 +1421,7 @@ impl App {
         let Some(name) = action.history() else {
             return;
         };
-        let (name, value) = (name.to_string(), value.to_string());
+        let (name, value) = (name.to_string(), rcmd_core::vfslog::redact_urls(value));
         if let Err(err) = state::update(move |s| {
             let ring = s.field_history.entry(name).or_default();
             ring.retain(|old| old != &value);
