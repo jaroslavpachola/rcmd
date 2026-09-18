@@ -130,19 +130,52 @@ pub struct State {
 
 /// The find dialog's answers, less the start directory: that is where
 /// the panel is, every time.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FindMemory {
     pub name: String,
     pub content: String,
+    pub ignore: String,
+    pub size: String,
+    pub newer: String,
+    pub depth: String,
     pub shell: bool,
+    pub name_case: bool,
     pub case_sensitive: bool,
     pub whole_words: bool,
     pub regex: bool,
     pub all_charsets: bool,
+    pub first_hit: bool,
+    pub recursive: bool,
     pub skip_hidden: bool,
     pub follow_links: bool,
     pub skip_ignored: bool,
+}
+
+/// mc's defaults: any name, shell patterns, down the whole tree, one
+/// result per file.
+impl Default for FindMemory {
+    fn default() -> Self {
+        FindMemory {
+            name: "*".into(),
+            content: String::new(),
+            ignore: String::new(),
+            size: String::new(),
+            newer: String::new(),
+            depth: String::new(),
+            shell: true,
+            name_case: false,
+            case_sensitive: false,
+            whole_words: false,
+            regex: false,
+            all_charsets: false,
+            first_hit: true,
+            recursive: true,
+            skip_hidden: false,
+            follow_links: false,
+            skip_ignored: true,
+        }
+    }
 }
 
 /// One directory in the visit log.

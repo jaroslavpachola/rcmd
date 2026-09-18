@@ -51,6 +51,7 @@ const DEFAULTS: &[(&str, &str)] = &[
     ("alt+y", "history-back"), // MC: M-y / M-u walk the history
     ("alt+u", "history-forward"),
     ("alt+?", "find-file"),    // MC: M-? find file
+    ("alt+/", "fuzzy-find"),   // beside it: find by a few letters
     ("alt+c", "quick-cd"),     // MC: M-c quick cd
     ("alt+h", "history-list"), // MC: M-h command-line history
     ("alt+H", "dir-history"),  // MC: M-H the panel's directory history
@@ -295,6 +296,7 @@ pub fn parse_action(name: &str) -> Option<Action> {
         "hotlist" => Action::Hotlist,
         "filter" => Action::Filter,
         "find-file" => Action::FindFile,
+        "fuzzy-find" => Action::FuzzyFind,
         "panelize" => Action::Panelize,
         "compare-dirs" => Action::CompareDirs,
         "dir-size" => Action::DirSize,
@@ -484,6 +486,10 @@ pub enum ViewerAction {
     /// C-f / C-b: the next / previous file of the panel.
     NextFile,
     PrevFile,
+    /// M-. / M-,: the next / previous result of the find this screen
+    /// was opened from - the next hit, in this file or the next one.
+    NextHit,
+    PrevHit,
     /// The hex cursor, and writing what it changed. Both live on keys
     /// that mean something else outside hex mode (F2 and F6, as mc's
     /// button bar spends them), so they have no default of their own.
@@ -524,6 +530,10 @@ pub enum EditorAction {
     ToggleLineNumbers,
     /// M-e: which codepage the file is in.
     Charset,
+    /// M-. / M-,: the next / previous result of the find this editor
+    /// was opened from.
+    NextHit,
+    PrevHit,
 }
 
 pub type ViewerMap = HashMap<(KeyCode, KeyModifiers), ViewerAction>;
@@ -550,6 +560,8 @@ const VIEWER_DEFAULTS: &[(&str, &str)] = &[
     ("alt+e", "charset"),
     ("ctrl+f", "next-file"),
     ("ctrl+b", "prev-file"),
+    ("alt+.", "next-hit"),
+    ("alt+,", "prev-hit"),
 ];
 
 const EDITOR_DEFAULTS: &[(&str, &str)] = &[
@@ -580,6 +592,8 @@ const EDITOR_DEFAULTS: &[(&str, &str)] = &[
     ("alt+o", "bookmark-clear"),
     ("alt+n", "line-numbers"),
     ("alt+e", "charset"),
+    ("alt+.", "next-hit"),
+    ("alt+,", "prev-hit"),
 ];
 
 pub fn parse_viewer_action(name: &str) -> Option<ViewerAction> {
@@ -599,6 +613,8 @@ pub fn parse_viewer_action(name: &str) -> Option<ViewerAction> {
         "charset" => ViewerAction::Charset,
         "next-file" => ViewerAction::NextFile,
         "prev-file" => ViewerAction::PrevFile,
+        "next-hit" => ViewerAction::NextHit,
+        "prev-hit" => ViewerAction::PrevHit,
         "hex-edit" => ViewerAction::HexEdit,
         "hex-save" => ViewerAction::HexSave,
         _ => return None,
@@ -631,6 +647,8 @@ pub fn parse_editor_action(name: &str) -> Option<EditorAction> {
         "bookmark-clear" => EditorAction::BookmarkClear,
         "line-numbers" => EditorAction::ToggleLineNumbers,
         "charset" => EditorAction::Charset,
+        "next-hit" => EditorAction::NextHit,
+        "prev-hit" => EditorAction::PrevHit,
         _ => return None,
     })
 }

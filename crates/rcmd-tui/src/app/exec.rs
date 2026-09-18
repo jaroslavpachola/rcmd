@@ -105,7 +105,7 @@ impl App {
         set_bracketed_paste(true);
         let _ = terminal.clear();
         for panel in &mut self.panels {
-            let _ = panel.reload();
+            let _ = panel.refresh();
         }
         self.git_refresh();
         Ok(())
@@ -297,7 +297,7 @@ impl App {
             }
         }
         for panel in &mut self.panels {
-            let _ = panel.reload();
+            let _ = panel.refresh();
         }
         self.git_refresh();
         self.dirty = true;

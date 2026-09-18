@@ -1,6 +1,7 @@
 //! Find file: walk a tree on a worker thread, stream matches back to the
 //! UI as they are found. Matches carry their path relative to the search
-//! root in `Entry::name`, ready for a panelized listing.
+//! root in `Entry::name`, ready for a panelized listing - and, when the
+//! content was searched, the line each hit is on and what it says.
 
 use std::fs::File;
 use std::io::Read;
@@ -13,9 +14,40 @@ use std::thread::{self, JoinHandle};
 use crate::entry::{self, Entry};
 
 pub enum FindEvent {
-    Match(Box<Entry>),
-    Done { matches: u64, scanned: u64 },
+    /// One result: a file whose name matched, or one hit inside it.
+    /// A file with three hits is three of these.
+    Match(Box<Found>),
+    Done {
+        matches: u64,
+        scanned: u64,
+    },
 }
+
+/// A result of a find.
+#[derive(Clone, Debug)]
+pub struct Found {
+    /// Its name is the path relative to the search root.
+    pub entry: Entry,
+    /// Where in the file the content matched; `None` for a find by name.
+    pub hit: Option<Hit>,
+}
+
+/// One line of a file the content was found on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hit {
+    /// 1-based, as an editor counts.
+    pub line: u64,
+    /// The line, decoded leniently and cut to a preview: from where it
+    /// starts, or from a little before the match when that is further
+    /// along than a window is wide.
+    pub text: String,
+}
+
+/// Hits reported for one file when every hit is wanted - a file that
+/// matches on every line is a file, not a million results.
+const MAX_HITS: usize = 1000;
+/// How much of a hit's line the preview keeps.
+const PREVIEW: usize = 200;
 
 pub struct FindHandle {
     pub events: Receiver<FindEvent>,
@@ -46,6 +78,15 @@ pub struct Query {
     /// Descend through symlinked directories. Off by default: a link
     /// pointing at its own ancestor is a walk that never ends.
     pub follow_links: bool,
+    /// mc's "First hit": one result per file, at the first line that
+    /// matches. Off, every matching line is a result of its own.
+    pub first_hit: bool,
+    /// How deep to go: 1 is the start directory alone, which is mc's
+    /// "Find recursively" switched off. `None` is all the way down.
+    pub max_depth: Option<usize>,
+    /// Directories never descended into: a bare name anywhere in the
+    /// tree (`node_modules`), or a path from the start (`build/out`).
+    pub ignore_dirs: Vec<String>,
 }
 
 /// The "containing text" half, and what the text means.
@@ -74,8 +115,33 @@ impl Default for Query {
             content: None,
             skip_hidden: false,
             follow_links: false,
+            first_hit: true,
+            max_depth: None,
+            ignore_dirs: Vec::new(),
         }
     }
+}
+
+/// Split mc's ignore-directories answer: `:`, `;`, `,` or blanks
+/// between the entries, trailing slashes dropped.
+pub fn parse_ignore_dirs(text: &str) -> Vec<String> {
+    text.split(|c: char| matches!(c, ':' | ';' | ',') || c.is_whitespace())
+        .map(|d| d.trim_end_matches('/'))
+        .filter(|d| !d.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether the directory at `rel` (relative to the search root) is one
+/// of those the query ignores.
+fn ignored(rel: &Path, ignore: &[String]) -> bool {
+    ignore.iter().any(|dir| {
+        if dir.contains('/') {
+            rel == Path::new(dir.trim_start_matches("./"))
+        } else {
+            rel.file_name().is_some_and(|name| name == dir.as_str())
+        }
+    })
 }
 
 /// A compiled [`Content`]: either bytes to scan for, or a regular
@@ -164,7 +230,9 @@ pub fn spawn_find(root: PathBuf, query: Query, skip: Option<SkipFn>) -> Result<F
     let thread = thread::spawn(move || {
         let mut matches = 0u64;
         let mut scanned = 0u64;
-        let walk = jwalk::WalkDir::new(&root)
+        // a size or an age is about files, and answering it takes a stat
+        let criteria = matcher.has_criteria();
+        let mut walk = jwalk::WalkDir::new(&root)
             // depth 0 is the search root itself, never a result
             .min_depth(1)
             .skip_hidden(query.skip_hidden)
@@ -172,39 +240,95 @@ pub fn spawn_find(root: PathBuf, query: Query, skip: Option<SkipFn>) -> Result<F
             // a pool of our own: the shared one may be busy, and jwalk
             // answers a busy pool by walking nothing at all
             .parallelism(jwalk::Parallelism::RayonNewPool(0));
-        let walk = match skip {
-            None => walk,
+        if let Some(depth) = query.max_depth {
+            walk = walk.max_depth(depth.max(1));
+        }
+        let walk = match (skip, query.ignore_dirs.is_empty()) {
+            (None, true) => walk,
             // dropping an entry here also prunes it: jwalk never
             // descends into what it was not handed back
-            Some(skip) => walk.process_read_dir(move |_, _, _, children| {
-                children.retain(|child| match child {
-                    Ok(entry) => !skip(&entry.path()),
-                    Err(_) => true,
-                });
-            }),
+            (skip, _) => {
+                let (base, ignore) = (root.clone(), query.ignore_dirs.clone());
+                walk.process_read_dir(move |_, _, _, children| {
+                    children.retain(|child| match child {
+                        Ok(entry) => {
+                            let path = entry.path();
+                            let dropped = entry.file_type.is_dir()
+                                && path
+                                    .strip_prefix(&base)
+                                    .is_ok_and(|rel| ignored(rel, &ignore));
+                            !dropped && !skip.as_ref().is_some_and(|skip| skip(&path))
+                        }
+                        Err(_) => true,
+                    });
+                })
+            }
         };
-        for entry in walk {
+        let mut send = |found: Found| -> bool {
+            matches += 1;
+            tx.send(FindEvent::Match(Box::new(found))).is_ok()
+        };
+        'walk: for entry in walk {
             if flag.load(Ordering::Relaxed) {
                 break;
             }
             let Ok(entry) = entry else { continue };
             scanned += 1;
-            if !matcher.matches(&entry.file_name.to_string_lossy()) {
+            let name = entry.file_name.to_string_lossy();
+            if !matcher.matches(&name) || (criteria && entry.file_type.is_dir()) {
                 continue;
             }
             let path = entry.path();
-            let hit = match &seek {
-                None => true,
-                Some(seek) => entry.file_type.is_file() && file_matches(&path, seek),
-            };
-            if hit && let Ok(mut found) = entry::stat(&path) {
+            let stat = || -> Option<Entry> {
+                let mut found = entry::stat(&path).ok()?;
+                if criteria && !matcher.accepts(&found, &name) {
+                    return None;
+                }
                 if let Ok(rel) = path.strip_prefix(&root) {
                     found.name = rel.as_os_str().to_os_string();
                 }
-                matches += 1;
-                if tx.send(FindEvent::Match(Box::new(found))).is_err() {
+                Some(found)
+            };
+            let Some(seek) = &seek else {
+                if let Some(found) = stat()
+                    && !send(Found {
+                        entry: found,
+                        hit: None,
+                    })
+                {
                     flag.store(true, Ordering::Relaxed);
                     break;
+                }
+                continue;
+            };
+            if !entry.file_type.is_file() {
+                continue;
+            }
+            // a size or an age rules a file out before it is read; with
+            // neither, most files hold no hit and the stat is saved
+            let early = if criteria {
+                match stat() {
+                    Some(found) => Some(found),
+                    None => continue,
+                }
+            } else {
+                None
+            };
+            let hits = file_hits(&path, seek, query.first_hit);
+            if hits.is_empty() {
+                continue;
+            }
+            let Some(found) = early.or_else(stat) else {
+                continue;
+            };
+            for hit in hits {
+                let result = Found {
+                    entry: found.clone(),
+                    hit: Some(hit),
+                };
+                if !send(result) {
+                    flag.store(true, Ordering::Relaxed);
+                    break 'walk;
                 }
             }
         }
@@ -217,13 +341,22 @@ pub fn spawn_find(root: PathBuf, query: Query, skip: Option<SkipFn>) -> Result<F
     })
 }
 
-/// Does this file hold what we are looking for?
-fn file_matches(path: &Path, seek: &Seek) -> bool {
+/// Where this file holds what we are looking for: the first line, or
+/// every line up to [`MAX_HITS`]. Empty = it does not.
+fn file_hits(path: &Path, seek: &Seek, first: bool) -> Vec<Hit> {
     match seek {
-        Seek::Bytes { needles, fold } => needles
-            .iter()
-            .any(|needle| file_contains(path, needle, *fold)),
-        Seek::Lines(re) => file_lines_match(path, re),
+        Seek::Bytes { needles, fold } => {
+            let mut hits: Vec<Hit> = needles
+                .iter()
+                .flat_map(|needle| bytes_hits(path, needle, *fold, first))
+                .collect();
+            // several spellings of the word can land on one line
+            hits.sort_by_key(|hit| hit.line);
+            hits.dedup_by_key(|hit| hit.line);
+            hits.truncate(if first { 1 } else { MAX_HITS });
+            hits
+        }
+        Seek::Lines(re) => line_hits(path, re, first),
     }
 }
 
@@ -231,27 +364,37 @@ fn file_matches(path: &Path, seek: &Seek) -> bool {
 /// a line by definition - `.` does not cross one - so reading a line at
 /// a time is both correct and bounded, whatever the file turns out to
 /// be. Absurdly long lines (a binary with no newline in it) are cut.
-fn file_lines_match(path: &Path, re: &regex::Regex) -> bool {
+fn line_hits(path: &Path, re: &regex::Regex, first: bool) -> Vec<Hit> {
     use std::io::{BufRead, BufReader};
+    let mut hits = Vec::new();
     let Ok(file) = File::open(path) else {
-        return false;
+        return hits;
     };
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
+    let mut number = 0u64;
     loop {
         line.clear();
         match reader.read_until(b'\n', &mut line) {
-            Ok(0) | Err(_) => return false,
+            Ok(0) | Err(_) => return hits,
             Ok(_) => {}
         }
+        number += 1;
         line.truncate(MAX_LINE);
         // the line separator is not part of the line: an anchored
         // pattern ending in $ must be able to reach the end of it
         while matches!(line.last(), Some(b'\n' | b'\r')) {
             line.pop();
         }
-        if re.is_match(&String::from_utf8_lossy(&line)) {
-            return true;
+        let text = String::from_utf8_lossy(&line);
+        if let Some(m) = re.find(&text) {
+            hits.push(Hit {
+                line: number,
+                text: preview(text.as_bytes(), 0, m.start()),
+            });
+            if first || hits.len() >= MAX_HITS {
+                return hits;
+            }
         }
     }
 }
@@ -262,34 +405,116 @@ const MAX_LINE: usize = 64 * 1024;
 
 /// Chunked substring search; never loads the whole file. With `fold`
 /// the haystack is lowercased as it goes and `needle` must already be
-/// lowercase.
-fn file_contains(path: &Path, needle: &[u8], fold: bool) -> bool {
+/// lowercase. Lines are counted only when there is a hit to number -
+/// most files searched hold none, and they cost no more than before -
+/// and the preview is read back from the file, in its own case.
+fn bytes_hits(path: &Path, needle: &[u8], fold: bool, first: bool) -> Vec<Hit> {
+    use std::os::unix::fs::FileExt;
+    let mut hits = Vec::new();
     if needle.is_empty() {
-        return true;
+        return hits;
     }
     let Ok(mut file) = File::open(path) else {
-        return false;
+        return hits;
     };
     let finder = memchr::memmem::Finder::new(needle);
     let overlap = needle.len() - 1;
-    let mut buf = vec![0u8; 64 * 1024 + overlap];
+    let mut buf = vec![0u8; CHUNK + overlap];
     let mut carry = 0usize;
+    // where buf[0] is in the file; how far the newlines are counted, and
+    // how many there were; the last line a hit was reported on
+    let (mut base, mut counted, mut lines, mut last) = (0u64, 0u64, 0u64, 0u64);
     loop {
         let n = match file.read(&mut buf[carry..]) {
-            Ok(0) | Err(_) => return false,
+            Ok(0) | Err(_) => return hits,
             Ok(n) => n,
         };
-        let hay = &mut buf[..carry + n];
+        let len = carry + n;
         if fold {
-            hay.make_ascii_lowercase();
+            buf[carry..len].make_ascii_lowercase();
         }
-        if finder.find(hay).is_some() {
-            return true;
+        let mut from = 0;
+        while let Some(at) = finder.find(&buf[from..len]).map(|p| from + p) {
+            let abs = base + at as u64;
+            if counted < base {
+                lines += count_lines(&file, counted, base);
+                counted = base;
+            }
+            let rel = (counted - base) as usize;
+            lines += memchr::memchr_iter(b'\n', &buf[rel..at]).count() as u64;
+            counted = abs;
+            if lines + 1 != last {
+                last = lines + 1;
+                // the preview's own read, in the file's own case
+                let lead = abs.min(2 * PREVIEW as u64);
+                let mut window = vec![0u8; 2 * PREVIEW + needle.len() + lead as usize];
+                let got = file.read_at(&mut window, abs - lead).unwrap_or(0);
+                window.truncate(got);
+                let at_w = lead as usize;
+                hits.push(Hit {
+                    line: last,
+                    text: preview(&window, line_start(&window[..at_w]), at_w),
+                });
+                if first || hits.len() >= MAX_HITS {
+                    return hits;
+                }
+            }
+            // the rest of this line has nothing new to report
+            from = memchr::memchr(b'\n', &buf[at..len]).map_or(len, |e| at + e + 1);
+            if from >= len {
+                break;
+            }
         }
-        carry = overlap.min(hay.len());
-        let start = hay.len() - carry;
-        buf.copy_within(start..start + carry, 0);
+        carry = overlap.min(len);
+        let start = len - carry;
+        base += start as u64;
+        buf.copy_within(start..len, 0);
     }
+}
+
+/// The newlines in bytes `from..to` of the file, read with `pread` so
+/// the scan's own position is left where it is.
+fn count_lines(file: &File, mut from: u64, to: u64) -> u64 {
+    use std::os::unix::fs::FileExt;
+    let mut block = vec![0u8; CHUNK];
+    let mut lines = 0;
+    while from < to {
+        let want = (to - from).min(CHUNK as u64) as usize;
+        match file.read_at(&mut block[..want], from) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                lines += memchr::memchr_iter(b'\n', &block[..n]).count() as u64;
+                from += n as u64;
+            }
+        }
+    }
+    lines
+}
+
+/// How much a content search reads at a time.
+const CHUNK: usize = 64 * 1024;
+
+/// Where the line holding `bytes`' end begins.
+fn line_start(bytes: &[u8]) -> usize {
+    memchr::memrchr(b'\n', bytes).map_or(0, |at| at + 1)
+}
+
+/// The line from `start` that holds the match at `at`, as a preview: a
+/// match further along than half a window gets a lead-in of its own.
+fn preview(bytes: &[u8], start: usize, at: usize) -> String {
+    let end = memchr::memchr(b'\n', &bytes[at..]).map_or(bytes.len(), |e| at + e);
+    let from = if at - start > PREVIEW / 2 {
+        at - PREVIEW / 4
+    } else {
+        start
+    };
+    let text = String::from_utf8_lossy(&bytes[from..end]);
+    let text = text.trim();
+    let mut shown: String = text.chars().take(PREVIEW).collect();
+    if from > start {
+        shown.insert(0, '…');
+    }
+    shown
 }
 
 #[cfg(test)]
@@ -301,7 +526,9 @@ mod tests {
         let mut names = Vec::new();
         loop {
             match handle.events.recv().expect("find died without Done") {
-                FindEvent::Match(entry) => names.push(entry.name.to_string_lossy().into_owned()),
+                FindEvent::Match(found) => {
+                    names.push(found.entry.name.to_string_lossy().into_owned())
+                }
                 FindEvent::Done { matches, .. } => {
                     names.sort();
                     return (names, matches);
@@ -497,6 +724,117 @@ mod tests {
             joins_within(thread, 30),
             "walk never stopped after its receiver went away"
         );
+    }
+
+    fn hits(handle: FindHandle) -> Vec<(String, u64, String)> {
+        let mut out = Vec::new();
+        loop {
+            match handle.events.recv().expect("find died without Done") {
+                FindEvent::Match(found) => {
+                    let hit = found.hit.expect("a content find reports where");
+                    out.push((
+                        found.entry.name.to_string_lossy().into_owned(),
+                        hit.line,
+                        hit.text,
+                    ));
+                }
+                FindEvent::Done { .. } => {
+                    out.sort();
+                    return out;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_hit_knows_its_line_and_what_it_says() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("a.txt"),
+            "one\ntwo needle\nthree\nneedle again\n",
+        )
+        .unwrap();
+        let first = hits(spawn_find(dir.path().to_path_buf(), containing("needle"), None).unwrap());
+        assert_eq!(first, [("a.txt".into(), 2, "two needle".into())]);
+
+        let mut every = containing("needle");
+        every.first_hit = false;
+        let all = hits(spawn_find(dir.path().to_path_buf(), every.clone(), None).unwrap());
+        assert_eq!(
+            all,
+            [
+                ("a.txt".into(), 2, "two needle".into()),
+                ("a.txt".into(), 4, "needle again".into())
+            ]
+        );
+
+        // a regular expression counts the same way
+        every.content.as_mut().unwrap().regex = true;
+        every.content.as_mut().unwrap().text = "ne+dle".into();
+        let all = hits(spawn_find(dir.path().to_path_buf(), every, None).unwrap());
+        assert_eq!(all.iter().map(|h| h.1).collect::<Vec<_>>(), [2, 4]);
+    }
+
+    #[test]
+    fn lines_are_counted_across_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        // a thousand lines of a hundred bytes: the hit is past two chunks
+        let mut text = String::new();
+        for n in 1..=1000 {
+            let body = if n == 900 { "NEEDLE" } else { "x" };
+            text.push_str(&format!("{body:<99}\n"));
+        }
+        fs::write(dir.path().join("long.txt"), &text).unwrap();
+        let found = hits(spawn_find(dir.path().to_path_buf(), containing("needle"), None).unwrap());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1, 900);
+        assert_eq!(
+            found[0].2, "NEEDLE",
+            "the preview keeps the file's own case"
+        );
+    }
+
+    #[test]
+    fn a_long_line_shows_the_match_not_its_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = format!("{}needle{}", "a".repeat(500), "b".repeat(500));
+        fs::write(dir.path().join("wide.txt"), &line).unwrap();
+        let found = hits(spawn_find(dir.path().to_path_buf(), containing("needle"), None).unwrap());
+        assert!(found[0].2.starts_with('…'), "{}", found[0].2);
+        assert!(found[0].2.contains("needle"));
+    }
+
+    #[test]
+    fn depth_and_ignored_directories_prune_the_walk() {
+        let t = tree();
+        let mut shallow = named("*");
+        shallow.max_depth = Some(1);
+        let (names, _) = collect(spawn_find(t.path().to_path_buf(), shallow, None).unwrap());
+        assert_eq!(names, ["notes.txt", "src"]);
+
+        let mut ignoring = named("*.rs");
+        ignoring.ignore_dirs = parse_ignore_dirs("deep");
+        let (names, _) = collect(spawn_find(t.path().to_path_buf(), ignoring, None).unwrap());
+        assert_eq!(names, ["src/main.rs"]);
+
+        // a path is from the start, not any directory of that name
+        let mut by_path = named("*.rs");
+        by_path.ignore_dirs = parse_ignore_dirs("src/deep/ : nowhere");
+        let (names, _) = collect(spawn_find(t.path().to_path_buf(), by_path, None).unwrap());
+        assert_eq!(names, ["src/main.rs"]);
+    }
+
+    #[test]
+    fn size_and_age_are_asked_of_files() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("small.txt"), "x").unwrap();
+        fs::write(dir.path().join("sub/big.txt"), vec![b'x'; 4096]).unwrap();
+        let mut big = named("*");
+        big.name.size = ">1k".into();
+        let (names, _) = collect(spawn_find(dir.path().to_path_buf(), big, None).unwrap());
+        // the directory is not listed for a question only files answer
+        assert_eq!(names, ["sub/big.txt"]);
     }
 
     #[test]

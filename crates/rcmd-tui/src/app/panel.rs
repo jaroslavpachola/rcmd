@@ -310,6 +310,7 @@ impl App {
             Action::UpDir => self.fallible(|p| p.go_up()),
             Action::Enter => self.fallible(|p| p.enter()),
             Action::FindFile => self.open_find(),
+            Action::FuzzyFind => self.open_fuzzy(),
             Action::Panelize => self.open_panelize(),
             Action::CompareDirs => self.open_compare(),
             Action::CompareFiles => self.open_diff(),
@@ -2514,10 +2515,17 @@ impl App {
             return;
         }
         let sources = self.panels[self.active].targets();
+        self.open_transfer_of(is_move, sources);
+    }
+
+    /// The copy/move form for `sources`, wherever they came from - the
+    /// panel's marks, or the find results window's.
+    pub(super) fn open_transfer_of(&mut self, is_move: bool, sources: Vec<PathBuf>) {
         if sources.is_empty() {
             self.status = Some(" nothing selected ".into());
             return;
         }
+        let in_archive = self.panels[self.active].archive.is_some();
         let verb = if is_move { "Move" } else { "Copy" };
         let other = &self.panels[self.active ^ 1];
         // a remote or archive panel on the other side prefills its
@@ -2813,7 +2821,7 @@ impl App {
 
     fn reload_panels(&mut self) {
         for panel in &mut self.panels {
-            let _ = panel.reload();
+            let _ = panel.refresh();
         }
         self.git_refresh();
     }
@@ -2934,10 +2942,15 @@ impl App {
         if self.panels[self.active].archive.is_some() && self.editable_archive().is_none() {
             return;
         }
+        let paths = self.panels[self.active].targets();
+        self.open_delete_of(permanent, paths);
+    }
+
+    /// The delete question for `paths`, wherever they came from.
+    pub(super) fn open_delete_of(&mut self, permanent: bool, paths: Vec<PathBuf>) {
         let panel = &self.panels[self.active];
         // no trash inside an archive or on a server: both delete outright
         let permanent = permanent || panel.is_remote() || panel.archive.is_some();
-        let paths = panel.targets();
         if paths.is_empty() {
             self.status = Some(" nothing selected ".into());
             return;

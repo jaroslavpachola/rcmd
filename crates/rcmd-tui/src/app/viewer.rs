@@ -184,15 +184,22 @@ impl App {
             VA::ToggleRaw => return self.viewer_toggle_raw(),
             VA::NextFile => return self.viewer_step_file(1),
             VA::PrevFile => return self.viewer_step_file(-1),
+            VA::NextHit => return self.step_hit(1),
+            VA::PrevHit => return self.step_hit(-1),
             _ => {}
         }
         let Some(v) = self.viewer_mut() else {
             return;
         };
         match action {
-            VA::Quit | VA::ToggleRaw | VA::NextFile | VA::PrevFile | VA::HexEdit | VA::HexSave => {
-                unreachable!("handled above")
-            }
+            VA::Quit
+            | VA::ToggleRaw
+            | VA::NextFile
+            | VA::PrevFile
+            | VA::NextHit
+            | VA::PrevHit
+            | VA::HexEdit
+            | VA::HexSave => unreachable!("handled above"),
             VA::ToggleWrap => {
                 v.wrap = !v.wrap;
                 v.top_seg = 0;
@@ -624,7 +631,7 @@ impl App {
     }
 
     /// Close the viewer, taking its scratch files with it.
-    fn close_viewer(&mut self) {
+    pub(super) fn close_viewer(&mut self) {
         if let Some(Screen::Viewer(viewer)) = self.take_current_screen() {
             for temp in viewer.temps {
                 let _ = std::fs::remove_file(temp);

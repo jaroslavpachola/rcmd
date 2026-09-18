@@ -10,6 +10,7 @@ pub mod find;
 pub mod fish;
 pub mod fsops;
 pub mod ftp;
+pub mod fuzzy;
 pub mod glob;
 pub mod iso;
 pub mod mail;

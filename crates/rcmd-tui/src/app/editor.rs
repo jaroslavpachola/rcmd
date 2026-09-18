@@ -157,7 +157,7 @@ impl App {
         }
     }
 
-    fn close_editor(&mut self) {
+    pub(super) fn close_editor(&mut self) {
         let follow_up = match self.take_current_screen() {
             Some(Screen::Editor(st)) => st.follow_up,
             _ => None,
@@ -168,7 +168,7 @@ impl App {
             None => {}
         }
         for panel in &mut self.panels {
-            let _ = panel.reload();
+            let _ = panel.refresh();
         }
         self.git_refresh();
     }
@@ -256,7 +256,7 @@ impl App {
             }
         }
         for panel in &mut self.panels {
-            let _ = panel.reload();
+            let _ = panel.refresh();
         }
         self.git_refresh();
         if !preview.deletes.is_empty() {
@@ -298,7 +298,7 @@ impl App {
     }
 
     /// Search from just after `from`; select the match so it is visible.
-    fn editor_find(&mut self, pattern: &str, from: rcmd_edit::Pos) {
+    pub(super) fn editor_find(&mut self, pattern: &str, from: rcmd_edit::Pos) {
         let Some(st) = self.editor_mut() else {
             return;
         };
@@ -462,6 +462,10 @@ impl App {
                 self.editor_quit();
                 return;
             }
+            EA::NextHit | EA::PrevHit => {
+                self.step_hit(if action == EA::NextHit { 1 } else { -1 });
+                return;
+            }
             EA::Goto => {
                 if let Some(st) = self.editor_mut() {
                     let at = (st.ed.cursor.line + 1).to_string();
@@ -513,7 +517,13 @@ impl App {
             .min(st.ed.cursor.line);
         let mut edited = true;
         match action {
-            EA::Save | EA::Quit | EA::SearchNext | EA::Menu | EA::Goto => {
+            EA::Save
+            | EA::Quit
+            | EA::SearchNext
+            | EA::Menu
+            | EA::Goto
+            | EA::NextHit
+            | EA::PrevHit => {
                 unreachable!("handled above")
             }
             EA::Mark => {

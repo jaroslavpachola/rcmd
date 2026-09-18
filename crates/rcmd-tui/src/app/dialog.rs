@@ -127,6 +127,7 @@ impl App {
             _ => key,
         };
         match dialog {
+            Dialog::Fuzzy(d) => self.on_fuzzy_key(d, key),
             Dialog::Input(mut d) => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => self.submit_input(d),
@@ -315,6 +316,23 @@ impl App {
                     // Enter on the list is Chdir, which is what mc's
                     // default button does and what the row invites
                     KeyCode::Enter => self.find_button(*d, None),
+                    // marks, as in a panel, for the keys below
+                    KeyCode::Insert | KeyCode::Char(' ') => {
+                        if let Some(row) = d.rows.get_mut(d.selected) {
+                            row.marked = !row.marked;
+                        }
+                        d.step(1, shown);
+                        self.dialog = Some(Dialog::FindResults(d));
+                    }
+                    KeyCode::Char('*') => {
+                        for row in &mut d.rows {
+                            row.marked = !row.marked;
+                        }
+                        self.dialog = Some(Dialog::FindResults(d));
+                    }
+                    KeyCode::F(5) | KeyCode::F(6) | KeyCode::F(8) => {
+                        self.find_operate(*d, key.code)
+                    }
                     KeyCode::F(3) => self.find_button(*d, Some(3)),
                     KeyCode::F(4) => self.find_button(*d, Some(4)),
                     KeyCode::Char(c) => {
@@ -1410,7 +1428,7 @@ impl App {
                 match std::fs::create_dir_all(&path) {
                     Ok(()) => {
                         for panel in &mut self.panels {
-                            let _ = panel.reload();
+                            let _ = panel.refresh();
                         }
                         let panel = &mut self.panels[self.active];
                         if path.parent() == Some(panel.cwd.as_path())

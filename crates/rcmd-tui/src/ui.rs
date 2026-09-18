@@ -552,12 +552,21 @@ const HELP_TEXT: &[&str] = &[
     "                  by how recently - and kept between sessions.",
     "                  C-s narrows the list by what you type",
     "  M-F7            find file: where to start, the name, and the text",
-    "                  to look for inside - with whole words, case, a",
-    "                  regular expression, every codepage, skip hidden,",
-    "                  follow symlinks and skip gitignored beside them.",
-    "                  Results land in a window of their own - Chdir,",
-    "                  Again, Panelize, View, Edit - or stream into the",
-    "                  panel with find_window = false. Esc cancels.",
+    "                  to look for inside - with whole words, case for",
+    "                  each, a regular expression, every codepage, first",
+    "                  hit, recursion, skip hidden, follow symlinks and",
+    "                  skip gitignored beside them; directories to",
+    "                  ignore, a size, an age and a depth under them.",
+    "                  Results land in a window of their own - a content",
+    "                  hit as file:line: text - with Chdir, Again,",
+    "                  Panelize, View, Edit; Insert marks rows for F5,",
+    "                  F6, F8. Or they stream into the panel with",
+    "                  find_window = false. Esc cancels.",
+    "  M-. / M-,       in a viewer or editor opened from a hit: the next",
+    "                  / previous result, into the next file too",
+    "  M-/             fuzzy find: a few letters of a path, ranked as",
+    "                  the tree is walked; Enter goes there, F3/F4",
+    "                  view and edit it",
     "  F9>Cmd>Compare files: the cursor file of each panel side by",
     "     side, lined up by the diff - n and p walk the differences,",
     "     a gap marked ~~~ is a line only one of them has, q closes",
@@ -1186,6 +1195,7 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
             Dialog::RenamePreview(d) => draw_rename_preview(frame, d),
             Dialog::Jobs(selected) => dialog_rows = draw_jobs(frame, &app.jobs, *selected),
             Dialog::Vfs(d) => draw_vfs(frame, d),
+            Dialog::Fuzzy(d) => draw_fuzzy(frame, d),
             Dialog::History(selected) => {
                 dialog_rows = draw_history(
                     frame,
@@ -4074,14 +4084,27 @@ fn draw_find_results(frame: &mut Frame, d: &crate::app::FindResults) {
             width: inner.width.saturating_sub(2),
             height: 1,
         };
-        let text = d.label_of(at);
+        // path:line: text, the path kept and the text cut, since the
+        // path is what the row is about
+        let width = (row.width as usize).saturating_sub(1);
+        let path = d.label_of(at);
+        let text = match &d.rows[at].hit {
+            None => tail(&path, width),
+            Some(hit) => {
+                let head = format!("{}:{}: ", tail(&path, width / 2), hit.line);
+                let room = width.saturating_sub(head.chars().count());
+                format!("{head}{}", hit.text.chars().take(room).collect::<String>())
+            }
+        };
+        let marked = Style::new().fg(th().mark_fg).bg(th().dialog_bg);
+        let row_style = match (at == d.selected, d.rows[at].marked) {
+            (true, _) => sel,
+            (false, true) => marked,
+            _ => style,
+        };
+        let mark = if d.rows[at].marked { '*' } else { ' ' };
         frame.render_widget(
-            Line::from(format!(
-                " {:<w$}",
-                tail(&text, row.width as usize),
-                w = (row.width as usize).saturating_sub(1)
-            ))
-            .style(if at == d.selected { sel } else { style }),
+            Line::from(format!("{mark}{text:<width$}")).style(row_style),
             row,
         );
     }
@@ -4109,15 +4132,84 @@ fn draw_find_results(frame: &mut Frame, d: &crate::app::FindResults) {
     );
 }
 
-fn draw_find(frame: &mut Frame, d: &FindDialog) {
-    use crate::app::{FIND_FIELDS, FIND_ROWS, FIND_SWITCHES};
+/// The fuzzy finder: the field on top, the best matches under it with
+/// the letters that made each match lit, and how much of the tree has
+/// been looked at.
+fn draw_fuzzy(frame: &mut Frame, d: &crate::app::FuzzyDialog) {
     let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
-    // three labelled fields, the switches, a blank line and the buttons
-    let height = (FIND_FIELDS * 2 + FIND_SWITCHES.len() + 4) as u16;
+    let lit = Style::new()
+        .fg(th().mark_fg)
+        .bg(th().dialog_bg)
+        .add_modifier(Modifier::BOLD);
+    let area = frame.area();
+    let width = area.width.saturating_sub(8).max(30);
+    let height = area.height.saturating_sub(4).max(8);
+    let inner = popup(frame, centered(width, height, area), " Fuzzy find ", style);
+    let line = |y: u16| Rect {
+        x: inner.x + 1,
+        y: inner.y + y,
+        width: inner.width.saturating_sub(2),
+        height: 1,
+    };
+    field_row(frame, line(0), &d.field.value, Some(d.field.cursor));
+    let rows = inner.height.saturating_sub(3) as usize;
+    let first = d.selected.saturating_sub(rows.saturating_sub(1));
+    for (i, &at) in d.shown.iter().skip(first).take(rows).enumerate() {
+        let (path, is_dir) = &d.all[at];
+        let shown = if *is_dir {
+            format!("{path}/")
+        } else {
+            path.clone()
+        };
+        let chosen = first + i == d.selected;
+        let lit_at = rcmd_core::fuzzy::fuzzy_match(&d.field.value, path)
+            .map(|m| m.positions)
+            .unwrap_or_default();
+        let width = line(0).width as usize;
+        let spans: Vec<Span> = shown
+            .chars()
+            .take(width)
+            .enumerate()
+            .map(|(c, ch)| {
+                let style = match (chosen, lit_at.contains(&c)) {
+                    (true, _) => sel,
+                    (false, true) => lit,
+                    _ => style,
+                };
+                Span::styled(ch.to_string(), style)
+            })
+            .collect();
+        let mut row_line = Line::from(spans);
+        if chosen {
+            row_line = row_line.style(sel);
+        }
+        frame.render_widget(row_line, line(1 + i as u16));
+    }
+    let count = match &d.walking {
+        Some(_) => format!("{} of {} so far…", d.shown.len(), d.all.len()),
+        None => format!("{} of {}", d.shown.len(), d.all.len()),
+    };
+    frame.render_widget(
+        Line::from(format!(
+            "{count}   Enter goes there · F3 view · F4 edit · Esc"
+        ))
+        .centered()
+        .style(style),
+        line(inner.height.saturating_sub(1)),
+    );
+}
+
+fn draw_find(frame: &mut Frame, d: &FindDialog) {
+    use crate::app::{FIND_FIELD_LABELS, FIND_FIELDS, FIND_ROWS, FIND_SWITCHES};
+    let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    // a field a row, the switches two to a row, the buttons
+    let switch_rows = FIND_SWITCHES.len().div_ceil(2);
+    let height = (FIND_FIELDS + switch_rows + 5) as u16;
     let inner = popup(
         frame,
-        centered(64, height, frame.area()),
+        centered(72, height, frame.area()),
         " Find file ",
         style,
     );
@@ -4127,34 +4219,38 @@ fn draw_find(frame: &mut Frame, d: &FindDialog) {
         width: inner.width.saturating_sub(2),
         height: 1,
     };
-    let fields = [
-        ("Start at:", &d.start.value, d.start.cursor),
-        ("Filename:", &d.name.value, d.name.cursor),
-        (
-            "Containing text (optional):",
-            &d.content.value,
-            d.content.cursor,
-        ),
-    ];
-    for (i, (label, value, cursor)) in fields.iter().enumerate() {
-        frame.render_widget(Line::from(*label).style(style), row(i * 2));
+    const LABEL: u16 = 13;
+    for (i, label) in FIND_FIELD_LABELS.iter().enumerate() {
+        let at = row(i);
+        frame.render_widget(Line::from(*label).style(style), at);
+        let Some(field) = d.field_at(i) else { continue };
         field_row(
             frame,
-            row(i * 2 + 1),
-            value,
-            (d.row == i).then_some(*cursor),
+            Rect {
+                x: at.x + LABEL,
+                width: at.width.saturating_sub(LABEL),
+                ..at
+            },
+            &field.value,
+            (d.row == i).then_some(field.cursor),
         );
     }
     let check = |on: bool| if on { "[x]" } else { "[ ]" };
+    let half = inner.width.saturating_sub(2) / 2;
     for (i, label) in FIND_SWITCHES.iter().enumerate() {
         let focused = d.row == FIND_FIELDS + i;
+        let at = row(FIND_FIELDS + 1 + i / 2);
         frame.render_widget(
-            Line::from(format!(" {} {label}", check(d.switch(i)))).style(if focused {
+            Line::from(format!("{} {label}", check(d.switch(i)))).style(if focused {
                 sel
             } else {
                 style
             }),
-            row(FIND_FIELDS * 2 + i),
+            Rect {
+                x: at.x + (i % 2) as u16 * half,
+                width: half,
+                ..at
+            },
         );
     }
     frame.render_widget(
@@ -4170,7 +4266,7 @@ fn draw_find(frame: &mut Frame, d: &FindDialog) {
         ),
         Rect {
             x: inner.x,
-            y: inner.y + (FIND_FIELDS * 2 + FIND_SWITCHES.len() + 1) as u16,
+            y: inner.y + (FIND_FIELDS + switch_rows + 2) as u16,
             width: inner.width,
             height: 1,
         },

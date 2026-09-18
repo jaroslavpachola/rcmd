@@ -26,6 +26,7 @@ impl App {
         if self.dialog.is_some() {
             return match self.dialog.as_mut()? {
                 Dialog::Input(d) => Some(FocusedLine::Field(&mut d.field)),
+                Dialog::Fuzzy(d) => Some(FocusedLine::Field(&mut d.field)),
                 Dialog::Find(d) => d.field().map(FocusedLine::Field),
                 Dialog::Pattern(d) => d.field_mut().map(FocusedLine::Field),
                 Dialog::Transfer(d) => match d.row {

@@ -4843,9 +4843,11 @@ def test_finddialog():
     open(os.path.join(play, "koi.txt"), "wb").write("Привет".encode("koi8-r"))
     s = Session(play, home)
 
-    # the rows below the two text fields, in order, from the content
-    # field: 1 Shell patterns, 2 Case sensitive, 3 Whole words,
-    # 4 Regular expression, 5 All charsets, 6 Skip hidden
+    # the rows below the content field, in order: 1-4 the ignore,
+    # size, newer and depth fields, then the switches - 5 Shell
+    # patterns, 6 Case sensitive name, 7 Case sensitive content,
+    # 8 Whole words, 9 Regular expression, 10 All charsets, 11 First
+    # hit, 12 Find recursively, 13 Skip hidden
     def find(keys, wait=STEP):
         # each question here starts from the defaults
         forget_find(home)
@@ -4871,7 +4873,7 @@ def test_finddialog():
 
     # whole words: "magic" is not "magically", so a2.txt drops out
     # while the hidden file - which does say the word - stays
-    find(b"\x15*.txt\t" + b"magic" + DOWN * 3 + b" ")
+    find(b"\x15*.txt\t" + b"magic" + DOWN * 8 + b" ")
     scr = s.screen()
     check("finddialog: whole words dropped the longer word",
           "2 match(es)" in scr, scr)
@@ -4882,13 +4884,13 @@ def test_finddialog():
           and "secret.txt" in scr, scr)
 
     # a regular expression over the content
-    find(b"\x15*.txt\t" + b"^magic\\w+$" + DOWN * 4 + b" ")
+    find(b"\x15*.txt\t" + b"^magic\\w+$" + DOWN * 9 + b" ")
     scr = s.screen()
     check("finddialog: the regex found the other",
           "1 match(es)" in scr and scr.count("a2.txt") == 2, scr)
 
     # all charsets finds the word as another machine spelled it
-    find(b"\x15*\t" + "Привет".encode() + DOWN * 5 + b" ")
+    find(b"\x15*\t" + "Привет".encode() + DOWN * 10 + b" ")
     scr = s.screen()
     check("finddialog: found it in KOI8-R",
           "1 match(es)" in scr and scr.count("koi.txt") == 2, scr)
@@ -4897,7 +4899,7 @@ def test_finddialog():
     find(b"\x15*.txt\t" + b"magic")
     check("finddialog: the hidden file is found by default",
           ".hidden/secret.txt" in s.screen(), s.screen())
-    find(b"\x15*.txt\t" + b"magic" + DOWN * 6 + b" ")
+    find(b"\x15*.txt\t" + b"magic" + DOWN * 13 + b" ")
     check("finddialog: hidden skipped", "secret.txt" not in s.screen(), s.screen())
 
     # a start directory of its own
@@ -5000,6 +5002,104 @@ def test_fields():
     check("fields: find reopens on the last question",
           "*.txt" in scr and "needle" in scr, scr)
     s.send(b"\x1b\x1b", wait=STEP)
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_findhits():
+    """PLAN5 S2: a content find says where - file, line and text, every
+    hit or the first - and the window can mark and copy; View walks the
+    hits with M-.; a panelized list outlives a copy; the fuzzy finder
+    goes by a few letters; depth and size narrow the walk."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "sub", "deep"))
+    open(os.path.join(play, "a.txt"), "w").write("one\nneedle two\nthree\nneedle four\n")
+    open(os.path.join(play, "b.txt"), "w").write("needle\n")
+    open(os.path.join(play, "sub", "deep", "frobnicate.txt"), "w").write("x" * 5000)
+    dest = os.path.join(root, "dest")
+    os.makedirs(dest)
+    s = Session(play, home)
+
+    def find(keys):
+        forget_find(home)
+        s.keys(b"\x1b[20~", b"\x1b[C" * 2, DOWN * 5, b"\r", wait=STEP)
+        s.keys(keys, b"\r", wait=STEP)
+        wait_for(s, "match(es)")
+
+    # every hit, not the first: First hit is the 11th row under content
+    find(b"\x15*.txt\tneedle" + DOWN * 11 + b" ")
+    scr = s.screen()
+    check("findhits: each hit is a row with its line",
+          "a.txt:2: needle two" in scr and "a.txt:4: needle four" in scr
+          and "b.txt:1: needle" in scr, scr)
+    check("findhits: three results", "3 match(es)" in scr, scr)
+
+    # mark two rows and copy them from the window, no Panelize first
+    s.send(HOME_K, wait=STEP)
+    s.send(INSERT, wait=STEP)
+    s.send(INSERT, wait=STEP)
+    s.send(F5, wait=STEP)
+    check("findhits: F5 opens the copy form", "to:" in s.screen(), s.screen())
+    s.send(b"\x15" + dest.encode() + b"\r", wait=STEP * 3)
+    check("findhits: the marked files were copied",
+          wait_file(os.path.join(dest, "a.txt")))
+
+    # View lands on the hit - far down a long file, so only if it went
+    # there - and M-. walks on to the next result
+    filler = [f"filler {n}" for n in range(300)]
+    filler[250] = "needle far"
+    open(os.path.join(play, "c.log"), "w").write("\n".join(filler) + "\n")
+    open(os.path.join(play, "d.log"), "w").write("needle far again\n")
+    find(b"\x15*.log\tneedle far")
+    s.send(HOME_K, wait=STEP)
+    if "d.log" in [l for l in s.screen().split("\n") if ".log:" in l][0]:
+        s.send(DOWN, wait=STEP)               # c.log first, whatever order
+    s.send(F3, wait=STEP * 2)
+    scr = s.screen()
+    shown = [l.strip() for l in scr.split("\n")]
+    check("findhits: View went to the hit's line",
+          "needle far" in shown and "filler 0" not in shown, scr)
+    s.send(b"\x1b.", wait=STEP * 2)
+    scr = s.screen()
+    check("findhits: M-. went on to the next file's hit",
+          "needle far again" in scr and "result 2 of 2" in scr, scr)
+    s.send(b"\x1b.", wait=STEP)
+    check("findhits: and knows when there are no more",
+          "that was the last result" in s.screen(), s.screen())
+    s.send(b"q", wait=STEP)
+
+    # Panelize, then a copy job: the list is still there afterwards
+    find(b"\x15*.txt")
+    s.send(b"p", wait=STEP * 2)               # Panelize
+    check("findhits: panelized", "find:" in s.screen(), s.screen())
+    s.send(b"\x13b.txt\r", wait=STEP)
+    s.send(F5, wait=STEP)
+    s.send(b"\x15" + dest.encode() + b"/b2.txt\r", wait=STEP * 3)
+    wait_file(os.path.join(dest, "b2.txt"))
+    check("findhits: the panelized list outlived the job",
+          "find:" in s.screen() and "sub/deep/frobnicate.txt" in s.screen(), s.screen())
+    s.send(b"\x12", wait=STEP)               # Ctrl+R: back to the directory
+    check("findhits: Ctrl+R still leaves it", "find:" not in s.screen(), s.screen())
+
+    # depth 1 is the start alone; a size keeps the big one only
+    find(b"\x15*.txt" + DOWN * 5 + b"1")
+    check("findhits: depth 1 stays at the top",
+          "2 match(es)" in s.screen() and "frobnicate" not in s.screen(), s.screen())
+    s.send(b"q", wait=STEP)
+    find(b"\x15*.txt" + DOWN * 3 + b">1k")
+    check("findhits: a size keeps the big file",
+          "1 match(es)" in s.screen() and "frobnicate" in s.screen(), s.screen())
+    s.send(b"q", wait=STEP)
+
+    # the fuzzy finder: a few letters, and Enter goes there
+    s.send(b"\x1b/", wait=STEP * 2)
+    s.send(b"frob", wait=STEP * 2)
+    scr = s.screen()
+    check("findhits: the fuzzy finder ranks it", "Fuzzy find" in scr and "frobnicate" in scr, scr)
+    s.send(b"\r", wait=STEP * 2)
+    scr = s.screen()
+    check("findhits: and Enter went there",
+          "sub/deep" in scr.split("\n")[0] and "Fuzzy find" not in scr, scr)
     s.quit()
     shutil.rmtree(root)
 
@@ -5998,6 +6098,7 @@ def main():
         test_selectdialog,
         test_finddialog,
         test_fields,
+        test_findhits,
         test_findwindow,
         test_panelize,
         test_diff,

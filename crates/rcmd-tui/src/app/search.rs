@@ -7,7 +7,7 @@ impl App {
         };
         let window = find.window;
         let mut done = None;
-        let mut found: Vec<Box<rcmd_core::entry::Entry>> = Vec::new();
+        let mut found: Vec<Box<find::Found>> = Vec::new();
         while let Ok(event) = find.handle.events.try_recv() {
             match event {
                 FindEvent::Match(entry) => {
@@ -26,13 +26,25 @@ impl App {
                 }
                 return;
             };
-            for entry in found {
-                results.rows.push(results.root.join(&entry.name));
+            for hit in found {
+                results.rows.push(FindRow {
+                    path: results.root.join(&hit.entry.name),
+                    hit: hit.hit,
+                    marked: false,
+                });
             }
             results.done = done;
         } else {
-            for entry in found {
-                self.panels[panel].entries.push(*entry);
+            // a listing holds each file once, however many lines hit;
+            // a file's hits arrive one after the other
+            for hit in found {
+                let entries = &mut self.panels[panel].entries;
+                if entries
+                    .last()
+                    .is_none_or(|last| last.name != hit.entry.name)
+                {
+                    entries.push(hit.entry);
+                }
             }
         }
         match done {
@@ -89,7 +101,8 @@ impl App {
     /// under the cursor. `None` = the focused button.
     pub(super) fn find_button(&mut self, d: FindResults, button: Option<usize>) {
         let button = button.unwrap_or(d.button);
-        let target = d.rows.get(d.selected).cloned();
+        let target = d.rows.get(d.selected).map(|row| row.path.clone());
+        let hit = d.rows.get(d.selected).and_then(|row| row.hit.clone());
         match (FIND_BUTTONS[button], target) {
             ("Quit", _) => self.close_find(),
             ("Again", _) => {
@@ -100,9 +113,14 @@ impl App {
                 // the list becomes the panel, which is where marking
                 // and F5/F6/F8 live
                 let root = d.root.clone();
-                let entries: Vec<_> = d
-                    .rows
-                    .iter()
+                let mut paths: Vec<&PathBuf> = Vec::new();
+                for row in &d.rows {
+                    if !paths.contains(&&row.path) {
+                        paths.push(&row.path);
+                    }
+                }
+                let entries: Vec<_> = paths
+                    .into_iter()
                     .filter_map(|path| {
                         let mut entry = rcmd_core::entry::stat(path).ok()?;
                         if let Ok(rel) = path.strip_prefix(&root) {
@@ -130,6 +148,15 @@ impl App {
             ("View", Some(path)) | ("Edit", Some(path)) => {
                 let side = self.active;
                 let edit = FIND_BUTTONS[button] == "Edit";
+                self.hit_walk = Some(HitWalk {
+                    rows: d
+                        .rows
+                        .iter()
+                        .map(|row| (row.path.clone(), row.hit.as_ref().map(|hit| hit.line)))
+                        .collect(),
+                    at: d.selected,
+                    query: d.query.clone(),
+                });
                 self.close_find();
                 // the panel goes where the file is first, so quitting
                 // the viewer leaves you standing on what you read
@@ -144,26 +171,162 @@ impl App {
                 } else {
                     self.open_viewer(false);
                 }
+                if let Some(hit) = hit {
+                    self.go_to_hit(&d.query, hit.line);
+                }
             }
             _ => {}
         }
     }
 
+    /// F5, F6 or F8 from the results window: the marked files, or the
+    /// one under the cursor, without panelizing them first.
+    pub(super) fn find_operate(&mut self, d: FindResults, key: KeyCode) {
+        let targets = d.targets();
+        self.close_find();
+        match key {
+            KeyCode::F(5) => self.open_transfer_of(false, targets),
+            KeyCode::F(6) => self.open_transfer_of(true, targets),
+            _ => self.open_delete_of(false, targets),
+        }
+    }
+
+    /// M-. / M-, in the viewer or the editor: the next or previous row
+    /// of the find it came from - further down this file, or the next
+    /// file, opened in the same kind of screen.
+    pub(super) fn step_hit(&mut self, delta: isize) {
+        let edit = self.editor().is_some();
+        let note = |app: &mut App, text: String| {
+            if let Some(st) = app.editor_mut() {
+                st.note = Some(text);
+            } else if let Some(v) = app.viewer_mut() {
+                v.note = Some(text);
+            }
+        };
+        let Some(walk) = self.hit_walk.as_ref() else {
+            note(self, " no find results to walk - Alt+F7 first ".into());
+            return;
+        };
+        let next = walk.at as isize + delta;
+        if next < 0 || next as usize >= walk.rows.len() {
+            let end = if delta > 0 { "last" } else { "first" };
+            note(self, format!(" that was the {end} result "));
+            return;
+        }
+        let (at, total) = (next as usize, walk.rows.len());
+        let (path, line) = walk.rows[at].clone();
+        let query = walk.query.clone();
+        let here = match (self.editor(), self.viewer()) {
+            (Some(st), _) => st.ed.path.clone(),
+            (None, Some(v)) => v.source.clone(),
+            _ => return,
+        };
+        if here != path {
+            // leaving this file: nothing it holds may be lost on the way
+            if edit && self.editor().is_some_and(|st| st.ed.modified()) {
+                note(
+                    self,
+                    " save first (F2) - the next result is in another file ".into(),
+                );
+                return;
+            }
+            if !edit && self.viewer().is_some_and(|v| !v.hex_edits.is_empty()) {
+                note(self, " bytes are still unwritten - F6 writes them ".into());
+                return;
+            }
+            if edit {
+                self.close_editor();
+            } else {
+                self.close_viewer();
+            }
+            let side = self.active;
+            if let Some(dir) = path.parent() {
+                let _ = self.panels[side].request_dir(dir.to_path_buf(), LoadKind::Enter);
+                if let Some(name) = path.file_name() {
+                    self.panels[side].select_name(name);
+                }
+            }
+            if edit {
+                self.open_editor();
+            } else {
+                self.open_viewer(false);
+            }
+        }
+        if let Some(walk) = self.hit_walk.as_mut() {
+            walk.at = at;
+        }
+        if let Some(line) = line {
+            self.go_to_hit(&query, line);
+        }
+        note(self, format!(" result {} of {total} ", at + 1));
+    }
+
+    /// The viewer or the editor just opened on a hit: take it to the
+    /// line, with the find's content as its search, so `n` or Shift+F7
+    /// goes on to the next one.
+    fn go_to_hit(&mut self, query: &FindDialog, line: u64) {
+        let text = query.content.value.trim().to_string();
+        let line = line.saturating_sub(1) as usize;
+        if self.editor().is_some() {
+            // the editor's search is a regular expression
+            let mut pattern = match query.regex {
+                true => text,
+                false => regex::escape(&text),
+            };
+            if !query.case_sensitive {
+                pattern = format!("(?i){pattern}");
+            }
+            if let Some(st) = self.editor_mut() {
+                st.ed.search = pattern.clone();
+            }
+            self.editor_find(&pattern, rcmd_edit::Pos { line, col: 0 });
+        } else if let Some(v) = self.viewer_mut() {
+            v.search = ViewSearch {
+                field: TextField::new(text).with_history("view-search"),
+                kind: if query.regex {
+                    SearchKind::Regex
+                } else {
+                    SearchKind::Normal
+                },
+                case_sensitive: query.case_sensitive,
+                whole_word: query.whole_words,
+                backwards: false,
+                row: 0,
+            };
+            viewer_search(v, line, false);
+        }
+    }
+
     pub(super) fn submit_find(&mut self, dialog: FindDialog) {
-        for field in [&dialog.start, &dialog.name, &dialog.content] {
-            self.remember(field);
+        for i in 0..FIND_FIELDS {
+            if let Some(field) = dialog.field_at(i) {
+                self.remember(field);
+            }
         }
         let memory = dialog.memory();
         if let Err(err) = state::update(move |s| s.find = Some(memory)) {
             self.status = Some(format!(" could not save state: {err} "));
         }
+        let max_depth = match (dialog.recursive, dialog.depth.value.trim()) {
+            (false, _) => Some(1),
+            (true, "") => None,
+            (true, typed) => match typed.parse::<usize>() {
+                Ok(depth) if depth > 0 => Some(depth),
+                _ => {
+                    self.status = Some(format!(" max depth: {typed} is not a number of levels "));
+                    self.dialog = Some(Dialog::Find(Box::new(dialog)));
+                    return;
+                }
+            },
+        };
         let text = dialog.name.value.trim();
         let name = rcmd_core::pattern::Pattern {
             text: if text.is_empty() { "*" } else { text }.to_string(),
             shell: dialog.shell,
-            case_sensitive: dialog.case_sensitive,
+            case_sensitive: dialog.name_case,
             files_only: false,
-            ..Default::default()
+            size: dialog.size.value.trim().to_string(),
+            newer: dialog.newer.value.trim().to_string(),
         };
         let content = {
             let text = dialog.content.value.trim();
@@ -184,6 +347,9 @@ impl App {
             content,
             skip_hidden: dialog.skip_hidden,
             follow_links: dialog.follow_links,
+            first_hit: dialog.first_hit,
+            max_depth,
+            ignore_dirs: find::parse_ignore_dirs(&dialog.ignore.value),
         };
         let root = match dialog.start.value.trim() {
             "" => self.panels[self.active].local_cwd(),
@@ -240,27 +406,8 @@ impl App {
         }
         let start = self.panels[self.active].local_cwd().display().to_string();
         // the last question, from this session or the one before
-        let last = state::load().0.find.unwrap_or(state::FindMemory {
-            name: "*".into(),
-            shell: true,
-            skip_ignored: true,
-            ..Default::default()
-        });
-        self.dialog = Some(Dialog::Find(Box::new(FindDialog {
-            start: TextField::new(start).with_history("find-start"),
-            name: TextField::new(last.name).with_history("find-name"),
-            content: TextField::new(last.content).with_history("find-content"),
-            shell: last.shell,
-            case_sensitive: last.case_sensitive,
-            whole_words: last.whole_words,
-            regex: last.regex,
-            all_charsets: last.all_charsets,
-            skip_hidden: last.skip_hidden,
-            follow_links: last.follow_links,
-            skip_ignored: last.skip_ignored,
-            row: 1,
-            ok: true,
-        })));
+        let last = state::load().0.find.unwrap_or_default();
+        self.dialog = Some(Dialog::Find(Box::new(FindDialog::from_memory(start, last))));
     }
 
     pub(super) fn open_panelize(&mut self) {

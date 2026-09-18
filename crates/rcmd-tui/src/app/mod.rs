@@ -241,71 +241,115 @@ pub struct RemoteEdit {
     mtime_before: Option<std::time::SystemTime>,
 }
 
-/// Alt+F7 find dialog: filename glob + optional content substring.
+/// Alt+F7 find dialog: mc's Find File, and the questions it never
+/// asked - how big, how old, how deep.
+#[derive(Clone)]
 pub struct FindDialog {
     /// Where the walk starts; the panel's directory unless changed.
     pub start: TextField,
     pub name: TextField,
     pub content: TextField,
+    /// mc's "Enable ignore directories": names or paths, `:` between.
+    pub ignore: TextField,
+    /// As the select dialog takes them: `>1M`, `30d`.
+    pub size: TextField,
+    pub newer: TextField,
+    /// How many levels down; empty is all of them.
+    pub depth: TextField,
     /// The filename is a glob; off = a regular expression.
     pub shell: bool,
+    pub name_case: bool,
     pub case_sensitive: bool,
     pub whole_words: bool,
     /// The content is a regular expression, matched line by line.
     pub regex: bool,
     pub all_charsets: bool,
+    /// One result per file; off, every matching line is one.
+    pub first_hit: bool,
+    /// Off = the start directory alone.
+    pub recursive: bool,
     pub skip_hidden: bool,
     pub follow_links: bool,
     /// Skip gitignored trees when searching inside a work tree.
     pub skip_ignored: bool,
-    /// Focused row: the three fields, then the switches, then
-    /// [`FIND_ROWS`] for the button row.
+    /// Focused row: the fields, then the switches, then [`FIND_ROWS`]
+    /// for the button row.
     pub row: usize,
     pub ok: bool,
 }
 
-/// The three text fields, in row order.
-pub const FIND_FIELDS: usize = 3;
-/// The switches, in row order after the fields: label and which field
-/// of the dialog they tick.
+/// The text fields, in row order: label, and the hint it carries.
+pub const FIND_FIELD_LABELS: &[&str] = &[
+    "Start at:",
+    "File name:",
+    "Content:",
+    "Ignore dirs:",
+    "Size:",
+    "Newer than:",
+    "Max depth:",
+];
+pub const FIND_FIELDS: usize = FIND_FIELD_LABELS.len();
+/// The switches, in row order after the fields.
 pub const FIND_SWITCHES: &[&str] = &[
-    "Shell patterns (name; off = regular expression)",
-    "Case sensitive (content)",
-    "Whole words (content)",
-    "Regular expression (content)",
-    "All charsets (content)",
-    "Skip hidden files",
+    "Shell patterns",
+    "Case sensitive name",
+    "Case sensitive content",
+    "Whole words",
+    "Regular expression",
+    "All charsets",
+    "First hit only",
+    "Find recursively",
+    "Skip hidden",
     "Follow symlinks",
-    "Skip gitignored files",
+    "Skip gitignored",
 ];
 /// Rows before the button row.
 pub const FIND_ROWS: usize = FIND_FIELDS + FIND_SWITCHES.len();
 
 impl FindDialog {
+    fn switch_mut(&mut self, index: usize) -> Option<&mut bool> {
+        Some(match index {
+            0 => &mut self.shell,
+            1 => &mut self.name_case,
+            2 => &mut self.case_sensitive,
+            3 => &mut self.whole_words,
+            4 => &mut self.regex,
+            5 => &mut self.all_charsets,
+            6 => &mut self.first_hit,
+            7 => &mut self.recursive,
+            8 => &mut self.skip_hidden,
+            9 => &mut self.follow_links,
+            10 => &mut self.skip_ignored,
+            _ => return None,
+        })
+    }
+
     pub fn switch(&self, index: usize) -> bool {
-        match index {
-            0 => self.shell,
-            1 => self.case_sensitive,
-            2 => self.whole_words,
-            3 => self.regex,
-            4 => self.all_charsets,
-            5 => self.skip_hidden,
-            6 => self.follow_links,
-            _ => self.skip_ignored,
-        }
+        [
+            self.shell,
+            self.name_case,
+            self.case_sensitive,
+            self.whole_words,
+            self.regex,
+            self.all_charsets,
+            self.first_hit,
+            self.recursive,
+            self.skip_hidden,
+            self.follow_links,
+            self.skip_ignored,
+        ]
+        .get(index)
+        .copied()
+        .unwrap_or(false)
     }
 
     fn toggle(&mut self) {
-        match self.row.checked_sub(FIND_FIELDS) {
-            Some(0) => self.shell = !self.shell,
-            Some(1) => self.case_sensitive = !self.case_sensitive,
-            Some(2) => self.whole_words = !self.whole_words,
-            Some(3) => self.regex = !self.regex,
-            Some(4) => self.all_charsets = !self.all_charsets,
-            Some(5) => self.skip_hidden = !self.skip_hidden,
-            Some(6) => self.follow_links = !self.follow_links,
-            Some(7) => self.skip_ignored = !self.skip_ignored,
-            _ => {}
+        if let Some(on) = self
+            .row
+            .checked_sub(FIND_FIELDS)
+            .and_then(|i| self.switch_mut(i))
+        {
+            *on = !*on;
         }
     }
 
@@ -320,14 +364,33 @@ impl FindDialog {
         self.row = row as usize;
     }
 
+    /// The field in row `i`.
+    pub fn field_at(&self, i: usize) -> Option<&TextField> {
+        [
+            &self.start,
+            &self.name,
+            &self.content,
+            &self.ignore,
+            &self.size,
+            &self.newer,
+            &self.depth,
+        ]
+        .get(i)
+        .copied()
+    }
+
     /// The field the cursor is in, if it is in one.
     pub fn field(&mut self) -> Option<&mut TextField> {
-        match self.row {
-            0 => Some(&mut self.start),
-            1 => Some(&mut self.name),
-            2 => Some(&mut self.content),
-            _ => None,
-        }
+        Some(match self.row {
+            0 => &mut self.start,
+            1 => &mut self.name,
+            2 => &mut self.content,
+            3 => &mut self.ignore,
+            4 => &mut self.size,
+            5 => &mut self.newer,
+            6 => &mut self.depth,
+            _ => return None,
+        })
     }
 
     /// The answers worth opening the next find on.
@@ -335,14 +398,47 @@ impl FindDialog {
         crate::state::FindMemory {
             name: self.name.value.clone(),
             content: self.content.value.clone(),
+            ignore: self.ignore.value.clone(),
+            size: self.size.value.clone(),
+            newer: self.newer.value.clone(),
+            depth: self.depth.value.clone(),
             shell: self.shell,
+            name_case: self.name_case,
             case_sensitive: self.case_sensitive,
             whole_words: self.whole_words,
             regex: self.regex,
             all_charsets: self.all_charsets,
+            first_hit: self.first_hit,
+            recursive: self.recursive,
             skip_hidden: self.skip_hidden,
             follow_links: self.follow_links,
             skip_ignored: self.skip_ignored,
+        }
+    }
+
+    /// A dialog opening on `last`, the walk starting at `start`.
+    pub fn from_memory(start: String, last: crate::state::FindMemory) -> FindDialog {
+        FindDialog {
+            start: TextField::new(start).with_history("find-start"),
+            name: TextField::new(last.name).with_history("find-name"),
+            content: TextField::new(last.content).with_history("find-content"),
+            ignore: TextField::new(last.ignore).with_history("find-ignore"),
+            size: TextField::new(last.size).with_history("size"),
+            newer: TextField::new(last.newer).with_history("newer"),
+            depth: TextField::new(last.depth),
+            shell: last.shell,
+            name_case: last.name_case,
+            case_sensitive: last.case_sensitive,
+            whole_words: last.whole_words,
+            regex: last.regex,
+            all_charsets: last.all_charsets,
+            first_hit: last.first_hit,
+            recursive: last.recursive,
+            skip_hidden: last.skip_hidden,
+            follow_links: last.follow_links,
+            skip_ignored: last.skip_ignored,
+            row: 1,
+            ok: true,
         }
     }
 }
@@ -363,8 +459,8 @@ pub struct FindResults {
     /// What was searched for, for the title.
     pub label: String,
     pub root: PathBuf,
-    /// Absolute paths, in the order they were found.
-    pub rows: Vec<PathBuf>,
+    /// In the order they were found.
+    pub rows: Vec<FindRow>,
     pub selected: usize,
     pub top: usize,
     /// Some(matches, scanned) once the walk has finished.
@@ -384,6 +480,26 @@ pub const COMPARE_MODES: &[(&str, rcmd_core::compare::Mode)] = &[
     ),
 ];
 
+/// A find's results, walked from the viewer or the editor one hit at a
+/// time: mc's results window as a quickfix list.
+pub struct HitWalk {
+    /// Every row of the window, in its order: the file and the line.
+    pub rows: Vec<(PathBuf, Option<u64>)>,
+    pub at: usize,
+    /// The question that found them, for the search each hit seeds.
+    pub query: Box<FindDialog>,
+}
+
+/// One row of the results window: a file, and - when the content was
+/// searched - the line it was found on.
+pub struct FindRow {
+    /// Absolute.
+    pub path: PathBuf,
+    pub hit: Option<find::Hit>,
+    /// Insert marks it for F5 / F6 / F8, as in a panel.
+    pub marked: bool,
+}
+
 /// The buttons along the bottom, in mc's order.
 pub const FIND_BUTTONS: &[&str] = &["Chdir", "Again", "Panelize", "View", "Edit", "Quit"];
 
@@ -391,11 +507,29 @@ impl FindResults {
     /// The path as the window shows it: relative to where the search
     /// started, which is what makes a long list readable.
     pub fn label_of(&self, at: usize) -> String {
-        let path = &self.rows[at];
+        let path = &self.rows[at].path;
         path.strip_prefix(&self.root)
             .unwrap_or(path)
             .display()
             .to_string()
+    }
+
+    /// What F5, F6 and F8 act on: the marked rows' files, each once,
+    /// or the file under the cursor when nothing is marked.
+    pub fn targets(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = Vec::new();
+        let marked = self.rows.iter().filter(|row| row.marked);
+        for row in marked {
+            if !out.contains(&row.path) {
+                out.push(row.path.clone());
+            }
+        }
+        if out.is_empty()
+            && let Some(row) = self.rows.get(self.selected)
+        {
+            out.push(row.path.clone());
+        }
+        out
     }
 
     /// Move the cursor and keep it on screen. `shown` is how many rows
@@ -1025,6 +1159,25 @@ pub enum Dialog {
     /// C-x a: what the panels are sitting on that is not the local
     /// filesystem.
     Vfs(VfsDialog),
+    /// M-/: the fuzzy finder over the tree under the panel.
+    Fuzzy(Box<FuzzyDialog>),
+}
+
+/// The fuzzy finder: what is typed, and the tree it is matched against.
+pub struct FuzzyDialog {
+    pub field: TextField,
+    pub root: PathBuf,
+    /// Every path the walk has found so far, relative to `root`, and
+    /// whether it is a directory.
+    pub all: Vec<(String, bool)>,
+    /// Indices into `all`, best match first.
+    pub shown: Vec<usize>,
+    pub selected: usize,
+    pub top: usize,
+    /// The walk, while it is still going.
+    pub walking: Option<FindHandle>,
+    /// The pattern `shown` was ranked for.
+    pub ranked_for: Option<String>,
 }
 
 /// One line of the active VFS list.
@@ -1891,6 +2044,7 @@ mod dialog;
 mod editor;
 mod exec;
 mod focus;
+mod fuzzy;
 mod panel;
 mod search;
 mod viewer;
@@ -2258,6 +2412,8 @@ pub enum Action {
     UpDir,
     Enter,
     FindFile,
+    /// M-/: the fuzzy finder over the tree under the panel.
+    FuzzyFind,
     Panelize,
     CompareDirs,
     DirSize,
@@ -2440,6 +2596,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Directory ho&tlist...", "C-\\", Action::Hotlist)),
             Some(("Directory tr&ee...", "", Action::DirTree)),
             Some(("&Find file...", "M-F7", Action::FindFile)),
+            Some(("Fuzzy find by &path...", "M-/", Action::FuzzyFind)),
             Some(("&Compare directories", "C-x d", Action::CompareDirs)),
             Some(("Synchroni&ze directories...", "", Action::Sync)),
             Some(("Compare fi&les", "", Action::CompareFiles)),
@@ -2880,6 +3037,9 @@ pub struct App {
     pub quick_search: Option<QuickSearch>,
     /// M-h inside a text field: that field's history as a list.
     pub field_popup: Option<FieldPopup>,
+    /// The find results a viewer or editor was opened from, which M-.
+    /// and M-, walk.
+    pub hit_walk: Option<HitWalk>,
     pub find: Option<FindState>,
     pub connect: Option<ConnectState>,
     /// Live remote connections by URL prefix; weak so that leaving a
@@ -3100,6 +3260,7 @@ impl App {
             cmdline,
             quick_search: None,
             field_popup: None,
+            hit_walk: None,
             find: None,
             connect: None,
             connections: Vec::new(),
@@ -3175,6 +3336,7 @@ impl App {
         self.drain_remote();
         self.drain_job();
         self.drain_find();
+        let fuzzy = self.drain_fuzzy();
         self.drain_connect();
         self.drain_du();
         self.drain_compare();
@@ -3209,6 +3371,7 @@ impl App {
             || self.compare.is_some()
             || self.panelize.is_some()
             || self.find.is_some()
+            || (fuzzy && matches!(&self.dialog, Some(Dialog::Fuzzy(d)) if d.walking.is_some()))
             || self.connect.is_some()
             || self.du.is_some()
             || loading
@@ -3637,7 +3800,7 @@ impl App {
         }
         if any_done {
             for panel in &mut self.panels {
-                let _ = panel.reload();
+                let _ = panel.refresh();
             }
             self.git_refresh();
             if self.jobs.is_empty() && matches!(self.dialog, Some(Dialog::Jobs(_))) {

@@ -416,6 +416,41 @@ impl Panel {
         }
     }
 
+    /// Bring the listing up to date without leaving it. A panelized
+    /// listing has its files looked at again - what is gone drops out,
+    /// the rest show their new size and time - where a reload would
+    /// swap the list for the directory it was found under. Anything
+    /// else is a reload. What a finished job, a closed editor or a
+    /// returning shell calls; Ctrl+R stays the way back to the
+    /// directory.
+    pub fn refresh(&mut self) -> io::Result<()> {
+        if self.panelized.is_none() || self.archive.is_some() || !self.is_local() {
+            return self.reload();
+        }
+        let keep = self.selected().map(|e| e.name.clone());
+        let cwd = self.cwd.clone();
+        self.entries.retain_mut(|e| {
+            if e.is_parent() {
+                return true;
+            }
+            match crate::entry::stat(&cwd.join(&e.name)) {
+                Ok(mut fresh) => {
+                    fresh.name = std::mem::take(&mut e.name);
+                    *e = fresh;
+                    true
+                }
+                Err(_) => false,
+            }
+        });
+        let entries = &self.entries;
+        self.marked
+            .retain(|name| entries.iter().any(|e| &e.name == name));
+        self.cursor = keep
+            .and_then(|name| self.entries.iter().position(|e| e.name == name))
+            .unwrap_or_else(|| self.cursor.min(self.entries.len().saturating_sub(1)));
+        Ok(())
+    }
+
     /// Re-read the current directory, keeping the cursor on the same entry
     /// where possible and pruning marks for entries that no longer exist.
     /// On failure the previous listing is kept. Local reloads go through
@@ -994,6 +1029,37 @@ mod tests {
         fs::write(dir.path().join("cargo.lock"), "").unwrap();
         fs::write(dir.path().join(".hidden"), "").unwrap();
         dir
+    }
+
+    /// A find's panelized result outlived nothing: every finished job
+    /// reloaded the panel, and a reload is the directory again.
+    #[test]
+    fn a_refresh_keeps_a_panelized_listing() {
+        let dir = make_tree();
+        let root = dir.path().to_path_buf();
+        fs::write(root.join("src/a.rs"), "a").unwrap();
+        fs::write(root.join("src/b.rs"), "b").unwrap();
+        let mut panel = Panel::new(root.clone()).unwrap();
+        let found: Vec<Entry> = ["src/a.rs", "src/b.rs"]
+            .iter()
+            .map(|name| {
+                let mut e = crate::entry::stat(&root.join(name)).unwrap();
+                e.name = name.into();
+                e
+            })
+            .collect();
+        panel.panelize(found, "find: *.rs".into());
+        fs::remove_file(root.join("src/a.rs")).unwrap();
+        fs::write(root.join("src/b.rs"), "grown").unwrap();
+
+        panel.refresh().unwrap();
+        assert!(panel.panelized.is_some(), "still the found list");
+        let names: Vec<_> = panel.entries.iter().map(|e| e.name.clone()).collect();
+        assert_eq!(names, ["src/b.rs"], "the removed one dropped out");
+        assert_eq!(
+            panel.entries[0].size, 5,
+            "and the other was looked at again"
+        );
     }
 
     #[test]

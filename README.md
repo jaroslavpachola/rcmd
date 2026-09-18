@@ -358,6 +358,7 @@ window was left in is where the next terminal session starts.
 | Alt+letter | In a dialog: press the button whose underlined letter it is |
 | Ctrl+\ | Directory hotlist: Enter goes (or walks into a group), `Ctrl+S` narrows the list by what you type, `a` adds this directory, `g` makes a group, `e` renames, `m` moves an entry into another group, `d` drops, Alt+↑/↓ reorders |
 | Alt+F7 | Find file (glob + optional content); results panelized |
+| Alt+/ | Fuzzy find: a few letters of a path under the panel |
 | Alt+← / Alt+→ | Directory history back / forward (per panel) |
 | Alt+Shift+H | Directory history as a list; Enter goes there |
 | Alt+↑ | Directory hotlist |
@@ -600,12 +601,33 @@ filename pattern, and the text to look for inside the files, with mc's
 answers beside them: **whole words**, **case sensitive**, **regular
 expression** (matched line by line), **all charsets** (the same word as
 another machine spelled it - KOI8-R, CP1251, Shift_JIS and the rest),
-**skip hidden**, **follow symlinks**, and rcmd's own **skip
-gitignored**. Matches arrive in a **results window** of their own as
-they are found, with mc's six buttons: **Chdir** (Enter on a row) takes
-the panel to the file and puts the cursor on it, **Again** reopens the
-dialog on the same question, **Panelize** turns the list into the panel
-listing, **View** and **Edit** open the match, and **Quit** closes.
+**skip hidden**, **follow symlinks**, **first hit only**, **find
+recursively**, and rcmd's own **skip gitignored** - with separate case
+switches for the name and the content, as mc has. Beside mc's
+questions sit the ones it never asked: directories to **ignore**
+(`node_modules:build/out`, a name anywhere or a path from the start), a
+**size** (`>1M`, `1M-2G`), an age (**newer than** `7d`) and a **max
+depth**. The dialog reopens on the last question, in the next session
+too. Matches arrive in a **results window** of their own as they are
+found; a content search shows each hit as `file:line: text`, one per
+file or - with *first hit only* unticked - every matching line. mc's six
+buttons: **Chdir** (Enter on a row) takes the panel to the file and puts
+the cursor on it, **Again** reopens the dialog on the same question,
+**Panelize** turns the list into the panel listing, **View** and
+**Edit** open the file at the hit with the search already set, and
+**Quit** closes. Insert marks rows and F5, F6 and F8 act on the marked
+files - or the one under the cursor - without panelizing first. In the
+viewer or editor opened from a hit, **Alt+.** and **Alt+,** walk the
+results, on down the file and into the next one: a quickfix list. A
+panelized listing now outlives a copy or a move: the files are looked
+at again rather than the list dropped, and Ctrl+R is still the way
+back to the directory.
+
+**Alt+/** opens a **fuzzy finder** over the tree under the panel: type
+a few letters of a path - `srmn` for `src/main.rs` - and the list ranks
+as the walk streams in, the letters that matched lit, the file name
+favoured over the directories above it. Enter goes there (into a
+directory, or onto the file); F3 and F4 view and edit it.
 `find_window = false` restores the pre-4.0 shape, where matches stream
 straight into the panel as a *panelized* listing (paths relative to the
 search root), where marking and F5/F6/F8 work as usual. *Panelize command…*

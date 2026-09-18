@@ -295,6 +295,12 @@ impl Matcher {
         }
     }
 
+    /// Whether anything beyond the name was asked - a size or an age,
+    /// which only a stat can answer.
+    pub fn has_criteria(&self) -> bool {
+        self.size.is_some() || self.newer.is_some()
+    }
+
     /// The name and everything else the dialog asked about. A
     /// directory is never held to a size or an age: the number in the
     /// listing is not its own, and the two criteria are about files.
