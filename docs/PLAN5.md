@@ -1,7 +1,10 @@
 # rcmd 5.0 - trust, then reach
 
-**Status:** DRAFT - drafted 2026-09-17 from a code audit of 4.30.8, not
-from the README. **Baseline:** 4.30.8 - the parity release (PLAN4), the
+**Status:** COMPLETE - drafted 2026-09-17 from a code audit of 4.30.8,
+not from the README; every phase done and shipped as 4.31.0 to 4.40.0
+on 2026-09-18. 5.0.0 waits on a dogfooding window of 4.40.0, and what
+the phases left is gathered under [Carried forward](#carried-forward).
+**Baseline:** 4.30.8 - the parity release (PLAN4), the
 orthodox pass (4.11 to 4.27), the window build (4.28 onwards).
 
 Both comparison documents are finished: every **Adopt** row of
@@ -445,6 +448,38 @@ is mechanical. Recorded so the question is closed rather than open.
   inodes, xattrs and ACLs.
 - **i18n**: every string is a literal. A decision more than a task;
   written down here so it is one.
+
+## Carried forward
+
+What each phase's "left" paragraph named, in one place, so the next
+plan starts from a list rather than from ten paragraphs. Limits that
+are the design (ACLs travelling as xattrs, `C-x d` staying one
+directory, dragging out of the window, which egui cannot start) are
+not repeated here.
+
+- **Trust**: SFTP and FISH reconnect after a dropped connection (S3);
+  zip members read into memory whole, FISH uploads buffered before
+  sending (S4); deletes and wipes outside the queue, the trash's
+  `directorysizes` cache not updated on restore or purge (S5);
+  `sudo://` with no password prompt of its own (S7).
+- **Reach**: `ProxyJump` and `Include` in `~/.ssh/config` (S3);
+  reflinks beyond local-to-local (S4); archives as a synchronize side
+  (S6); a writable `[[vfs]]`, rclone setting a file's time after an
+  upload, a login step for podman and kubectl (S7); zstd and 7z
+  writing, archive passwords, a compression level on the pack form,
+  archives on remote panels and inside one another, zip names in a
+  chosen codepage (S9).
+- **Hands**: mouse clicks in the remaining dialogs, the subshell prompt
+  for a shell that has wandered from the panel (S3); a merge keeping a
+  file's mixed line endings, a character-level diff highlight (S6);
+  graphemes in the line editor, `marked_stats` without a walk per draw,
+  changed-line marks in the editor gutter and ORTHODOX-DIFF §7's git
+  actions (S9).
+
+The other source is ORTHODOX-DIFF itself: its `Adopt-later` rows
+(yank registers or a collector panel, find inside archives, the fuzzy
+tree, a disk usage mode, sort groups, content columns and the rest),
+and §9's `Open` ones, which this plan left where they were.
 
 ## Open decisions
 

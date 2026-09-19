@@ -247,7 +247,7 @@ overturned in passing, and those five would overturn one.
 
 ---
 
-This document is decisions, in the shape MC-DIFF settled on. A roadmap
-for the rows marked `Adopt` would be `PLAN5.md`, and does not exist yet:
-unlike MC-DIFF's, none of these rows is owed to anybody, so the roadmap
-should start from the five above rather than from the whole page.
+This document is decisions, in the shape MC-DIFF settled on. The
+roadmap that followed it is [PLAN5.md](PLAN5.md), which started from a
+code audit rather than from this page, picked up several `Adopt-later`
+rows on the way, and left §9's five `Open` rows where they were.
