@@ -1,22 +1,25 @@
 # rcmd
 
-A Midnight Commander replacement in Rust: orthodox dual-pane file manager
-with MC keybindings, built on ratatui. All four roadmaps are complete -
-1.0 ([docs/PLAN.md](docs/PLAN.md)), 2.0
-([docs/PLAN2.md](docs/PLAN2.md)), 3.0
-([docs/PLAN3.md](docs/PLAN3.md)) and now **4.0, the parity release**
-([docs/PLAN4.md](docs/PLAN4.md)), whose scope came from a
-decision-by-decision comparison against mc
-([docs/MC-DIFF.md](docs/MC-DIFF.md)). Every row that comparison marked
-**Adopt** is closed, and the places where rcmd still differs on purpose
-are written down there rather than left to be discovered.
+An orthodox dual-pane file manager written in Rust, for the terminal or
+in a window. If your hands know Midnight Commander, they already know
+rcmd: the same F-keys, menus and dialogs, and `rcmd --import-mc` brings
+your mc config and skins with you. From there it goes further:
 
-**4.11 onwards** is a second comparison, against the rest of the
-orthodox family - Far Manager, DOS Navigator, Volkov Commander, Total
-Commander, and the modern TUI managers - written down the same way in
-[docs/ORTHODOX-DIFF.md](docs/ORTHODOX-DIFF.md). Those rows are not
-parity work and nothing is owed to anybody, which is why `Skip` appears
-there as often as `Adopt`.
+- **a live shell**: a persistent subshell with real job control, and in
+  the window build, a real terminal pane where `less` and `vim` work
+- **operations you can trust**: a background job queue, undo for moves
+  and bulk renames, checksum verification on copy, F8 to the trash
+- **more places as panels**: SFTP, anything rclone reaches (S3, Drive,
+  Dropbox…), and zip/tar/rar/7z archives you can browse and pack
+- **scriptable**: `rcmd --remote` drives a running instance, so plugins
+  need no embedded runtime
+- **tools for real trees**: directory synchronize, git status in the
+  panels, gitignore-aware find, a frecency-ranked hotlist
+
+Where rcmd differs from mc, it does so on purpose, and each difference
+has its reason in [docs/MC-DIFF.md](docs/MC-DIFF.md). Ideas taken from
+Far Manager, DOS Navigator and Total Commander are recorded in
+[docs/ORTHODOX-DIFF.md](docs/ORTHODOX-DIFF.md).
 
 ![rcmd demo: browsing, the syntax-highlighted viewer, marking and
 copying, the persistent subshell](docs/demo.gif)
@@ -25,103 +28,12 @@ copying, the persistent subshell](docs/demo.gif)
 the same pty harness that runs the test suite - and rendered with
 [agg](https://github.com/asciinema/agg))*
 
-**4.28** adds a second front end: `rcmd-egui` is the same file
-manager drawn by [egui](https://github.com/emilk/egui) in a window
-instead of by a terminal - see [In a window](#in-a-window).
+`rcmd-egui` is the same file manager drawn by
+[egui](https://github.com/emilk/egui) in a window instead of by a
+terminal - see [In a window](#in-a-window).
 
 ![rcmd-egui: the same two panels, the same keys, in a
 window](docs/rcmd-egui.png)
-
-## Status
-
-**2.0** - complete MC-workflow parity and beyond: marking and F5–F8
-operations with MC-style dialogs (mtimes preserved, F8 goes to trash),
-command line + shell integration with real job control, F3 chunked
-viewer with wrap and hex modes, F9 menu, F1 help, config file with
-keymap presets/custom bindings, quick search, filter, hotlist, themes,
-archive browsing (zip, tar, tar.{gz,xz,bz2}) with extraction and
-copy-into-zip; find file / panelize / directory compare, non-blocking
-listings with filesystem watching, **SFTP remote panels**, a **built-in
-editor** with syntax highlighting, mouse support, per-panel directory
-history, quick view, info panel, listing formats, git status in the
-panels, **openers and an F2 user menu**, and MC's ESC-prefix - see
-below.
-
-**3.0** - the live commander: the persistent **subshell**
-(Ctrl+O), SFTP auth depth (passphrase keys, keyboard-interactive),
-bulk rename via the editor, viewer follow mode (tail&nbsp;-f) with
-syntax highlighting and precise search-match highlighting, `[[view]]`
-filters (F3 through `pdftotext` & co.), Tab path completion,
-gitignore-aware find, recent directories in the hotlist, a **job
-queue** with background transfers, chmod/chattr/chown/symlink dialogs, editor
-soft-wrap + `$1` capture groups + block ops, copy *into* tar, **rar and
-7z browsing** (via 7z/unrar), click-to-sort headers, and an MC alias
-batch (S-F4/S-F5/S-F6, C-x t/p, M-c quick cd…).
-
-**3.8** - toward parity with mc: `config.toml` is now yours alone, with
-everything rcmd changes itself moved to a state file; F9 > Options >
-Panel options is one grouped dialog covering mc's whole setting
-surface; `[keys.viewer]` and `[keys.editor]` rebind inside the viewer
-and the editor; `rcmd --import-mc` converts an existing mc
-configuration; the command line gained mc's keys, macros and a
-persistent history; and the panels gained the **Layout** settings
-(horizontal split, adjustable ratio, optional bars), a **per-panel mini
-status** and the **multi-column brief listing**.
-
-**3.10** - the panels themselves: mc's **directory tree**, both as the
-Command-menu dialog (Enter moves this panel) and as a panel listing mode
-(Enter moves the other one and the tree stays), scanned on demand so
-there is no tree cache to go stale; and the **user-defined listing
-format**, where `listing = "user"` draws whatever `listing_format` names
-in mc's own format language - `half type name | size | mtime` and the
-other fifteen fields, with widths that grow.
-
-**3.11** - `[[highlight]]` colour rules: entries are painted by glob or
-by kind, which is mc's filehighlight without the second file.
-
-**3.12** - mc's menu bar: **Left, File, Command, Options, Right**, where
-the two panel menus act on their own panel whichever one has the focus.
-
-**3.51** - the wider world (4.0 S7): `-e` and `-v` and the
-**rcedit / rcview / rcdiff** aliases, mc's startup flags
-(`-b -c -C -S -d -u -U -l`), the shipped shell wrappers, **skins** -
-rcmd's own theme files and mc's skin files read where they lie - and
-**macOS builds back** in CI and in the releases.
-
-**4.28** - **a second front end**: `rcmd-egui` draws the same screen
-with egui, in a window, sharing every crate with the terminal build and
-calling the same `ui::draw`. `rcmd-tui` became a library as well as a
-binary to allow it, and `App::run`'s body became `App::tick` so a front
-end that does not own its event loop can drive the same state machine.
-`Ctrl+O` opens a real terminal pane in it: `vt100` interprets what the
-existing subshell's pty produces, so `less` and `vim` work there. See
-[In a window](#in-a-window).
-
-**4.11-4.27** - the orthodox pass, from
-[docs/ORTHODOX-DIFF.md](docs/ORTHODOX-DIFF.md): **directory
-synchronize** (compare, then a plan that says which way each difference
-goes), **Alt+F5 packs** into a new archive, **Ctrl+X u undoes** a move
-or a bulk rename, mask lists (`*.c,*.h|*_test.*`) everywhere a glob is
-typed, **named filter sets**, select and filter **by size and age**,
-five more **sort orders** including *unsorted*, the hotlist ranked by
-**frecency** and searchable, `rcmd --remote` **driving a running
-instance** (and with it a plugin story that needs no runtime), **rclone
-panels**, what is **mounted** in the `C-x a` list, **checksum files**
-and a **Verify** box on the copy form, **wipe**, **apply a command per
-file**, the **numbered places**, **recent files**, and the small keys
-the others always had - restore marks, size every directory, names to
-the clipboard, hide a panel.
-
-**4.0** - the parity release, and the leftovers that finished it: mc's
-**quick search** with an input field of its own, **Learn keys**,
-`[keys.dialog]`, a **hotlist with groups** and a label prompt and
-editing, **user-menu conditions and submenus** plus the per-directory
-`.mc.menu`, mc's full **macro set**, dialog **input history**, **mouse**
-and **underlined hotkeys**, the mc **clipboard file**, and **user syntax
-files**. What is left in [docs/MC-DIFF.md](docs/MC-DIFF.md) is the
-divergences - Tab completing rather than switching panels, F8 to the
-trash, one grouped options dialog instead of five - each of them a
-decision with a reason next to it.
 
 ## Install & run
 
@@ -1407,6 +1319,100 @@ those fields. What rcmd draws for itself - the frames, the menus - is
 not taken from the skin, so a skin is read for its colours and nothing
 else. **F9 → Options → Appearance** lists everything found and switches
 on Enter, and the choice outlives the session.
+
+## History
+
+The milestones in brief; every release is in
+[CHANGELOG.md](CHANGELOG.md).
+
+**2.0** - complete MC-workflow parity and beyond: marking and F5–F8
+operations with MC-style dialogs (mtimes preserved, F8 goes to trash),
+command line + shell integration with real job control, F3 chunked
+viewer with wrap and hex modes, F9 menu, F1 help, config file with
+keymap presets/custom bindings, quick search, filter, hotlist, themes,
+archive browsing (zip, tar, tar.{gz,xz,bz2}) with extraction and
+copy-into-zip; find file / panelize / directory compare, non-blocking
+listings with filesystem watching, **SFTP remote panels**, a **built-in
+editor** with syntax highlighting, mouse support, per-panel directory
+history, quick view, info panel, listing formats, git status in the
+panels, **openers and an F2 user menu**, and MC's ESC-prefix - see
+below.
+
+**3.0** - the live commander: the persistent **subshell**
+(Ctrl+O), SFTP auth depth (passphrase keys, keyboard-interactive),
+bulk rename via the editor, viewer follow mode (tail&nbsp;-f) with
+syntax highlighting and precise search-match highlighting, `[[view]]`
+filters (F3 through `pdftotext` & co.), Tab path completion,
+gitignore-aware find, recent directories in the hotlist, a **job
+queue** with background transfers, chmod/chattr/chown/symlink dialogs, editor
+soft-wrap + `$1` capture groups + block ops, copy *into* tar, **rar and
+7z browsing** (via 7z/unrar), click-to-sort headers, and an MC alias
+batch (S-F4/S-F5/S-F6, C-x t/p, M-c quick cd…).
+
+**3.8** - toward parity with mc: `config.toml` is now yours alone, with
+everything rcmd changes itself moved to a state file; F9 > Options >
+Panel options is one grouped dialog covering mc's whole setting
+surface; `[keys.viewer]` and `[keys.editor]` rebind inside the viewer
+and the editor; `rcmd --import-mc` converts an existing mc
+configuration; the command line gained mc's keys, macros and a
+persistent history; and the panels gained the **Layout** settings
+(horizontal split, adjustable ratio, optional bars), a **per-panel mini
+status** and the **multi-column brief listing**.
+
+**3.10** - the panels themselves: mc's **directory tree**, both as the
+Command-menu dialog (Enter moves this panel) and as a panel listing mode
+(Enter moves the other one and the tree stays), scanned on demand so
+there is no tree cache to go stale; and the **user-defined listing
+format**, where `listing = "user"` draws whatever `listing_format` names
+in mc's own format language - `half type name | size | mtime` and the
+other fifteen fields, with widths that grow.
+
+**3.11** - `[[highlight]]` colour rules: entries are painted by glob or
+by kind, which is mc's filehighlight without the second file.
+
+**3.12** - mc's menu bar: **Left, File, Command, Options, Right**, where
+the two panel menus act on their own panel whichever one has the focus.
+
+**3.51** - the wider world (4.0 S7): `-e` and `-v` and the
+**rcedit / rcview / rcdiff** aliases, mc's startup flags
+(`-b -c -C -S -d -u -U -l`), the shipped shell wrappers, **skins** -
+rcmd's own theme files and mc's skin files read where they lie - and
+**macOS builds back** in CI and in the releases.
+
+**4.28** - **a second front end**: `rcmd-egui` draws the same screen
+with egui, in a window, sharing every crate with the terminal build and
+calling the same `ui::draw`. `rcmd-tui` became a library as well as a
+binary to allow it, and `App::run`'s body became `App::tick` so a front
+end that does not own its event loop can drive the same state machine.
+`Ctrl+O` opens a real terminal pane in it: `vt100` interprets what the
+existing subshell's pty produces, so `less` and `vim` work there. See
+[In a window](#in-a-window).
+
+**4.11-4.27** - the orthodox pass, from
+[docs/ORTHODOX-DIFF.md](docs/ORTHODOX-DIFF.md): **directory
+synchronize** (compare, then a plan that says which way each difference
+goes), **Alt+F5 packs** into a new archive, **Ctrl+X u undoes** a move
+or a bulk rename, mask lists (`*.c,*.h|*_test.*`) everywhere a glob is
+typed, **named filter sets**, select and filter **by size and age**,
+five more **sort orders** including *unsorted*, the hotlist ranked by
+**frecency** and searchable, `rcmd --remote` **driving a running
+instance** (and with it a plugin story that needs no runtime), **rclone
+panels**, what is **mounted** in the `C-x a` list, **checksum files**
+and a **Verify** box on the copy form, **wipe**, **apply a command per
+file**, the **numbered places**, **recent files**, and the small keys
+the others always had - restore marks, size every directory, names to
+the clipboard, hide a panel.
+
+**4.0** - the parity release, and the leftovers that finished it: mc's
+**quick search** with an input field of its own, **Learn keys**,
+`[keys.dialog]`, a **hotlist with groups** and a label prompt and
+editing, **user-menu conditions and submenus** plus the per-directory
+`.mc.menu`, mc's full **macro set**, dialog **input history**, **mouse**
+and **underlined hotkeys**, the mc **clipboard file**, and **user syntax
+files**. What is left in [docs/MC-DIFF.md](docs/MC-DIFF.md) is the
+divergences - Tab completing rather than switching panels, F8 to the
+trash, one grouped options dialog instead of five - each of them a
+decision with a reason next to it.
 
 ## Development
 
