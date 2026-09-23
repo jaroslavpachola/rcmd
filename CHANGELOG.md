@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.41.0 - 2026-09-23
+
+- **Quick search: Enter acts on the match.** Enter used to only close
+  the search field, so entering the found directory took a second
+  Enter. It now closes the field and runs Enter on the entry at the
+  cursor, as in mc; Esc still just closes it.
+
+- **Quick search says how to step.** The field ends with
+  `↓↑ M-s next` (`C-s next` in tree mode), so the way to the second
+  match is on screen instead of only in the README. On a narrow panel
+  the hint gives way to the text.
+
+- **Help shows the version.** The title row reads
+  `Help - rcmd 4.41.0`; until now `--version` was the only place it
+  appeared.
+
 ## 4.40.0 - 2026-09-18
 
 [PLAN5](docs/PLAN5.md)'s S9: small wins.

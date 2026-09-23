@@ -377,7 +377,7 @@ window was left in is where the next terminal session starts.
 | Alt+T | Cycle listing format: brief (names in columns) / full / long (active long panel = full-width one-panel view) |
 | Ctrl+U | Swap panels |
 | Alt+. | Toggle hidden files |
-| Ctrl+S, Alt+S | Quick search: matches anywhere in the name, `*`/`?` glob, smartcase; Ctrl+S or ↓/↑ walks the matches |
+| Ctrl+S, Alt+S | Quick search: matches anywhere in the name, `*`/`?` glob, smartcase; Ctrl+S/Alt+S or ↓/↑ walks the matches; Enter closes it and opens the match, Esc just closes it |
 | Ctrl+F | Filter shown files by glob (`*` or empty clears) |
 | Alt+letter | In a dialog: press the button whose underlined letter it is |
 | Ctrl+\ | Directory hotlist: Enter goes (or walks into a group), `Ctrl+S` narrows the list by what you type, `a` adds this directory, `g` makes a group, `e` renames, `m` moves an entry into another group, `d` drops, Alt+↑/↓ reorders |

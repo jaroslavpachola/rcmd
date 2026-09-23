@@ -54,9 +54,9 @@ impl App {
                 miss: false,
             });
             self.quick_search = if close { None } else { search };
-            // Esc and Enter only end the search; anything else was meant
-            // for the panel underneath
-            if close && !matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+            // Esc only ends the search; anything else - Enter included,
+            // as in mc - was meant for the panel underneath
+            if close && key.code != KeyCode::Esc {
                 self.on_panel_key(key);
             }
             return;
@@ -68,7 +68,7 @@ impl App {
                 .unwrap_or_default()
         };
         match key.code {
-            KeyCode::Esc | KeyCode::Enter => self.quick_search = None,
+            KeyCode::Esc => self.quick_search = None,
             // C-s / M-s again, and the arrows, walk the matches -
             // typing narrows, these two move
             KeyCode::Char('s') if ctrl || alt => self.search_step(&text(self), true),

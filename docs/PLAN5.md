@@ -474,7 +474,11 @@ not repeated here.
   file's mixed line endings, a character-level diff highlight (S6);
   graphemes in the line editor, `marked_stats` without a walk per draw,
   changed-line marks in the editor gutter and ORTHODOX-DIFF §7's git
-  actions (S9).
+  actions (S9); a real Help page - S3 made F1 land on the right part
+  and `/` search it, but it is still one flat key table: mc's manual
+  has topics, links between them, Back and a contents page, and an
+  About entry (version, license, repo, config paths) where 4.41.0
+  only put the version in the title.
 
 The other source is ORTHODOX-DIFF itself: its `Adopt-later` rows
 (yank registers or a collector panel, find inside archives, the fuzzy

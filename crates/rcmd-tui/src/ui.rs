@@ -2502,19 +2502,34 @@ fn draw_quick_search(frame: &mut Frame, panel: Rect, app: &App) {
         return;
     }
     let label = format!(" Search: {} ", search.text);
-    let width = (label.chars().count() as u16).min(panel.width.saturating_sub(4));
-    let area = Rect {
-        x: panel.x + 2,
-        y: panel.y + panel.height - 1,
-        width,
-        height: 1,
+    // how to get to the next match is not something the field would
+    // otherwise say - the tree walks on C-s alone, the arrows leave it
+    let hint = match app.panels[app.active].list_mode {
+        ListMode::Tree => " C-s next ",
+        _ => " ↓↑ M-s next ",
     };
     let style = match search.miss {
         true => Style::new().fg(th().error_fg).bg(th().error_bg),
         false => Style::new().fg(th().select_fg).bg(th().select_bg),
     };
+    let room = panel.width.saturating_sub(4);
+    let wanted = (label.chars().count() + hint.chars().count()) as u16;
+    // the hint is the first thing to go when the panel is narrow
+    let line = match wanted <= room {
+        true => Line::from(vec![
+            Span::styled(label, style),
+            Span::styled(hint, Style::new().fg(th().header_fg).bg(th().panel_bg)),
+        ]),
+        false => Line::from(label).style(style),
+    };
+    let area = Rect {
+        x: panel.x + 2,
+        y: panel.y + panel.height - 1,
+        width: (line.width() as u16).min(room),
+        height: 1,
+    };
     frame.render_widget(Clear, area);
-    frame.render_widget(Line::from(label).style(style), area);
+    frame.render_widget(line, area);
 }
 
 /// The framed row of panel `side`, if it has one: the active panel's
@@ -2690,7 +2705,11 @@ fn draw_help(frame: &mut Frame, app: &mut App) {
     let base = Style::new().fg(th().help_fg).bg(th().help_bg);
     let width = content.width as usize;
     frame.render_widget(
-        Line::from(format!("{:<width$}", " Help - rcmd")).style(base.add_modifier(Modifier::BOLD)),
+        Line::from(format!(
+            "{:<width$}",
+            concat!(" Help - rcmd ", env!("CARGO_PKG_VERSION"))
+        ))
+        .style(base.add_modifier(Modifier::BOLD)),
         title_area,
     );
     frame.render_widget(Block::new().style(base), content);

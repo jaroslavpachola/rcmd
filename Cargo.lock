@@ -2793,7 +2793,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-egui"
-version = "4.40.0"
+version = "4.41.0"
 dependencies = [
  "anyhow",
  "eframe",
@@ -2810,7 +2810,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-tui"
-version = "4.40.0"
+version = "4.41.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2829,7 +2829,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-tui-core"
-version = "4.40.0"
+version = "4.41.0"
 dependencies = [
  "bzip2",
  "encoding_rs",
@@ -2850,7 +2850,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-tui-edit"
-version = "4.40.0"
+version = "4.41.0"
 dependencies = [
  "encoding_rs",
  "regex",
