@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.44.0 - 2026-09-24
+
+- **Extracting a zip is fast.** Every file taken out of a zip opened
+  the zip again, parsed its whole directory and walked it to the name,
+  so extracting grew with the square of the file count: 4,000 small
+  files took 105 seconds. The zip is now parsed once when it is
+  entered and each member is found by its number - the same 4,000
+  take 0.05 s, and 40,000 half a second.
+
+- **Zip members stream.** A member used to be read into memory whole
+  before a byte of it was written; stored and deflated members - what
+  zip tools write - now stream from the file, so a 4 GB member costs
+  a buffer, not 4 GB. Each is checked against its size and its CRC at
+  the end: a damaged member is an error, not a file written wrong.
+
+- **Big directories list fast, in every archive.** Each entry looked
+  for its name in its whole directory, so a directory of 40,000 files
+  took seconds to list before anything was read, and every stat of a
+  member walked it again. A path now finds its entry directly.
+
 ## 4.43.0 - 2026-09-24
 
 - **Selecting text in the window.** In a terminal, Shift+drag selects

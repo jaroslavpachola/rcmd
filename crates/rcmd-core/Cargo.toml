@@ -20,6 +20,7 @@ trash.workspace = true
 zip.workspace = true
 tar.workspace = true
 flate2.workspace = true
+crc32fast.workspace = true
 xz2.workspace = true
 bzip2.workspace = true
 ruzstd.workspace = true

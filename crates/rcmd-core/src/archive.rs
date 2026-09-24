@@ -4,10 +4,10 @@
 //! and 7z through an external tool (the 7z family, or unrar for .rar) -
 //! listed once at open, members streamed out per read.
 //!
-//! The entry table is indexed once at open; `open_read` re-opens the
-//! archive and decodes just the requested member into memory (compressed
-//! streams cannot seek), so memory use is bounded by the largest single
-//! member, not the archive.
+//! The entry table is indexed once at open. A zip is parsed once too
+//! and kept open: `open_read` goes straight to the member's bytes and
+//! streams them. The other formats stream or slice their members as
+//! each of them allows.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -87,6 +87,10 @@ pub struct ArchiveFs {
     cmd: Option<CmdBackend>,
     /// Directory (relative, "" = archive root) → its entries.
     index: HashMap<PathBuf, Vec<Entry>>,
+    /// Every path in `index` → where its entry stands in its parent's
+    /// list: a lookup by name, where walking a directory of 40,000
+    /// files for each one made indexing it quadratic.
+    slots: HashMap<PathBuf, usize>,
     /// A hard link's name → the member that actually carries the bytes.
     /// cpio writes the data once, with one of the names.
     links: HashMap<PathBuf, PathBuf>,
@@ -116,6 +120,8 @@ pub struct ArchiveFs {
     /// extraction does - go on from there, where each used to start the
     /// decompression over from the first byte.
     stream: Kept,
+    /// A zip, parsed once at open and kept.
+    zip: Option<ZipIndex>,
     /// How many times the container was opened and unwrapped from the
     /// top, for the tests to hold the reading to one pass.
     #[cfg(test)]
@@ -189,6 +195,8 @@ impl ArchiveFs {
             mbox: None,
             members: HashMap::new(),
             stream: Arc::new(Mutex::new(None)),
+            zip: None,
+            slots: HashMap::new(),
             #[cfg(test)]
             opens: std::sync::atomic::AtomicUsize::new(0),
         };
@@ -208,7 +216,12 @@ impl ArchiveFs {
     }
 
     fn index_zip(&mut self) -> io::Result<()> {
-        let mut zip = zip::ZipArchive::new(File::open(&self.path)?).map_err(zip_err)?;
+        #[cfg(test)]
+        self.opens
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let file = SharedFile::new(File::open(&self.path)?);
+        let mut zip = zip::ZipArchive::new(file).map_err(zip_err)?;
+        let mut numbers = HashMap::new();
         for i in 0..zip.len() {
             let member = zip.by_index_raw(i).map_err(zip_err)?;
             let Some(rel) = member.enclosed_name() else {
@@ -222,9 +235,60 @@ impl ArchiveFs {
             let mode = member.unix_mode().unwrap_or(0) & 0o7777;
             let (size, name) = (member.size(), rel.clone());
             drop(member);
+            // a name written twice reads as its first copy
+            numbers.entry(normalize_rel(&name)).or_insert(i);
             self.add(&name, kind, size, mode, None, None);
         }
+        self.zip = Some(ZipIndex { zip, numbers });
         Ok(())
+    }
+
+    /// A zip member, streamed: its number looked up, its bytes read
+    /// where they lie. Stored and deflated members - what zip tools
+    /// write - are decoded here and checked against their CRC at the
+    /// end; anything else (an encrypted member, another method) goes
+    /// through the zip crate, which reads it whole or says why not.
+    fn read_zip(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
+        let index = self
+            .zip
+            .as_ref()
+            .ok_or_else(|| io::Error::other("the zip is not open"))?;
+        let &number = index
+            .numbers
+            .get(rel)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found in archive"))?;
+        // a copy shares the parsed directory and the open file, and
+        // has a position of its own
+        let mut zip = index.zip.clone();
+        let member = zip.by_index_raw(number).map_err(zip_err)?;
+        let (start, packed, size, crc) = (
+            member.data_start(),
+            member.compressed_size(),
+            member.size(),
+            member.crc32(),
+        );
+        let (method, encrypted) = (member.compression(), member.encrypted());
+        drop(member);
+        let mut raw = index.zip_file().at(start);
+        raw.limit(packed);
+        let body: Box<dyn Read + Send> = match method {
+            zip::CompressionMethod::Stored if !encrypted => Box::new(raw),
+            zip::CompressionMethod::Deflated if !encrypted => {
+                Box::new(flate2::read::DeflateDecoder::new(raw))
+            }
+            _ => {
+                let mut member = zip.by_index(number).map_err(zip_err)?;
+                let mut buf = Vec::with_capacity(member.size() as usize);
+                member.read_to_end(&mut buf)?;
+                return Ok(Box::new(Cursor::new(buf)));
+            }
+        };
+        Ok(Box::new(Checked {
+            body,
+            left: size,
+            crc: crc32fast::Hasher::new(),
+            want: crc,
+        }))
     }
 
     fn index_tar(&mut self) -> io::Result<()> {
@@ -632,15 +696,20 @@ impl ArchiveFs {
     /// A hard link's listing should show the size of what it points at,
     /// not the zero bytes its own record carries.
     fn set_size(&mut self, rel: &Path, size: u64) {
+        let rel = normalize_rel(rel);
         let parent = rel.parent().map(Path::to_path_buf).unwrap_or_default();
-        let Some(name) = rel.file_name() else { return };
-        if let Some(entry) = self
-            .index
-            .get_mut(&parent)
-            .and_then(|list| list.iter_mut().find(|e| e.name == name))
+        if let Some(&at) = self.slots.get(&rel)
+            && let Some(entry) = self.index.get_mut(&parent).and_then(|l| l.get_mut(at))
         {
             entry.size = size;
         }
+    }
+
+    /// The entry at `rel`, by its slot.
+    fn entry_at(&self, rel: &Path) -> Option<&Entry> {
+        let parent = rel.parent().map(Path::to_path_buf).unwrap_or_default();
+        let &at = self.slots.get(rel)?;
+        self.index.get(&parent)?.get(at)
     }
 
     fn add(
@@ -669,10 +738,13 @@ impl ArchiveFs {
             extra: Default::default(),
         };
         let list = self.index.entry(parent).or_default();
-        match list.iter_mut().find(|e| e.name == name) {
+        match self.slots.get(&rel) {
             // an implicit dir may have been created first; real data wins
-            Some(existing) => *existing = entry,
-            None => list.push(entry),
+            Some(&at) => list[at] = entry,
+            None => {
+                self.slots.insert(rel.clone(), list.len());
+                list.push(entry);
+            }
         }
         if kind == EntryKind::Dir {
             self.index.entry(rel).or_default();
@@ -690,7 +762,8 @@ impl ArchiveFs {
         self.index.insert(dir.to_path_buf(), Vec::new());
         let name = dir.file_name().unwrap_or_default().to_os_string();
         let list = self.index.entry(parent).or_default();
-        if !list.iter().any(|e| e.name == name) {
+        if !self.slots.contains_key(dir) {
+            self.slots.insert(dir.to_path_buf(), list.len());
             list.push(Entry {
                 name,
                 kind: EntryKind::Dir,
@@ -891,13 +964,10 @@ impl FsProvider for ArchiveFs {
 
     fn stat(&self, path: &Path) -> io::Result<Entry> {
         let path = normalize_rel(path);
-        let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        let name = path
-            .file_name()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty path"))?;
-        self.index
-            .get(&parent)
-            .and_then(|list| list.iter().find(|e| e.name == name))
+        if path.file_name().is_none() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty path"));
+        }
+        self.entry_at(&path)
             .cloned()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found in archive"))
     }
@@ -911,25 +981,7 @@ impl FsProvider for ArchiveFs {
             Kind::Iso => self.read_iso(&rel),
             Kind::Patch(_) => self.read_patch(&rel),
             Kind::Mbox(_) => self.read_mbox(&rel),
-            Kind::Zip => {
-                let mut zip = zip::ZipArchive::new(File::open(&self.path)?).map_err(zip_err)?;
-                for i in 0..zip.len() {
-                    let mut member = zip.by_index(i).map_err(zip_err)?;
-                    let matches = member
-                        .enclosed_name()
-                        .map(|n| normalize_rel(&n) == rel)
-                        .unwrap_or(false);
-                    if matches {
-                        let mut buf = Vec::with_capacity(member.size() as usize);
-                        member.read_to_end(&mut buf)?;
-                        return Ok(Box::new(Cursor::new(buf)));
-                    }
-                }
-                Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "not found in archive",
-                ))
-            }
+            Kind::Zip => self.read_zip(&rel),
             _ => {
                 if let Some(&(at, len)) = self.members.get(&rel) {
                     return self.read_member(at, len);
@@ -949,6 +1001,162 @@ impl FsProvider for ArchiveFs {
                 ))
             }
         }
+    }
+}
+
+/// A zip parsed once: the zip crate's archive, whose copies share the
+/// directory and the file, and each member's number in it.
+struct ZipIndex {
+    zip: zip::ZipArchive<SharedFile>,
+    numbers: HashMap<PathBuf, usize>,
+}
+
+impl ZipIndex {
+    /// The open file, for reading a member's bytes where they lie.
+    fn zip_file(&self) -> SharedFile {
+        // the archive hands its reader out only by value, and a copy
+        // of the archive is cheap
+        self.zip.clone().into_inner().fresh()
+    }
+}
+
+/// One open file read by many at once: each copy has its own position
+/// and a small read-ahead buffer, and reads with `pread`, so none of
+/// them moves the others. What lets a zip be parsed once and read
+/// from by every member after.
+struct SharedFile {
+    file: Arc<File>,
+    pos: u64,
+    /// Where the readable part ends: a member's last byte, or none.
+    end: Option<u64>,
+    buf: Vec<u8>,
+    /// The file offset `buf` starts at.
+    buf_at: u64,
+}
+
+/// How much one read of the file takes ahead: the zip directory is
+/// read a few dozen bytes at a time, and one syscall each is slow.
+const READ_AHEAD: usize = 64 * 1024;
+
+impl SharedFile {
+    fn new(file: File) -> SharedFile {
+        SharedFile {
+            file: Arc::new(file),
+            pos: 0,
+            end: None,
+            buf: Vec::new(),
+            buf_at: 0,
+        }
+    }
+
+    /// Another reader on the same file, at the start, with no limit.
+    fn fresh(&self) -> SharedFile {
+        SharedFile {
+            file: Arc::clone(&self.file),
+            pos: 0,
+            end: None,
+            buf: Vec::new(),
+            buf_at: 0,
+        }
+    }
+
+    fn at(mut self, pos: u64) -> SharedFile {
+        self.pos = pos;
+        self
+    }
+
+    /// Stop reading `len` bytes on from here.
+    fn limit(&mut self, len: u64) {
+        self.end = Some(self.pos.saturating_add(len));
+    }
+}
+
+impl Clone for SharedFile {
+    fn clone(&self) -> SharedFile {
+        SharedFile {
+            end: self.end,
+            ..self.fresh().at(self.pos)
+        }
+    }
+}
+
+impl Read for SharedFile {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        use std::os::unix::fs::FileExt;
+        let room = match self.end {
+            Some(end) => end.saturating_sub(self.pos).min(out.len() as u64) as usize,
+            None => out.len(),
+        };
+        if room == 0 {
+            return Ok(0);
+        }
+        let out = &mut out[..room];
+        let buffered = self.pos >= self.buf_at && self.pos < self.buf_at + self.buf.len() as u64;
+        if !buffered {
+            // a big read goes straight through; a small one fills the
+            // buffer and is served from it
+            if out.len() >= READ_AHEAD {
+                let n = self.file.read_at(out, self.pos)?;
+                self.pos += n as u64;
+                return Ok(n);
+            }
+            self.buf.resize(READ_AHEAD, 0);
+            let n = self.file.read_at(&mut self.buf, self.pos)?;
+            self.buf.truncate(n);
+            self.buf_at = self.pos;
+            if n == 0 {
+                return Ok(0);
+            }
+        }
+        let from = (self.pos - self.buf_at) as usize;
+        let n = out.len().min(self.buf.len() - from);
+        out[..n].copy_from_slice(&self.buf[from..from + n]);
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for SharedFile {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        let pos = match to {
+            SeekFrom::Start(at) => Some(at),
+            SeekFrom::Current(by) => self.pos.checked_add_signed(by),
+            SeekFrom::End(by) => self.file.metadata()?.len().checked_add_signed(by),
+        };
+        self.pos = pos
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "seek before the start"))?;
+        Ok(self.pos)
+    }
+}
+
+/// A zip member's bytes as they are decoded, held to the size and the
+/// CRC the directory gives: a damaged member is an error at its end,
+/// not a file quietly written wrong.
+struct Checked {
+    body: Box<dyn Read + Send>,
+    left: u64,
+    crc: crc32fast::Hasher,
+    want: u32,
+}
+
+impl Read for Checked {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let damaged = |why: &str| io::Error::new(io::ErrorKind::InvalidData, why.to_string());
+        let n = self.body.read(out)?;
+        if n as u64 > self.left {
+            return Err(damaged("the zip member is longer than its size"));
+        }
+        self.left -= n as u64;
+        self.crc.update(&out[..n]);
+        if n == 0 && !out.is_empty() {
+            if self.left != 0 {
+                return Err(damaged("the zip member ends early"));
+            }
+            if self.crc.clone().finalize() != self.want {
+                return Err(damaged("the zip member is damaged (CRC mismatch)"));
+            }
+        }
+        Ok(n)
     }
 }
 
@@ -1326,6 +1534,142 @@ mod tests {
             .read_to_string(&mut content)
             .unwrap();
         assert_eq!(content, "fn main() {}\n");
+    }
+
+    /// A zip of `n` small deflated members, `d/fN.txt`.
+    fn make_big_zip(dir: &Path, n: usize) -> PathBuf {
+        let path = dir.join("many.zip");
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        for i in 0..n {
+            zip.start_file(
+                format!("d/f{i}.txt"),
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(format!("file {i}\n").repeat(50).as_bytes())
+                .unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn a_zip_is_parsed_once_however_many_members_are_read() {
+        // every member used to re-parse the whole directory and walk it
+        // to the name: 4,000 small files took 105 s to extract
+        let tmp = tempfile::tempdir().unwrap();
+        let n = 3000;
+        let fs = ArchiveFs::open(&make_big_zip(tmp.path(), n)).unwrap();
+        let started = std::time::Instant::now();
+        for i in 0..n {
+            let mut body = String::new();
+            fs.open_read(Path::new(&format!("d/f{i}.txt")))
+                .unwrap()
+                .read_to_string(&mut body)
+                .unwrap();
+            assert_eq!(body, format!("file {i}\n").repeat(50), "member {i}");
+        }
+        assert_eq!(fs.opens.load(std::sync::atomic::Ordering::Relaxed), 1);
+        // generous for a debug build; the quadratic read took minutes
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{n} members took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_huge_directory_indexes_in_linear_time() {
+        // each entry used to look for its name in the whole directory:
+        // 40,000 files in one took seconds to list, before any reading
+        let tmp = tempfile::tempdir().unwrap();
+        let mut fs = ArchiveFs::open(&make_zip(tmp.path())).unwrap();
+        let started = std::time::Instant::now();
+        let n = 100_000;
+        for i in 0..n {
+            let name = PathBuf::from(format!("big/f{i}"));
+            fs.add(&name, EntryKind::File, i as u64, 0o644, None, None);
+        }
+        // the same name again replaces, rather than adds
+        fs.add(Path::new("big/f7"), EntryKind::File, 1, 0o600, None, None);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{n} entries took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(fs.read_dir(Path::new("big")).unwrap().len(), n);
+        let seven = fs.stat(Path::new("big/f7")).unwrap();
+        assert_eq!((seven.size, seven.mode), (1, 0o600));
+        assert_eq!(fs.stat(Path::new("big/f99999")).unwrap().size, 99_999);
+        assert!(fs.stat(Path::new("big")).unwrap().is_dir());
+    }
+
+    #[test]
+    fn zip_members_stream_both_ways_they_are_stored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("mixed.zip");
+        let big: Vec<u8> = (0..3_000_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("stored.bin", stored).unwrap();
+        zip.write_all(&big).unwrap();
+        zip.start_file("deflated.bin", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&big).unwrap();
+        zip.start_file("empty", stored).unwrap();
+        zip.finish().unwrap();
+        let fs = ArchiveFs::open(&path).unwrap();
+        for name in ["stored.bin", "deflated.bin"] {
+            let mut body = Vec::new();
+            fs.open_read(Path::new(name))
+                .unwrap()
+                .read_to_end(&mut body)
+                .unwrap();
+            assert!(body == big, "{name}");
+        }
+        // two readers at once do not move each other
+        let (mut a, mut b) = (
+            fs.open_read(Path::new("stored.bin")).unwrap(),
+            fs.open_read(Path::new("deflated.bin")).unwrap(),
+        );
+        let (mut x, mut y) = ([0u8; 1000], [0u8; 1000]);
+        for _ in 0..50 {
+            a.read_exact(&mut x).unwrap();
+            b.read_exact(&mut y).unwrap();
+            assert_eq!(x, y);
+        }
+        let mut body = Vec::new();
+        fs.open_read(Path::new("empty"))
+            .unwrap()
+            .read_to_end(&mut body)
+            .unwrap();
+        assert!(body.is_empty());
+    }
+
+    #[test]
+    fn a_damaged_zip_member_is_an_error_not_a_wrong_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("bad.zip");
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("a.txt", stored).unwrap();
+        zip.write_all(b"the quick brown fox").unwrap();
+        zip.finish().unwrap();
+        // flip one byte of the member's data
+        let mut bytes = std::fs::read(&path).unwrap();
+        let at = bytes.windows(5).position(|w| w == b"quick").unwrap();
+        bytes[at] = b'Q';
+        std::fs::write(&path, bytes).unwrap();
+        let fs = ArchiveFs::open(&path).unwrap();
+        let mut body = Vec::new();
+        let err = fs
+            .open_read(Path::new("a.txt"))
+            .unwrap()
+            .read_to_end(&mut body)
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
     }
 
     #[test]
