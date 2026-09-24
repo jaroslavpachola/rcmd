@@ -82,34 +82,45 @@ class Session:
             open(cfg, "w").write(line)
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
-            os.chdir(cwd)
-            os.environ["HOME"] = home
-            os.environ.pop("XDG_CONFIG_HOME", None)
-            os.environ.pop("XDG_STATE_HOME", None)  # state.toml stays in $HOME
-            os.environ.pop("XDG_DATA_HOME", None)   # F8's trash stays in $HOME
-            # ...and the remote-control socket in the sandbox, so a test
-            # never reaches a real rcmd of the user's
-            os.environ["XDG_RUNTIME_DIR"] = home
-            os.environ.pop("SSH_AUTH_SOCK", None)  # keep sftp auth deterministic
-            # no desktop: a test must neither read the user's clipboard
-            # nor overwrite it (the editor shares it through wl-copy /
-            # xclip when there is one), and a test that wants a display
-            # asks for one through `env`
-            os.environ.pop("DISPLAY", None)
-            os.environ.pop("WAYLAND_DISPLAY", None)
-            os.environ["SHELL"] = shell
-            os.environ["TERM"] = "xterm-256color"
-            # the binary under test is what `rcmd` means in here - the
-            # shipped wrappers call it by name
-            os.environ["PATH"] = os.path.dirname(BIN) + ":" + os.environ.get("PATH", "")
-            os.environ.update(env or {})
-            if exec_argv:                     # a shell that will run rcmd itself
-                os.execv(exec_argv[0], exec_argv)
-            # argv[0] is what picks rcedit/rcview/rcdiff apart from rcmd
-            os.execv(BIN, [argv0 or BIN, *args])
+            # the child only ever becomes rcmd: if it cannot, it says so
+            # and dies here, rather than carry on as a second copy of the
+            # suite that forks more of itself for every test after
+            try:
+                self.become(cwd, home, shell, env, exec_argv, argv0, args)
+            except BaseException as err:
+                os.write(2, f"e2e: cannot start {BIN}: {err}\n".encode())
+            os._exit(127)
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
         os.kill(self.pid, signal.SIGWINCH)
         self.drain(STEP * 2)
+
+    def become(self, cwd, home, shell, env, exec_argv, argv0, args):
+        """In the forked child: the sandbox's environment, then rcmd."""
+        os.chdir(cwd)
+        os.environ["HOME"] = home
+        os.environ.pop("XDG_CONFIG_HOME", None)
+        os.environ.pop("XDG_STATE_HOME", None)  # state.toml stays in $HOME
+        os.environ.pop("XDG_DATA_HOME", None)   # F8's trash stays in $HOME
+        # ...and the remote-control socket in the sandbox, so a test
+        # never reaches a real rcmd of the user's
+        os.environ["XDG_RUNTIME_DIR"] = home
+        os.environ.pop("SSH_AUTH_SOCK", None)  # keep sftp auth deterministic
+        # no desktop: a test must neither read the user's clipboard
+        # nor overwrite it (the editor shares it through wl-copy /
+        # xclip when there is one), and a test that wants a display
+        # asks for one through `env`
+        os.environ.pop("DISPLAY", None)
+        os.environ.pop("WAYLAND_DISPLAY", None)
+        os.environ["SHELL"] = shell
+        os.environ["TERM"] = "xterm-256color"
+        # the binary under test is what `rcmd` means in here - the
+        # shipped wrappers call it by name
+        os.environ["PATH"] = os.path.dirname(BIN) + ":" + os.environ.get("PATH", "")
+        os.environ.update(env or {})
+        if exec_argv:                     # a shell that will run rcmd itself
+            os.execv(exec_argv[0], exec_argv)
+        # argv[0] is what picks rcedit/rcview/rcdiff apart from rcmd
+        os.execv(BIN, [argv0 or BIN, *args])
 
     def drain(self, timeout, settle=None):
         """Read the pty until it has been quiet for `settle` seconds,

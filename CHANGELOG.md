@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.45.0 - 2026-09-24
+
+- **Packages and cpio archives extract in one pass.** A file read out
+  of a .deb unwrapped the tarball it was in from the top and walked it
+  to the name; out of an rpm or a cpio (an initramfs, say), the same
+  with the payload - and each came back whole in memory. Extracting a
+  .deb of 3,000 files took 13 seconds; it now takes 0.025. Each
+  member's place in its stream is noted when the archive is listed,
+  and reading goes on from where the last member ended, as tar's
+  already did - so an extraction is one pass, and a member streams.
+
 ## 4.44.0 - 2026-09-24
 
 - **Extracting a zip is fast.** Every file taken out of a zip opened

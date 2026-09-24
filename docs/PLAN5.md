@@ -458,8 +458,8 @@ directory, dragging out of the window, which egui cannot start) are
 not repeated here.
 
 - **Trust**: SFTP and FISH reconnect after a dropped connection (S3);
-  zip members read into memory whole, FISH uploads buffered before
-  sending (S4); deletes and wipes outside the queue, the trash's
+  FISH uploads buffered before sending (S4; zip members read into
+  memory whole went in 4.44.0, streamed); deletes and wipes outside the queue, the trash's
   `directorysizes` cache not updated on restore or purge (S5);
   `sudo://` with no password prompt of its own (S7).
 - **Reach**: `ProxyJump` and `Include` in `~/.ssh/config` (S3);
@@ -476,6 +476,23 @@ not repeated here.
   changed-line marks in the editor gutter and ORTHODOX-DIFF §7's git
   actions (S9). (A real Help page - topics, links, Back, contents and
   an About entry - was named here too, and landed in 4.42.0.)
+- **Speed** (an audit of the archive readers after 4.44.0 found zip
+  re-parsing itself for every member, and 4.45.0 gave deb, rpm and
+  cpio the tar reader's kept stream; what was left):
+  - *The external-tool formats* (rar, 7z, lha, arj, cab) start one
+    `7z` or `unrar` per member and hold its output whole, and a solid
+    7z decompresses its block from the start for every member - a few
+    thousand files take minutes. A bulk hook on the provider: an
+    extraction of a tree, or of many marked members, is one
+    `7z x -o<dest>` or `unrar x`, with progress from its output.
+  - *tar read out of order* starts the decompression over: F5 of
+    members marked in a name-sorted panel, from a tar written in
+    readdir order, costs a pass per member. Sort a job's archive
+    sources by their position in the stream before reading them.
+  - *A plain `.tar`* reads its way to a member it could seek to.
+  - *tar's hard links, devices and FIFOs* are left out of the listing
+    ("skip for now" in `index_tar_from`): a hard-linked file is not
+    there at all, which is a gap in what is shown, not only in speed.
 
 The other source is ORTHODOX-DIFF itself: its `Adopt-later` rows
 (yank registers or a collector panel, find inside archives, the fuzzy

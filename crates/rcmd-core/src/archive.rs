@@ -96,14 +96,9 @@ pub struct ArchiveFs {
     links: HashMap<PathBuf, PathBuf>,
     /// Paths whose bytes are a plain slice of the container file.
     slices: HashMap<PathBuf, Slice>,
-    /// Prefix → the tarball nested at that point in the tree. A .deb
-    /// is two of these plus one loose file.
-    nested: Vec<(PathBuf, Slice)>,
     /// Files rcmd writes itself rather than finds: an rpm's tags are
     /// not a file in the package, but they read best as one.
     generated: HashMap<PathBuf, String>,
-    /// Where a cpio payload sits, when the container has one.
-    payload: Option<(PathBuf, Slice)>,
     /// An opened disc image, which locates its own members.
     iso: Option<iso::Image>,
     /// A patch's whole text and where each file's part of it starts.
@@ -111,10 +106,11 @@ pub struct ArchiveFs {
     patch: Option<(String, Vec<patch::Piece>)>,
     /// The same arrangement for an mbox and its messages.
     mbox: Option<(String, Vec<mail::Message>)>,
-    /// A tar's files: where each one's bytes start in the (unwrapped)
-    /// stream, and how many there are - so a member is streamed rather
-    /// than read into memory whole.
-    members: HashMap<PathBuf, (u64, u64)>,
+    /// The files of a tar or a cpio, the container's own or one nested
+    /// in it: which stream they are in, where in it their bytes start
+    /// and how many there are - so a member is streamed rather than
+    /// read into memory whole, and found without walking to it.
+    members: HashMap<PathBuf, (Source, u64, u64)>,
     /// The unwrapped stream left where the last member read from it
     /// ended. Members read in the archive's order - which is what an
     /// extraction does - go on from there, where each used to start the
@@ -129,11 +125,20 @@ pub struct ArchiveFs {
 }
 
 /// A run of bytes inside the container, and what it is wrapped in.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Slice {
     at: u64,
     len: u64,
     comp: Comp,
+}
+
+/// The stream a member's bytes are in: the whole container unwrapped
+/// (a tar, a cpio), or one slice of it unwrapped (a .deb's data.tar,
+/// an rpm's payload).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Source {
+    Root,
+    Slice(Slice),
 }
 
 impl ArchiveFs {
@@ -187,9 +192,7 @@ impl ArchiveFs {
             index: HashMap::from([(PathBuf::new(), Vec::new())]),
             links: HashMap::new(),
             slices: HashMap::new(),
-            nested: Vec::new(),
             generated: HashMap::new(),
-            payload: None,
             iso: None,
             patch: None,
             mbox: None,
@@ -292,11 +295,16 @@ impl ArchiveFs {
     }
 
     fn index_tar(&mut self) -> io::Result<()> {
-        let reader = self.raw_reader()?;
-        self.index_tar_from(reader, Path::new(""))
+        let reader = self.open_stream(Source::Root)?;
+        self.index_tar_from(reader, Path::new(""), Source::Root)
     }
 
-    fn index_tar_from(&mut self, reader: Box<dyn Read>, prefix: &Path) -> io::Result<()> {
+    fn index_tar_from(
+        &mut self,
+        reader: Box<dyn Read>,
+        prefix: &Path,
+        source: Source,
+    ) -> io::Result<()> {
         let mut archive = tar::Archive::new(reader);
         for member in archive.entries()? {
             let member = member?;
@@ -319,10 +327,13 @@ impl ArchiveFs {
                 .map(|secs| UNIX_EPOCH + Duration::from_secs(secs));
             let mode = header.mode().unwrap_or(0) & 0o7777;
             let size = header.size().unwrap_or(0);
-            // a nested tar's positions are in its own stream, not ours
-            if kind == EntryKind::File && prefix.as_os_str().is_empty() {
-                self.members
-                    .insert(normalize_rel(&rel), (member.raw_file_position(), size));
+            // positions are in the stream this tar is read from: the
+            // container's, or a nested tarball's own
+            if kind == EntryKind::File {
+                self.members.insert(
+                    normalize_rel(&prefix.join(normalize_rel(&rel))),
+                    (source, member.raw_file_position(), size),
+                );
             }
             self.add(
                 &prefix.join(normalize_rel(&rel)),
@@ -341,12 +352,23 @@ impl ArchiveFs {
     /// with the data attached to just one of the names, so the empty
     /// aliases are collected and pointed at the one that has it.
     fn index_cpio(&mut self) -> io::Result<()> {
-        let reader = self.raw_reader()?;
-        self.index_cpio_from(reader, Path::new(""))
+        let reader = self.open_stream(Source::Root)?;
+        self.index_cpio_from(reader, Path::new(""), Source::Root)
     }
 
-    fn index_cpio_from(&mut self, reader: Box<dyn Read>, prefix: &Path) -> io::Result<()> {
-        let mut reader = cpio::Reader::new(reader);
+    fn index_cpio_from(
+        &mut self,
+        reader: Box<dyn Read>,
+        prefix: &Path,
+        source: Source,
+    ) -> io::Result<()> {
+        // how far into the stream the reader is: right after a header,
+        // that is where the member's bytes start
+        let read = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let mut reader = cpio::Reader::new(Counting {
+            inner: reader,
+            read: std::rc::Rc::clone(&read),
+        });
         // (dev, ino) → the member carrying the bytes, and its size
         let mut bodies: HashMap<(u64, u64), (PathBuf, u64)> = HashMap::new();
         let mut aliases: Vec<(PathBuf, (u64, u64))> = Vec::new();
@@ -361,6 +383,10 @@ impl ArchiveFs {
                 let target = String::from_utf8_lossy(&reader.data()?).into_owned();
                 (EntryKind::SymlinkFile, Some(PathBuf::from(target)))
             } else if header.is_file() {
+                self.members.insert(
+                    normalize_rel(&prefix.join(&rel)),
+                    (source, read.get(), header.size),
+                );
                 (EntryKind::File, None)
             } else {
                 continue; // devices, fifos, sockets: nothing to browse
@@ -459,9 +485,8 @@ impl ArchiveFs {
             };
             let prefix = PathBuf::from(prefix);
             self.ensure_dir_chain(&prefix);
-            let reader = self.slice_reader(slice)?;
-            self.index_tar_from(reader, &prefix)?;
-            self.nested.push((prefix, slice));
+            let reader = self.open_stream(Source::Slice(slice))?;
+            self.index_tar_from(reader, &prefix, Source::Slice(slice))?;
             seen = true;
         }
         if !seen {
@@ -523,9 +548,8 @@ impl ArchiveFs {
             len,
             comp,
         };
-        let reader = self.slice_reader(slice)?;
-        self.index_cpio_from(reader, &contents)?;
-        self.payload = Some((contents, slice));
+        let reader = self.open_stream(Source::Slice(slice))?;
+        self.index_cpio_from(reader, &contents, Source::Slice(slice))?;
         Ok(())
     }
 
@@ -583,7 +607,7 @@ impl ArchiveFs {
     /// `docs/` shows up under a `src/` of its own.
     fn index_patch(&mut self) -> io::Result<()> {
         let mut text = String::new();
-        self.raw_reader()?.read_to_string(&mut text)?;
+        self.open_stream(Source::Root)?.read_to_string(&mut text)?;
         let pieces = patch::split(&text);
         if pieces.is_empty() {
             return Err(io::Error::new(
@@ -621,7 +645,7 @@ impl ArchiveFs {
     /// order is the mailbox's order.
     fn index_mbox(&mut self) -> io::Result<()> {
         let mut text = String::new();
-        self.raw_reader()?.read_to_string(&mut text)?;
+        self.open_stream(Source::Root)?.read_to_string(&mut text)?;
         let messages = mail::split(&text);
         if messages.is_empty() {
             return Err(io::Error::new(
@@ -658,34 +682,22 @@ impl ArchiveFs {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not in this mailbox"))
     }
 
-    /// Read a path that lives in a slice of the container: either the
-    /// slice *is* the file, or it is a tarball the path reaches into.
-    fn read_slice(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
+    /// Read a path out of a tar, a cpio, an `ar` or a package: text
+    /// rcmd made up (an rpm's tags), a plain slice of the container (an
+    /// `ar` member), or a member of a stream, followed there from where
+    /// the last read left it. A hard link reads as what it links to.
+    fn read_streamed(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
         if let Some(body) = self.generated.get(rel) {
             return Ok(Box::new(Cursor::new(body.clone().into_bytes())));
-        }
-        if let Some((prefix, slice)) = self.payload.as_ref().filter(|(p, _)| rel.starts_with(p)) {
-            let reader = self.slice_reader(*slice)?;
-            return self.read_cpio_from(reader, rel, prefix);
         }
         if let Some(slice) = self.slices.get(rel) {
             let mut file = File::open(&self.path)?;
             file.seek(SeekFrom::Start(slice.at))?;
             return Ok(Box::new(file.take(slice.len)));
         }
-        for (prefix, slice) in &self.nested {
-            let Ok(inner) = rel.strip_prefix(prefix) else {
-                continue;
-            };
-            let mut archive = tar::Archive::new(self.slice_reader(*slice)?);
-            for member in archive.entries()? {
-                let mut member = member?;
-                if normalize_rel(&member.path()?) == inner {
-                    let mut buf = Vec::with_capacity(member.size() as usize);
-                    member.read_to_end(&mut buf)?;
-                    return Ok(Box::new(Cursor::new(buf)));
-                }
-            }
+        let wanted = self.links.get(rel).map_or(rel, PathBuf::as_path);
+        if let Some(&(source, at, len)) = self.members.get(wanted) {
+            return self.read_member(source, at, len);
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -880,51 +892,42 @@ impl ArchiveFs {
         Ok(Box::new(Cursor::new(output.stdout)))
     }
 
-    /// Stream one member out by walking the archive again - the only
-    /// way in without an index, and the same cost tar already pays.
-    fn read_cpio(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
-        let reader = self.raw_reader()?;
-        self.read_cpio_from(reader, rel, Path::new(""))
-    }
-
-    fn read_cpio_from(
-        &self,
-        reader: Box<dyn Read>,
-        rel: &Path,
-        prefix: &Path,
-    ) -> io::Result<Box<dyn Read + Send>> {
-        let wanted = self.links.get(rel).unwrap_or(&rel.to_path_buf()).clone();
-        let mut reader = cpio::Reader::new(reader);
-        while let Some(header) = reader.next_member()? {
-            if prefix.join(normalize_rel(&header.path)) == wanted {
-                return Ok(Box::new(Cursor::new(reader.data()?)));
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "not found in archive",
-        ))
-    }
-
-    fn raw_reader(&self) -> io::Result<Box<dyn Read + Send>> {
+    /// A stream unwrapped from its first byte. Counted, in the tests,
+    /// to hold a run of reads to one pass.
+    fn open_stream(&self, source: Source) -> io::Result<Box<dyn Read + Send>> {
         #[cfg(test)]
         self.opens
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let comp = match self.kind {
-            Kind::Tar(comp) | Kind::Cpio(comp) | Kind::Patch(comp) | Kind::Mbox(comp) => comp,
-            _ => unreachable!("zip, ar, deb and cmd use their own readers"),
-        };
-        decompress(Box::new(File::open(&self.path)?), comp)
+        match source {
+            Source::Root => {
+                let comp = match self.kind {
+                    Kind::Tar(comp) | Kind::Cpio(comp) | Kind::Patch(comp) | Kind::Mbox(comp) => {
+                        comp
+                    }
+                    _ => unreachable!("zip, ar, deb and cmd use their own readers"),
+                };
+                let file = io::BufReader::new(File::open(&self.path)?);
+                decompress(Box::new(file), comp)
+            }
+            Source::Slice(slice) => {
+                let mut file = File::open(&self.path)?;
+                file.seek(SeekFrom::Start(slice.at))?;
+                decompress(
+                    Box::new(io::BufReader::new(file).take(slice.len)),
+                    slice.comp,
+                )
+            }
+        }
     }
 
-    /// A tar member's bytes, streamed from the unwrapped stream: on from
-    /// where the last member left it when that is not past this one,
-    /// from the top otherwise.
-    fn read_member(&self, at: u64, len: u64) -> io::Result<Box<dyn Read + Send>> {
+    /// A member's bytes, streamed from its stream: on from where the
+    /// last member left it when that is the same stream and not past
+    /// this one, from the top otherwise.
+    fn read_member(&self, source: Source, at: u64, len: u64) -> io::Result<Box<dyn Read + Send>> {
         let kept = self.stream.lock().unwrap_or_else(|p| p.into_inner()).take();
         let (pos, mut stream) = match kept {
-            Some((pos, stream)) if pos <= at => (pos, stream),
-            _ => (0, self.raw_reader()?),
+            Some((was, pos, stream)) if was == source && pos <= at => (pos, stream),
+            _ => (0, self.open_stream(source)?),
         };
         let skip = at - pos;
         if io::copy(&mut (&mut stream).take(skip), &mut io::sink())? < skip {
@@ -935,17 +938,11 @@ impl ArchiveFs {
         }
         Ok(Box::new(Member {
             stream: Some(stream),
+            source,
             left: len,
             end: at + len,
             keep: self.stream.clone(),
         }))
-    }
-
-    /// The bytes of one slice of the container, unwrapped.
-    fn slice_reader(&self, slice: Slice) -> io::Result<Box<dyn Read + Send>> {
-        let mut file = File::open(&self.path)?;
-        file.seek(SeekFrom::Start(slice.at))?;
-        decompress(Box::new(file.take(slice.len)), slice.comp)
     }
 }
 
@@ -976,17 +973,16 @@ impl FsProvider for ArchiveFs {
         let rel = normalize_rel(path);
         match self.kind {
             Kind::Cmd => self.read_cmd(&rel),
-            Kind::Cpio(_) => self.read_cpio(&rel),
-            Kind::Ar | Kind::Deb | Kind::Rpm => self.read_slice(&rel),
+            Kind::Cpio(_) | Kind::Ar | Kind::Deb | Kind::Rpm => self.read_streamed(&rel),
             Kind::Iso => self.read_iso(&rel),
             Kind::Patch(_) => self.read_patch(&rel),
             Kind::Mbox(_) => self.read_mbox(&rel),
             Kind::Zip => self.read_zip(&rel),
             _ => {
-                if let Some(&(at, len)) = self.members.get(&rel) {
-                    return self.read_member(at, len);
+                if let Some(&(source, at, len)) = self.members.get(&rel) {
+                    return self.read_member(source, at, len);
                 }
-                let mut archive = tar::Archive::new(self.raw_reader()?);
+                let mut archive = tar::Archive::new(self.open_stream(Source::Root)?);
                 for member in archive.entries()? {
                     let mut member = member?;
                     if normalize_rel(&member.path()?) == rel {
@@ -1160,14 +1156,30 @@ impl Read for Checked {
     }
 }
 
-/// The unwrapped stream between members, and where in it it stands.
-type Kept = Arc<Mutex<Option<(u64, Box<dyn Read + Send>)>>>;
+/// The unwrapped stream between members: which one, and where in it
+/// it stands.
+type Kept = Arc<Mutex<Option<(Source, u64, Box<dyn Read + Send>)>>>;
 
-/// One tar member being read. Read to its end, it hands the stream
+/// A reader that counts what went through it.
+struct Counting {
+    inner: Box<dyn Read>,
+    read: std::rc::Rc<std::cell::Cell<u64>>,
+}
+
+impl Read for Counting {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.read.set(self.read.get() + n as u64);
+        Ok(n)
+    }
+}
+
+/// One tar or cpio member being read. Read to its end, it hands the stream
 /// back for the next member to go on from; dropped part way, the stream
 /// goes with it, since where it stands is no longer known.
 struct Member {
     stream: Option<Box<dyn Read + Send>>,
+    source: Source,
     left: u64,
     end: u64,
     keep: Kept,
@@ -1199,7 +1211,8 @@ impl Drop for Member {
         if self.left == 0
             && let Some(stream) = self.stream.take()
         {
-            *self.keep.lock().unwrap_or_else(|p| p.into_inner()) = Some((self.end, stream));
+            *self.keep.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some((self.source, self.end, stream));
         }
     }
 }
@@ -1738,6 +1751,162 @@ mod tests {
             }
         }
         out
+    }
+
+    /// Sixty members with sizes that need padding, as (name, body).
+    fn sixty() -> Vec<(String, Vec<u8>)> {
+        (0..60)
+            .map(|n| {
+                (
+                    format!("f{n:02}.txt"),
+                    format!("member {n}\n").repeat(n + 1).into_bytes(),
+                )
+            })
+            .collect()
+    }
+
+    /// Read every one of `members` under `prefix` in order, and say how
+    /// many times a stream was unwrapped from the top to do it.
+    fn passes_to_read(fs: &ArchiveFs, prefix: &str, members: &[(String, Vec<u8>)]) -> usize {
+        let before = fs.opens.load(std::sync::atomic::Ordering::Relaxed);
+        for (name, body) in members {
+            let mut got = Vec::new();
+            fs.open_read(&Path::new(prefix).join(name))
+                .unwrap()
+                .read_to_end(&mut got)
+                .unwrap();
+            assert!(got == *body, "{prefix}{name}");
+        }
+        fs.opens.load(std::sync::atomic::Ordering::Relaxed) - before
+    }
+
+    #[test]
+    fn a_cpio_is_read_in_one_pass_and_a_hard_link_finds_its_bytes() {
+        // every member used to unwrap the stream from the top and walk
+        // it to the name, and come back whole in memory
+        let tmp = tempfile::tempdir().unwrap();
+        let members = sixty();
+        let mut rows: Vec<(&str, u32, u64, u64, &[u8])> = members
+            .iter()
+            .enumerate()
+            .map(|(i, (name, body))| (name.as_str(), 0o100_644, 1, 10 + i as u64, &body[..]))
+            .collect();
+        // a hard link: the bytes ride with the first name only
+        rows.push(("linked", 0o100_644, 2, 999, b"shared bytes\n"));
+        rows.push(("alias", 0o100_644, 2, 999, b""));
+        let mut gz = GzEncoder::new(Vec::new(), Compression::fast());
+        gz.write_all(&write_newc(&rows)).unwrap();
+        let path = tmp.path().join("many.cpio.gz");
+        std::fs::write(&path, gz.finish().unwrap()).unwrap();
+        let fs = ArchiveFs::open(&path).unwrap();
+        assert_eq!(passes_to_read(&fs, "", &members), 1);
+        let mut alias = String::new();
+        fs.open_read(Path::new("alias"))
+            .unwrap()
+            .read_to_string(&mut alias)
+            .unwrap();
+        assert_eq!(alias, "shared bytes\n");
+        // backwards still reads, from the top again
+        assert_eq!(passes_to_read(&fs, "", &members[3..4]), 1);
+    }
+
+    #[test]
+    fn an_rpm_payload_is_read_in_one_pass() {
+        use crate::rpm::fixture::{Tag, build};
+        let tmp = tempfile::tempdir().unwrap();
+        let members = sixty();
+        let rows: Vec<(&str, u32, u64, u64, &[u8])> = members
+            .iter()
+            .enumerate()
+            .map(|(i, (name, body))| (name.as_str(), 0o100_644, 1, 10 + i as u64, &body[..]))
+            .collect();
+        let mut gz = GzEncoder::new(Vec::new(), Compression::fast());
+        gz.write_all(&write_newc(&rows)).unwrap();
+        let path = tmp.path().join("many-1.0-1.noarch.rpm");
+        std::fs::write(
+            &path,
+            build(
+                &[
+                    Tag::Str(crate::rpm::NAME, "many"),
+                    Tag::Str(crate::rpm::PAYLOADFORMAT, "cpio"),
+                    Tag::Str(crate::rpm::PAYLOADCOMPRESSOR, "gzip"),
+                ],
+                &gz.finish().unwrap(),
+            ),
+        )
+        .unwrap();
+        let fs = ArchiveFs::open(&path).unwrap();
+        assert_eq!(passes_to_read(&fs, "CONTENTS", &members), 1);
+    }
+
+    /// An `ar` archive by hand: the global header, then each member's
+    /// 60-byte header and its bytes, padded to an even length.
+    fn write_ar(members: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut out = b"!<arch>\n".to_vec();
+        for (name, data) in members {
+            let header = format!(
+                "{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n",
+                name,
+                1_700_000_000,
+                0,
+                0,
+                100_644,
+                data.len()
+            );
+            out.extend_from_slice(header.as_bytes());
+            out.extend_from_slice(data);
+            if out.len() % 2 == 1 {
+                out.push(b'\n');
+            }
+        }
+        out
+    }
+
+    fn tar_of(members: &[(String, Vec<u8>)]) -> Vec<u8> {
+        let mut tar = tar::Builder::new(Vec::new());
+        for (name, body) in members {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, format!("./{name}"), &body[..])
+                .unwrap();
+        }
+        tar.into_inner().unwrap()
+    }
+
+    #[test]
+    fn a_deb_is_read_in_one_pass_per_half() {
+        // a .deb's files are in tarballs inside it, and each one read
+        // used to unwrap its tarball from the top and walk to it
+        let tmp = tempfile::tempdir().unwrap();
+        let members = sixty();
+        let control = vec![("control".to_string(), b"Package: many\n".to_vec())];
+        let mut gz = GzEncoder::new(Vec::new(), Compression::fast());
+        gz.write_all(&tar_of(&control)).unwrap();
+        let control_tar = gz.finish().unwrap();
+        let mut xz = xz2::write::XzEncoder::new(Vec::new(), 1);
+        xz.write_all(&tar_of(&members)).unwrap();
+        let data_tar = xz.finish().unwrap();
+        let path = tmp.path().join("many_1.0_all.deb");
+        std::fs::write(
+            &path,
+            write_ar(&[
+                ("debian-binary", b"2.0\n"),
+                ("control.tar.gz", &control_tar),
+                ("data.tar.xz", &data_tar),
+            ]),
+        )
+        .unwrap();
+        let fs = ArchiveFs::open(&path).unwrap();
+        assert_eq!(passes_to_read(&fs, "CONTENTS", &members), 1);
+        assert_eq!(passes_to_read(&fs, "CONTROL", &control), 1);
+        let mut version = String::new();
+        fs.open_read(Path::new("debian-binary"))
+            .unwrap()
+            .read_to_string(&mut version)
+            .unwrap();
+        assert_eq!(version, "2.0\n");
     }
 
     fn make_cpio(dir: &Path, name: &str) -> PathBuf {
