@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.42.0 - 2026-09-24
+
+- **Help as pages.** F1 used to open one flat key table. It is now
+  mc's kind of help: a page per topic (panels, listing, directories,
+  finding, comparing, marking, file operations, jobs, attributes,
+  archives, remote panels, the viewer, the editor and the rest), a
+  contents page they all hang off, and links between them. Tab and
+  S-Tab pick a link, Enter or → follows it, ← or Backspace goes back,
+  F2 is the contents, and a click on a link follows it. `/` searches
+  every page and `n` goes on into the next ones. F1 over the viewer,
+  the editor or a dialog still opens the page about it, and F1 inside
+  the help opens the page about the help.
+
+- **An About page**: the version, the license, the source repository,
+  and where this session's config and state files are.
+
 ## 4.41.0 - 2026-09-23
 
 - **Quick search: Enter acts on the match.** Enter used to only close

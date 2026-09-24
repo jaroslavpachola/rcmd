@@ -464,8 +464,7 @@ def test_cpio():
         f.write(stream)
 
     s = Session(play, home, args=(play, os.path.join(play, "out")))
-    s.send(b"\x13box\r", wait=STEP)     # quick search -> box.cpio.gz
-    s.send(b"\r", wait=STEP * 2)        # enter the archive
+    s.send(b"\x13box\r", wait=STEP * 2)   # quick search: Enter goes in
     scr = s.screen()
     check("cpio: entered", "box.cpio.gz://" in scr)
     check("cpio: listing", "hello.txt" in scr and "sub" in scr and "point" in scr)
@@ -510,8 +509,7 @@ def test_cmdarchive():
                    cwd=src, check=True, capture_output=True)
 
     s = Session(play, home, args=(play, os.path.join(play, "out")))
-    s.send(b"\x13box\r", wait=STEP)     # quick search -> box.rar/.7z
-    s.send(b"\r", wait=STEP * 3)        # enter the archive
+    s.send(b"\x13box\r", wait=STEP * 3)   # quick search: Enter goes in
     scr = s.screen()
     check("cmdarchive: entered", ("box." + ext + "://") in scr)
     check("cmdarchive: listing", "hello.txt" in scr and "sub" in scr)
@@ -579,8 +577,7 @@ def test_deb():
     ]))
 
     s = Session(play, home, args=(play, os.path.join(play, "out")))
-    s.send(b"\x13hello\r", wait=STEP)   # quick search -> the package
-    s.send(b"\r", wait=STEP * 2)        # enter it
+    s.send(b"\x13hello\r", wait=STEP * 2)   # quick search: Enter goes in
     scr = s.screen()
     check("deb: entered", "hello_1.0_all.deb://" in scr)
     check("deb: both halves listed", "CONTROL" in scr and "CONTENTS" in scr)
@@ -659,8 +656,7 @@ def test_rpm():
     }, gzip.compress(stream)))
 
     s = Session(play, home, args=(play, os.path.join(play, "out")))
-    s.send(b"\x13hello\r", wait=STEP)   # quick search -> the package
-    s.send(b"\r", wait=STEP * 2)
+    s.send(b"\x13hello\r", wait=STEP * 2)   # quick search: Enter goes in
     scr = s.screen()
     check("rpm: entered", "hello-1.0-3.noarch.rpm://" in scr)
     check("rpm: both halves listed", "CONTROL" in scr and "CONTENTS" in scr)
@@ -724,8 +720,7 @@ def test_iso():
                    check=True, capture_output=True)
 
     s = Session(play, home, args=(play, os.path.join(play, "out")))
-    s.send(b"\x13disc\r", wait=STEP)    # quick search -> disc.iso
-    s.send(b"\r", wait=STEP * 2)
+    s.send(b"\x13disc\r", wait=STEP * 2)    # quick search: Enter goes in
     scr = s.screen()
     check("iso: entered", "disc.iso://" in scr)
     check("iso: rock ridge names", "readme.txt" in scr and "docs" in scr)
@@ -770,8 +765,7 @@ def test_patch():
         "+new title\n")
 
     s = Session(play, home, args=(play, os.path.join(play, "out")))
-    s.send(b"\x13change\r", wait=STEP)  # quick search -> change.patch
-    s.send(b"\r", wait=STEP * 2)
+    s.send(b"\x13change\r", wait=STEP * 2)   # quick search: Enter goes in
     scr = s.screen()
     check("patch: entered", "change.patch://" in scr)
     check("patch: paths became directories", "docs" in scr and "src" in scr)
@@ -815,8 +809,7 @@ def test_mbox():
         "And a reply.\n")
 
     s = Session(play, home, args=(play, os.path.join(play, "out")))
-    s.send(b"\x13inbox\r", wait=STEP)   # quick search -> inbox.mbox
-    s.send(b"\r", wait=STEP * 2)
+    s.send(b"\x13inbox\r", wait=STEP * 2)   # quick search: Enter goes in
     scr = s.screen()
     check("mbox: entered", "inbox.mbox://" in scr)
     check("mbox: messages are numbered", "0001 the first message" in scr)
@@ -865,8 +858,7 @@ def test_vfslist():
           "not rcmd's to free" in s.screen(), s.screen())
     s.send(b"\x1b", wait=STEP)
 
-    s.send(b"\x13b.tar\r", wait=STEP)   # quick search -> b.tar.gz
-    s.send(b"\r", wait=STEP * 2)        # enter the archive
+    s.send(b"\x13b.tar\r", wait=STEP * 2)   # quick search: Enter goes in
     check("vfslist: in the archive", "b.tar.gz://" in s.screen())
 
     s.send(b"\x18a", wait=STEP)
@@ -903,8 +895,7 @@ def test_archive_write():
         z.writestr("dir/inner.txt", "inside\n")
 
     s = Session(play, home, args=(play, os.path.join(play, "out")))
-    s.send(b"\x13box\r", wait=STEP)     # quick search -> box.zip
-    s.send(b"\r", wait=STEP * 2)
+    s.send(b"\x13box\r", wait=STEP * 2)   # quick search: Enter goes in
     check("archwrite: entered", "box.zip://" in s.screen())
 
     # .., dir, drop.txt, keep.txt
@@ -1037,8 +1028,7 @@ fi
           "notes.txt" in scr and "photos" in scr, scr)
     check("rclone: with sizes and times", "12" in scr and "Aug 27" in scr, scr)
 
-    s.send(b"\x13photos\r", wait=STEP)
-    s.send(b"\r", wait=STEP * 3)
+    s.send(b"\x13photos\r", wait=STEP * 3)   # quick search: Enter goes in
     check("rclone: and folders open", wait_for(s, "cat.jpg"), s.screen())
     s.send(BACKSPACE, wait=STEP * 2)
 
@@ -1080,8 +1070,7 @@ def test_shortcutsandfiles():
     s.send(b"\x181", wait=STEP)
     check("shortcuts: an empty slot is set here",
           wait_for(s, "shortcut 1 is now " + play), s.screen())
-    s.send(b"\x13away\r", wait=STEP)
-    s.send(b"\r", wait=STEP)
+    s.send(b"\x13away\r", wait=STEP)   # quick search: Enter goes in
     check("shortcuts: we walked away", wait_for(s, away))
     s.send(b"\x181", wait=STEP)
     out = remote("pwd")
@@ -1468,12 +1457,10 @@ def test_visits():
         os.makedirs(os.path.join(play, name))
 
     s = Session(play, home, args=(play, play))
-    s.send(b"\x13once\r", wait=STEP)
-    s.send(b"\r", wait=STEP)                   # into once
+    s.send(b"\x13once\r", wait=STEP)   # quick search: Enter goes in
     s.send(BACKSPACE, wait=STEP)
     for _ in range(2):                         # and twice into often
-        s.send(b"\x13often\r", wait=STEP)
-        s.send(b"\r", wait=STEP)
+        s.send(b"\x13often\r", wait=STEP)   # quick search: Enter goes in
         s.send(BACKSPACE, wait=STEP)
     s.quit()
 
@@ -1510,8 +1497,7 @@ def test_restore_other_dir():
 
     s = Session(play, home, args=(play, play))
     s.send(b"\t", wait=STEP)                   # to the right panel
-    s.send(b"\x13away\r", wait=STEP)
-    s.send(b"\r", wait=STEP)                   # into away
+    s.send(b"\x13away\r", wait=STEP)   # quick search: Enter goes in
     s.send(b"\t", wait=STEP)                   # back to the left panel
     s.quit()
 
@@ -1893,13 +1879,11 @@ def test_uservfs():
         "-rw-r--r-- 1 u g 20 2024-01-01 00:00 inner/one.txt\n"
         "-rw-r--r-- 1 u g 9 Jan 01 2024 top.txt\n")
     s = Session(play, home)
-    s.send(b"\x13thing\r", wait=STEP)
-    s.send(b"\r", wait=STEP * 2)
+    s.send(b"\x13thing\r", wait=STEP * 2)   # quick search: Enter goes in
     scr = s.screen()
     check("uservfs: Enter goes into the file",
           "inner" in scr and "top.txt" in scr and "thing.box" in scr, scr)
-    s.send(b"\x13inner\r", wait=STEP)
-    s.send(b"\r", wait=STEP)
+    s.send(b"\x13inner\r", wait=STEP)   # quick search: Enter goes in
     check("uservfs: and into its directories", "one.txt" in s.screen(), s.screen())
     s.send(b"\x13one\r", wait=STEP)
     s.send(F3, wait=STEP * 2)
@@ -2025,7 +2009,7 @@ def test_extract():
         tar.add(os.path.join(src, "top.txt"), "top.txt")
         tar.add(os.path.join(src, "inner"), "inner")
     s = Session(play, home, args=(play, other))
-    s.send(b"\x13bundle\r", wait=STEP)
+    s.send(b"\x13bundle", wait=STEP)
     s.send(b"\x1b[17;3~", wait=STEP * 3)       # Alt+F6
     check("extract: it ran", wait_for(s, "done -"), s.screen())
     out = os.path.join(other, "bundle")
@@ -2052,7 +2036,7 @@ def test_pack():
     open(os.path.join(play, "loose.txt"), "w").write("alone\n")
 
     s = Session(play, home, args=(play, os.path.join(play, "out")))
-    s.send(b"\x13src\r", wait=STEP)          # quick search -> src
+    s.send(b"\x13src", wait=STEP)            # quick search -> src; M-F5 ends it
     s.send(ALT_F5, wait=STEP)
     screen = s.screen()
     check("pack: the dialog names what it is packing", "Pack" in screen, screen)
@@ -2072,9 +2056,9 @@ def test_pack():
 
     # two marked entries, and the default container this time
     s.send(HOME_K, wait=STEP)
-    s.send(b"\x13loose\r", wait=STEP)
+    s.send(b"\x13loose", wait=STEP)
     s.send(INSERT, wait=STEP)                # mark loose.txt
-    s.send(b"\x13src\r", wait=STEP)
+    s.send(b"\x13src", wait=STEP)
     s.send(INSERT, wait=STEP)                # and src
     s.send(ALT_F5, wait=STEP)
     check("pack: two marked entries are named as two", "2 items" in s.screen())
@@ -3188,16 +3172,14 @@ def test_extensibility():
     s = Session(play, home)
 
     # Enter on a matching file runs the opener (quietly, no pause)
-    s.send(b"\x13notes\r", wait=STEP)   # quick search -> notes.txt
-    s.send(b"\r", wait=STEP * 3)
+    s.send(b"\x13notes\r", wait=STEP * 3)   # quick search: Enter goes in
     copy = os.path.join(play, "opened_copy")
     check(
         "extensibility: opener ran on Enter",
         os.path.isfile(copy) and open(copy).read() == "data\n",
     )
     # a regex + directory rule, where no glob would do
-    s.send(b"\x13weird\r", wait=STEP)
-    s.send(b"\r", wait=STEP * 3)
+    s.send(b"\x13weird\r", wait=STEP * 3)   # quick search: Enter goes in
     copy = os.path.join(play, "regex_copy")
     check(
         "extensibility: regex/directory opener ran",
@@ -3267,8 +3249,7 @@ def test_extensibility():
     s.quit()
     s2 = Session(play, home, env={"DISPLAY": ":0"})
     os.environ.clear(); os.environ.update(saved)
-    s2.send(b"\x13slides\r", wait=STEP)
-    s2.send(b"\r", wait=STEP * 3)
+    s2.send(b"\x13slides\r", wait=STEP * 3)   # quick search: Enter goes in
     out = os.path.join(play, "desktop.out")
     wait_file(out, "slides.pdf")
     check("extensibility: unclaimed file goes to xdg-open",
@@ -4833,7 +4814,7 @@ def test_sftp():
         open(os.path.join(remote, "deep", "one.bin"), "w").write("x" * 10)
         open(os.path.join(remote, "deep", "two.bin"), "w").write("y" * 6)
         s.send(b"\x12", wait=STEP)          # Ctrl+R reload the listing
-        s.send(b"\x13deep\r", wait=STEP)    # quick search -> deep/
+        s.send(b"\x13deep", wait=STEP)    # quick search -> deep/
         s.send(b"\x00", wait=STEP)          # Ctrl+Space
         check("sftp: remote dir size", wait_for(s, "deep: 16 bytes in 2 file(s)"))
 
@@ -5930,6 +5911,41 @@ def test_leftovers():
     shutil.rmtree(root)
 
 
+def test_helppages():
+    """The help as pages: F1 on the panels opens the contents, Tab
+    picks a link and Enter follows it, Backspace comes back, a click
+    follows a link, / searches every page, F1 inside the help is the
+    page about the help, and the About page says where the files are."""
+    root, play, home = sandbox()
+    s = Session(play, home)
+    s.send(b"\x1bOP", wait=STEP * 2)                     # F1
+    top = "\n".join(s.screen().split("\n")[:3])
+    check("help pages: F1 on the panels opens the contents",
+          "Help - rcmd" in top and "Contents" in top, s.screen())
+    s.send(b"\t\t\r", wait=STEP * 2)                     # Using, Panels, Listing
+    check("help pages: Tab picks a link and Enter follows it",
+          "- Listing" in s.screen().split("\n")[0], s.screen())
+    s.send(b"\x7f", wait=STEP)
+    check("help pages: Backspace goes back",
+          "- Contents" in s.screen().split("\n")[0], s.screen())
+    rows = s.screen().split("\n")
+    y = next(i for i, l in enumerate(rows) if l.strip().startswith("About ")) + 1
+    s.send(b"\x1b[<0;5;%dM\x1b[<0;5;%dm" % (y, y), wait=STEP * 2)
+    check("help pages: a click follows a link, About says where config lives",
+          "- About" in s.screen().split("\n")[0]
+          and os.path.join(home, ".config/rcmd/config.toml") in s.screen(), s.screen())
+    s.send(b"/hex edit\r", wait=STEP * 2)
+    check("help pages: / searches every page",
+          "- Viewer" in s.screen().split("\n")[0] and "hex edit" in s.screen(), s.screen())
+    s.send(b"\x1bOP", wait=STEP)
+    check("help pages: F1 in the help is the page about it",
+          "- Using the help" in s.screen().split("\n")[0], s.screen())
+    s.send(b"\x1b", wait=STEP * 3)
+    check("help pages: Esc closes it", "Help - rcmd" not in s.screen(), s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_findwindow():
     """PLAN4 S6: mc's find results window - the matches in a list of
     their own, with Chdir, Again, Panelize, View and Edit."""
@@ -7013,6 +7029,7 @@ def main():
         test_findhits,
         test_firstrun,
         test_leftovers,
+        test_helppages,
         test_findwindow,
         test_panelize,
         test_diff,

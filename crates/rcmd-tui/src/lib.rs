@@ -12,6 +12,7 @@ pub mod editorconfig;
 pub mod field;
 pub mod format;
 pub mod git;
+pub mod help;
 pub mod keymap;
 pub mod keyring;
 pub mod mcimport;

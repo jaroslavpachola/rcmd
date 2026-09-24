@@ -3190,30 +3190,7 @@ pub struct MenuState {
     pub item: usize,
 }
 
-/// Full-screen F1 help state.
-pub struct HelpState {
-    pub top: usize,
-    /// Content rows; updated on every draw, drives paging.
-    pub rows: usize,
-    /// `/` typing a search: the field.
-    pub typing: Option<TextField>,
-    /// What was searched for last, for `n` and for highlighting.
-    pub query: String,
-    pub note: Option<String>,
-}
-
-impl HelpState {
-    /// Help opened at `top`.
-    pub fn at(top: usize) -> HelpState {
-        HelpState {
-            top,
-            rows: 1,
-            typing: None,
-            query: String::new(),
-            note: None,
-        }
-    }
-}
+pub use crate::help::HelpState;
 
 /// The MC-style command line at the bottom of the screen.
 #[derive(Default)]
@@ -4635,6 +4612,20 @@ impl App {
     }
 
     fn on_click(&mut self, x: u16, y: u16, double: bool) {
+        // the help covers whatever F1 was pressed over, dialogs too: a
+        // click on a link follows it, and nothing reaches underneath
+        if let Some(help) = self.help.as_mut() {
+            let hit = help
+                .drawn
+                .iter()
+                .find(|&&(row, from, to, _)| row == y && (from..to).contains(&x))
+                .map(|&(.., link)| link);
+            if let Some(link) = hit {
+                help.link = Some(link);
+                help.follow();
+            }
+            return;
+        }
         // A form dialog takes a click on a field, a switch or a button;
         // a list dialog on one of its rows.
         if self.dialog.is_some() {
@@ -4937,9 +4928,7 @@ impl App {
             return;
         }
         if let Some(help) = self.help.as_mut() {
-            let rows = help.rows.max(1);
-            let max_top = crate::ui::help_lines().saturating_sub(rows);
-            help.top = help.top.saturating_add_signed(delta).min(max_top);
+            help.scroll(delta);
             return;
         }
         if let Some(st) = self.editor_mut() {

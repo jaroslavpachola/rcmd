@@ -266,7 +266,7 @@ window was left in is where the next terminal session starts.
 | ↑ ↓ PgUp PgDn Home End | Move cursor |
 | Enter | Enter directory or archive (zip, tar, tar.{gz,xz,bz2}) |
 | Backspace | Parent directory / leave archive |
-| F1 | Help |
+| F1 | Help: pages on topics with links between them - Tab picks a link, Enter follows it, ← goes back, F2 is the contents, / searches every page. Over the viewer, the editor or a dialog it opens at the page about it |
 | F2 | User menu (`[[commands]]` from the config) |
 | F3 | View file (internal viewer) |
 | F4 | Edit file (built-in editor; `editor = "external"` for $EDITOR) |

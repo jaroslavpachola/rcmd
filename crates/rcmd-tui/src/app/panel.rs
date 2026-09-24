@@ -137,25 +137,26 @@ impl App {
         } else if self.viewer().is_some() {
             "# Viewer"
         } else if self.diff().is_some() {
-            "  F9>Cmd>Compare files"
+            "# Comparing"
         } else {
             match &self.dialog {
                 Some(Dialog::Find(_) | Dialog::FindResults(_)) => "  M-F7",
                 Some(Dialog::Fuzzy(_)) => "  M-/",
                 Some(Dialog::Transfer(_) | Dialog::Confirm(_)) => "# File operations",
                 Some(Dialog::Chmod(_) | Dialog::Chattr(_) | Dialog::Chown(_) | Dialog::Link(_)) => {
-                    "# File operations"
+                    "# Attributes and links"
                 }
                 Some(Dialog::Pattern(_)) => "# Marking",
                 Some(Dialog::Hotlist(_)) => "  C-\\",
                 Some(Dialog::Panelize(_)) => "  C-x !",
                 Some(Dialog::Sync(_)) => "  F9>Cmd>Synchronize",
-                Some(Dialog::Options(_)) => "# Config",
+                Some(Dialog::Options(_)) => "# Menus and options",
                 Some(_) => "# Editing a line",
                 None => return false,
             }
         };
-        self.help = Some(HelpState::at(crate::ui::help_line_of(heading)));
+        let (topic, line) = crate::help::locate(heading);
+        self.help = Some(HelpState::at(topic, line));
         true
     }
 
@@ -163,8 +164,7 @@ impl App {
         let Some(help) = self.help.as_mut() else {
             return;
         };
-        let rows = help.rows.max(1);
-        let max_top = crate::ui::help_lines().saturating_sub(rows);
+        let rows = help.rows.max(1) as isize;
         help.note = None;
         // `/` asked for a search: the field takes the keys until Enter
         if let Some(field) = help.typing.as_mut() {
@@ -173,7 +173,7 @@ impl App {
                 KeyCode::Enter => {
                     help.query = field.value.trim().to_string();
                     help.typing = None;
-                    help_search(help, help.top, max_top);
+                    help.search(false);
                 }
                 _ => {
                     field.key(key);
@@ -185,18 +185,32 @@ impl App {
             KeyCode::Char('/') | KeyCode::F(7) => {
                 help.typing = Some(TextField::new("").with_history("help-search"));
             }
-            KeyCode::Char('n') if !help.query.is_empty() => {
-                help_search(help, help.top + 1, max_top)
+            KeyCode::Char('n') if !help.query.is_empty() => help.search(true),
+            KeyCode::Tab => help.step_link(true),
+            KeyCode::BackTab => help.step_link(false),
+            // Enter with no link on screen closes, as it always has
+            KeyCode::Enter => {
+                if !help.follow() {
+                    self.help = None
+                }
             }
-            KeyCode::Esc | KeyCode::Enter | KeyCode::F(1) | KeyCode::F(10) | KeyCode::Char('q') => {
-                self.help = None
+            KeyCode::Right => {
+                help.follow();
             }
-            KeyCode::Up => help.top = help.top.saturating_sub(1),
-            KeyCode::Down => help.top = (help.top + 1).min(max_top),
-            KeyCode::PageUp => help.top = help.top.saturating_sub(rows.saturating_sub(1)),
-            KeyCode::PageDown => help.top = (help.top + rows.saturating_sub(1)).min(max_top),
-            KeyCode::Home => help.top = 0,
-            KeyCode::End => help.top = max_top,
+            KeyCode::Left | KeyCode::Backspace | KeyCode::F(3) => help.go_back(),
+            KeyCode::F(2) | KeyCode::Char('c') => help.go(0, 0),
+            KeyCode::F(1) => {
+                if let Some(at) = crate::help::topic_named("Using the help") {
+                    help.go(at, 0)
+                }
+            }
+            KeyCode::Esc | KeyCode::F(10) | KeyCode::Char('q') => self.help = None,
+            KeyCode::Up => help.scroll(-1),
+            KeyCode::Down => help.scroll(1),
+            KeyCode::PageUp => help.scroll(1 - rows),
+            KeyCode::PageDown => help.scroll(rows - 1),
+            KeyCode::Home => help.scroll_to(0),
+            KeyCode::End => help.scroll_to(usize::MAX),
             _ => {}
         }
     }
@@ -337,7 +351,7 @@ impl App {
             return;
         }
         match action {
-            Action::Help => self.help = Some(HelpState::at(0)),
+            Action::Help => self.help = Some(HelpState::at(0, 0)),
             Action::Menu => {
                 if self.external_menubar {
                     self.menu_requested = true;
@@ -3366,23 +3380,6 @@ impl App {
             Action::ScreenMiddle => offset + (last.saturating_sub(offset)) / 2,
             _ => last,
         };
-    }
-}
-
-/// The next help line holding the query, from `from` on and round to
-/// the start once, brought to the top of the screen.
-fn help_search(help: &mut HelpState, from: usize, max_top: usize) {
-    let lines = crate::ui::help_lines();
-    let query = help.query.to_lowercase();
-    if query.is_empty() {
-        return;
-    }
-    let found = (0..lines)
-        .map(|step| (from + step) % lines)
-        .find(|&at| crate::ui::help_line(at).to_lowercase().contains(&query));
-    match found {
-        Some(at) => help.top = at.min(max_top),
-        None => help.note = Some(format!(" \"{}\" is not in the help ", help.query)),
     }
 }
 
