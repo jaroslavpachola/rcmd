@@ -17,6 +17,7 @@ mod grid;
 mod gui;
 mod keys;
 mod menu;
+mod select;
 mod settings;
 mod term;
 

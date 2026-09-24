@@ -204,6 +204,9 @@ is still drawn.
   info.
 - **The clipboard** is the window system's own, through egui, not
   `wl-copy` or `xclip`.
+- **Selecting text**: Shift+drag over the panels, as Shift does in a
+  terminal, or a plain drag in the Ctrl+O pane, selects the screen's
+  text row after row, and letting go copies it to the clipboard.
 - **Where the window was and how big** is remembered.
 - **An input method** composes into the command line and the editor,
   and is told where the cursor is.

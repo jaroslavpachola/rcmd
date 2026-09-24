@@ -25,6 +25,7 @@ use ratatui::crossterm::event::{
 use crate::grid::Metrics;
 
 /// What one frame of egui input turned into, in arrival order.
+#[derive(Clone)]
 pub enum Input {
     Key(KeyEvent),
     Mouse(MouseEvent),

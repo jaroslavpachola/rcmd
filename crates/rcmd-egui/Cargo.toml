@@ -23,10 +23,11 @@ git = ["rcmd-tui/git"]
 screenshot = ["eframe/__screenshot"]
 
 [dependencies]
-rcmd-tui = { path = "../rcmd-tui", version = "4.42.0", default-features = false }
-rcmd-tui-edit = { path = "../rcmd-edit", version = "4.42.0" }
+rcmd-tui = { path = "../rcmd-tui", version = "4.43.0", default-features = false }
+rcmd-tui-edit = { path = "../rcmd-edit", version = "4.43.0" }
 ratatui.workspace = true
 vt100.workspace = true
+unicode-width.workspace = true
 anyhow.workspace = true
 # glow rather than the default wgpu: a cell grid is flat 2D drawing,
 # and glow is the smaller dependency tree and the wider driver support

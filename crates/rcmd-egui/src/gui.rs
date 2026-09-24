@@ -23,6 +23,7 @@ use crate::exec;
 use crate::grid::{EguiBackend, Metrics, Palette};
 use crate::keys::{self, Input};
 use crate::menu::{self, WindowEntry};
+use crate::select::Selecting;
 use crate::settings::{self, Window};
 use crate::term::TerminalPane;
 
@@ -71,6 +72,10 @@ pub struct Gui {
     wheel: f32,
     /// The right-click menu, open at this point.
     context: Option<egui::Pos2>,
+    /// Text being selected with the mouse: a plain drag in the shell
+    /// pane, a Shift+drag over the panels - see [`crate::select`].
+    pane_select: Selecting,
+    grid_select: Selecting,
 }
 
 /// The right-click menu: what a file manager is asked to do to the
@@ -137,6 +142,8 @@ impl Gui {
             font_dialog: None,
             wheel: 0.0,
             context: None,
+            pane_select: Selecting::default(),
+            grid_select: Selecting::default(),
         })
     }
 
@@ -173,14 +180,27 @@ impl Gui {
         let pane = &mut self.pane;
         let (cols, rows) = self.size;
         pane.resize(&mut self.app, cols, rows);
+        // the shell takes no mouse, so every drag is a selection, and
+        // letting go copies it, as a terminal does
+        let (input, done) = self.pane_select.filter(input, true);
+        if let Some(sel) = done {
+            let sel = sel.clamp(cols, rows);
+            ui.ctx()
+                .copy_text(sel.text(cols, |col, row| pane.symbol(col, row)));
+        }
         // Ctrl+O closes it; everything typed before that still reaches
         // the shell, the way the terminal build feeds the bytes ahead
         // of the 0x0F and then breaks
         let open = pane.feed(&mut self.app, &input) & pane.step(&mut self.app);
         pane.paint(ui.painter(), origin, self.metrics, &self.font, self.palette);
+        if let Some(sel) = self.pane_select.shown {
+            sel.clamp(cols, rows)
+                .paint(ui.painter(), origin, self.metrics, cols);
+        }
         let wait = pane.repaint_after();
         if !open {
             pane.close();
+            self.pane_select.clear();
             self.app.end_subshell();
             self.app.finish_remote_edit();
             // the panels are back and owed a frame
@@ -484,9 +504,24 @@ impl eframe::App for Gui {
         // neither drawn nor given any input, exactly as they are not in
         // the terminal build while the output screen is up.
         if self.pane.is_open() {
+            // a selection over the panels does not outlive them
+            self.grid_select.clear();
             let wait = self.pane_frame(ui, origin, input);
             ctx.request_repaint_after(wait);
             return;
+        }
+
+        // Shift+drag selects the screen's text, as Shift does in a
+        // terminal that rcmd has asked for the mouse; the panels never
+        // see that drag
+        let (input, done) = self.grid_select.filter(input, false);
+        if let Some(sel) = done {
+            let (cols, rows) = self.size;
+            let backend = self.terminal.backend();
+            ctx.copy_text(
+                sel.clamp(cols, rows)
+                    .text(cols, |col, row| backend.symbol(col, row)),
+            );
         }
 
         // Input, in arrival order, into the same handlers the terminal
@@ -541,6 +576,11 @@ impl eframe::App for Gui {
         self.terminal
             .backend()
             .paint(ui.painter(), origin, self.metrics, &self.font);
+        if let Some(sel) = self.grid_select.shown {
+            let (cols, rows) = self.size;
+            sel.clamp(cols, rows)
+                .paint(ui.painter(), origin, self.metrics, cols);
+        }
         self.paint_image(ui, origin);
         self.context_menu(&ctx);
         self.window_io(&ctx, origin);

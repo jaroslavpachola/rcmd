@@ -170,6 +170,14 @@ impl TerminalPane {
         }
     }
 
+    /// What cell (`col`, `row`) of the shell's screen shows.
+    pub fn symbol(&self, col: u16, row: u16) -> String {
+        self.parser
+            .screen()
+            .cell(row, col)
+            .map_or_else(String::new, vt100::Cell::contents)
+    }
+
     /// Paint the shell's screen. Same grid, same font, same origin as
     /// the panels it is standing in front of.
     pub fn paint(

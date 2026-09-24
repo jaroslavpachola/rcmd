@@ -127,6 +127,12 @@ impl EguiBackend {
         self.cursor_visible.then_some(self.cursor)
     }
 
+    /// What cell (`x`, `y`) shows: its text, or nothing off the grid.
+    pub fn symbol(&self, x: u16, y: u16) -> String {
+        self.index(x, y)
+            .map_or_else(String::new, |i| self.cells[i].symbol().to_string())
+    }
+
     fn index(&self, x: u16, y: u16) -> Option<usize> {
         (x < self.width && y < self.height).then(|| y as usize * self.width as usize + x as usize)
     }

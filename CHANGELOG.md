@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.43.0 - 2026-09-24
+
+- **Selecting text in the window.** In a terminal, Shift+drag selects
+  the screen's text because the terminal emulator keeps that drag for
+  itself; the window has no emulator behind it, so nothing selected -
+  not over the panels, and not in the Ctrl+O shell, which took no
+  mouse at all. Now a plain drag in the shell pane, or a Shift+drag
+  over the panels, selects row after row as a terminal does, and
+  letting go copies it to the clipboard. A key or another click clears
+  the highlight.
+
 ## 4.42.0 - 2026-09-24
 
 - **Help as pages.** F1 used to open one flat key table. It is now
