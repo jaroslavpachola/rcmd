@@ -857,6 +857,13 @@ header shapes - `newc`/`crc`, the portable octal `odc`, and the old
 binary one in either byte order - and a hard link inside one lists and
 opens as the file it shares its bytes with.
 
+An archive **on a server, in the trash or inside another archive**
+opens too: Enter copies it to a scratch file, as F3 does, and goes into
+the copy. The title says where the archive really is
+(`outer.zip://box/inner.zip://`), `..` at its top comes back to it
+there, and the copy goes with it. It is read-only: changes go to the
+original, which may be on a server or inside another archive.
+
 `ar` archives open too, which is how a `.a` static library lists its
 members, and a **Debian package** (`.deb`, `.udeb`) opens as one tree
 rather than three: `debian-binary` at the root, the metadata and

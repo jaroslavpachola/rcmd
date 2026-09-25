@@ -355,6 +355,8 @@ const TEXT: &[&str] = &[
     "# Archives",
     "  Enter on zip/tar/tar.{gz,xz,bz2} browses it; F5 copies out,",
     "  F3 views members. Move/delete/mkdir are disabled inside.",
+    "  An archive on a server or inside another opens through a copy,",
+    "  read-only; .. at its top comes back to where it was.",
     "  rar, 7z, lha/lzh, arj and cab browse through an installed 7z",
     "  (p7zip; rar needs its codec) or unrar. F3 streams one member;",
     "  F5 unpacks all it copies in one run of the tool, then copies.",

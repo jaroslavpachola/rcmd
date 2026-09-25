@@ -789,6 +789,48 @@ impl App {
     /// plain file consults the [[open]] rules (local panels only, the
     /// first matching glob wins, case-insensitive). The `enter` keymap
     /// action (lynx-motion Right) stays dirs-only on purpose.
+    /// Enter on an archive a panel cannot open where it lies - on a
+    /// server, or inside the archive the panel is in: a local copy is
+    /// made, as F3 makes one, and the panel goes into that. False = not
+    /// such an archive.
+    fn enter_nested_archive(&mut self) -> bool {
+        let panel = &self.panels[self.active];
+        if panel.is_local() {
+            return false;
+        }
+        let Some(entry) = panel.selected().filter(|e| {
+            e.kind == rcmd_core::entry::EntryKind::File && rcmd_core::vfs::is_archive_name(&e.name)
+        }) else {
+            return false;
+        };
+        let name = entry.name.clone();
+        let source = panel.cwd.join(&name);
+        let copied = crate::scratch::create(&name.to_string_lossy()).and_then(|(mut out, copy)| {
+            let done = panel
+                .fs
+                .open_read(&source)
+                .and_then(|mut reader| std::io::copy(&mut reader, &mut out));
+            match done {
+                Ok(_) => Ok(copy),
+                Err(err) => {
+                    let _ = std::fs::remove_file(&copy);
+                    Err(err)
+                }
+            }
+        });
+        let entered = copied.and_then(|copy| {
+            self.panels[self.active]
+                .enter_nested(copy.clone(), name.clone())
+                .inspect_err(|_| {
+                    let _ = std::fs::remove_file(&copy);
+                })
+        });
+        if let Err(err) = entered {
+            self.status = Some(format!(" {}: {err} ", name.to_string_lossy()));
+        }
+        true
+    }
+
     pub(super) fn enter_or_open(&mut self) {
         if self.enter_user_vfs() {
             return;
@@ -800,6 +842,9 @@ impl App {
                 self.status = Some(format!(" {err} "));
                 return;
             }
+        }
+        if self.enter_nested_archive() {
+            return;
         }
         let panel = &self.panels[self.active];
         if !panel.is_local() {
@@ -2162,6 +2207,11 @@ impl App {
     /// rewriting a package or a disc image is not what a panel is for.
     fn editable_archive(&mut self) -> Option<PathBuf> {
         let archive = self.panels[self.active].archive.clone()?;
+        if self.panels[self.active].nested() {
+            self.status =
+                Some(" an archive on a server or inside another is read here, not changed ".into());
+            return None;
+        }
         let name = archive
             .file_name()
             .unwrap_or_default()

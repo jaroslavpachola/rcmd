@@ -124,6 +124,25 @@ pub struct Panel {
     /// Target index of an in-flight Alt+←/→ navigation; committed by
     /// [`Self::hist_note`] once the matching listing lands.
     hist_pending: Option<usize>,
+    /// Archives entered from somewhere a panel cannot open one where it
+    /// lies - a server, or another archive - through a local copy: what
+    /// each one was entered from, innermost last, so `..` at its top
+    /// goes back there.
+    outer: Vec<Outer>,
+}
+
+/// Where a nested archive was entered from.
+struct Outer {
+    fs: Arc<dyn FsProvider>,
+    archive: Option<PathBuf>,
+    remote: Option<String>,
+    cwd: PathBuf,
+    /// The archive's name there, for the cursor to land on.
+    name: std::ffi::OsString,
+    /// The local copy the archive is read from.
+    copy: PathBuf,
+    /// How the panel title calls the archive: where it really is.
+    shown: String,
 }
 
 impl Panel {
@@ -132,6 +151,7 @@ impl Panel {
             fs: Arc::new(LocalFs),
             archive: None,
             remote: None,
+            outer: Vec::new(),
             cwd,
             entries: Vec::new(),
             cursor: 0,
@@ -349,6 +369,9 @@ impl Panel {
     /// Panel location for titles: `path`, `archive.zip://inside` or
     /// `sftp://user@host/path`.
     pub fn display_path(&self) -> String {
+        if let Some(outer) = self.outer.last() {
+            return format!("{}://{}", outer.shown, self.cwd.display());
+        }
         if let Some(prefix) = &self.remote {
             return format!("{prefix}{}", self.cwd.display());
         }
@@ -362,6 +385,19 @@ impl Panel {
     /// inside an archive, that is the archive's parent directory; on a
     /// remote panel there is no meaningful local directory, use home.
     pub fn local_cwd(&self) -> PathBuf {
+        // inside an archive entered from a server or another archive:
+        // wherever the outermost of them was
+        if let Some(first) = self.outer.first() {
+            if first.remote.is_some() {
+                return std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("/"));
+            }
+            return match &first.archive {
+                Some(archive) => archive.parent().unwrap_or(Path::new("/")).to_path_buf(),
+                None => first.cwd.clone(),
+            };
+        }
         if self.remote.is_some() {
             return std::env::var_os("HOME")
                 .map(PathBuf::from)
@@ -387,6 +423,7 @@ impl Panel {
         raw: Vec<Entry>,
     ) {
         self.cancel_pending();
+        self.drop_outer();
         self.fs = fs;
         self.archive = None;
         self.remote = Some(prefix);
@@ -411,6 +448,7 @@ impl Panel {
     /// Leave a remote connection (or an archive) for a local directory;
     /// on failure the panel stays where it was.
     pub fn to_local(&mut self, target: PathBuf) -> io::Result<()> {
+        self.drop_outer();
         let prev_fs = std::mem::replace(&mut self.fs, Arc::new(LocalFs));
         let prev_archive = self.archive.take();
         let prev_remote = self.remote.take();
@@ -592,6 +630,9 @@ impl Panel {
     /// archive. Returns true if the panel moved.
     pub fn go_up(&mut self) -> io::Result<bool> {
         let Some(parent) = self.cwd.parent().map(Path::to_path_buf) else {
+            if self.nested() {
+                return self.leave_nested().map(|()| true);
+            }
             if let Some(archive) = self.archive.clone() {
                 return self.exit_archive(&archive).map(|()| true);
             }
@@ -613,6 +654,65 @@ impl Panel {
 
     /// Open an archive without going through Enter on a listing - the
     /// active VFS list needs this to send a panel back into one.
+    /// Whether this panel is inside an archive that is a local copy of
+    /// one on a server or inside another archive - one that cannot be
+    /// written back to where it came from.
+    pub fn nested(&self) -> bool {
+        !self.outer.is_empty()
+    }
+
+    /// Go into `copy`, a local copy of the archive `name` under the
+    /// cursor - on a server, or inside the archive the panel is in.
+    /// `..` at its top comes back to it where it was.
+    pub fn enter_nested(&mut self, copy: PathBuf, name: std::ffi::OsString) -> io::Result<()> {
+        let fs = Arc::new(ArchiveFs::open(&copy)?);
+        let shown = format!(
+            "{}/{}",
+            self.display_path().trim_end_matches('/'),
+            name.to_string_lossy()
+        );
+        self.cancel_pending();
+        self.outer.push(Outer {
+            fs: std::mem::replace(&mut self.fs, fs),
+            archive: self.archive.replace(copy.clone()),
+            remote: self.remote.take(),
+            cwd: self.cwd.clone(),
+            name,
+            copy,
+            shown,
+        });
+        if let Err(err) = self.change_dir(PathBuf::new()) {
+            let _ = self.leave_nested();
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// Back out of the innermost nested archive to where it was entered
+    /// from, the cursor on it, its copy gone.
+    fn leave_nested(&mut self) -> io::Result<()> {
+        let Some(outer) = self.outer.pop() else {
+            return Ok(());
+        };
+        let _ = std::fs::remove_file(&outer.copy);
+        self.fs = outer.fs;
+        self.archive = outer.archive;
+        self.remote = outer.remote;
+        self.change_dir(outer.cwd)?;
+        if let Some(pos) = self.entries.iter().position(|e| e.name == outer.name) {
+            self.cursor = pos;
+        }
+        Ok(())
+    }
+
+    /// Forget every nested archive, their copies with them: the panel is
+    /// going somewhere else altogether.
+    fn drop_outer(&mut self) {
+        for outer in self.outer.drain(..) {
+            let _ = std::fs::remove_file(&outer.copy);
+        }
+    }
+
     pub fn open_archive(&mut self, path: PathBuf) -> io::Result<()> {
         self.enter_archive(path)
     }
@@ -1080,6 +1180,52 @@ fn name_cmp(a: &(bool, String, Entry), b: &(bool, String, Entry)) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_archive_inside_an_archive_opens_through_a_copy_and_leaves_to_it() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        // inner.zip holds a file; outer.zip holds inner.zip in a folder
+        let mut inner = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut inner));
+            zip.start_file("deep.txt", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(b"at the bottom").unwrap();
+            zip.finish().unwrap();
+        }
+        let outer_path = tmp.path().join("outer.zip");
+        {
+            let mut zip = zip::ZipWriter::new(fs::File::create(&outer_path).unwrap());
+            zip.start_file("box/inner.zip", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(&inner).unwrap();
+            zip.finish().unwrap();
+        }
+        let mut panel = Panel::new(tmp.path().to_path_buf()).unwrap();
+        panel.open_archive(outer_path.clone()).unwrap();
+        panel.change_dir(PathBuf::from("box")).unwrap();
+        // what the TUI does: copy the member out, go into the copy
+        let copy = tmp.path().join("copy-inner.zip");
+        let mut reader = panel.fs.open_read(Path::new("box/inner.zip")).unwrap();
+        std::io::copy(&mut reader, &mut fs::File::create(&copy).unwrap()).unwrap();
+        panel
+            .enter_nested(copy.clone(), "inner.zip".into())
+            .unwrap();
+        assert!(panel.nested());
+        let names: Vec<_> = panel.entries.iter().map(|e| e.name.clone()).collect();
+        assert!(names.contains(&"deep.txt".into()), "{names:?}");
+        assert_eq!(
+            panel.display_path(),
+            format!("{}://box/inner.zip://", outer_path.display())
+        );
+        // .. at its top: back in the outer archive, on the member
+        panel.go_up().unwrap();
+        assert!(!panel.nested());
+        assert_eq!(panel.cwd, PathBuf::from("box"));
+        assert_eq!(panel.selected().unwrap().name, "inner.zip");
+        assert!(!copy.exists(), "the copy is cleared away");
+    }
     use std::fs;
 
     fn order(key: SortKey, reverse: bool) -> Order {

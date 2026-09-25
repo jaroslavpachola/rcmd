@@ -2055,6 +2055,34 @@ def test_diskusage():
     shutil.rmtree(root)
 
 
+def test_nestedarchive():
+    """PLAN7 U0: Enter on an archive inside an archive opens it, and ..
+    at its top comes back to it where it was."""
+    import io
+    root, play, home = sandbox()
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as z:
+        z.writestr("deep.txt", "at the bottom\n")
+    with zipfile.ZipFile(os.path.join(play, "outer.zip"), "w") as z:
+        z.writestr("box/inner.zip", inner.getvalue())
+    s = Session(play, home)
+    s.send(b"\x13outer", wait=STEP)
+    s.send(b"\r", wait=STEP * 2)                 # into outer.zip
+    s.send(b"\x13box", wait=STEP)
+    s.send(b"\r", wait=STEP * 2)                 # into box/
+    s.send(b"\x13inner", wait=STEP)
+    s.send(b"\r", wait=STEP * 2)                 # into inner.zip
+    scr = s.screen()
+    check("nestedarchive: the inner archive opens",
+          "deep.txt" in scr and "inner.zip://" in scr.split("\n")[0], scr)
+    s.send(HOME_K + b"\r", wait=STEP * 2)        # .. at its top
+    scr = s.screen()
+    check("nestedarchive: .. comes back to it in the outer one",
+          "outer.zip://box" in scr.split("\n")[0] and "inner.zip" in status_line(s), scr)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_kittykeys():
     """PLAN5 S7: in a terminal that has the kitty keyboard protocol, rcmd
     turns it on - and an Esc is an Esc at once, with no prefix to wait
@@ -5064,6 +5092,20 @@ def test_sftp():
               and "SSH authentication" not in s.screen(),
               s.screen())
 
+        # PLAN7 U0: an archive on the server opens through a local copy
+        with zipfile.ZipFile(os.path.join(remote, "bundle.zip"), "w") as z:
+            z.writestr("from-the-zip.txt", "zipped on a server\n")
+        s.send(b"\x12", wait=STEP)
+        s.send(b"\x13bundle", wait=STEP)
+        s.send(b"\r", wait=STEP * 3)
+        scr = s.screen()
+        # (the title is the server's long path, cut before the zip)
+        check("sftp: a zip on the server opens",
+              "from-the-zip.txt" in scr and "server.txt" not in scr.split("\n")[2][:60], scr)
+        s.send(HOME_K + b"\r", wait=STEP * 2)
+        check("sftp: and .. is the server again",
+              "sftp://tester@" in s.screen().split("\n")[0], s.screen())
+
         khfile = os.path.join(home, ".ssh", "known_hosts")
         check(
             "sftp: host key saved",
@@ -7357,6 +7399,7 @@ def main():
         test_scrollbar,
         test_flatview,
         test_diskusage,
+        test_nestedarchive,
         test_editdrag,
         test_uservfs,
         test_kittykeys,

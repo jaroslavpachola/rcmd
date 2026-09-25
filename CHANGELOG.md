@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.61.0 - 2026-09-25
+
+- **An archive opens wherever it is.** Enter opened an archive only on
+  a local panel; on a server, in the trash or inside another archive it
+  was just a file. It now copies the archive to a scratch file, as F3
+  does, and goes into the copy. The title says where the archive
+  really is (`outer.zip://box/inner.zip://`), `..` at its top comes
+  back to it there with the cursor on it, and the copy goes with it.
+  Archives nest any number deep, and one opened this way is read-only.
+
 ## 4.60.0 - 2026-09-25
 
 - **Disk usage mode.** ncdu's view, as a panel mode (F9 → Command →

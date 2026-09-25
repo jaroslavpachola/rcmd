@@ -21,7 +21,14 @@ The same markers as before: **[run]**, **[read]**, **[audit]**.
 
 ## Phases
 
-### U0 - an archive anywhere
+### U0 - an archive anywhere - DONE (2026-09-25, 4.61.0)
+
+Shipped with the copy made as F3 makes one, in the foreground, rather
+than through the job engine: a big archive on a slow server holds the
+screen while it comes down, as viewing a big file there already does.
+The panel keeps a stack of where each nested archive was entered from,
+so archives nest any number deep.
+
 
 Enter opens an archive only on a local panel (`Panel::enter`,
 `panel.rs:583`) [read]. An archive on an SFTP panel or inside another
