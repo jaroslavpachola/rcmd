@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.56.0 - 2026-09-25
+
+- **A question's Yes and No take a click**, and so do the rows and
+  buttons of the options form. Every delete asks a question, and its
+  buttons were drawn but deaf to the mouse.
+
+- **The trash's size cache follows what leaves the trash.** A
+  directory restored or purged by rcmd kept its line in the trash's
+  `directorysizes`, so the desktop's trash went on counting it until
+  it noticed. The line now goes with it.
+
 ## 4.55.0 - 2026-09-25
 
 - **Find looks inside archives.** A new switch on Alt+F7's dialog,

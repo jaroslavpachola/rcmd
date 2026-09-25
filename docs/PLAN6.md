@@ -1,8 +1,10 @@
 # rcmd 6.0 - connections that stay, and the leftovers
 
-**Status:** drafted 2026-09-25 from PLAN5's carried-forward list and a
-code audit of 4.46.0 (three read-only passes: remote connections,
-archive writing and find, the editors and dialogs).
+**Status:** COMPLETE - drafted 2026-09-25 from PLAN5's
+carried-forward list and a code audit of 4.46.0 (three read-only
+passes: remote connections, archive writing and find, the editors and
+dialogs); every phase done and shipped the same day as 4.47.0 to
+4.56.0.
 **Baseline:** 4.46.0 - PLAN5 complete (4.31.0 to 4.40.0), the help as
 pages, selection in the window and the archive speed work after it.
 
@@ -191,12 +193,13 @@ external-tool ones cost a process each) and report a hit as
 the archive at the hit. A panelized listing assumes one provider, so
 archive hits stay out of it.
 
-### T9 - the small ones
+### T9 - the small ones - DONE (2026-09-25, 4.56.0)
 
-- **Clicks in the dialogs that have none yet**: Confirm's buttons
-  first, then Chmod, Chown, Options and the fuzzy finder.
-- **The trash's `directorysizes` cache** updated on restore and purge,
-  so the desktop does not recount.
+- **Clicks** on a question's Yes and No (every delete asks one) and on
+  the options form's rows and buttons. Chmod, Chown and the fuzzy
+  finder still take keys only.
+- **The trash's `directorysizes` cache** loses a directory's line when
+  rcmd restores or purges it.
 
 ## Sequencing
 

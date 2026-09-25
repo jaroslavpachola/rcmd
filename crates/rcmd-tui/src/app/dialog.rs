@@ -59,6 +59,27 @@ impl App {
                 d.ok = button == 0;
                 true
             }
+            (Some(Dialog::Confirm(d)), FormHit::Button(button)) => {
+                d.yes = button == 0;
+                true
+            }
+            // a switch or a choice flips where it is clicked; the ratio
+            // row only takes the focus, its arrows do the rest
+            (Some(Dialog::Options(d)), FormHit::Row(row)) => {
+                d.cursor = row;
+                if matches!(
+                    OPTION_ROWS.get(row),
+                    Some(OptRow::Check(..) | OptRow::Radio(..))
+                ) {
+                    d.toggle();
+                }
+                false
+            }
+            (Some(Dialog::Options(d)), FormHit::Button(button)) => {
+                d.cursor = OPTION_ROWS.len();
+                d.ok = button == 0;
+                true
+            }
             _ => return false,
         };
         if press {

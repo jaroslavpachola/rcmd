@@ -715,7 +715,7 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
     if let Some(dialog) = &app.dialog {
         match dialog {
             Dialog::Input(d) => draw_input(frame, d),
-            Dialog::Confirm(d) => draw_confirm(frame, d),
+            Dialog::Confirm(d) => draw_confirm(frame, d, &mut form_hits),
             Dialog::Tree(tree) => draw_tree_dialog(frame, tree),
             Dialog::Transfer(d) => draw_transfer(frame, d, &mut form_hits),
             Dialog::Chmod(d) => draw_chmod(frame, d),
@@ -725,7 +725,7 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
             Dialog::Hotlist(d) => dialog_rows = draw_hotlist(frame, app, d),
             Dialog::UserMenu(d) => dialog_rows = draw_user_menu(frame, d),
             Dialog::Find(d) => draw_find(frame, d, &mut form_hits),
-            Dialog::Options(d) => draw_options(frame, d),
+            Dialog::Options(d) => draw_options(frame, d, &mut form_hits),
             Dialog::Pattern(d) => draw_pattern(frame, d, &mut form_hits),
             Dialog::FindResults(d) => draw_find_results(frame, d),
             Dialog::Panelize(d) => draw_panelize(frame, d, &app.config.panelize),
@@ -4014,7 +4014,7 @@ fn field_row(frame: &mut Frame, field: Rect, value: &str, cursor: Option<usize>)
 }
 
 /// F9 > Options > Panel options - the MC-style checkbox form.
-fn draw_options(frame: &mut Frame, d: &OptionsDialog) {
+fn draw_options(frame: &mut Frame, d: &OptionsDialog, hits: &mut Vec<(Rect, FormHit)>) {
     use crate::app::{OPTION_ROWS, OptRow};
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
@@ -4053,6 +4053,9 @@ fn draw_options(frame: &mut Frame, d: &OptionsDialog) {
             ),
         };
         frame.render_widget(Line::from(format!("{text:<width$}")).style(style), row);
+        if !matches!(entry, OptRow::Head(_)) {
+            hits.push((row, FormHit::Row(i)));
+        }
     }
 
     let buttons = Rect {
@@ -4070,6 +4073,12 @@ fn draw_options(frame: &mut Frame, d: &OptionsDialog) {
         buttons_line(&["OK", "Cancel"], selected, base, sel),
         buttons,
     );
+    for (i, rect) in button_rects(&["OK", "Cancel"], buttons)
+        .into_iter()
+        .enumerate()
+    {
+        hits.push((rect, FormHit::Button(i)));
+    }
 }
 
 /// MC's external panelize: the saved commands above, the one being
@@ -5265,7 +5274,7 @@ fn draw_rename_preview(frame: &mut Frame, d: &crate::app::RenamePreview) {
     );
 }
 
-fn draw_confirm(frame: &mut Frame, d: &ConfirmDialog) {
+fn draw_confirm(frame: &mut Frame, d: &ConfirmDialog, hits: &mut Vec<(Rect, FormHit)>) {
     // red is for what cannot be taken back: a permanent delete, an
     // overwrite. The trash and a question are ordinary dialogs.
     let (style, sel) = if d.permanent {
@@ -5301,6 +5310,12 @@ fn draw_confirm(frame: &mut Frame, d: &ConfirmDialog) {
         buttons_line(crate::app::YES_NO, selected, style, sel),
         buttons,
     );
+    for (i, rect) in button_rects(crate::app::YES_NO, buttons)
+        .into_iter()
+        .enumerate()
+    {
+        hits.push((rect, FormHit::Button(i)));
+    }
 }
 
 /// Host-key confirmation / password prompt during an SFTP connect.

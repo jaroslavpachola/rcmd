@@ -281,13 +281,58 @@ pub fn restore(item: &Trashed) -> io::Result<()> {
         }
         Err(err) => return Err(err),
     }
+    forget_size(item);
     fs::remove_file(&item.info).or_else(ignore_missing)
 }
 
 /// Delete an item for good: its contents and its info file.
 pub fn purge(item: &Trashed) -> io::Result<()> {
     remove_all(&item.files).or_else(ignore_missing)?;
+    forget_size(item);
     fs::remove_file(&item.info).or_else(ignore_missing)
+}
+
+/// Take a directory that has left the trash out of the trash's
+/// `directorysizes`, the cache a desktop keeps of how big each trashed
+/// directory is: a line left behind is a directory it still counts.
+/// Best effort - the cache is the desktop's, and a stale line only
+/// costs it a recount.
+fn forget_size(item: &Trashed) {
+    let Some(trash) = item.files.parent().and_then(Path::parent) else {
+        return;
+    };
+    let cache = trash.join("directorysizes");
+    let Ok(text) = fs::read_to_string(&cache) else {
+        return;
+    };
+    let name = item
+        .files
+        .file_name()
+        .unwrap_or_default()
+        .as_encoded_bytes();
+    // `SIZE MTIME NAME`, the name percent-encoded
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|line| {
+            line.splitn(3, ' ')
+                .nth(2)
+                .is_none_or(|encoded| percent_decode(encoded.trim_end()) != name)
+        })
+        .collect();
+    if kept.len() == text.lines().count() {
+        return;
+    }
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    let temp = trash.join(format!(".directorysizes.rcmd-{}", std::process::id()));
+    if fs::write(&temp, out)
+        .and_then(|()| fs::rename(&temp, &cache))
+        .is_err()
+    {
+        let _ = fs::remove_file(&temp);
+    }
 }
 
 fn ignore_missing(err: io::Error) -> io::Result<()> {
@@ -622,6 +667,37 @@ mod tests {
             path: dir,
             top: None,
         }
+    }
+
+    #[test]
+    fn a_directory_leaving_the_trash_leaves_its_size_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trash = tmp.path().join("Trash");
+        fs::create_dir_all(trash.join("files/my dir")).unwrap();
+        fs::create_dir_all(trash.join("files/other")).unwrap();
+        fs::create_dir_all(trash.join("info")).unwrap();
+        fs::write(
+            trash.join("directorysizes"),
+            "4096 1726000000 my%20dir\n8192 1726000001 other\n",
+        )
+        .unwrap();
+        let item = |name: &str| Trashed {
+            name: name.into(),
+            files: trash.join("files").join(name),
+            info: trash.join("info").join(format!("{name}.trashinfo")),
+            original: tmp.path().join("back").join(name),
+            deleted: None,
+        };
+        restore(&item("my dir")).unwrap();
+        assert_eq!(
+            fs::read_to_string(trash.join("directorysizes")).unwrap(),
+            "8192 1726000001 other\n"
+        );
+        purge(&item("other")).unwrap();
+        assert_eq!(
+            fs::read_to_string(trash.join("directorysizes")).unwrap(),
+            ""
+        );
     }
 
     #[test]

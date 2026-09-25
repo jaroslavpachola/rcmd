@@ -1909,6 +1909,35 @@ def test_gutter():
     shutil.rmtree(root)
 
 
+def test_clickconfirm():
+    """PLAN6 T9: the buttons of a confirmation take a click - here the
+    No of a delete, which leaves the file, then the Yes."""
+    root, play, home = sandbox()
+    target = os.path.join(play, "doomed.txt")
+    open(target, "w").write("x\n")
+    s = Session(play, home)
+    s.send(b"\x13doomed", wait=STEP)
+
+    def button(label):
+        # where the dialog drew it: the row and column of "[ Label ]"
+        for row, line in enumerate(s.screen().split("\n")):
+            at = line.find("[ " + label)
+            if at >= 0:
+                return click(at + 3, row + 1)
+        return b""
+
+    s.send(F8, wait=STEP * 2)
+    s.send(button("No"), wait=STEP * 2)
+    check("clickconfirm: No closes the question and keeps the file",
+          os.path.exists(target) and "[ Yes" not in s.screen(), s.screen())
+    s.send(F8, wait=STEP * 2)
+    s.send(button("Yes"), wait=STEP * 3)
+    wait_for(s, "done", timeout=5)
+    check("clickconfirm: Yes deletes it", not os.path.exists(target), s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_kittykeys():
     """PLAN5 S7: in a terminal that has the kitty keyboard protocol, rcmd
     turns it on - and an Esc is an Esc at once, with no prefix to wait
@@ -7206,6 +7235,7 @@ def main():
         test_gitactions,
         test_gutter,
         test_findarchives,
+        test_clickconfirm,
         test_editdrag,
         test_uservfs,
         test_kittykeys,
