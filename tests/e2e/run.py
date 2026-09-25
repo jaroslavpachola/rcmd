@@ -1934,6 +1934,23 @@ def test_clickconfirm():
     s.send(button("Yes"), wait=STEP * 3)
     wait_for(s, "done", timeout=5)
     check("clickconfirm: Yes deletes it", not os.path.exists(target), s.screen())
+
+    # chmod: a click flips a bit, and a click on Set applies it
+    script = os.path.join(play, "run.sh")
+    open(script, "w").write("#!/bin/sh\n")
+    os.chmod(script, 0o644)
+    s.send(b"\x12", wait=STEP)
+    s.send(b"\x13run", wait=STEP)
+    s.send(b"\x18c", wait=STEP * 2)
+    for row, line in enumerate(s.screen().split("\n")):
+        at = line.find("[ ] exec    owner")
+        if at >= 0:
+            s.send(click(at + 2, row + 1), wait=STEP)
+            break
+    check("clickconfirm: a click flips a chmod bit", "octal 744" in s.screen(), s.screen())
+    s.send(button("Set"), wait=STEP * 2)
+    check("clickconfirm: Set is a click too",
+          os.stat(script).st_mode & 0o777 == 0o744, oct(os.stat(script).st_mode))
     s.quit()
     shutil.rmtree(root)
 

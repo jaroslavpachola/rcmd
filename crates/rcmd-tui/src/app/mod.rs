@@ -2462,6 +2462,8 @@ pub type DiskSpace = Option<(PathBuf, Instant, Option<(u64, u64)>)>;
 pub enum FormHit {
     Row(usize),
     Button(usize),
+    /// One entry of a form's list: which list, and which entry.
+    Item(usize, usize),
 }
 
 /// Where the open list dialog drew its rows, and which index the

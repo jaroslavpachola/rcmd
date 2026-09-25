@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.57.0 - 2026-09-25
+
+- **The editor moves by the character you see**, as the line editor
+  has since 4.51.0. Left, Right, Backspace and Delete no longer split
+  an accent from its letter or a flag into two letters, and Up and
+  Down never leave the cursor inside one.
+
+- **Chmod, Chown and the fuzzy finder take clicks.** A click flips a
+  chmod bit or the recurse box and presses Set, picks a user or a
+  group from Chown's lists, and selects a fuzzy-find row, a
+  double-click going there.
+
 ## 4.56.0 - 2026-09-25
 
 - **A question's Yes and No take a click**, and so do the rows and

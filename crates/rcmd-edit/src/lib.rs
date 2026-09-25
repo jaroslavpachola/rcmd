@@ -607,11 +607,44 @@ impl Editor {
         }
     }
 
+    /// The column where the character a person sees before `col` on
+    /// `line` starts: an accent goes with its letter, a flag is one.
+    fn grapheme_left(&self, line: usize, col: usize) -> usize {
+        use unicode_segmentation::UnicodeSegmentation;
+        let text = self.line(line);
+        let at = text.char_indices().nth(col).map_or(text.len(), |(i, _)| i);
+        let start = text[..at]
+            .grapheme_indices(true)
+            .next_back()
+            .map_or(0, |(i, _)| i);
+        col - text[start..at].chars().count()
+    }
+
+    /// The column where the character a person sees at `col` ends.
+    fn grapheme_right(&self, line: usize, col: usize) -> usize {
+        use unicode_segmentation::UnicodeSegmentation;
+        let text = self.line(line);
+        let at = text.char_indices().nth(col).map_or(text.len(), |(i, _)| i);
+        col + text[at..]
+            .graphemes(true)
+            .next()
+            .map_or(0, |g| g.chars().count())
+    }
+
+    /// `col`, moved back to the start of the character it is inside of.
+    fn snap(&self, line: usize, col: usize) -> usize {
+        if col == 0 || col >= self.line_len(line) {
+            return col;
+        }
+        // to the end of the character it is in, then back to its start
+        self.grapheme_left(line, self.grapheme_right(line, col))
+    }
+
     pub fn move_left(&mut self, select: bool) {
         let pos = if self.cursor.col > 0 {
             Pos {
                 line: self.cursor.line,
-                col: self.cursor.col - 1,
+                col: self.grapheme_left(self.cursor.line, self.cursor.col),
             }
         } else if self.cursor.line > 0 {
             Pos {
@@ -629,7 +662,9 @@ impl Editor {
         let pos = if self.cursor.col < len {
             Pos {
                 line: self.cursor.line,
-                col: self.cursor.col + 1,
+                col: self
+                    .grapheme_right(self.cursor.line, self.cursor.col)
+                    .min(len),
             }
         } else if self.cursor.line + 1 < self.line_count() {
             Pos {
@@ -648,7 +683,7 @@ impl Editor {
             .line
             .saturating_add_signed(delta)
             .min(self.line_count().saturating_sub(1));
-        let col = self.desired_col.min(self.line_len(line));
+        let col = self.snap(line, self.desired_col.min(self.line_len(line)));
         self.place(Pos { line, col }, select, true);
     }
 
@@ -1031,7 +1066,13 @@ impl Editor {
                 }
             }
         }
-        self.splice(at - 1, 1, "", Kind::Backspace);
+        // a letter with its accents, a flag, an emoji family: one
+        // press takes what a person sees as one character
+        let back = match self.cursor.col {
+            0 => 1,
+            col => col - self.grapheme_left(self.cursor.line, col),
+        };
+        self.splice(at - back, back, "", Kind::Backspace);
     }
 
     pub fn delete_forward(&mut self) {
@@ -1041,7 +1082,12 @@ impl Editor {
         }
         let at = self.char_idx(self.cursor);
         if at < self.rope.len_chars() {
-            self.splice(at, 1, "", Kind::Delete);
+            let (line, col) = (self.cursor.line, self.cursor.col);
+            let n = match col < self.line_len(line) {
+                true => self.grapheme_right(line, col) - col,
+                false => 1, // the line break
+            };
+            self.splice(at, n.max(1), "", Kind::Delete);
         }
     }
 
@@ -1359,6 +1405,35 @@ fn expand_replacement(caps: &regex::Captures, replacement: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cursor_and_deletes_go_by_what_a_person_sees() {
+        let mut ed = Editor::create(Path::new("/nonexistent/x"));
+        // an e with a combining acute, a flag, and a plain letter
+        ed.insert("e\u{301}\u{1F1E8}\u{1F1FF}x\nab");
+        ed.goto(Pos { line: 0, col: 0 }, false);
+        ed.move_right(false);
+        assert_eq!(ed.cursor.col, 2);
+        ed.move_right(false);
+        assert_eq!(ed.cursor.col, 4);
+        ed.move_left(false);
+        assert_eq!(ed.cursor.col, 2);
+        ed.delete_forward();
+        assert_eq!(ed.line(0), "e\u{301}x");
+        ed.backspace();
+        assert_eq!(ed.line(0), "x");
+        assert_eq!(ed.cursor.col, 0);
+        // a line break is still one press
+        ed.goto(Pos { line: 1, col: 0 }, false);
+        ed.backspace();
+        assert_eq!(ed.text(), "xab");
+        // Down into the middle of a cluster lands before it
+        let mut ed = Editor::create(Path::new("/nonexistent/y"));
+        ed.insert("abc\n\u{1F1E8}\u{1F1FF}z");
+        ed.goto(Pos { line: 0, col: 1 }, false);
+        ed.move_vert(1, false);
+        assert_eq!(ed.cursor, Pos { line: 1, col: 0 });
+    }
 
     #[test]
     fn the_saved_text_is_kept_beside_the_buffer() {

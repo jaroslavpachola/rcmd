@@ -718,9 +718,9 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
             Dialog::Confirm(d) => draw_confirm(frame, d, &mut form_hits),
             Dialog::Tree(tree) => draw_tree_dialog(frame, tree),
             Dialog::Transfer(d) => draw_transfer(frame, d, &mut form_hits),
-            Dialog::Chmod(d) => draw_chmod(frame, d),
+            Dialog::Chmod(d) => draw_chmod(frame, d, &mut form_hits),
             Dialog::Chattr(d) => draw_chattr(frame, d),
-            Dialog::Chown(d) => draw_chown(frame, d),
+            Dialog::Chown(d) => draw_chown(frame, d, &mut form_hits),
             Dialog::Link(d) => draw_link(frame, d, &mut form_hits),
             Dialog::Hotlist(d) => dialog_rows = draw_hotlist(frame, app, d),
             Dialog::UserMenu(d) => dialog_rows = draw_user_menu(frame, d),
@@ -763,7 +763,7 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
             Dialog::RenamePreview(d) => draw_rename_preview(frame, d),
             Dialog::Jobs(selected) => dialog_rows = draw_jobs(frame, &app.jobs, *selected),
             Dialog::Vfs(d) => draw_vfs(frame, d),
-            Dialog::Fuzzy(d) => draw_fuzzy(frame, d),
+            Dialog::Fuzzy(d) => dialog_rows = draw_fuzzy(frame, d),
             Dialog::Palette(d) => draw_palette(frame, d),
             Dialog::Connections(selected) => {
                 let saved = app.saved_connections();
@@ -4377,7 +4377,7 @@ fn draw_palette(frame: &mut Frame, d: &crate::app::PaletteDialog) {
     );
 }
 
-fn draw_fuzzy(frame: &mut Frame, d: &crate::app::FuzzyDialog) {
+fn draw_fuzzy(frame: &mut Frame, d: &crate::app::FuzzyDialog) -> Option<crate::app::DialogRows> {
     let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
     let lit = Style::new()
@@ -4397,6 +4397,16 @@ fn draw_fuzzy(frame: &mut Frame, d: &crate::app::FuzzyDialog) {
     field_row(frame, line(0), &d.field.value, Some(d.field.cursor));
     let rows = inner.height.saturating_sub(3) as usize;
     let first = d.selected.saturating_sub(rows.saturating_sub(1));
+    let list = crate::app::DialogRows {
+        area: Rect {
+            y: line(1).y,
+            height: rows as u16,
+            ..line(1)
+        },
+        rows: (first..first + rows)
+            .map(|at| (at < d.shown.len()).then_some(at))
+            .collect(),
+    };
     for (i, &at) in d.shown.iter().skip(first).take(rows).enumerate() {
         let (path, is_dir) = &d.all[at];
         let shown = if *is_dir {
@@ -4440,6 +4450,7 @@ fn draw_fuzzy(frame: &mut Frame, d: &crate::app::FuzzyDialog) {
         .style(style),
         line(inner.height.saturating_sub(1)),
     );
+    Some(list)
 }
 
 fn draw_find(frame: &mut Frame, d: &FindDialog, hits: &mut Vec<(Rect, FormHit)>) {
@@ -4731,7 +4742,7 @@ fn draw_link(frame: &mut Frame, d: &crate::app::LinkDialog, hits: &mut Vec<(Rect
 /// C-x o: MC's chown window - the system's users and groups as two pick
 /// lists. Typing an owner is fine when you know the name; picking is
 /// what you want when you do not, which is most of the time.
-fn draw_chown(frame: &mut Frame, d: &crate::app::ChownDialog) {
+fn draw_chown(frame: &mut Frame, d: &crate::app::ChownDialog, hits: &mut Vec<(Rect, FormHit)>) {
     use crate::app::{CHOWN_BUTTON_COL, CHOWN_BUTTONS, CHOWN_RECURSE_COL, CHOWN_ROWS};
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
@@ -4782,6 +4793,10 @@ fn draw_chown(frame: &mut Frame, d: &crate::app::ChownDialog) {
                 Line::from(format!("{text:<w$}", w = col_w as usize)).style(style),
                 row_at(x, col_w, i as u16 + 1),
             );
+            hits.push((
+                row_at(x, col_w, i as u16 + 1),
+                FormHit::Item(index, first + i),
+            ));
         }
     }
 
@@ -4828,6 +4843,14 @@ fn draw_chown(frame: &mut Frame, d: &crate::app::ChownDialog) {
         buttons_line(CHOWN_BUTTONS, selected, base, sel),
         row_at(0, inner.width.saturating_sub(2), CHOWN_ROWS as u16 + 2),
     );
+    hits.push((
+        row_at(0, inner.width.saturating_sub(2), CHOWN_ROWS as u16 + 1),
+        FormHit::Row(CHOWN_RECURSE_COL),
+    ));
+    let buttons = row_at(0, inner.width.saturating_sub(2), CHOWN_ROWS as u16 + 2);
+    for (i, rect) in button_rects(CHOWN_BUTTONS, buttons).into_iter().enumerate() {
+        hits.push((rect, FormHit::Button(i)));
+    }
 }
 
 /// C-x e: mc's chattr window. The flags as check boxes, each with its
@@ -4892,7 +4915,7 @@ fn draw_chattr(frame: &mut Frame, d: &crate::app::ChattrDialog) {
 /// C-x c: MC's chmod window. The bits on the left as check boxes, what
 /// is being changed on the right, and the octal underneath - typing in
 /// it moves the boxes, flipping a box rewrites it.
-fn draw_chmod(frame: &mut Frame, d: &crate::app::ChmodDialog) {
+fn draw_chmod(frame: &mut Frame, d: &crate::app::ChmodDialog, hits: &mut Vec<(Rect, FormHit)>) {
     use crate::app::{CHMOD_BITS, CHMOD_BUTTONS, CHMOD_OCTAL_ROW, CHMOD_RECURSE_ROW, CHMOD_ROWS};
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
@@ -4924,13 +4947,15 @@ fn draw_chmod(frame: &mut Frame, d: &crate::app::ChmodDialog) {
         let text = format!(" {mark} {label}");
         let row = row_at(i as u16 + 1);
         // the bit half highlights on its own; the facts sit past it
+        let bit_area = Rect {
+            width: left as u16,
+            ..row
+        };
         frame.render_widget(
             Line::from(format!("{text:<left$}")).style(if d.row == i { sel } else { base }),
-            Rect {
-                width: left as u16,
-                ..row
-            },
+            bit_area,
         );
+        hits.push((bit_area, FormHit::Row(i)));
         if let Some(fact) = facts.get(i) {
             frame.render_widget(
                 Line::from(fact.as_str()).style(base),
@@ -4955,6 +4980,20 @@ fn draw_chmod(frame: &mut Frame, d: &crate::app::ChmodDialog) {
             ..row_at(octal_row)
         },
     );
+    hits.push((
+        Rect {
+            width: left as u16,
+            ..row_at(octal_row)
+        },
+        FormHit::Row(CHMOD_OCTAL_ROW),
+    ));
+    hits.push((row_at(octal_row + 1), FormHit::Row(CHMOD_RECURSE_ROW)));
+    for (i, rect) in button_rects(CHMOD_BUTTONS, row_at(octal_row + 3))
+        .into_iter()
+        .enumerate()
+    {
+        hits.push((rect, FormHit::Button(i)));
+    }
     let recurse = format!(
         " {} recurse into directories",
         if d.recurse { "[x]" } else { "[ ]" }

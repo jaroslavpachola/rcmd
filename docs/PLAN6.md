@@ -126,8 +126,9 @@ idle.
 
 Shipped as below: the command line and every field share one window
 function now, measured by grapheme. The editor proper (rcmd-edit)
-still moves by code point; its `Pos.col` is a character column, and
-that is a job of its own.
+moved by code point then; 4.57.0 gave it the same treatment - its
+`Pos.col` stays a character column, snapped to grapheme boundaries by
+Left, Right, Up, Down, Backspace and Delete.
 
 Left, Right, Backspace and Delete move and delete by code point
 (`field.rs:105-167`): Backspace takes an accent off its letter, a flag
@@ -196,8 +197,8 @@ archive hits stay out of it.
 ### T9 - the small ones - DONE (2026-09-25, 4.56.0)
 
 - **Clicks** on a question's Yes and No (every delete asks one) and on
-  the options form's rows and buttons. Chmod, Chown and the fuzzy
-  finder still take keys only.
+  the options form's rows and buttons; 4.57.0 added Chmod, Chown and
+  the fuzzy finder's rows.
 - **The trash's `directorysizes` cache** loses a directory's line when
   rcmd restores or purges it.
 

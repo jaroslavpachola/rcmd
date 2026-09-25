@@ -59,6 +59,40 @@ impl App {
                 d.ok = button == 0;
                 true
             }
+            // a bit flips where it is clicked, and the octal follows
+            (Some(Dialog::Chmod(d)), FormHit::Row(row)) => {
+                d.row = row;
+                if let Some(&(_, bit)) = CHMOD_BITS.get(row) {
+                    d.mode ^= bit;
+                    d.sync_octal();
+                } else if row == CHMOD_RECURSE_ROW {
+                    d.recurse = !d.recurse;
+                }
+                false
+            }
+            (Some(Dialog::Chmod(d)), FormHit::Button(button)) => {
+                d.row = CHMOD_ROWS;
+                d.button = button;
+                true
+            }
+            (Some(Dialog::Chown(d)), FormHit::Item(list, at)) => {
+                d.column = list;
+                match list {
+                    0 => d.user_row = at,
+                    _ => d.group_row = at,
+                }
+                false
+            }
+            (Some(Dialog::Chown(d)), FormHit::Row(_)) => {
+                d.column = CHOWN_RECURSE_COL;
+                d.recurse = !d.recurse;
+                false
+            }
+            (Some(Dialog::Chown(d)), FormHit::Button(button)) => {
+                d.column = CHOWN_BUTTON_COL;
+                d.button = button;
+                true
+            }
             (Some(Dialog::Confirm(d)), FormHit::Button(button)) => {
                 d.yes = button == 0;
                 true
@@ -166,6 +200,12 @@ impl App {
             Some(Dialog::Charset(row)) => {
                 if let Some(at) = count(CHARSET_ROWS.len()) {
                     *row = at;
+                }
+                true
+            }
+            Some(Dialog::Fuzzy(d)) => {
+                if let Some(at) = count(d.shown.len()) {
+                    d.selected = at;
                 }
                 true
             }

@@ -688,9 +688,11 @@ you do something else.
 enters, the right button marks what it is on (as mc's does), the wheel
 scrolls whatever it hovers (panels, viewer, editor, quick view, list
 dialogs), the bottom keybar and the F9 menu are clickable, a click in
-the editor places the cursor, and in the find, copy/move, select, link
-and options dialogs a click takes a field, ticks a switch or presses a
-button. A question's Yes and No take a click too.
+the editor places the cursor, and in the find, copy/move, select, link,
+options, chmod and chown dialogs a click takes a field, ticks a switch,
+picks from a list or presses a button. A question's Yes and No take a
+click too, and so does a row of the fuzzy finder (a double-click goes
+there).
 All additive - every feature stays keyboard-reachable. Hold Shift to select terminal text as usual;
 `mouse = false` in the config turns capture off entirely.
 
