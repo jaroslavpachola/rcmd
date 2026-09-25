@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const ENABLED: bool = cfg!(feature = "git");
 
@@ -49,6 +49,146 @@ pub fn head_blob(path: &Path) -> Option<(Vec<u8>, String)> {
         .peel_to_blob()
         .ok()?;
     Some((blob.content().to_vec(), rel.to_string_lossy().into_owned()))
+}
+
+/// Stage `paths` - files and whole directories - as `git add -A` would:
+/// what is there goes in, what is gone comes out. How many were taken.
+#[cfg(not(feature = "git"))]
+pub fn stage(_paths: &[PathBuf]) -> Result<usize, String> {
+    Err("built without git".into())
+}
+
+/// Take `paths` back out of the index to what HEAD has, as
+/// `git restore --staged` would. The work tree is not touched.
+#[cfg(not(feature = "git"))]
+pub fn unstage(_paths: &[PathBuf]) -> Result<usize, String> {
+    Err("built without git".into())
+}
+
+/// The local branches of the repository `dir` is in, and which one is
+/// checked out.
+#[cfg(not(feature = "git"))]
+pub fn branches(_dir: &Path) -> Result<(Vec<String>, Option<String>), String> {
+    Err("built without git".into())
+}
+
+/// Check a branch out, safely: a change it would overwrite stops it.
+#[cfg(not(feature = "git"))]
+pub fn switch(_dir: &Path, _name: &str) -> Result<(), String> {
+    Err("built without git".into())
+}
+
+/// The repository `paths` are in, and each one relative to its work
+/// tree. A path that is gone (a deleted file to be staged) is found
+/// through its directory.
+#[cfg(feature = "git")]
+fn in_repo(paths: &[PathBuf]) -> Result<(git2::Repository, Vec<PathBuf>), String> {
+    let real = |path: &Path| -> Option<PathBuf> {
+        path.canonicalize()
+            .ok()
+            .or_else(|| Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?)))
+    };
+    let first = paths
+        .first()
+        .and_then(|p| real(p))
+        .ok_or("nothing to act on")?;
+    let repo = git2::Repository::discover(first.parent().unwrap_or(&first))
+        .map_err(|_| "not in a git repository".to_string())?;
+    let workdir = repo
+        .workdir()
+        .and_then(|w| w.canonicalize().ok())
+        .ok_or("a bare repository has no work tree")?;
+    let mut rels = Vec::new();
+    for path in paths {
+        let path = real(path).ok_or_else(|| format!("{}: not found", path.display()))?;
+        let rel = path
+            .strip_prefix(&workdir)
+            .map_err(|_| format!("{}: outside the work tree", path.display()))?;
+        rels.push(rel.to_path_buf());
+    }
+    Ok((repo, rels))
+}
+
+#[cfg(feature = "git")]
+pub fn stage(paths: &[PathBuf]) -> Result<usize, String> {
+    let (repo, rels) = in_repo(paths)?;
+    let mut index = repo.index().map_err(|e| e.message().to_string())?;
+    let workdir = repo.workdir().ok_or("no work tree")?.to_path_buf();
+    for rel in &rels {
+        let result = if workdir.join(rel).is_dir() {
+            // new files in it, then changed and deleted ones
+            let spec = [rel.as_path()];
+            index
+                .add_all(spec, git2::IndexAddOption::DEFAULT, None)
+                .and_then(|()| index.update_all(spec, None))
+        } else if workdir.join(rel).symlink_metadata().is_ok() {
+            index.add_path(rel)
+        } else {
+            index.remove_path(rel)
+        };
+        result.map_err(|e| format!("{}: {}", rel.display(), e.message()))?;
+    }
+    index.write().map_err(|e| e.message().to_string())?;
+    Ok(rels.len())
+}
+
+#[cfg(feature = "git")]
+pub fn unstage(paths: &[PathBuf]) -> Result<usize, String> {
+    let (repo, rels) = in_repo(paths)?;
+    match repo.head().and_then(|h| h.peel_to_commit()) {
+        Ok(head) => repo
+            .reset_default(Some(head.as_object()), rels.iter())
+            .map_err(|e| e.message().to_string())?,
+        // nothing committed yet: out of the index is all there is
+        Err(_) => {
+            let mut index = repo.index().map_err(|e| e.message().to_string())?;
+            for rel in &rels {
+                index
+                    .remove_all([rel.as_path()], None)
+                    .map_err(|e| e.message().to_string())?;
+            }
+            index.write().map_err(|e| e.message().to_string())?;
+        }
+    }
+    Ok(rels.len())
+}
+
+#[cfg(feature = "git")]
+pub fn branches(dir: &Path) -> Result<(Vec<String>, Option<String>), String> {
+    let repo =
+        git2::Repository::discover(dir).map_err(|_| "not in a git repository".to_string())?;
+    let mut names: Vec<String> = repo
+        .branches(Some(git2::BranchType::Local))
+        .map_err(|e| e.message().to_string())?
+        .flatten()
+        .filter_map(|(branch, _)| branch.name().ok().flatten().map(str::to_string))
+        .collect();
+    names.sort();
+    let current = repo
+        .head()
+        .ok()
+        .filter(|h| h.is_branch())
+        .and_then(|h| h.shorthand().map(str::to_string));
+    Ok((names, current))
+}
+
+#[cfg(feature = "git")]
+pub fn switch(dir: &Path, name: &str) -> Result<(), String> {
+    let repo =
+        git2::Repository::discover(dir).map_err(|_| "not in a git repository".to_string())?;
+    let branch = repo
+        .find_branch(name, git2::BranchType::Local)
+        .map_err(|e| e.message().to_string())?;
+    let target = branch
+        .get()
+        .peel(git2::ObjectType::Commit)
+        .map_err(|e| e.message().to_string())?;
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.safe();
+    repo.checkout_tree(&target, Some(&mut checkout))
+        .map_err(|e| e.message().to_string())?;
+    let refname = branch.get().name().ok_or("the branch name is not UTF-8")?;
+    repo.set_head(refname).map_err(|e| e.message().to_string())
 }
 
 /// A skip predicate for find (R3): true for gitignored paths and the
@@ -344,5 +484,111 @@ mod tests {
             return; // environment has a repo above tmp - nothing to assert
         }
         assert!(scan(dir.path()).is_none());
+    }
+}
+
+#[cfg(all(test, feature = "git"))]
+mod index_tests {
+    use super::*;
+
+    /// A repository with one commit of `a.txt` and `dir/b.txt` on its
+    /// first branch, and a second branch `other` that adds `c.txt`.
+    fn repo() -> (tempfile::TempDir, git2::Repository) {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(tmp.path()).unwrap();
+        std::fs::create_dir(tmp.path().join("dir")).unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "a\n").unwrap();
+        std::fs::write(tmp.path().join("dir/b.txt"), "b\n").unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let commit = |repo: &git2::Repository, message: &str| {
+            let mut index = repo.index().unwrap();
+            index
+                .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+                .unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let parents: Vec<git2::Commit> = repo
+                .head()
+                .ok()
+                .and_then(|h| h.peel_to_commit().ok())
+                .into_iter()
+                .collect();
+            let parents: Vec<&git2::Commit> = parents.iter().collect();
+            repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)
+                .unwrap()
+        };
+        commit(&repo, "first");
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let main = repo.head().unwrap().shorthand().unwrap().to_string();
+        repo.branch("other", &head, false).unwrap();
+        repo.set_head("refs/heads/other").unwrap();
+        std::fs::write(tmp.path().join("c.txt"), "c\n").unwrap();
+        commit(&repo, "second");
+        repo.set_head(&format!("refs/heads/{main}")).unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        drop(head);
+        (tmp, repo)
+    }
+
+    fn staged(repo: &git2::Repository) -> Vec<String> {
+        let mut opts = git2::StatusOptions::new();
+        opts.include_untracked(true);
+        repo.statuses(Some(&mut opts))
+            .unwrap()
+            .iter()
+            .filter(|s| {
+                s.status().intersects(
+                    git2::Status::INDEX_NEW
+                        | git2::Status::INDEX_MODIFIED
+                        | git2::Status::INDEX_DELETED,
+                )
+            })
+            .map(|s| s.path().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn stage_and_unstage_files_directories_and_deletions() {
+        let (tmp, repo) = repo();
+        let root = tmp.path();
+        std::fs::write(root.join("a.txt"), "changed\n").unwrap();
+        std::fs::write(root.join("dir/new.txt"), "new\n").unwrap();
+        std::fs::remove_file(root.join("dir/b.txt")).unwrap();
+        assert_eq!(stage(&[root.join("a.txt"), root.join("dir")]), Ok(2));
+        let mut got = staged(&repo);
+        got.sort();
+        assert_eq!(got, ["a.txt", "dir/b.txt", "dir/new.txt"]);
+        assert_eq!(unstage(&[root.join("dir")]), Ok(1));
+        assert_eq!(staged(&repo), ["a.txt"]);
+        // a deleted file named on its own
+        assert_eq!(stage(&[root.join("dir/b.txt")]), Ok(1));
+        assert!(staged(&repo).contains(&"dir/b.txt".to_string()));
+        // the work tree is left as it was
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "changed\n"
+        );
+        assert!(stage(&[PathBuf::from("/")]).is_err());
+    }
+
+    #[test]
+    fn branches_are_listed_and_switched_to_safely() {
+        let (tmp, _repo) = repo();
+        let root = tmp.path();
+        let (names, current) = branches(root).unwrap();
+        assert!(names.contains(&"other".to_string()), "{names:?}");
+        let home = current.unwrap();
+        assert!(!root.join("c.txt").exists());
+        switch(root, "other").unwrap();
+        assert!(root.join("c.txt").exists());
+        assert_eq!(branches(root).unwrap().1.as_deref(), Some("other"));
+        // a change the checkout would overwrite stops it
+        std::fs::write(root.join("c.txt"), "mine\n").unwrap();
+        assert!(switch(root, &home).is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("c.txt")).unwrap(),
+            "mine\n"
+        );
     }
 }

@@ -750,6 +750,10 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
                 dialog_rows =
                     draw_pick_list(frame, " Character set ", &crate::app::CHARSET_ROWS, *row, 0)
             }
+            Dialog::Branches(d) => {
+                let rows: Vec<&str> = d.rows.iter().map(String::as_str).collect();
+                dialog_rows = draw_pick_list(frame, " Switch branch ", &rows, d.row, 0)
+            }
             Dialog::Learn(d) => draw_learn(frame, d),
             Dialog::Skin(row) => {
                 let names = crate::theme::list();

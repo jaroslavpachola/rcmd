@@ -149,7 +149,11 @@ compresses it.
   dependency but offers only "fastest" (about zstd's level 1). That is
   still better than refusing.
 
-### T6 - git from the panel
+### T6 - git from the panel - DONE (2026-09-25, 4.53.0)
+
+Shipped as below, as menu entries and palette actions (`git-stage`,
+`git-unstage`, `git-branch`) with no default key, like diff against
+HEAD. Creating a branch is left to the shell.
 
 `git.rs` reads status and branch, and diff against HEAD exists
 (`open_diff_head`). Missing: **stage and unstage the marked files**,

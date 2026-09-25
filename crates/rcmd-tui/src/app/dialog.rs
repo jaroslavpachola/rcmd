@@ -148,6 +148,12 @@ impl App {
                 }
                 true
             }
+            Some(Dialog::Branches(d)) => {
+                if let Some(at) = count(d.rows.len()) {
+                    d.row = at;
+                }
+                true
+            }
             Some(Dialog::Skin(row)) => {
                 if let Some(at) = count(crate::theme::list().len()) {
                     *row = at;
@@ -856,6 +862,23 @@ impl App {
                     }
                 }
             }
+            Dialog::Branches(mut d) => match pick_key(&d.rows, d.row, key) {
+                PickKey::Move(to) => {
+                    d.row = to;
+                    self.dialog = Some(Dialog::Branches(d));
+                }
+                PickKey::Close => {}
+                PickKey::Chose(at) => {
+                    let name = d.names[at].clone();
+                    self.status = Some(match crate::git::switch(&d.dir, &name) {
+                        Ok(()) => format!(" on {name} now "),
+                        Err(err) => format!(" git: {err} "),
+                    });
+                    self.git_refresh();
+                    self.reload_panels();
+                }
+                PickKey::Ignored => self.dialog = Some(Dialog::Branches(d)),
+            },
             Dialog::Charset(row) => match charset_pick_key(row, key) {
                 PickKey::Move(to) => self.dialog = Some(Dialog::Charset(to)),
                 PickKey::Close => {}

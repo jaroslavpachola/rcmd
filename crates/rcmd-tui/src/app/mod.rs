@@ -700,6 +700,15 @@ struct WatchState {
     last: [Option<std::time::Instant>; 2],
 }
 
+/// The local branches of the repository a panel is in.
+pub struct BranchPick {
+    pub dir: PathBuf,
+    /// As listed: the one checked out says so.
+    pub rows: Vec<String>,
+    pub names: Vec<String>,
+    pub row: usize,
+}
+
 pub struct InputDialog {
     pub title: String,
     /// The line, its cursor, and the ring of earlier answers
@@ -1296,6 +1305,8 @@ pub enum Dialog {
     Jobs(usize),
     /// M-e: the panel's codepage, with the row it is on.
     Charset(usize),
+    /// Git: switch branch - the local branches, and the row it is on.
+    Branches(Box<BranchPick>),
     /// F9 > Options > Appearance: the theme list, with the row it is on.
     Skin(usize),
     /// F9 > Options > Learn keys.
@@ -2879,6 +2890,12 @@ pub enum Action {
     Trash,
     /// The cursor file against the last commit's version of it.
     DiffHead,
+    /// Stage the marked files (or the cursor's) in git's index.
+    GitStage,
+    /// Take them back out of the index.
+    GitUnstage,
+    /// Pick a local branch to check out.
+    GitBranch,
     /// Alt+X: every action, found by a few letters of its name.
     Palette,
     /// The saved connections.
@@ -2999,6 +3016,9 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Synchroni&ze directories...", "", Action::Sync)),
             Some(("Compare fi&les", "", Action::CompareFiles)),
             Some(("Diff against HEAD", "", Action::DiffHead)),
+            Some(("Git: stage", "", Action::GitStage)),
+            Some(("Git: unstage", "", Action::GitUnstage)),
+            Some(("Git: switch branch...", "", Action::GitBranch)),
             Some(("Command palette...", "M-x", Action::Palette)),
             Some(("Connections...", "", Action::Connections)),
             Some(("&Open shell", "C-o", Action::Shell)),

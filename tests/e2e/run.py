@@ -1849,6 +1849,43 @@ def test_palette():
     shutil.rmtree(root)
 
 
+def test_gitactions():
+    """PLAN6 T6: stage the file under the cursor, and switch branch from
+    a list - both through the palette."""
+    if shutil.which("git") is None:
+        print("SKIP gitactions (no git)")
+        return
+    root, play, home = sandbox()
+    env = {**os.environ, "HOME": home, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"}
+    git = lambda *a: subprocess.run(["git", *a], cwd=play, env=env, check=True,
+                                    capture_output=True, text=True).stdout
+    git("init", "-q")
+    open(os.path.join(play, "tracked.txt"), "w").write("one\n")
+    git("add", "tracked.txt")
+    git("commit", "-q", "-m", "first")
+    git("branch", "feature")
+    open(os.path.join(play, "tracked.txt"), "w").write("two\n")
+    s = Session(play, home)
+    s.send(b"\x13tracked", wait=STEP)
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"git-stage\r", wait=STEP * 2)
+    check("git: staged from the palette", "staged 1" in s.screen(), s.screen())
+    check("git: the index has it", "M  tracked.txt" in git("status", "--short"),
+          git("status", "--short"))
+    git("commit", "-q", "-m", "second")
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"git-branch\r", wait=STEP * 2)
+    scr = s.screen()
+    check("git: the branches are listed", "Switch branch" in scr and "feature" in scr, scr)
+    s.send(b"f\r", wait=STEP * 2)
+    check("git: switched", "on feature now" in s.screen(), s.screen())
+    check("git: the work tree followed",
+          open(os.path.join(play, "tracked.txt")).read() == "one\n")
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_kittykeys():
     """PLAN5 S7: in a terminal that has the kitty keyboard protocol, rcmd
     turns it on - and an Esc is an Esc at once, with no prefix to wait
@@ -7103,6 +7140,7 @@ def main():
         test_extract,
         test_undo,
         test_palette,
+        test_gitactions,
         test_editdrag,
         test_uservfs,
         test_kittykeys,

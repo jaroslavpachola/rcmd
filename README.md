@@ -824,7 +824,12 @@ changed in the work tree, `S` changed and staged, `A` added, `?`
 untracked, `!` ignored (ignored entries are dimmed); changes deep inside
 a subdirectory mark the subdirectory, the loudest winning.
 Statuses are computed on a background thread so huge repositories never
-block the UI. Built behind the default-on `git` cargo feature;
+block the UI. F9 → Command has **Git: stage** and **Git: unstage** for
+the marked files or the one under the cursor (a directory stages as
+`git add -A` would, deletions included), and **Git: switch branch**
+lists the local branches and checks one out safely: a change the
+checkout would overwrite stops it. They are also in the palette and
+bindable, as `git-stage`, `git-unstage` and `git-branch`. Built behind the default-on `git` cargo feature;
 `git = false` in the config disables it at runtime.
 
 **Archives**: Enter on a `.zip`, `.tar` or `.cpio` - plain or wrapped in

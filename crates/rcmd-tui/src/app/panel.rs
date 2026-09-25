@@ -615,6 +615,9 @@ impl App {
             Action::JobReport => self.show_job_report(),
             Action::Trash => self.connect_remote(rcmd_core::trashcan::PREFIX),
             Action::DiffHead => self.open_diff_head(),
+            Action::GitStage => self.git_index(true),
+            Action::GitUnstage => self.git_index(false),
+            Action::GitBranch => self.open_branches(),
             Action::Palette => self.open_palette(),
             Action::Connections => self.open_connections(),
             Action::Extract => self.extract_archives(),
@@ -1987,6 +1990,63 @@ impl App {
         }
     }
 
+    /// Stage the targets in git's index, or take them back out.
+    fn git_index(&mut self, stage: bool) {
+        let panel = &self.panels[self.active];
+        if !panel.is_local() {
+            self.status = Some(" git works on local files ".into());
+            return;
+        }
+        let targets = panel.targets();
+        let done = match stage {
+            true => crate::git::stage(&targets),
+            false => crate::git::unstage(&targets),
+        };
+        self.status = Some(match done {
+            Ok(n) => format!(
+                " {} {n} item(s) ",
+                if stage { "staged" } else { "unstaged" }
+            ),
+            Err(err) => format!(" git: {err} "),
+        });
+        self.git_refresh();
+    }
+
+    fn open_branches(&mut self) {
+        let panel = &self.panels[self.active];
+        if !panel.is_local() {
+            self.status = Some(" git works on local files ".into());
+            return;
+        }
+        let dir = panel.cwd.clone();
+        match crate::git::branches(&dir) {
+            Ok((names, _)) if names.is_empty() => {
+                self.status = Some(" no branches yet - nothing has been committed ".into());
+            }
+            Ok((names, current)) => {
+                let row = names
+                    .iter()
+                    .position(|n| Some(n) == current.as_ref())
+                    .unwrap_or(0);
+                let rows = names
+                    .iter()
+                    // the name first, so a letter finds it
+                    .map(|n| match Some(n) == current.as_ref() {
+                        true => format!("{n}  (checked out)"),
+                        false => n.clone(),
+                    })
+                    .collect();
+                self.dialog = Some(Dialog::Branches(Box::new(BranchPick {
+                    dir,
+                    rows,
+                    names,
+                    row,
+                })));
+            }
+            Err(err) => self.status = Some(format!(" git: {err} ")),
+        }
+    }
+
     /// Copy INTO an archive: zip appends in place, tar (plain or
     /// compressed) goes through a full rewrite-append.
     pub(super) fn start_pack(
@@ -3099,7 +3159,7 @@ impl App {
         self.reload_panels();
     }
 
-    fn reload_panels(&mut self) {
+    pub(super) fn reload_panels(&mut self) {
         for panel in &mut self.panels {
             let _ = panel.refresh();
         }

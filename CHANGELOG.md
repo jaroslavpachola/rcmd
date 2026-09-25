@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.53.0 - 2026-09-25
+
+- **Stage, unstage and switch branch from the panel.** F9 → Command
+  has Git: stage and Git: unstage for the marked files or the one
+  under the cursor. A directory stages as `git add -A` would, deleted
+  files included, and unstaging puts the index back to HEAD without
+  touching the work tree. Git: switch branch lists the local branches
+  and checks one out safely: a change the checkout would overwrite
+  stops it, and the status line says why. All three are in the palette
+  (`git-stage`, `git-unstage`, `git-branch`) and can be bound to keys.
+
 ## 4.52.0 - 2026-09-25
 
 - **A compression level when packing.** Alt+F5's form takes Alt+0 to
