@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.50.0 - 2026-09-25
+
+- **`sudo://` asks for the password.** It ran `sudo -n`, which fails
+  rather than prompt on the screen rcmd draws, so a sudo that wanted a
+  password needed `sudo -v` run beforehand in a shell. Now the panel's
+  first listing, failing with "a password is required", asks for the
+  password in a dialog (three tries, as on a terminal) and gives it to
+  `sudo -S -v`. Every operation after that runs on the timestamp sudo
+  keeps, which is refreshed while the panel is open. The password
+  itself is not kept.
+
 ## 4.49.0 - 2026-09-25
 
 - **`~/.ssh/config`'s `Include`, `ProxyJump` and `ProxyCommand`.** A

@@ -5301,7 +5301,11 @@ fn draw_connect_ask(frame: &mut Frame, ask: &ConnectAsk) {
         } => {
             let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
             let area = centered(56, 6, frame.area());
-            let inner = popup(frame, area, " SSH authentication ", style);
+            let title = match prompt.starts_with("[sudo]") {
+                true => " sudo ",
+                false => " SSH authentication ",
+            };
+            let inner = popup(frame, area, title, style);
             let row = |offset: u16| Rect {
                 x: inner.x + 1,
                 y: inner.y + offset,

@@ -5007,6 +5007,45 @@ def test_sftp_proxy():
     shutil.rmtree(root)
 
 
+def test_sudo():
+    """PLAN6 T3: sudo:// when sudo wants a password - asked in a dialog,
+    handed to sudo -S -v once, a wrong one asked again. The sudo here is
+    a script on PATH that wants "hunter2" and then runs what it is
+    given."""
+    root, play, home = sandbox()
+    target = os.path.join(root, "guarded")
+    os.makedirs(target)
+    open(os.path.join(target, "secret.txt"), "w").write("root's\n")
+    bindir = os.path.join(root, "bin")
+    os.makedirs(bindir)
+    stamp = os.path.join(root, "sudo-ok")
+    fake = os.path.join(bindir, "sudo")
+    open(fake, "w").write(f"""#!/bin/sh
+if [ "$1" = "-S" ]; then
+    read pw
+    [ "$pw" = hunter2 ] && {{ touch {stamp}; exit 0; }}
+    echo "Sorry, try again." >&2; exit 1
+fi
+shift
+[ -e {stamp} ] || {{ echo "sudo: a password is required" >&2; exit 1; }}
+[ "$1" = "-v" ] && exit 0
+[ "$1" = "-u" ] && shift 2
+exec "$@"
+""")
+    os.chmod(fake, 0o755)
+    s = Session(play, home, env={"PATH": bindir + ":" + os.environ["PATH"]})
+    s.send(f"cd sudo://{target}\r".encode(), wait=STEP * 2)
+    check("sudo: asks for the password", wait_for(s, "[sudo] password"), s.screen())
+    s.send(b"wrong\r", wait=STEP * 2)
+    check("sudo: a wrong one is asked again", wait_for(s, "[sudo] password"), s.screen())
+    s.send(b"hunter2\r", wait=STEP * 2)
+    check("sudo: listed once sudo took it",
+          wait_for(s, "secret.txt", timeout=10) and "sudo://" in s.screen(),
+          s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_sftp_auth():
     """R2: passphrase-protected key + keyboard-interactive auth."""
     if os.environ.get("RCMD_E2E_SFTP") == "0":
@@ -7137,6 +7176,7 @@ def main():
         test_fish,
         test_shellpanel,
         test_sftp_proxy,
+        test_sudo,
         test_sftp_auth,
         test_scale,
     ):

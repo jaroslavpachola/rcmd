@@ -106,7 +106,12 @@ terminal, and a proxy that fails is reported in its own words.
   as long as the session. `BatchMode=yes`: the jump host needs a key
   or the agent, because rcmd owns the terminal.
 
-### T3 - `sudo://` that asks
+### T3 - `sudo://` that asks - DONE (2026-09-25, 4.50.0)
+
+Shipped as below. The password is not kept: sudo's timestamp is what
+lasts, refreshed while the panel is open. That timestamp is the
+terminal's, so the README says what that means for a shell in the same
+terminal.
 
 `sudo -n` fails with "a password is required" unless `sudo -v` was run
 first (`fish.rs:543-550`). [audit] On that error, ask for the password

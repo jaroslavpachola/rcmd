@@ -575,7 +575,9 @@ impl ShellUrl {
                 CommandTransport::new(words, Wrap::OneString)
             }
             // sudo: -n never stops to ask for a password on a terminal
-            // rcmd is drawing on; `sudo -v` beforehand is the way in
+            // rcmd is drawing on - the password, when one is wanted, is
+            // asked once in a dialog and given to `sudo -S -v`, and the
+            // timestamp that leaves behind is what every -n runs on
             _ => {
                 let mut words = argv(&["sudo", "-n"]);
                 if !t.is_empty() {
@@ -587,15 +589,32 @@ impl ShellUrl {
     }
 }
 
-/// Put a panel on the shell a [`ShellUrl`] names. Nothing to log in to:
-/// the local command did that, or needs no login at all.
+/// Put a panel on the shell a [`ShellUrl`] names. Nothing to log in to
+/// but sudo: the local command did that, or needs no login at all.
 pub fn spawn_shell(url: ShellUrl) -> ConnectHandle {
     let (event_tx, event_rx) = std::sync::mpsc::channel();
-    let (reply_tx, _reply_rx) = std::sync::mpsc::channel();
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     let host = url.prefix();
     std::thread::spawn(move || {
-        let fs = Arc::new(ShellFs::new(Box::new(url.transport()), url.prefix()));
-        let _ = event_tx.send(match first_listing(fs, &url.path) {
+        let open = || Arc::new(ShellFs::new(Box::new(url.transport()), url.prefix()));
+        let mut listed = first_listing(open(), &url.path);
+        if url.scheme == "sudo"
+            && let Err(message) = &listed
+            && message.contains("password is required")
+        {
+            listed = match sudo_login(SUDO, &event_tx, &reply_rx) {
+                Ok(()) => first_listing(open(), &url.path),
+                Err(message) => Err(message),
+            };
+        }
+        if url.scheme == "sudo"
+            && let Ok((fs, _, _)) = &listed
+        {
+            // sudo forgets a password after a few idle minutes; a panel
+            // left open on it would start failing, so it is reminded
+            sudo_keep_alive(Arc::downgrade(fs));
+        }
+        let _ = event_tx.send(match listed {
             Ok((fs, start, entries)) => ConnectEvent::Ok { fs, start, entries },
             Err(message) => ConnectEvent::Err(message),
         });
@@ -605,6 +624,66 @@ pub fn spawn_shell(url: ShellUrl) -> ConnectHandle {
         replies: reply_tx,
         host,
     }
+}
+
+/// The program `sudo://` runs.
+const SUDO: &str = "sudo";
+
+/// Ask for the password sudo wants, in the connect dialog, and hand it
+/// to `sudo -S -v` - three tries, as sudo gives on a terminal. What sudo
+/// keeps afterwards (its timestamp) is what the `sudo -n` of every
+/// operation then runs on; the password itself is not kept.
+fn sudo_login(
+    program: &str,
+    tx: &std::sync::mpsc::Sender<ConnectEvent>,
+    rx: &std::sync::mpsc::Receiver<ConnectReply>,
+) -> Result<(), String> {
+    let user = std::env::var("USER").unwrap_or_default();
+    let mut last = String::from("a password is required");
+    for _ in 0..3 {
+        let prompt = format!("[sudo] password for {user}:");
+        if tx
+            .send(ConnectEvent::AskPassword {
+                prompt,
+                echo: false,
+            })
+            .is_err()
+        {
+            return Err("cancelled".into());
+        }
+        let password = match rx.recv() {
+            Ok(ConnectReply::Password(password)) => password,
+            _ => return Err("cancelled".into()),
+        };
+        let mut child = Command::new(program)
+            .args(["-S", "-p", "", "-v"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|err| format!("{program}: {err}"))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(format!("{password}\n").as_bytes());
+        }
+        match verdict(&mut child) {
+            Ok(()) => return Ok(()),
+            Err(err) => last = err.to_string(),
+        }
+    }
+    Err(format!("sudo: {last}"))
+}
+
+/// `sudo -n -v` every [`sftp::KEEPALIVE`] while the panel is open: it
+/// asks nothing, and keeps the timestamp from running out.
+fn sudo_keep_alive(fs: std::sync::Weak<dyn RemoteFs>) {
+    sftp::keep_alive(fs, |_: &(dyn RemoteFs + 'static)| {
+        let _ = Command::new(SUDO)
+            .args(["-n", "-v"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    });
 }
 
 /// Wrap a path so the remote shell takes it as one literal word. Single
@@ -813,6 +892,54 @@ fn os_string(bytes: Vec<u8>) -> OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sudo that wants "hunter2", as a script.
+    fn fake_sudo(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("sudo");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\nread pw\n[ \"$pw\" = hunter2 ] && exit 0\necho 'Sorry, try again.' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn sudo_asks_for_its_password_until_it_is_right_or_three_times() {
+        let dir = tempfile::tempdir().unwrap();
+        let sudo = fake_sudo(dir.path());
+        let program = sudo.to_str().unwrap();
+        let (event_tx, event_rx) = std::sync::mpsc::channel();
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        for answer in ["wrong", "hunter2"] {
+            reply_tx
+                .send(ConnectReply::Password(answer.into()))
+                .unwrap();
+        }
+        assert_eq!(sudo_login(program, &event_tx, &reply_rx), Ok(()));
+        let asked = event_rx
+            .try_iter()
+            .filter(|e| matches!(e, ConnectEvent::AskPassword { echo: false, .. }))
+            .count();
+        assert_eq!(asked, 2);
+        for _ in 0..3 {
+            reply_tx
+                .send(ConnectReply::Password("nope".into()))
+                .unwrap();
+        }
+        assert_eq!(
+            sudo_login(program, &event_tx, &reply_rx),
+            Err("sudo: Sorry, try again.".to_string())
+        );
+        // a closed dialog is a cancel, not a fourth try
+        drop(reply_tx);
+        assert_eq!(
+            sudo_login(program, &event_tx, &reply_rx),
+            Err("cancelled".to_string())
+        );
+    }
 
     /// Build the record stream the listing script prints, so the parser
     /// is tested against the format rather than against a server.

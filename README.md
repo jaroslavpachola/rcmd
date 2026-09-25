@@ -876,8 +876,12 @@ and `sudo://[user]/path` put a panel on a shell that a local command
 reaches - `docker exec -i`, `kubectl exec -i`, `adb shell`, `sudo -n`.
 They are FISH without the SSH: the same small scripts, run through that
 command instead of over a connection, so everything a FISH panel does
-works here - F3, F5 both ways, F6, F7, F8, chmod. `sudo://` never stops
-to ask for a password on a screen rcmd is drawing; run `sudo -v` first.
+works here - F3, F5 both ways, F6, F7, F8, chmod. When `sudo://` needs
+a password, it asks in a dialog and gives it to `sudo -S -v` once, and
+every operation after that runs on the timestamp sudo keeps. While the
+panel is open that timestamp is refreshed (`sudo -n -v`), and sudo's
+timestamp belongs to the terminal: a shell in the same terminal gets
+sudo without a password for as long as it would after `sudo -v`.
 
 **Your own filesystems**, mc's extfs: a `[[vfs]]` rule makes a kind of
 file enterable like an archive. `list` prints what is in it, `ls -l`

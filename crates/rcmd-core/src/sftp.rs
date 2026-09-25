@@ -536,7 +536,7 @@ pub(crate) const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs
 /// A thread that sends a keepalive over `session` every [`KEEPALIVE`]
 /// for as long as the filesystem holding it lives - it has only a weak
 /// reference, so the connection is not kept open by it.
-pub(crate) fn keep_alive<T: Send + Sync + 'static>(fs: std::sync::Weak<T>, ping: fn(&T)) {
+pub(crate) fn keep_alive<T: ?Sized + Send + Sync + 'static>(fs: std::sync::Weak<T>, ping: fn(&T)) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(KEEPALIVE);
