@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.54.0 - 2026-09-25
+
+- **The editor gutter marks changed lines.** With line numbers on
+  (Alt+N), the gutter's last column shows how each line stands next to
+  the file as it was opened or last saved: `+` added, `~` changed, `_`
+  saved lines deleted from just below. Undoing back to the saved text
+  clears the marks, as saving does.
+
 ## 4.53.0 - 2026-09-25
 
 - **Stage, unstage and switch branch from the panel.** F9 → Command

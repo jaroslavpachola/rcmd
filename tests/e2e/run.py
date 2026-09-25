@@ -1886,6 +1886,29 @@ def test_gitactions():
     shutil.rmtree(root)
 
 
+def test_gutter():
+    """PLAN6 T7: with line numbers on, a line changed since the file was
+    opened is marked in the gutter, and saving clears the mark."""
+    root, play, home = sandbox()
+    cfg = os.path.join(home, ".config", "rcmd", "config.toml")
+    os.makedirs(os.path.dirname(cfg), exist_ok=True)
+    open(cfg, "w").write("edit_line_numbers = true\n")
+    open(os.path.join(play, "notes.txt"), "w").write("alpha\nbeta\ngamma\n")
+    s = Session(play, home)
+    s.send(b"\x13notes", wait=STEP)
+    s.send(F4, wait=STEP * 2)
+    s.send(DOWN + b"Z", wait=STEP)
+    scr = s.screen()
+    check("gutter: the changed line is marked", re.search(r"2 ~Zbeta", scr) is not None, scr)
+    check("gutter: the others are not", re.search(r"1  alpha", scr) is not None, scr)
+    s.send(F2, wait=STEP * 2)
+    scr = s.screen()
+    check("gutter: saving clears the mark", re.search(r"2  Zbeta", scr) is not None, scr)
+    s.send(F10, wait=STEP)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_kittykeys():
     """PLAN5 S7: in a terminal that has the kitty keyboard protocol, rcmd
     turns it on - and an Esc is an Esc at once, with no prefix to wait
@@ -7141,6 +7164,7 @@ def main():
         test_undo,
         test_palette,
         test_gitactions,
+        test_gutter,
         test_editdrag,
         test_uservfs,
         test_kittykeys,

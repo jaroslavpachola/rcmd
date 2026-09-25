@@ -2648,7 +2648,8 @@ fn draw_pick_list(
 /// note pushed to the right. The note is what the program just said, so
 /// it gets the room it needs and the key list is what gets cut - the
 /// other way round the message vanishes exactly when it matters.
-fn gutter_line(line: Option<usize>, marked: bool, width: usize) -> Line<'static> {
+fn gutter_line(line: Option<usize>, marked: bool, change: u8, width: usize) -> Line<'static> {
+    use crate::app::change::{ADDED, CHANGED, DELETED_BELOW};
     let style = Style::new().fg(th().header_fg).bg(th().panel_bg);
     let mark = Style::new().fg(th().mark_fg).bg(th().panel_bg);
     let num = match line {
@@ -2656,12 +2657,20 @@ fn gutter_line(line: Option<usize>, marked: bool, width: usize) -> Line<'static>
         None => String::new(),
     };
     let pad = width.saturating_sub(2);
+    // the last column says how the line stands next to the saved text:
+    // + new, ~ changed, _ saved lines gone from below it
+    let changed = match change {
+        c if c & ADDED != 0 => "+",
+        c if c & CHANGED != 0 => "~",
+        c if c & DELETED_BELOW != 0 => "_",
+        _ => " ",
+    };
     Line::from(vec![
         Span::styled(format!("{num:>pad$}"), style),
         // the bookmark sits next to its number rather than in the text,
         // where it would move the line sideways
         Span::styled(if marked { "*" } else { " " }, mark),
-        Span::styled(" ", style),
+        Span::styled(changed, mark),
     ])
 }
 
@@ -2782,6 +2791,9 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
         Layout::horizontal([Constraint::Length(gutter_w as u16), Constraint::Min(1)])
             .areas(content);
     st.gutter = gutter.width as usize;
+    if gutter.width > 0 {
+        st.refresh_marks();
+    }
     st.rows = content.height as usize;
     st.cols = content.width as usize;
 
@@ -2844,6 +2856,10 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
                     gutter_line(
                         (seg == 0).then_some(line_idx),
                         seg == 0 && st.bookmarks.binary_search(&line_idx).is_ok(),
+                        match seg {
+                            0 => st.marks.1.get(line_idx).copied().unwrap_or(0),
+                            _ => 0,
+                        },
                         gutter.width as usize,
                     ),
                     Rect {
@@ -2896,6 +2912,7 @@ fn draw_editor(frame: &mut Frame, app: &mut App) {
                     gutter_line(
                         Some(idx),
                         st.bookmarks.binary_search(&idx).is_ok(),
+                        st.marks.1.get(idx).copied().unwrap_or(0),
                         gutter.width as usize,
                     ),
                     Rect {

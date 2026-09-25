@@ -139,6 +139,7 @@ impl App {
                 // asked to be highlighted
                 let note = rcmd_edit::user_syntax_warning().map(|w| format!(" {w} "));
                 self.open_screen(Screen::Editor(Box::new(EditorState {
+                    marks: Default::default(),
                     hl,
                     ed,
                     title,

@@ -1038,7 +1038,10 @@ bookmark follows its text: inserting or deleting lines above one moves
 it with what it marked, rather than leaving it pointing at whatever
 slid into that line number. `Alt+N` draws mc's line-number gutter, with
 a `*` beside a bookmarked line so the bookmarks can be seen and not
-only jumped to. `Ctrl+U` undoes, as it does in mc, beside rcmd's
+only jumped to. Its last column marks how each line stands next to the
+file as it was opened or last saved: `+` added, `~` changed, `_` saved
+lines deleted from just below. Undoing back to the saved text clears
+them, as saving does. `Ctrl+U` undoes, as it does in mc, beside rcmd's
 `Ctrl+Z`.
 
 **The desktop clipboard**: Ctrl+C and Ctrl+X also put the text on the

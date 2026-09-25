@@ -161,7 +161,14 @@ and **switch branch** from a list (safe checkout; a conflict reports
 itself in the status line). git2 is already linked, and no network
 features are needed.
 
-### T7 - changed lines in the editor gutter
+### T7 - changed lines in the editor gutter - DONE (2026-09-25, 4.54.0)
+
+Shipped with one change to the plan: the marks live in the line-number
+gutter (M-n), in its last column, instead of a column of their own
+that would shift the text sideways on the first keystroke. The diff
+runs when the text has changed and the gutter is drawn, which is cheap
+because common prefixes and suffixes are cut first, and it is skipped
+past 100,000 lines.
 
 Keep the text as it was when the file was opened or last saved (a
 `ropey::Rope` clone costs nothing), diff it against the buffer on a

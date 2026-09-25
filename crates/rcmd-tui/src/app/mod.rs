@@ -1925,6 +1925,9 @@ pub enum Exec {
 /// this is viewport + prompt presentation state.
 pub struct EditorState {
     pub ed: rcmd_edit::Editor,
+    /// What each line is next to the saved text - [`change`] - for the
+    /// gutter, and the revision it was worked out at.
+    pub marks: (u64, Vec<u8>),
     pub hl: Option<rcmd_edit::Highlighter>,
     /// Shown in the title bar (the sftp URL for remote scratch edits).
     pub title: String,
@@ -1958,7 +1961,58 @@ pub struct EditorState {
     pub gutter: usize,
 }
 
+/// Each line of `now` marked against `saved`: added, changed, or with
+/// saved lines gone from below it.
+pub fn line_marks(saved: &[String], now: &[String]) -> Vec<u8> {
+    let mut marks = vec![0u8; now.len().max(1)];
+    let mut last = None;
+    for row in rcmd_core::diff::rows(saved, now) {
+        match (row.left, row.right) {
+            (Some(_), Some(at)) => {
+                if !row.same {
+                    marks[at] |= change::CHANGED;
+                }
+                last = Some(at);
+            }
+            (None, Some(at)) => {
+                marks[at] |= change::ADDED;
+                last = Some(at);
+            }
+            (Some(_), None) => marks[last.unwrap_or(0)] |= change::DELETED_BELOW,
+            (None, None) => {}
+        }
+    }
+    marks
+}
+
+/// A line's mark in the editor gutter, next to the text as it was saved.
+pub mod change {
+    pub const ADDED: u8 = 1;
+    pub const CHANGED: u8 = 2;
+    /// Lines that were saved are gone from just below this one.
+    pub const DELETED_BELOW: u8 = 4;
+}
+
+/// Past this many lines the gutter's diff is not worth a keystroke.
+const MARKS_MAX_LINES: usize = 100_000;
+
 impl EditorState {
+    /// Bring the gutter's change marks up to the text, if it moved.
+    pub fn refresh_marks(&mut self) {
+        let revision = self.ed.revision();
+        if self.marks.0 == revision && !self.marks.1.is_empty() {
+            return;
+        }
+        let marks = match self.ed.line_count() > MARKS_MAX_LINES {
+            true => Vec::new(),
+            false => {
+                let (now, saved) = self.ed.lines_and_saved();
+                line_marks(&saved, &now)
+            }
+        };
+        self.marks = (revision, marks);
+    }
+
     /// How wide a wrapped row is: the window, or the column the options
     /// pin it to when that is narrower.
     pub fn wrap_width(&self) -> usize {
@@ -6693,5 +6747,34 @@ mod tests {
         assert!(matches!(pick_key(&rows, 3, m), PickKey::Move(0)));
         let z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE);
         assert!(matches!(pick_key(&rows, 1, z), PickKey::Ignored));
+    }
+}
+
+#[cfg(test)]
+mod change_mark_tests {
+    use super::*;
+
+    fn lines(text: &str) -> Vec<String> {
+        text.lines().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn lines_are_marked_against_the_saved_text() {
+        let saved = lines("a\nb\nc\nd\ne");
+        let now = lines("a\nB\nc\nnew\nd");
+        let marks = line_marks(&saved, &now);
+        assert_eq!(marks[0], 0);
+        assert_eq!(marks[1], change::CHANGED);
+        assert_eq!(marks[2], 0);
+        assert_eq!(marks[3], change::ADDED);
+        // e is gone from below d
+        assert_eq!(marks[4], change::DELETED_BELOW);
+        // nothing changed, nothing marked
+        assert!(line_marks(&saved, &saved).iter().all(|&m| m == 0));
+        // a first line deleted marks the top
+        assert_eq!(
+            line_marks(&lines("x\ny"), &lines("y"))[0],
+            change::DELETED_BELOW
+        );
     }
 }

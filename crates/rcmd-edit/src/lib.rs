@@ -180,6 +180,13 @@ struct EditGroup {
 
 pub struct Editor {
     rope: Rope,
+    /// The text as it was opened or last saved - what the gutter marks
+    /// changed lines against. A rope clone shares its chunks, so this
+    /// costs nothing until the text moves away from it.
+    saved: Rope,
+    /// Bumped by every change to the text or to `saved`: how a caller
+    /// tells that what it worked out from them is stale.
+    revision: u64,
     pub path: PathBuf,
     /// The codepage the file was read in and will be written back in;
     /// None = UTF-8, which is what everything is unless it is old.
@@ -252,6 +259,8 @@ impl Editor {
 
     fn with_rope(rope: Rope, path: PathBuf, crlf: bool) -> Editor {
         Editor {
+            saved: rope.clone(),
+            revision: 0,
             rope,
             path,
             charset: None,
@@ -323,6 +332,8 @@ impl Editor {
             let _ = std::fs::remove_file(&tmp);
         } else {
             self.saved_id = self.top_id();
+            self.saved = self.rope.clone();
+            self.revision += 1;
             self.disk_mtime = std::fs::metadata(&target).and_then(|m| m.modified()).ok();
         }
         result
@@ -446,6 +457,28 @@ impl Editor {
 
     pub fn modified(&self) -> bool {
         self.top_id() != self.saved_id
+    }
+
+    /// Changes every time the text or its saved copy does.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Every line of the text, and of the text as it was saved, each
+    /// without its newline: the two sides of the gutter's diff.
+    pub fn lines_and_saved(&self) -> (Vec<String>, Vec<String>) {
+        let lines = |rope: &Rope| -> Vec<String> {
+            rope.lines()
+                .map(|l| {
+                    let mut s = l.to_string();
+                    if s.ends_with('\n') {
+                        s.pop();
+                    }
+                    s
+                })
+                .collect()
+        };
+        (lines(&self.rope), lines(&self.saved))
     }
 
     pub fn text(&self) -> String {
@@ -692,6 +725,7 @@ impl Editor {
         let removed = self.rope.slice(at..at + remove_chars).to_string();
         self.rope.remove(at..at + remove_chars);
         self.rope.insert(at, insert);
+        self.revision += 1;
         let after = self.pos_at(at + insert.chars().count());
         self.cursor = after;
         self.desired_col = after.col;
@@ -1133,6 +1167,7 @@ impl Editor {
             let end = edit.at + edit.inserted.chars().count();
             self.rope.remove(edit.at..end);
             self.rope.insert(edit.at, &edit.removed);
+            self.revision += 1;
         }
         self.cursor = group.before;
         self.desired_col = self.cursor.col;
@@ -1150,6 +1185,7 @@ impl Editor {
             let end = edit.at + edit.removed.chars().count();
             self.rope.remove(edit.at..end);
             self.rope.insert(edit.at, &edit.inserted);
+            self.revision += 1;
         }
         self.cursor = group.after;
         self.desired_col = self.cursor.col;
@@ -1323,6 +1359,28 @@ fn expand_replacement(caps: &regex::Captures, replacement: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_saved_text_is_kept_beside_the_buffer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("f.txt");
+        std::fs::write(&path, "a\nb\n").unwrap();
+        let mut ed = Editor::open(&path).unwrap();
+        let start = ed.revision();
+        ed.insert("x");
+        assert_ne!(ed.revision(), start);
+        let (now, saved) = ed.lines_and_saved();
+        assert_eq!((now[0].as_str(), saved[0].as_str()), ("xa", "a"));
+        // undone, the buffer is the saved text again - and says it moved
+        let edited = ed.revision();
+        ed.undo();
+        assert_ne!(ed.revision(), edited);
+        assert_eq!(ed.lines_and_saved().0, ed.lines_and_saved().1);
+        ed.insert("y");
+        ed.save().unwrap();
+        let (now, saved) = ed.lines_and_saved();
+        assert_eq!(now, saved);
+    }
 
     #[test]
     fn tidy_trims_and_ends_with_a_newline_as_one_step() {

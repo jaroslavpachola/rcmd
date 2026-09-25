@@ -2933,6 +2933,7 @@ impl App {
             let mut ed = rcmd_edit::Editor::create(&path);
             ed.prefs = crate::editorconfig::for_file(&ed, self.config.edit_prefs());
             self.open_screen(Screen::Editor(Box::new(EditorState {
+                marks: Default::default(),
                 hl: rcmd_edit::Highlighter::new(&path, 0),
                 ed,
                 title,
