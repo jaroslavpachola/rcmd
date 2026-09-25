@@ -26,10 +26,14 @@ pub enum FindEvent {
 /// A result of a find.
 #[derive(Clone, Debug)]
 pub struct Found {
-    /// Its name is the path relative to the search root.
+    /// Its name is the path relative to the search root - through the
+    /// archive, for a member of one: `src.tar.gz/lib/x.c`.
     pub entry: Entry,
     /// Where in the file the content matched; `None` for a find by name.
     pub hit: Option<Hit>,
+    /// For a member of an archive: the archive, relative to the root,
+    /// and where the member is inside it.
+    pub inside: Option<(PathBuf, PathBuf)>,
 }
 
 /// One line of a file the content was found on.
@@ -87,6 +91,10 @@ pub struct Query {
     /// Directories never descended into: a bare name anywhere in the
     /// tree (`node_modules`), or a path from the start (`build/out`).
     pub ignore_dirs: Vec<String>,
+    /// Look inside the archives the walk meets, the ones rcmd reads
+    /// itself: the formats an external tool opens cost a process for
+    /// every member, which is not a search.
+    pub archives: bool,
 }
 
 /// The "containing text" half, and what the text means.
@@ -118,6 +126,7 @@ impl Default for Query {
             first_hit: true,
             max_depth: None,
             ignore_dirs: Vec::new(),
+            archives: false,
         }
     }
 }
@@ -274,6 +283,22 @@ pub fn spawn_find(root: PathBuf, query: Query, skip: Option<SkipFn>) -> Result<F
             }
             let Ok(entry) = entry else { continue };
             scanned += 1;
+            if query.archives
+                && entry.file_type.is_file()
+                && crate::vfs::is_archive_name(&entry.file_name)
+                && !is_tool_archive(&entry.file_name)
+            {
+                let path = entry.path();
+                let rel = path.strip_prefix(&root).unwrap_or(&path).to_path_buf();
+                let found = search_archive(&path, &rel, &matcher, seek.as_ref(), &query, &flag);
+                scanned += found.scanned;
+                for result in found.results {
+                    if !send(result) {
+                        flag.store(true, Ordering::Relaxed);
+                        break 'walk;
+                    }
+                }
+            }
             let name = entry.file_name.to_string_lossy();
             if !matcher.matches(&name) || (criteria && entry.file_type.is_dir()) {
                 continue;
@@ -294,6 +319,7 @@ pub fn spawn_find(root: PathBuf, query: Query, skip: Option<SkipFn>) -> Result<F
                     && !send(Found {
                         entry: found,
                         hit: None,
+                        inside: None,
                     })
                 {
                     flag.store(true, Ordering::Relaxed);
@@ -325,6 +351,7 @@ pub fn spawn_find(root: PathBuf, query: Query, skip: Option<SkipFn>) -> Result<F
                 let result = Found {
                     entry: found.clone(),
                     hit: Some(hit),
+                    inside: None,
                 };
                 if !send(result) {
                     flag.store(true, Ordering::Relaxed);
@@ -339,6 +366,140 @@ pub fn spawn_find(root: PathBuf, query: Query, skip: Option<SkipFn>) -> Result<F
         cancel,
         thread: Some(thread),
     })
+}
+
+/// The archives an external tool opens: searched inside, each member
+/// would be a process.
+fn is_tool_archive(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy().to_lowercase();
+    [".rar", ".7z", ".lha", ".lzh", ".arj", ".cab"]
+        .iter()
+        .any(|ext| name.ends_with(ext))
+}
+
+/// The biggest member read into memory to be searched for content.
+const MAX_MEMBER: u64 = 64 * 1024 * 1024;
+
+/// What a search inside one archive came to.
+struct InArchive {
+    results: Vec<Found>,
+    scanned: u64,
+}
+
+/// Walk an archive as the find walks a directory: its members by name,
+/// and by content when there is content to look for. One that cannot
+/// be opened is passed over - it is a file to the walk around it all
+/// the same.
+fn search_archive(
+    path: &Path,
+    rel: &Path,
+    matcher: &crate::pattern::Matcher,
+    seek: Option<&Seek>,
+    query: &Query,
+    cancel: &AtomicBool,
+) -> InArchive {
+    use crate::vfs::FsProvider;
+    let mut out = InArchive {
+        results: Vec::new(),
+        scanned: 0,
+    };
+    let Ok(archive) = crate::archive::ArchiveFs::open(path) else {
+        return out;
+    };
+    let mut dirs = vec![PathBuf::new()];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = archive.read_dir(&dir) else {
+            continue;
+        };
+        for mut member in entries {
+            if cancel.load(Ordering::Relaxed) {
+                return out;
+            }
+            out.scanned += 1;
+            let inner = dir.join(&member.name);
+            let name = member.name.to_string_lossy().into_owned();
+            if query.skip_hidden && name.starts_with('.') {
+                continue;
+            }
+            let is_dir = member.kind == crate::entry::EntryKind::Dir;
+            if is_dir {
+                dirs.push(inner.clone());
+            }
+            let criteria = matcher.has_criteria();
+            if !matcher.matches(&name) || (criteria && (is_dir || !matcher.accepts(&member, &name)))
+            {
+                continue;
+            }
+            member.name = rel.join(&inner).into_os_string();
+            let inside = Some((rel.to_path_buf(), inner.clone()));
+            let Some(seek) = seek else {
+                out.results.push(Found {
+                    entry: member,
+                    hit: None,
+                    inside,
+                });
+                continue;
+            };
+            if member.kind != crate::entry::EntryKind::File || member.size > MAX_MEMBER {
+                continue;
+            }
+            let mut bytes = Vec::new();
+            let read = archive
+                .open_read(&inner)
+                .and_then(|r| r.take(MAX_MEMBER).read_to_end(&mut bytes));
+            if read.is_err() {
+                continue;
+            }
+            for hit in memory_hits(&bytes, seek, query.first_hit) {
+                out.results.push(Found {
+                    entry: member.clone(),
+                    hit: Some(hit),
+                    inside: inside.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// [`file_hits`] over bytes already in memory, a line at a time.
+fn memory_hits(bytes: &[u8], seek: &Seek, first: bool) -> Vec<Hit> {
+    let mut hits = Vec::new();
+    for (index, line) in bytes.split(|&b| b == b'\n').enumerate() {
+        let line = &line[..line.len().min(MAX_LINE)];
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let at = match seek {
+            Seek::Lines(re) => re.find(&String::from_utf8_lossy(line)).map(|m| m.start()),
+            Seek::Bytes { needles, fold } => {
+                let folded;
+                let hay = match fold {
+                    true => {
+                        folded = line.to_ascii_lowercase();
+                        &folded[..]
+                    }
+                    false => line,
+                };
+                needles
+                    .iter()
+                    .filter_map(|needle| memchr::memmem::find(hay, needle))
+                    .min()
+            }
+        };
+        if let Some(at) = at {
+            let text = String::from_utf8_lossy(line);
+            // the match as a byte offset into the lossy text, which is
+            // the line itself unless it was not UTF-8
+            let at = at.min(text.len());
+            hits.push(Hit {
+                line: index as u64 + 1,
+                text: preview(text.as_bytes(), 0, at),
+            });
+            if first || hits.len() >= MAX_HITS {
+                break;
+            }
+        }
+    }
+    hits
 }
 
 /// Where this file holds what we are looking for: the first line, or
@@ -846,5 +1007,79 @@ mod tests {
         let (names, _) =
             collect(spawn_find(dir.path().to_path_buf(), containing("needle"), None).unwrap());
         assert_eq!(names, ["big.bin"]);
+    }
+
+    #[test]
+    fn a_find_can_look_inside_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("bundle.tar.gz");
+        let gz = flate2::write::GzEncoder::new(
+            File::create(&archive).unwrap(),
+            flate2::Compression::fast(),
+        );
+        let mut tar = tar::Builder::new(gz);
+        for (name, body) in [
+            ("src/needle.rs", "fn main() {}\n"),
+            ("docs/readme.txt", "first line\nthe Haystack holds it\n"),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, name, body.as_bytes()).unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap();
+        fs::write(dir.path().join("needle.rs"), "outside\n").unwrap();
+        let run = |query: Query| -> Vec<Found> {
+            let handle = spawn_find(dir.path().to_path_buf(), query, None).unwrap();
+            let mut out = Vec::new();
+            while let Ok(event) = handle.events.recv() {
+                match event {
+                    FindEvent::Match(found) => out.push(*found),
+                    FindEvent::Done { .. } => break,
+                }
+            }
+            out
+        };
+        let by_name = |archives| Query {
+            name: crate::pattern::Pattern {
+                text: "needle*".into(),
+                shell: true,
+                ..Query::default().name
+            },
+            archives,
+            ..Query::default()
+        };
+        // off, the archive is a file like any other
+        assert_eq!(run(by_name(false)).len(), 1);
+        let mut found = run(by_name(true));
+        found.sort_by(|a, b| a.entry.name.cmp(&b.entry.name));
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].entry.name, "bundle.tar.gz/src/needle.rs");
+        assert_eq!(
+            found[0].inside,
+            Some((
+                PathBuf::from("bundle.tar.gz"),
+                PathBuf::from("src/needle.rs")
+            ))
+        );
+        assert_eq!(found[1].inside, None);
+        // and by what is in the members, case folded as asked
+        let by_content = Query {
+            content: Some(Content {
+                text: "haystack".into(),
+                regex: false,
+                case_sensitive: false,
+                whole_words: false,
+                all_charsets: false,
+            }),
+            archives: true,
+            ..Query::default()
+        };
+        let found = run(by_content);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].entry.name, "bundle.tar.gz/docs/readme.txt");
+        assert_eq!(found[0].hit.as_ref().map(|h| h.line), Some(2));
+        assert!(found[0].hit.as_ref().unwrap().text.contains("Haystack"));
     }
 }

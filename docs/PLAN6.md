@@ -176,7 +176,13 @@ thread after edits settle, and mark added, changed and deleted-below
 lines in the gutter. With line numbers off, the marks get a column of
 their own.
 
-### T8 - find inside archives
+### T8 - find inside archives - DONE (2026-09-25, 4.55.0)
+
+Shipped as below: an "Inside archives" switch on the find dialog,
+remembered with the rest. It finds by name and by content. A member is
+read into memory to be searched, up to 64 MiB. Rows inside an archive
+stay out of F5, F6 and F8 from the window, and out of a panelized
+listing. Nested archives are not descended into.
 
 A-F7 walks local directories only (`find.rs:235-266`). Add an option
 to descend into the archives it meets (native kinds only: the

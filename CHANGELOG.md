@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.55.0 - 2026-09-25
+
+- **Find looks inside archives.** A new switch on Alt+F7's dialog,
+  Inside archives, makes the walk open the zips, tarballs, cpios,
+  packages and disc images it meets and search their members, by name
+  and by content. A member is listed as `bundle.zip/dir/file`. Chdir
+  puts the panel inside the archive on it, and View and Edit open it
+  at the hit. The formats an external tool opens are left alone, since
+  each member would cost a process. Like the other switches, it is
+  remembered.
+
 ## 4.54.0 - 2026-09-25
 
 - **The editor gutter marks changed lines.** With line numbers on

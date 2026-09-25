@@ -255,6 +255,7 @@ pub struct FindMemory {
     pub skip_hidden: bool,
     pub follow_links: bool,
     pub skip_ignored: bool,
+    pub archives: bool,
 }
 
 /// mc's defaults: any name, shell patterns, down the whole tree, one
@@ -279,6 +280,7 @@ impl Default for FindMemory {
             skip_hidden: false,
             follow_links: false,
             skip_ignored: true,
+            archives: false,
         }
     }
 }

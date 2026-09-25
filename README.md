@@ -591,8 +591,15 @@ answers beside them: **whole words**, **case sensitive**, **regular
 expression** (matched line by line), **all charsets** (the same word as
 another machine spelled it - KOI8-R, CP1251, Shift_JIS and the rest),
 **skip hidden**, **follow symlinks**, **first hit only**, **find
-recursively**, and rcmd's own **skip gitignored** - with separate case
-switches for the name and the content, as mc has. Beside mc's
+recursively**, and rcmd's own **skip gitignored** and **inside
+archives** - with separate case switches for the name and the content,
+as mc has. Inside archives looks into the zips, tarballs, cpios,
+packages and disc images the walk meets, by name and by content, and
+lists a member as `bundle.zip/dir/file`. Chdir, View and Edit go into
+the archive to it. The formats an external tool opens (rar, 7z and the
+rest) are left alone, since every member would cost a process, and a
+member is never added to a panelized listing, which holds one
+filesystem. Beside mc's
 questions sit the ones it never asked: directories to **ignore**
 (`node_modules:build/out`, a name anywhere or a path from the start), a
 **size** (`>1M`, `1M-2G`), an age (**newer than** `7d`) and a **max

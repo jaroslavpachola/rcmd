@@ -2653,8 +2653,9 @@ def test_find():
     if gitted:
         check("find: gitignored tree skipped", "needle-hidden" not in scr)
         # Up from the Filename field wraps through Start at and the
-        # buttons to the last switch, which is the gitignore one
-        find(b"needle*" + UP * 3 + b" ")
+        # buttons to the last switch, Inside archives, and one more up
+        # is the gitignore one
+        find(b"needle*" + UP * 4 + b" ")
         scr = s.screen()
         check("find: unticked finds ignored", "junk/needle-hidden.txt" in scr)
         check("find: unticked count", "3 match(es)" in scr)
@@ -6149,6 +6150,45 @@ def test_helppages():
     shutil.rmtree(root)
 
 
+def test_findarchives():
+    """PLAN6 T8: with Inside archives on, find lists the members of an
+    archive it walks past, and Chdir and View go into the archive."""
+    root, play, home = sandbox()
+    with zipfile.ZipFile(os.path.join(play, "bundle.zip"), "w") as z:
+        z.writestr("inner/deep.txt", "found inside the zip\n")
+        z.writestr("inner/other.bin", "no\n")
+    state = os.path.join(home, ".local", "state", "rcmd")
+    os.makedirs(state, exist_ok=True)
+    open(os.path.join(state, "state.toml"), "w").write(
+        '[find]\nname = "*.txt"\narchives = true\n')
+    s = Session(play, home)
+
+    def find():
+        s.keys(b"\x1b[20~", b"\x1b[C" * 2, DOWN * 5, b"\r", wait=STEP)
+        check("findarchives: the switch is on", "[x] Inside archives" in s.screen(),
+              s.screen())
+        s.keys(b"\r", wait=STEP)
+        wait_for(s, "match(es)")
+
+    find()
+    scr = s.screen()
+    check("findarchives: the member is listed through the archive",
+          "bundle.zip/inner/deep.txt" in scr and "1 match(es)" in scr, scr)
+    s.send(b"\r", wait=STEP * 2)                # Chdir
+    scr = s.screen()
+    check("findarchives: chdir went into the archive",
+          "bundle.zip" in scr.splitlines()[0] and "deep.txt" in scr, scr)
+    s.send(b"\x1bc", wait=STEP)
+    s.send(play.encode() + b"\r", wait=STEP * 2)
+    find()
+    s.send(b"v", wait=STEP * 2)                  # View
+    check("findarchives: view reads the member",
+          "found inside the zip" in s.screen(), s.screen())
+    s.send(F10, wait=STEP)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_findwindow():
     """PLAN4 S6: mc's find results window - the matches in a list of
     their own, with Chdir, Again, Panelize, View and Edit."""
@@ -7165,6 +7205,7 @@ def main():
         test_palette,
         test_gitactions,
         test_gutter,
+        test_findarchives,
         test_editdrag,
         test_uservfs,
         test_kittykeys,

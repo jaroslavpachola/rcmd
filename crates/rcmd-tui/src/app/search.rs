@@ -29,6 +29,9 @@ impl App {
             for hit in found {
                 results.rows.push(FindRow {
                     path: results.root.join(&hit.entry.name),
+                    inside: hit
+                        .inside
+                        .map(|(archive, inner)| (results.root.join(archive), inner)),
                     hit: hit.hit,
                     marked: false,
                 });
@@ -37,7 +40,9 @@ impl App {
         } else {
             // a listing holds each file once, however many lines hit;
             // a file's hits arrive one after the other
-            for hit in found {
+            // a listing is of one filesystem: a member of an archive
+            // is only in the results window, which can go into it
+            for hit in found.into_iter().filter(|hit| hit.inside.is_none()) {
                 let entries = &mut self.panels[panel].entries;
                 if entries
                     .last()
@@ -103,6 +108,7 @@ impl App {
         let button = button.unwrap_or(d.button);
         let target = d.rows.get(d.selected).map(|row| row.path.clone());
         let hit = d.rows.get(d.selected).and_then(|row| row.hit.clone());
+        let inside = d.rows.get(d.selected).and_then(|row| row.inside.clone());
         match (FIND_BUTTONS[button], target) {
             ("Quit", _) => self.close_find(),
             ("Again", _) => {
@@ -135,6 +141,27 @@ impl App {
                 self.panels[side].panelize(entries, label);
             }
             (_, None) => self.dialog = Some(Dialog::FindResults(Box::new(d))),
+            ("Chdir", Some(_)) if inside.is_some() => {
+                let side = self.active;
+                self.close_find();
+                self.go_into_archive(side, inside.expect("checked"));
+            }
+            ("View", Some(_)) | ("Edit", Some(_)) if inside.is_some() => {
+                let side = self.active;
+                self.close_find();
+                // the result walk steps from file to file on disk; a
+                // member of an archive is read where it is, once
+                self.hit_walk = None;
+                if self.go_into_archive(side, inside.expect("checked")) {
+                    match FIND_BUTTONS[button] {
+                        "Edit" => self.open_editor(),
+                        _ => self.open_viewer(false),
+                    }
+                    if let Some(hit) = hit {
+                        self.go_to_hit(&d.query, hit.line);
+                    }
+                }
+            }
             ("Chdir", Some(path)) => {
                 let side = self.active;
                 self.close_find();
@@ -179,10 +206,34 @@ impl App {
         }
     }
 
+    /// Put a panel inside an archive, on one of its members. False, with
+    /// the reason on the status line, when the archive will not open.
+    fn go_into_archive(&mut self, side: usize, (archive, inner): (PathBuf, PathBuf)) -> bool {
+        // `..` at the archive's top comes out beside it, wherever the
+        // panel was before
+        self.panels[side].cancel_pending();
+        if let Err(err) = self.panels[side].open_archive(archive.clone()) {
+            self.status = Some(format!(" {}: {err} ", archive.display()));
+            return false;
+        }
+        if let Some(dir) = inner.parent().filter(|d| !d.as_os_str().is_empty()) {
+            let _ = self.panels[side].request_dir(dir.to_path_buf(), LoadKind::Enter);
+        }
+        if let Some(name) = inner.file_name() {
+            self.panels[side].select_name(name);
+        }
+        true
+    }
+
     /// F5, F6 or F8 from the results window: the marked files, or the
     /// one under the cursor, without panelizing them first.
     pub(super) fn find_operate(&mut self, d: FindResults, key: KeyCode) {
         let targets = d.targets();
+        if targets.is_empty() {
+            self.status = Some(" a member of an archive - Chdir goes into it ".into());
+            self.dialog = Some(Dialog::FindResults(Box::new(d)));
+            return;
+        }
         self.close_find();
         match key {
             KeyCode::F(5) => self.open_transfer_of(false, targets),
@@ -343,6 +394,7 @@ impl App {
             first_hit: dialog.first_hit,
             max_depth,
             ignore_dirs: find::parse_ignore_dirs(&dialog.ignore.value),
+            archives: dialog.archives,
         };
         let root = match dialog.start.value.trim() {
             "" => self.panels[self.active].local_cwd(),

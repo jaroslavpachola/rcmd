@@ -287,6 +287,8 @@ pub struct FindDialog {
     pub follow_links: bool,
     /// Skip gitignored trees when searching inside a work tree.
     pub skip_ignored: bool,
+    /// Look inside the archives the walk meets.
+    pub archives: bool,
     /// Focused row: the fields, then the switches, then [`FIND_ROWS`]
     /// for the button row.
     pub row: usize,
@@ -317,6 +319,7 @@ pub const FIND_SWITCHES: &[&str] = &[
     "Skip hidden",
     "Follow symlinks",
     "Skip gitignored",
+    "Inside archives",
 ];
 /// Rows before the button row.
 pub const FIND_ROWS: usize = FIND_FIELDS + FIND_SWITCHES.len();
@@ -335,6 +338,7 @@ impl FindDialog {
             8 => &mut self.skip_hidden,
             9 => &mut self.follow_links,
             10 => &mut self.skip_ignored,
+            11 => &mut self.archives,
             _ => return None,
         })
     }
@@ -352,6 +356,7 @@ impl FindDialog {
             self.skip_hidden,
             self.follow_links,
             self.skip_ignored,
+            self.archives,
         ]
         .get(index)
         .copied()
@@ -428,6 +433,7 @@ impl FindDialog {
             skip_hidden: self.skip_hidden,
             follow_links: self.follow_links,
             skip_ignored: self.skip_ignored,
+            archives: self.archives,
         }
     }
 
@@ -452,6 +458,7 @@ impl FindDialog {
             skip_hidden: last.skip_hidden,
             follow_links: last.follow_links,
             skip_ignored: last.skip_ignored,
+            archives: last.archives,
             row: 1,
             ok: true,
         }
@@ -508,8 +515,11 @@ pub struct HitWalk {
 /// One row of the results window: a file, and - when the content was
 /// searched - the line it was found on.
 pub struct FindRow {
-    /// Absolute.
+    /// Absolute - through the archive for a member of one.
     pub path: PathBuf,
+    /// For a member of an archive: the archive, absolute, and where the
+    /// member is inside it.
+    pub inside: Option<(PathBuf, PathBuf)>,
     pub hit: Option<find::Hit>,
     /// Insert marks it for F5 / F6 / F8, as in a panel.
     pub marked: bool,
@@ -531,16 +541,24 @@ impl FindResults {
 
     /// What F5, F6 and F8 act on: the marked rows' files, each once,
     /// or the file under the cursor when nothing is marked.
+    /// A member of an archive is left out: it is not a file F5 can
+    /// reach from here, and Chdir goes into the archive to it.
     pub fn targets(&self) -> Vec<PathBuf> {
         let mut out: Vec<PathBuf> = Vec::new();
-        let marked = self.rows.iter().filter(|row| row.marked);
+        let marked = self
+            .rows
+            .iter()
+            .filter(|row| row.marked && row.inside.is_none());
         for row in marked {
             if !out.contains(&row.path) {
                 out.push(row.path.clone());
             }
         }
         if out.is_empty()
-            && let Some(row) = self.rows.get(self.selected)
+            && let Some(row) = self
+                .rows
+                .get(self.selected)
+                .filter(|row| row.inside.is_none())
         {
             out.push(row.path.clone());
         }
