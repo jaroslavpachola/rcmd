@@ -246,7 +246,13 @@ impl Control {
         let read = (&mut self.stream)
             .take(MAX_LINE)
             .read_line(&mut line)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "FTP reply is not text"))?;
+            .map_err(|err| match err.kind() {
+                io::ErrorKind::InvalidData => {
+                    io::Error::new(io::ErrorKind::InvalidData, "FTP reply is not text")
+                }
+                // a reset or a timeout is the link, and says so
+                _ => err,
+            })?;
         if read == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -289,7 +295,13 @@ impl Reply {
         if codes.contains(&self.code) {
             return Ok(());
         }
-        Err(io::Error::other(format!("{} {}", self.code, self.text)))
+        // 421: the server is closing the connection - an idle one it
+        // timed out, most often - which is the link going, not a no
+        let kind = match self.code {
+            421 => io::ErrorKind::NotConnected,
+            _ => io::ErrorKind::Other,
+        };
+        Err(io::Error::new(kind, format!("{} {}", self.code, self.text)))
     }
 }
 
@@ -381,6 +393,12 @@ impl FtpFs {
     /// Take a logged-in connection, opening a new one if the pool is
     /// empty - which happens exactly when another transfer holds them.
     fn take(&self) -> io::Result<Control> {
+        self.take_pooled().map(|(control, _)| control)
+    }
+
+    /// [`FtpFs::take`], saying whether the connection had been lying in
+    /// the pool - where the server may have hung up on it meanwhile.
+    fn take_pooled(&self) -> io::Result<(Control, bool)> {
         let mut pool = self.pool.lock().unwrap_or_else(|p| p.into_inner());
         // collect whatever finished transfers have handed back
         let returned = self.returned.lock().unwrap_or_else(|p| p.into_inner());
@@ -389,12 +407,12 @@ impl FtpFs {
         }
         drop(returned);
         if let Some(control) = pool.pop() {
-            return Ok(control);
+            return Ok((control, true));
         }
         drop(pool);
         self.logins
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Control::connect(&self.url, &self.password)
+        Control::connect(&self.url, &self.password).map(|control| (control, false))
     }
 
     /// How many control connections this provider has had to open.
@@ -411,13 +429,20 @@ impl FtpFs {
 
     /// Run something with a connection, returning it afterwards. A
     /// connection that failed is dropped rather than pooled: the next
-    /// call logs in again instead of inheriting a broken session.
-    fn with<T>(&self, f: impl FnOnce(&mut Control) -> io::Result<T>) -> io::Result<T> {
-        let mut control = self.take()?;
+    /// call logs in again instead of inheriting a broken session. One
+    /// taken from the pool that turns out to have been hung up on while
+    /// it lay there is not this call's failure: it runs again on a
+    /// fresh login.
+    fn with<T>(&self, f: impl Fn(&mut Control) -> io::Result<T>) -> io::Result<T> {
+        let (mut control, pooled) = self.take_pooled()?;
         match f(&mut control) {
             Ok(value) => {
                 self.give_back(control);
                 Ok(value)
+            }
+            Err(err) if pooled && hung_up(&err) => {
+                drop(control);
+                self.with(f)
             }
             Err(err) => Err(err),
         }
@@ -450,24 +475,41 @@ impl FtpFs {
         let dir = self.absolute(dir);
         let quoted = dir.to_string_lossy().into_owned();
         self.with(|control| {
-            let prefer_mlsd = *self.mlsd.lock().unwrap_or_else(|p| p.into_inner()) != Some(false);
+            let known = *self.mlsd.lock().unwrap_or_else(|p| p.into_inner());
+            let prefer_mlsd = known != Some(false);
             if prefer_mlsd {
                 match self.download(control, &format!("MLSD {quoted}")) {
                     Ok(bytes) => {
                         *self.mlsd.lock().unwrap_or_else(|p| p.into_inner()) = Some(true);
                         return Ok(parse_mlsd(&String::from_utf8_lossy(&bytes)));
                     }
-                    Err(_) => {
-                        // note it and fall through, so the next listing
-                        // does not pay for the refusal again
-                        *self.mlsd.lock().unwrap_or_else(|p| p.into_inner()) = Some(false);
-                    }
+                    // the link, not the command: nothing learned
+                    Err(err) if hung_up(&err) => return Err(err),
+                    Err(_) => {}
                 }
             }
             let bytes = self.download(control, &format!("LIST {quoted}"))?;
+            if known.is_none() {
+                // MLSD failed where LIST worked: the server does not
+                // have it, so the next listing does not pay for asking
+                *self.mlsd.lock().unwrap_or_else(|p| p.into_inner()) = Some(false);
+            }
             Ok(parse_list(&String::from_utf8_lossy(&bytes)))
         })
     }
+}
+
+/// Whether an error is the connection going, rather than the server
+/// answering no.
+fn hung_up(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::NotConnected
+    )
 }
 
 /// The login and password `.netrc` has for `host` (and `user`, when the
@@ -1218,6 +1260,29 @@ mod tests {
         // connection back and the next one picked it up
         assert_eq!(fs.logins(), 1);
 
+        let _ = child.kill();
+    }
+
+    /// A connection the server hung up on while it lay in the pool -
+    /// an idle timeout, most often - costs a second login, not a
+    /// failed listing, and does not leave MLSD marked unsupported.
+    #[test]
+    fn a_pooled_connection_hung_up_on_logs_in_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("here.txt"), b"x").unwrap();
+        let Some((mut child, port)) = server(tmp.path()) else {
+            return;
+        };
+        let fs = connect(port, "/");
+        assert_eq!(fs.read_dir(Path::new("/")).unwrap().len(), 1);
+        let mlsd = *fs.mlsd.lock().unwrap();
+        // hang up on every pooled connection behind the provider's back
+        for control in fs.pool.lock().unwrap().iter() {
+            let _ = control.stream.get_ref().shutdown(std::net::Shutdown::Both);
+        }
+        assert_eq!(fs.read_dir(Path::new("/")).unwrap().len(), 1);
+        assert_eq!(fs.logins(), 2);
+        assert_eq!(*fs.mlsd.lock().unwrap(), mlsd);
         let _ = child.kill();
     }
 

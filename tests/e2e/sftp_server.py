@@ -7,9 +7,11 @@ $RCMD_SFTP_AUTH picks the accepted method:
   password (default) - $RCMD_SFTP_PASSWORD (default "secret")
   pubkey             - the OpenSSH .pub file at $RCMD_SFTP_PUBKEY
   interactive        - keyboard-interactive, two prompts ("fish", "chips")
+SIGUSR1 drops every connection and keeps listening, host key unchanged.
 """
 import base64
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -191,6 +193,15 @@ def main():
     sock.listen(8)
     print("READY", flush=True)
     transports = []
+
+    def hang_up(*_):
+        # SIGUSR1: drop every connection, as a server restart would, but
+        # keep the host key - so a client dialing again is let back in
+        for t in transports:
+            t.close()
+        transports.clear()
+
+    signal.signal(signal.SIGUSR1, hang_up)
     while True:
         conn, _ = sock.accept()
         t = paramiko.Transport(conn)

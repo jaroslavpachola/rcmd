@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.48.0 - 2026-09-25
+
+- **A dropped SFTP or FISH connection comes back by itself.** A server
+  restart or a laptop that slept left the panel on a dead session:
+  every listing failed, a job's Retry asked the same dead session
+  again, and typing the URL again reused it - freeing it from the
+  connections list was the only way out. Now an operation that finds
+  the connection gone dials again and runs once more. It gives the
+  answers the first login was given (a password, a passphrase, a host
+  key accepted on trust) without asking anyone, so an answer it does
+  not have - a new host key, a one-time code - fails it the way a
+  refusal would. A keepalive that cannot be sent makes the next
+  operation redial at once instead of waiting out the 30-second
+  timeout first.
+
+- **FTP: a connection the server hung up on while it sat idle** costs
+  a second login instead of a failed operation. A dead link no longer
+  marks MLSD as unsupported for the rest of the session, and a reset
+  is reported as one rather than as "FTP reply is not text".
+
 ## 4.47.0 - 2026-09-25
 
 - **A merge in the diff view keeps each line's ending.** The view

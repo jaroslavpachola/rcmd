@@ -69,7 +69,11 @@ are now kept per line, so they survive a merge either way.
   first new suffix (T5's `.tar.zst`) would. Make every arm explicit.
   [audit]
 
-### T1 - connections that come back
+### T1 - connections that come back - DONE (2026-09-25, 4.48.0)
+
+Shipped as below. The first login's answers stay in memory for as long
+as the connection does, as FTP's password already did. An FTP link that
+fails mid-read also stopped being reported as "FTP reply is not text".
 
 Today nothing reconnects. A dropped SFTP or FISH session stays in the
 connection cache while a panel holds it, a retry in a job calls the

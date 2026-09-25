@@ -10,6 +10,7 @@
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
@@ -178,17 +179,123 @@ pub fn spawn_connect(url: SftpUrl) -> ConnectHandle {
 
 /// Dial a host and authenticate. What is done with the session after
 /// that - the SFTP subsystem, or a shell - is the caller's business,
-/// which is what lets `fish://` reuse every question asked here.
+/// which is what lets `fish://` reuse every question asked here. The
+/// answers given are kept, so the connection can be dialed again later
+/// without asking them twice.
 pub fn ssh_session(
     url: &SftpUrl,
     tx: &Sender<ConnectEvent>,
     rx: &Receiver<ConnectReply>,
-) -> Result<Session, String> {
-    let info = |msg: String| {
-        let _ = tx.send(ConnectEvent::Info(msg));
+) -> Result<(Session, Redial), String> {
+    let mut ask = Ui {
+        tx,
+        rx,
+        told: Login::default(),
     };
+    let session = dial(url, &mut ask)?;
+    Ok((
+        session,
+        Redial {
+            url: url.clone(),
+            login: ask.told,
+        },
+    ))
+}
+
+/// How a session is dialed again once it has died: where to, and what
+/// the first login was told - the secrets typed and a host key taken
+/// on trust - so the same answers can be given without anyone asked.
+pub struct Redial {
+    url: SftpUrl,
+    login: Login,
+}
+
+#[derive(Default)]
+struct Login {
+    answers: Vec<String>,
+    fingerprint: Option<String>,
+}
+
+impl Redial {
+    /// A fresh session, or why not. Nothing is asked: an answer the
+    /// first login did not give - a new passphrase, a one-time code, a
+    /// host key it did not accept - fails this the way a refusal would.
+    pub fn session(&self) -> Result<Session, String> {
+        let mut ask = Replay {
+            login: &self.login,
+            next: 0,
+        };
+        dial(&self.url, &mut ask)
+    }
+}
+
+/// The questions a login asks, and who answers them.
+trait Ask {
+    fn info(&mut self, _message: String) {}
+    /// A secret, or `Err` to stop the whole login.
+    fn secret(&mut self, prompt: String, echo: bool) -> Result<String, String>;
+    /// Whether to trust a host key known_hosts does not have.
+    fn host_key(&mut self, fingerprint: &str) -> bool;
+}
+
+/// The person at the dialogs, with what they said written down.
+struct Ui<'a> {
+    tx: &'a Sender<ConnectEvent>,
+    rx: &'a Receiver<ConnectReply>,
+    told: Login,
+}
+
+impl Ask for Ui<'_> {
+    fn info(&mut self, message: String) {
+        let _ = self.tx.send(ConnectEvent::Info(message));
+    }
+
+    fn secret(&mut self, prompt: String, echo: bool) -> Result<String, String> {
+        let answer = ask_secret(self.tx, self.rx, prompt, echo)?;
+        self.told.answers.push(answer.clone());
+        Ok(answer)
+    }
+
+    fn host_key(&mut self, fingerprint: &str) -> bool {
+        let fingerprint = fingerprint.to_string();
+        if self
+            .tx
+            .send(ConnectEvent::AskHostKey {
+                fingerprint: fingerprint.clone(),
+            })
+            .is_err()
+        {
+            return false;
+        }
+        let yes = matches!(self.rx.recv(), Ok(ConnectReply::Accept(true)));
+        if yes {
+            self.told.fingerprint = Some(fingerprint);
+        }
+        yes
+    }
+}
+
+/// A login's answers said again, in order.
+struct Replay<'a> {
+    login: &'a Login,
+    next: usize,
+}
+
+impl Ask for Replay<'_> {
+    fn secret(&mut self, _prompt: String, _echo: bool) -> Result<String, String> {
+        let answer = self.login.answers.get(self.next).cloned();
+        self.next += 1;
+        answer.ok_or_else(|| "cannot log in again without asking".to_string())
+    }
+
+    fn host_key(&mut self, fingerprint: &str) -> bool {
+        self.login.fingerprint.as_deref() == Some(fingerprint)
+    }
+}
+
+fn dial(url: &SftpUrl, ask: &mut dyn Ask) -> Result<Session, String> {
     let host = url.dial_host();
-    info(format!("Connecting to {host}:{}…", url.port));
+    ask.info(format!("Connecting to {host}:{}…", url.port));
     let addrs = (host, url.port)
         .to_socket_addrs()
         .map_err(|e| format!("{host}: {e}"))?;
@@ -210,13 +317,25 @@ pub fn ssh_session(
     sess.set_tcp_stream(tcp);
     sess.handshake().map_err(|e| format!("handshake: {e}"))?;
 
-    check_host_key(url, &sess, tx, rx)?;
+    check_host_key(url, &sess, ask)?;
 
-    info(format!("Authenticating as {}…", url.user));
-    authenticate(url, &sess, tx, rx)?;
+    ask.info(format!("Authenticating as {}…", url.user));
+    authenticate(url, &sess, ask)?;
     // keepalives are sent only when asked for; `keep_alive` asks
     sess.set_keepalive(false, KEEPALIVE.as_secs() as u32);
     Ok(sess)
+}
+
+/// Whether an error says the connection itself is gone - the socket
+/// closed, reset or silent past the timeout - rather than that the
+/// server refused one request on a connection that is fine.
+pub(crate) fn is_dead(err: &ssh2::Error) -> bool {
+    // libssh2's SOCKET_NONE, SOCKET_SEND, TIMEOUT, SOCKET_DISCONNECT,
+    // SOCKET_TIMEOUT and SOCKET_RECV
+    matches!(
+        err.code(),
+        ssh2::ErrorCode::Session(-1 | -7 | -9 | -13 | -30 | -43)
+    )
 }
 
 /// How often an idle connection says something. NAT boxes and
@@ -242,7 +361,7 @@ fn connect(
     tx: &Sender<ConnectEvent>,
     rx: &Receiver<ConnectReply>,
 ) -> Result<(Arc<SftpFs>, PathBuf, Vec<Entry>), String> {
-    let sess = ssh_session(url, tx, rx)?;
+    let (sess, redial) = ssh_session(url, tx, rx)?;
     let sftp = sess.sftp().map_err(|e| format!("sftp: {e}"))?;
     let start = if url.path.as_os_str().is_empty() {
         sftp.realpath(Path::new("."))
@@ -256,9 +375,17 @@ fn connect(
             sftp,
         }),
         prefix: url.prefix(),
+        redial,
+        dead: AtomicBool::new(false),
     });
     keep_alive(Arc::downgrade(&fs), |fs: &SftpFs| {
-        let _ = fs.lock().session.keepalive_send();
+        // a keepalive that cannot be sent: the next operation dials
+        // again at once instead of waiting out the timeout first
+        if let Err(err) = fs.lock().session.keepalive_send()
+            && is_dead(&err)
+        {
+            fs.dead.store(true, Ordering::Relaxed);
+        }
     });
     let entries = fs
         .read_dir(&start)
@@ -266,12 +393,7 @@ fn connect(
     Ok((fs, start, entries))
 }
 
-fn check_host_key(
-    url: &SftpUrl,
-    sess: &Session,
-    tx: &Sender<ConnectEvent>,
-    rx: &Receiver<ConnectReply>,
-) -> Result<(), String> {
+fn check_host_key(url: &SftpUrl, sess: &Session, ask: &mut dyn Ask) -> Result<(), String> {
     let mut kh = sess.known_hosts().map_err(|e| e.to_string())?;
     let file = home_dir().map(|h| h.join(".ssh/known_hosts"));
     if let Some(f) = &file {
@@ -293,11 +415,8 @@ fn check_host_key(
                 .host_key_hash(HashType::Sha256)
                 .map(|h| format!("SHA256:{}", base64(h)))
                 .unwrap_or_else(|| "(unavailable)".into());
-            if tx.send(ConnectEvent::AskHostKey { fingerprint }).is_err() {
-                return Err("cancelled".into());
-            }
-            match rx.recv() {
-                Ok(ConnectReply::Accept(true)) => {
+            match ask.host_key(&fingerprint) {
+                true => {
                     let name = if url.port == 22 {
                         host.to_string()
                     } else {
@@ -312,18 +431,13 @@ fn check_host_key(
                     }
                     Ok(())
                 }
-                _ => Err("host key rejected".into()),
+                false => Err("host key rejected".into()),
             }
         }
     }
 }
 
-fn authenticate(
-    url: &SftpUrl,
-    sess: &Session,
-    tx: &Sender<ConnectEvent>,
-    rx: &Receiver<ConnectReply>,
-) -> Result<(), String> {
+fn authenticate(url: &SftpUrl, sess: &Session, ask: &mut dyn Ask) -> Result<(), String> {
     // The "none" probe behind auth_methods() tells us what the server
     // accepts, so we only try (and only prompt for) methods that can
     // work - OpenSSH order: publickey, keyboard-interactive, password.
@@ -357,7 +471,7 @@ fn authenticate(
             if key_needs_passphrase(&key) {
                 for _ in 0..3 {
                     let prompt = format!("Enter passphrase for {}:", tilde(&key));
-                    let phrase = ask_secret(tx, rx, prompt, false)?;
+                    let phrase = ask.secret(prompt, false)?;
                     if phrase.is_empty() {
                         break; // skip this key, try the next method
                     }
@@ -380,8 +494,7 @@ fn authenticate(
     if has("keyboard-interactive") {
         for _ in 0..3 {
             let mut prompter = Prompter {
-                tx,
-                rx,
+                ask: &mut *ask,
                 cancelled: false,
             };
             let result = sess.userauth_keyboard_interactive(&url.user, &mut prompter);
@@ -399,7 +512,7 @@ fn authenticate(
     if has("password") {
         for _ in 0..3 {
             let prompt = format!("{}@{}'s password:", url.user, url.host);
-            let password = ask_secret(tx, rx, prompt, false)?;
+            let password = ask.secret(prompt, false)?;
             match sess.userauth_password(&url.user, &password) {
                 Ok(()) => return Ok(()),
                 Err(e) => last = e.to_string(),
@@ -436,8 +549,7 @@ fn ask_secret(
 /// Servers may send several prompts per round - each becomes its own
 /// dialog, in order.
 struct Prompter<'a> {
-    tx: &'a Sender<ConnectEvent>,
-    rx: &'a Receiver<ConnectReply>,
+    ask: &'a mut dyn Ask,
     cancelled: bool,
 }
 
@@ -459,7 +571,7 @@ impl ssh2::KeyboardInteractivePrompt for Prompter<'_> {
             } else {
                 format!("{} - {}", instructions.trim(), p.text)
             };
-            match ask_secret(self.tx, self.rx, text, p.echo) {
+            match self.ask.secret(text, p.echo) {
                 Ok(answer) => out.push(answer),
                 Err(_) => {
                     self.cancelled = true;
@@ -557,6 +669,10 @@ struct Raw {
 pub struct SftpFs {
     raw: Mutex<Raw>,
     prefix: String,
+    /// How to get the connection back when it drops.
+    redial: Redial,
+    /// The keepalive found the connection gone.
+    dead: AtomicBool,
 }
 
 impl RemoteFs for SftpFs {
@@ -566,13 +682,51 @@ impl RemoteFs for SftpFs {
     }
 
     fn realpath(&self, path: &Path) -> io::Result<PathBuf> {
-        self.lock().sftp.realpath(path).map_err(ioerr)
+        self.with(|raw| raw.sftp.realpath(path))
     }
 }
 
 impl SftpFs {
     fn lock(&self) -> MutexGuard<'_, Raw> {
         self.raw.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Run one request, and if the connection turns out to be gone -
+    /// a server restarted, a laptop that slept - dial again and run it
+    /// once more. A request that failed at the socket never reached
+    /// the server whole, so saying it again is what was meant.
+    fn with<T>(&self, op: impl Fn(&Raw) -> Result<T, ssh2::Error>) -> io::Result<T> {
+        let mut raw = self.lock();
+        if self.dead.swap(false, Ordering::Relaxed) {
+            self.revive(&mut raw)
+                .map_err(|why| io::Error::new(io::ErrorKind::NotConnected, why))?;
+        }
+        match op(&raw) {
+            Err(err) if is_dead(&err) => {
+                self.revive(&mut raw).map_err(|why| {
+                    io::Error::new(
+                        io::ErrorKind::NotConnected,
+                        format!("{err} - and dialing again: {why}"),
+                    )
+                })?;
+                op(&raw).map_err(ioerr)
+            }
+            done => done.map_err(ioerr),
+        }
+    }
+
+    fn revive(&self, raw: &mut Raw) -> Result<(), String> {
+        crate::vfslog::line(
+            "!",
+            &format!("{}: connection lost, dialing again", self.prefix),
+        );
+        let session = self.redial.session()?;
+        let sftp = session.sftp().map_err(|e| format!("sftp: {e}"))?;
+        let old = std::mem::replace(raw, Raw { session, sftp });
+        // closing a connection that went quiet rather than away can
+        // wait out the whole timeout: let it, somewhere else
+        thread::spawn(move || drop(old));
+        Ok(())
     }
 }
 
@@ -622,39 +776,41 @@ fn ioerr(e: ssh2::Error) -> io::Error {
 
 impl FsProvider for SftpFs {
     fn read_dir(&self, dir: &Path) -> io::Result<Vec<Entry>> {
-        let raw = self.lock();
-        let listed = raw.sftp.readdir(dir).map_err(ioerr)?;
-        let mut entries = Vec::with_capacity(listed.len());
-        for (path, st) in listed {
-            let Some(name) = path.file_name() else {
-                continue;
-            };
-            if name == "." || name == ".." {
-                continue;
+        self.with(|raw| {
+            let listed = raw.sftp.readdir(dir)?;
+            let mut entries = Vec::with_capacity(listed.len());
+            for (path, st) in listed {
+                let Some(name) = path.file_name() else {
+                    continue;
+                };
+                if name == "." || name == ".." {
+                    continue;
+                }
+                entries.push(entry_from(name.to_os_string(), &st, &raw.sftp, &path));
             }
-            entries.push(entry_from(name.to_os_string(), &st, &raw.sftp, &path));
-        }
-        Ok(entries)
+            Ok(entries)
+        })
     }
 
     fn stat(&self, path: &Path) -> io::Result<Entry> {
-        let raw = self.lock();
-        let st = raw.sftp.lstat(path).map_err(ioerr)?;
         let name = path
             .file_name()
             .map(|n| n.to_os_string())
             .unwrap_or_else(|| "/".into());
-        Ok(entry_from(name, &st, &raw.sftp, path))
+        self.with(|raw| {
+            let st = raw.sftp.lstat(path)?;
+            Ok(entry_from(name.clone(), &st, &raw.sftp, path))
+        })
     }
 
     fn open_read(&self, path: &Path) -> io::Result<Box<dyn Read + Send>> {
-        let file = self.lock().sftp.open(path).map_err(ioerr)?;
+        let file = self.with(|raw| raw.sftp.open(path))?;
         Ok(Box::new(SftpFile { file }))
     }
 
     fn open_read_at(&self, path: &Path, offset: u64) -> io::Result<Box<dyn Read + Send>> {
         use std::io::Seek;
-        let mut file = self.lock().sftp.open(path).map_err(ioerr)?;
+        let mut file = self.with(|raw| raw.sftp.open(path))?;
         file.seek(io::SeekFrom::Start(offset))?;
         Ok(Box::new(SftpFile { file }))
     }
@@ -666,39 +822,41 @@ impl FsProvider for SftpFs {
 
 impl FsWrite for SftpFs {
     fn mkdir(&self, dir: &Path) -> io::Result<()> {
-        self.lock().sftp.mkdir(dir, 0o755).map_err(ioerr)
+        self.with(|raw| raw.sftp.mkdir(dir, 0o755))
     }
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
-        self.lock().sftp.unlink(path).map_err(ioerr)
+        self.with(|raw| raw.sftp.unlink(path))
     }
 
     fn remove_dir(&self, dir: &Path) -> io::Result<()> {
-        self.lock().sftp.rmdir(dir).map_err(ioerr)
+        self.with(|raw| raw.sftp.rmdir(dir))
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         use ssh2::RenameFlags;
-        let raw = self.lock();
         let flags = RenameFlags::ATOMIC | RenameFlags::OVERWRITE | RenameFlags::NATIVE;
-        raw.sftp.rename(from, to, Some(flags)).or_else(|_| {
-            // servers without POSIX rename refuse to overwrite
-            let _ = raw.sftp.unlink(to);
-            raw.sftp.rename(from, to, None).map_err(ioerr)
+        self.with(|raw| {
+            raw.sftp.rename(from, to, Some(flags)).or_else(|err| {
+                if is_dead(&err) {
+                    return Err(err);
+                }
+                // servers without POSIX rename refuse to overwrite
+                let _ = raw.sftp.unlink(to);
+                raw.sftp.rename(from, to, None)
+            })
         })
     }
 
     fn open_write(&self, path: &Path) -> io::Result<Box<dyn Write + Send>> {
-        let file = self
-            .lock()
-            .sftp
-            .open_mode(
+        let file = self.with(|raw| {
+            raw.sftp.open_mode(
                 path,
                 OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
                 0o644,
                 OpenType::File,
             )
-            .map_err(ioerr)?;
+        })?;
         Ok(Box::new(SftpFile { file }))
     }
 
@@ -708,16 +866,14 @@ impl FsWrite for SftpFs {
 
     fn open_append(&self, path: &Path) -> io::Result<Box<dyn Write + Send>> {
         use std::io::Seek;
-        let mut file = self
-            .lock()
-            .sftp
-            .open_mode(
+        let mut file = self.with(|raw| {
+            raw.sftp.open_mode(
                 path,
                 OpenFlags::WRITE | OpenFlags::APPEND,
                 0o644,
                 OpenType::File,
             )
-            .map_err(ioerr)?;
+        })?;
         // not every server honours APPEND; writing from the end does
         // the same on any of them
         file.seek(io::SeekFrom::End(0))?;
@@ -725,29 +881,26 @@ impl FsWrite for SftpFs {
     }
 
     fn set_mode(&self, path: &Path, mode: u32) -> io::Result<()> {
-        self.lock()
-            .sftp
-            .setstat(path, stat_with(|st| st.perm = Some(mode)))
-            .map_err(ioerr)
+        self.with(|raw| raw.sftp.setstat(path, stat_with(|st| st.perm = Some(mode))))
     }
 
     fn set_owner(&self, path: &Path, uid: Option<u32>, gid: Option<u32>) -> io::Result<()> {
         // SFTP's UIDGID attribute carries both ids; fill the missing
         // half from the current stat so it stays unchanged
-        let raw = self.lock();
-        let (cur_uid, cur_gid) = match raw.sftp.lstat(path) {
-            Ok(st) => (st.uid, st.gid),
-            Err(_) => (None, None),
-        };
-        raw.sftp
-            .setstat(
+        self.with(|raw| {
+            let (cur_uid, cur_gid) = match raw.sftp.lstat(path) {
+                Ok(st) => (st.uid, st.gid),
+                Err(err) if is_dead(&err) => return Err(err),
+                Err(_) => (None, None),
+            };
+            raw.sftp.setstat(
                 path,
                 stat_with(|st| {
                     st.uid = uid.or(cur_uid);
                     st.gid = gid.or(cur_gid);
                 }),
             )
-            .map_err(ioerr)
+        })
     }
 
     fn set_mtime(&self, path: &Path, mtime: SystemTime) -> io::Result<()> {
@@ -756,20 +909,19 @@ impl FsWrite for SftpFs {
             .unwrap_or_default()
             .as_secs();
         // the SFTP ACMODTIME attribute always carries both stamps
-        self.lock()
-            .sftp
-            .setstat(
+        self.with(|raw| {
+            raw.sftp.setstat(
                 path,
                 stat_with(|st| {
                     st.mtime = Some(secs);
                     st.atime = Some(secs);
                 }),
             )
-            .map_err(ioerr)
+        })
     }
 
     fn symlink(&self, target: &Path, link: &Path) -> io::Result<()> {
-        self.lock().sftp.symlink(target, link).map_err(ioerr)
+        self.with(|raw| raw.sftp.symlink(target, link))
     }
 }
 
@@ -812,6 +964,46 @@ impl Write for SftpFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_redial_says_what_the_login_was_told_and_nothing_more() {
+        let login = Login {
+            answers: vec!["wrong".into(), "secret".into()],
+            fingerprint: Some("SHA256:abc".into()),
+        };
+        let mut replay = Replay {
+            login: &login,
+            next: 0,
+        };
+        assert_eq!(replay.secret("password:".into(), false).unwrap(), "wrong");
+        assert_eq!(replay.secret("password:".into(), false).unwrap(), "secret");
+        // a third question was never answered: nobody is asked it now
+        assert!(replay.secret("one-time code:".into(), true).is_err());
+        assert!(replay.host_key("SHA256:abc"));
+        assert!(!replay.host_key("SHA256:other"));
+        let never = Login::default();
+        assert!(
+            !Replay {
+                login: &never,
+                next: 0
+            }
+            .host_key("SHA256:abc")
+        );
+    }
+
+    #[test]
+    fn only_the_socket_going_counts_as_a_dead_connection() {
+        use ssh2::{Error, ErrorCode};
+        for code in [-1, -7, -9, -13, -30, -43] {
+            assert!(
+                is_dead(&Error::new(ErrorCode::Session(code), "gone")),
+                "{code}"
+            );
+        }
+        // an SFTP "no such file" (2) or a denied request is an answer
+        assert!(!is_dead(&Error::new(ErrorCode::SFTP(2), "no such file")));
+        assert!(!is_dead(&Error::new(ErrorCode::Session(-18), "auth")));
+    }
 
     #[test]
     fn ssh_config_fills_in_only_what_the_url_left_out() {

@@ -25,6 +25,7 @@ use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -113,10 +114,12 @@ fn dial(
     tx: &std::sync::mpsc::Sender<ConnectEvent>,
     rx: &std::sync::mpsc::Receiver<ConnectReply>,
 ) -> Result<Dialed, String> {
-    let session = sftp::ssh_session(url, tx, rx)?;
+    let (session, redial) = sftp::ssh_session(url, tx, rx)?;
     let fs = Arc::new(ShellFs::new(
         Box::new(Ssh {
             session: Mutex::new(session),
+            redial,
+            dead: AtomicBool::new(false),
         }),
         url.prefix(),
     ));
@@ -194,14 +197,41 @@ struct Ssh {
     /// The library's session is not shared across threads; a channel,
     /// once open, carries its own share of it.
     session: Mutex<Session>,
+    /// How to get the connection back when it drops.
+    redial: sftp::Redial,
+    /// The keepalive found the connection gone.
+    dead: AtomicBool,
 }
 
 impl Ssh {
+    /// A channel running `command`. A connection found gone when the
+    /// channel is opened is dialed again first: nothing has been sent
+    /// yet, so the command runs once either way.
     fn channel(&self, command: &str) -> io::Result<ssh2::Channel> {
-        let session = self.session.lock().unwrap_or_else(|p| p.into_inner());
-        let mut channel = session.channel_session().map_err(ioerr)?;
+        let mut session = self.session.lock().unwrap_or_else(|p| p.into_inner());
+        if self.dead.swap(false, Ordering::Relaxed) {
+            self.revive(&mut session)?;
+        }
+        let mut channel = match session.channel_session() {
+            Err(err) if sftp::is_dead(&err) => {
+                self.revive(&mut session)?;
+                session.channel_session().map_err(ioerr)?
+            }
+            opened => opened.map_err(ioerr)?,
+        };
         channel.exec(command).map_err(ioerr)?;
         Ok(channel)
+    }
+
+    fn revive(&self, session: &mut Session) -> io::Result<()> {
+        crate::vfslog::line("!", "connection lost, dialing again");
+        let fresh = self
+            .redial
+            .session()
+            .map_err(|why| io::Error::new(io::ErrorKind::NotConnected, why))?;
+        let old = std::mem::replace(session, fresh);
+        std::thread::spawn(move || drop(old));
+        Ok(())
     }
 }
 
@@ -242,7 +272,11 @@ impl ShellTransport for Ssh {
 
     fn keepalive(&self) {
         let session = self.session.lock().unwrap_or_else(|p| p.into_inner());
-        let _ = session.keepalive_send();
+        if let Err(err) = session.keepalive_send()
+            && sftp::is_dead(&err)
+        {
+            self.dead.store(true, Ordering::Relaxed);
+        }
     }
 }
 

@@ -4829,6 +4829,17 @@ def test_sftp():
         s.send(b"\x00", wait=STEP)          # Ctrl+Space
         check("sftp: remote dir size", wait_for(s, "deep: 16 bytes in 2 file(s)"))
 
+        # PLAN6 T1: the server hangs up; the next listing dials again,
+        # with the password it was given the first time, asking nothing
+        server.send_signal(signal.SIGUSR1)
+        time.sleep(0.5)
+        open(os.path.join(remote, "after-drop.txt"), "w").write("back\n")
+        s.send(b"\x12", wait=STEP)          # Ctrl+R reload the listing
+        check("sftp: a dropped connection comes back by itself",
+              wait_for(s, "after-drop.txt", timeout=15)
+              and "SSH authentication" not in s.screen(),
+              s.screen())
+
         khfile = os.path.join(home, ".ssh", "known_hosts")
         check(
             "sftp: host key saved",
@@ -4924,6 +4935,16 @@ def test_fish():
         s.send(b"y", wait=STEP * 3)
         check("fish: remote delete",
               wait_for(s, "done -") and not os.path.exists(uploaded))
+
+        # PLAN6 T1: dropped, and back on the next command
+        server.send_signal(signal.SIGUSR1)
+        time.sleep(0.5)
+        open(os.path.join(remote, "after-drop.txt"), "w").write("back\n")
+        s.send(b"\x12", wait=STEP)
+        check("fish: a dropped connection comes back by itself",
+              wait_for(s, "after-drop.txt", timeout=15)
+              and "SSH authentication" not in s.screen(),
+              s.screen())
         s.quit()
     finally:
         server.kill()

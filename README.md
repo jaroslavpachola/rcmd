@@ -1073,7 +1073,12 @@ read the way `ssh` reads it: an alias's `HostName`, `User`, `Port` and
 `IdentityFile` fill in whatever the URL left out, so `sftp://box` goes
 where `ssh box` does. An IPv6 address goes in brackets
 (`sftp://[::1]:2222`). An idle connection sends a keepalive every half
-minute, so a NAT box or firewall does not drop it. Authentication tries
+minute, so a NAT box or firewall does not drop it. A connection that
+drops anyway - the server restarted, the laptop slept - is dialed again
+on the next thing the panel or a job does, with the answers the first
+login was given, and that operation runs once more; nothing is asked,
+so a new host key or a one-time code makes it fail as a refusal would.
+Authentication tries
 your ssh-agent, then the host's `IdentityFile` keys and the default
 `~/.ssh/id_*` ones, then asks for a password; host keys are checked
 against `~/.ssh/known_hosts`, and
