@@ -2080,23 +2080,31 @@ fn draw_cmdline(frame: &mut Frame, area: Rect, app: &mut App) {
 /// not characters: a CJK character or an emoji takes two, and a cursor
 /// placed by count sat left of where typing goes.
 fn cmdline_window(value: &str, cursor: usize, width: usize) -> (String, usize) {
-    use unicode_width::UnicodeWidthChar;
-    let chars: Vec<char> = value.chars().collect();
-    let cells = |c: &char| UnicodeWidthChar::width(*c).unwrap_or(0);
-    let cursor = cursor.min(chars.len());
-    let (mut start, mut before) = (cursor, 0);
-    while start > 0 && before + cells(&chars[start - 1]) < width {
-        start -= 1;
-        before += cells(&chars[start]);
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    // by grapheme, measured as the terminal draws it: an emoji family
+    // is two cells, where its five code points one by one were ten
+    let at = crate::field::byte_index(value, cursor);
+    let (head, tail) = value.split_at(at);
+    let mut start = head.len();
+    let mut before = 0;
+    for (i, g) in head.grapheme_indices(true).rev() {
+        let w = UnicodeWidthStr::width(g);
+        if before + w >= width {
+            break;
+        }
+        start = i;
+        before += w;
     }
-    let mut used = 0;
-    let visible = chars[start..]
-        .iter()
-        .take_while(|c| {
-            used += cells(c);
-            used <= width
-        })
-        .collect();
+    let mut used = before;
+    let mut visible = head[start..].to_string();
+    for g in tail.graphemes(true) {
+        used += UnicodeWidthStr::width(g);
+        if used > width {
+            break;
+        }
+        visible.push_str(g);
+    }
     (visible, before)
 }
 
@@ -3949,19 +3957,10 @@ fn draw_field(frame: &mut Frame, inner: Rect, value: &str, cursor: usize) {
 
 /// One editable line; the terminal cursor is placed only when focused.
 fn field_row(frame: &mut Frame, field: Rect, value: &str, cursor: Option<usize>) {
-    use unicode_width::UnicodeWidthChar;
     let width = field.width as usize;
-    let chars: Vec<char> = value.chars().collect();
-    let cur = cursor.unwrap_or(0).min(chars.len());
-    let cells = |c: &char| c.width().unwrap_or(0);
     // scrolled just far enough that the cursor's cell is on screen
-    let mut start = cur;
-    let mut before = 0;
-    while start > 0 && before + cells(&chars[start - 1]) < width {
-        start -= 1;
-        before += cells(&chars[start]);
-    }
-    let visible = fit(&chars[start..].iter().collect::<String>(), width, false);
+    let (visible, before) = cmdline_window(value, cursor.unwrap_or(0), width);
+    let visible = fit(&visible, width, false);
     frame.render_widget(
         Line::from(visible).style(Style::new().fg(th().select_fg).bg(th().select_bg)),
         field,
@@ -5845,6 +5844,11 @@ mod tests {
         let (visible, before) = cmdline_window("一二三四五六", 6, 7);
         assert_eq!((visible.as_str(), before), ("四五六", 6));
         assert_eq!(cmdline_window("", 0, 5), (String::new(), 0));
+        // an emoji family is two cells wide, as the terminal draws it
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}x";
+        assert_eq!(cmdline_window(family, 5, 20).1, 2);
+        // an accent takes no cell of its own
+        assert_eq!(cmdline_window("e\u{301}", 2, 20).1, 1);
     }
 
     #[test]

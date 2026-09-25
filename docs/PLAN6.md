@@ -120,7 +120,12 @@ stdin, and keep `sudo -n` for every operation after that. A keepalive
 of `sudo -n -v` stops the timestamp expiring while the panel sits
 idle.
 
-### T4 - the line editor by grapheme
+### T4 - the line editor by grapheme - DONE (2026-09-25, 4.51.0)
+
+Shipped as below: the command line and every field share one window
+function now, measured by grapheme. The editor proper (rcmd-edit)
+still moves by code point; its `Pos.col` is a character column, and
+that is a job of its own.
 
 Left, Right, Backspace and Delete move and delete by code point
 (`field.rs:105-167`): Backspace takes an accent off its letter, a flag

@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.51.0 - 2026-09-25
+
+- **The line editor moves by the character you see.** Left, Right,
+  Backspace and Delete in the command line and in every field moved by
+  code point: Backspace took the accent off an `é` typed as `e` plus a
+  combining accent, a flag came apart into two letters, and an emoji
+  family took five presses to cross. They now move and delete by
+  grapheme cluster. The field and the command line also measure what
+  they show by grapheme, as the terminal draws it, so the cursor stays
+  where typing goes after an emoji sequence.
+
 ## 4.50.0 - 2026-09-25
 
 - **`sudo://` asks for the password.** It ran `sudo -n`, which fails

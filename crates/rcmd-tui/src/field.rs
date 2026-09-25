@@ -14,6 +14,7 @@
 use std::cell::RefCell;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// How many answers a field's history keeps. A convenience, not an
 /// archive.
@@ -41,6 +42,28 @@ pub fn byte_index(s: &str, char_idx: usize) -> usize {
         .nth(char_idx)
         .map(|(i, _)| i)
         .unwrap_or(s.len())
+}
+
+/// Where the character a person sees before `cursor` starts - a letter
+/// with its accents, a flag, an emoji family - as a character index.
+/// The cursor counts characters; these keep it off the inside of one.
+pub fn grapheme_before(value: &str, cursor: usize) -> usize {
+    let at = byte_index(value, cursor);
+    let start = value[..at]
+        .grapheme_indices(true)
+        .next_back()
+        .map_or(0, |(i, _)| i);
+    cursor - value[start..at].chars().count()
+}
+
+/// Where the character a person sees at `cursor` ends.
+pub fn grapheme_after(value: &str, cursor: usize) -> usize {
+    let at = byte_index(value, cursor);
+    cursor
+        + value[at..]
+            .graphemes(true)
+            .next()
+            .map_or(0, |g| g.chars().count())
 }
 
 /// Remove characters `from..to` and hand them to the kill buffer.
@@ -145,20 +168,21 @@ pub fn edit_line(
             value.insert(byte_index(value, *cursor), c);
             *cursor += 1;
         }
+        // a character as a person sees it: an accent goes with its
+        // letter, a flag does not come apart into two letters
         KeyCode::Backspace => {
-            if *cursor > 0 {
-                *cursor -= 1;
-                value.remove(byte_index(value, *cursor));
-            }
+            let from = grapheme_before(value, *cursor);
+            let (a, b) = (byte_index(value, from), byte_index(value, *cursor));
+            value.replace_range(a..b, "");
+            *cursor = from;
         }
         KeyCode::Delete => {
-            let idx = byte_index(value, *cursor);
-            if idx < value.len() {
-                value.remove(idx);
-            }
+            let to = grapheme_after(value, *cursor);
+            let (a, b) = (byte_index(value, *cursor), byte_index(value, to));
+            value.replace_range(a..b, "");
         }
-        KeyCode::Left => *cursor = cursor.saturating_sub(1),
-        KeyCode::Right => *cursor = (*cursor + 1).min(len),
+        KeyCode::Left => *cursor = grapheme_before(value, *cursor),
+        KeyCode::Right => *cursor = grapheme_after(value, *cursor).min(len),
         KeyCode::Home => *cursor = 0,
         KeyCode::End => *cursor = len,
         _ => return false,
@@ -375,6 +399,36 @@ pub fn remember(name: &str, value: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(value: &str, cursor: usize, code: KeyCode) -> (String, usize) {
+        let (mut value, mut cursor) = (value.to_string(), cursor);
+        edit_line(&mut value, &mut cursor, code, KeyModifiers::NONE);
+        (value, cursor)
+    }
+
+    #[test]
+    fn the_keys_move_by_what_a_person_sees_as_one_character() {
+        let accent = "caf\u{65}\u{301}!"; // e and a combining acute
+        let end = accent.chars().count();
+        // Backspace takes the accent and its letter, not the accent alone
+        assert_eq!(key(accent, end - 1, KeyCode::Backspace), ("caf!".into(), 3));
+        assert_eq!(key(accent, 3, KeyCode::Delete), ("caf!".into(), 3));
+        // Left from after it lands before the e, not between e and accent
+        assert_eq!(key(accent, end - 1, KeyCode::Left).1, 3);
+        assert_eq!(key(accent, 3, KeyCode::Right).1, end - 1);
+        // a flag is two regional indicators and one character
+        let flag = "a\u{1F1E8}\u{1F1FF}b";
+        assert_eq!(key(flag, 3, KeyCode::Backspace), ("ab".into(), 1));
+        assert_eq!(key(flag, 1, KeyCode::Right).1, 3);
+        // a family is five code points joined; one Left crosses it
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        assert_eq!(key(family, 5, KeyCode::Left).1, 0);
+        assert_eq!(key(family, 5, KeyCode::Backspace), (String::new(), 0));
+        // plain text is as it was
+        assert_eq!(key("abc", 2, KeyCode::Backspace), ("ac".into(), 1));
+        assert_eq!(key("abc", 3, KeyCode::Right).1, 3);
+        assert_eq!(key("", 0, KeyCode::Backspace), (String::new(), 0));
+    }
 
     fn press(value: &mut String, cursor: &mut usize, code: KeyCode, mods: KeyModifiers) {
         assert!(edit_line(value, cursor, code, mods), "{code:?} {mods:?}");
