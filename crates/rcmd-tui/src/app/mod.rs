@@ -2899,6 +2899,9 @@ pub enum Action {
     RestoreMarks,
     /// Size every directory in the panel, not only the cursor one.
     DirSizeAll,
+    /// ncdu's view of the active panel: every directory sized, the
+    /// listing by size, a bar for each - or back to how it was.
+    DiskUsage,
     /// Give one panel the whole screen by hiding the other; again
     /// brings it back. The index is the panel to hide.
     HidePanel(usize),
@@ -3075,6 +3078,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             None,
             Some(("Directory si&ze", "C-spc", Action::DirSize)),
             Some(("Size every directory", "C-x spc", Action::DirSizeAll)),
+            Some(("Disk usage mode", "", Action::DiskUsage)),
             None,
             Some(("&Quit", "F10", Action::Quit)),
         ],
@@ -3566,6 +3570,14 @@ pub struct App {
     pub git_info: [Option<(PathBuf, git::GitStatus)>; 2],
     /// Directory a scan was already dispatched for; None forces a rescan.
     git_seen: [Option<PathBuf>; 2],
+    /// Disk usage mode, per panel, with the order it replaced - the
+    /// key, reverse and mix-directories switches - to go back to.
+    pub du_mode: [Option<(rcmd_core::panel::SortKey, bool, bool)>; 2],
+    /// The directory each panel's sizes were last filled in for.
+    du_seen: [Option<PathBuf>; 2],
+    /// Every directory sized this session, by path: climbing back up
+    /// does not walk again. Emptied when anything may have changed.
+    du_cache: std::collections::HashMap<PathBuf, u64>,
     git_tx: std::sync::mpsc::Sender<(usize, PathBuf, Option<git::GitStatus>)>,
     git_rx: std::sync::mpsc::Receiver<(usize, PathBuf, Option<git::GitStatus>)>,
     pub config: Config,
@@ -3767,6 +3779,9 @@ impl App {
             esc_at: None,
             git_info: [None, None],
             git_seen: [None, None],
+            du_mode: [None, None],
+            du_seen: [None, None],
+            du_cache: std::collections::HashMap::new(),
             git_tx,
             git_rx,
             config,
@@ -3840,6 +3855,7 @@ impl App {
         self.follow_tick();
         self.update_quick_view();
         self.git_tick();
+        self.du_tick();
         self.disk_tick();
         self.subshell_tick();
         // an abandoned ESC prefix becomes a real Escape, like MC
@@ -4161,6 +4177,10 @@ impl App {
                 {
                     entry.size = bytes;
                 }
+                self.du_cache.insert(du.cwd.join(&du.name), bytes);
+                if self.du_mode[du.panel].is_some() && panel.cwd == du.cwd {
+                    panel.resort();
+                }
                 self.status = Some(match self.du_queue.len() {
                     0 => format!(
                         " {}: {bytes} bytes in {files} file(s) ",
@@ -4169,7 +4189,11 @@ impl App {
                     left => format!(" sizing… {left} to go "),
                 });
                 // ...and on to the next one, where a whole listing was
-                // asked for
+                // asked for - unless the panel has moved on, when the
+                // names left are another directory's
+                if self.panels[du.panel].cwd != du.cwd {
+                    self.du_queue.clear();
+                }
                 if !self.du_queue.is_empty() {
                     let next = self.du_queue.remove(0);
                     let was = self.active;
@@ -5240,6 +5264,75 @@ impl App {
     /// rescan both sides on the next tick.
     fn git_refresh(&mut self) {
         self.git_seen = [None, None];
+        // a job or a shell may have changed what the sizes add up to
+        self.du_cache.clear();
+        self.du_seen = [None, None];
+    }
+
+    /// Disk usage mode on or off for the active panel.
+    pub(super) fn toggle_disk_usage(&mut self) {
+        let side = self.active;
+        let panel = &mut self.panels[side];
+        match self.du_mode[side].take() {
+            Some((key, reverse, mix)) => {
+                panel.sort_key = key;
+                panel.sort_reverse = reverse;
+                panel.mix_dirs = mix;
+                panel.resort();
+                self.status = Some(" disk usage off ".into());
+            }
+            None => {
+                self.du_mode[side] = Some((panel.sort_key, panel.sort_reverse, panel.mix_dirs));
+                // biggest first, directories among the files
+                panel.sort_key = rcmd_core::panel::SortKey::Size;
+                panel.sort_reverse = true;
+                panel.mix_dirs = true;
+                panel.resort();
+                self.du_seen[side] = None;
+                self.status = Some(" disk usage: sizing every directory… ".into());
+            }
+        }
+    }
+
+    /// In disk usage mode: fill in the sizes the cache has, and size the
+    /// rest, whenever a panel's directory is not the one it was.
+    fn du_tick(&mut self) {
+        for side in [0, 1] {
+            if self.du_mode[side].is_none() {
+                continue;
+            }
+            let panel = &self.panels[side];
+            if panel.is_loading() || self.du_seen[side].as_ref() == Some(&panel.cwd) {
+                continue;
+            }
+            // one scan at a time, shared with C-space and C-x space
+            if self.du.is_some() || !self.du_queue.is_empty() {
+                continue;
+            }
+            self.du_seen[side] = Some(self.panels[side].cwd.clone());
+            let cwd = self.panels[side].cwd.clone();
+            let mut missing = Vec::new();
+            for entry in self.panels[side].entries.iter_mut() {
+                if !entry.is_dir() || entry.is_parent() {
+                    continue;
+                }
+                match self.du_cache.get(&cwd.join(&entry.name)) {
+                    Some(&bytes) => entry.size = bytes,
+                    None => missing.push(entry.name.clone()),
+                }
+            }
+            self.panels[side].resort();
+            self.dirty = true;
+            if missing.is_empty() {
+                continue;
+            }
+            let first = missing.remove(0);
+            self.du_queue = missing;
+            let was = self.active;
+            self.active = side;
+            self.start_du(first);
+            self.active = was;
+        }
     }
 
     /// Keep the free-space cache fresh: per local panel, re-measure when

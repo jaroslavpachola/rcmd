@@ -32,7 +32,15 @@ archive. `..` at the top comes back to where the archive was, not to
 the temporary directory. The archive is read-only there, like every
 archive but a local zip or tar.
 
-### U1 - disk usage mode (ncdu's)
+### U1 - disk usage mode (ncdu's) - DONE (2026-09-25, 4.60.0)
+
+Shipped as a panel mode reached from F9 > Command and the palette
+(`disk-usage`), with no key of its own. The bar replaces the Full
+listing's date column; the other listings sort by size without one.
+The size cache is emptied by anything that may have changed the tree
+(a finished job, the shell, a save), so a delete shows in the parents'
+sizes on the next look.
+
 
 A listing mode that shows every directory's recursive size, computed on
 a thread (the `C-space` walker, all of them at once), with a bar

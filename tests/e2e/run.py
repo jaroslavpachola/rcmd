@@ -2022,6 +2022,39 @@ def test_flatview():
     shutil.rmtree(root)
 
 
+def test_diskusage():
+    """PLAN7 U1: disk usage mode sizes every directory, lists biggest
+    first with a bar each, and goes back to the order it replaced."""
+    root, play, home = sandbox()
+    for name, size in (("aaa-small", 1000), ("zzz-big", 400_000)):
+        os.makedirs(os.path.join(play, name, "inner"))
+        open(os.path.join(play, name, "inner", "blob"), "wb").write(b"x" * size)
+    open(os.path.join(play, "mid.bin"), "wb").write(b"y" * 100_000)
+    s = Session(play, home)
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"disk-usage\r", wait=STEP * 2)
+    wait_for(s, "[##########]", timeout=10)
+    left = [line[:COLS // 2] for line in s.screen().split("\n")]
+    # listing rows carry a bar; the status line names a directory too
+    names = [l for l in left if "[" in l and ("zzz-big" in l or "mid.bin" in l
+                                               or "aaa-small" in l)]
+    check("diskusage: the header says Usage", any("Usage" in l for l in left), "\n".join(left))
+    check("diskusage: biggest first, files among directories",
+          len(names) == 3 and "zzz-big" in names[0] and "mid.bin" in names[1],
+          "\n".join(names))
+    check("diskusage: the biggest has the whole bar", "[##########]" in names[0] if names else False,
+          "\n".join(names))
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"disk-usage\r", wait=STEP * 2)
+    left = [line[:COLS // 2] for line in s.screen().split("\n")]
+    names = [l for l in left if ("zzz-big" in l or "aaa-small" in l) and "bytes in" not in l]
+    check("diskusage: off, the order it replaced is back",
+          any("Modify time" in l for l in left) and len(names) == 2 and "aaa-small" in names[0],
+          "\n".join(left))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_kittykeys():
     """PLAN5 S7: in a terminal that has the kitty keyboard protocol, rcmd
     turns it on - and an Esc is an Esc at once, with no prefix to wait
@@ -7323,6 +7356,7 @@ def main():
         test_calc,
         test_scrollbar,
         test_flatview,
+        test_diskusage,
         test_editdrag,
         test_uservfs,
         test_kittykeys,

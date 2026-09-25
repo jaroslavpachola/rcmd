@@ -458,6 +458,7 @@ impl App {
             Action::CopyNames { paths } => self.copy_names(paths),
             Action::RestoreMarks => self.restore_marks(),
             Action::DirSizeAll => self.dir_size_all(),
+            Action::DiskUsage => self.toggle_disk_usage(),
             Action::HidePanel(at) => self.hide_panel(at),
             Action::Wipe => self.open_wipe(),
             Action::Apply => self.open_apply(),

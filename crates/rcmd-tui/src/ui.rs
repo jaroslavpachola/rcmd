@@ -669,6 +669,7 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
                     columns: app.config.columns(),
                     tree: app.trees[i].as_ref(),
                     format: &app.listing_format,
+                    usage: app.du_mode[i].is_some(),
                 },
             );
             if app.config.scrollbars
@@ -914,6 +915,8 @@ struct Chrome<'a> {
     tree: Option<&'a Tree>,
     /// The parsed `listing_format`, drawn in user mode.
     format: &'a Format,
+    /// Disk usage mode: the Full listing's date column is a bar.
+    usage: bool,
 }
 
 /// The column a panel's scrollbar runs down: its right border, beside
@@ -1085,6 +1088,14 @@ fn draw_panel(
         // brief columns, the tree and a user format have renderers
         // of their own; they never reach the table
         ListMode::Brief | ListMode::Tree | ListMode::User => (&["Name"], vec![Constraint::Fill(1)]),
+        ListMode::Full if chrome.usage => (
+            &["Name", "Size", "Usage"],
+            vec![
+                Constraint::Fill(1),
+                Constraint::Length(7),
+                Constraint::Length(12),
+            ],
+        ),
         ListMode::Full => (
             &["Name", "Size", "Modify time"],
             vec![
@@ -1133,6 +1144,17 @@ fn draw_panel(
     }
     offset = offset.min(len.saturating_sub(shown));
     let remote = panel.is_remote();
+    // ncdu's bar: each entry against the biggest one here
+    let biggest = match chrome.usage {
+        true => panel
+            .entries
+            .iter()
+            .filter(|e| !e.is_parent())
+            .map(|e| e.size)
+            .max()
+            .filter(|&max| max > 0),
+        false => None,
+    };
     let rows = panel
         .entries
         .iter()
@@ -1141,6 +1163,11 @@ fn draw_panel(
         .take(shown)
         .map(|(i, entry)| {
             let git_mark = git.map(|g| g.marks.get(&entry.name).copied());
+            let usage = biggest.filter(|_| !entry.is_parent()).map(|max| {
+                let filled = ((entry.size as f64 / max as f64) * 10.0).round() as usize;
+                let filled = filled.min(10);
+                format!("[{}{}]", "#".repeat(filled), " ".repeat(10 - filled))
+            });
             entry_row(
                 entry,
                 panel.is_marked(entry),
@@ -1149,6 +1176,7 @@ fn draw_panel(
                 panel.list_mode,
                 remote,
                 panel.charset,
+                usage,
             )
         });
 
@@ -1664,6 +1692,7 @@ fn entry_row(
     mode: ListMode,
     remote: bool,
     charset: Option<&'static rcmd_core::charset::Encoding>,
+    usage: Option<String>,
 ) -> Row<'static> {
     let (marker, base) = entry_style(entry);
     let style = cell_style(marked, under_cursor, base);
@@ -1712,7 +1741,12 @@ fn entry_row(
         // the tree and the user format have their own renderers; they
         // never build table rows
         ListMode::Brief | ListMode::Tree | ListMode::User => Row::new(vec![name_cell]),
-        ListMode::Full => Row::new(vec![name_cell, size_cell, Cell::from(mtime)]),
+        // disk usage mode trades the date for a bar
+        ListMode::Full => Row::new(vec![
+            name_cell,
+            size_cell,
+            Cell::from(usage.unwrap_or(mtime)),
+        ]),
         ListMode::Long => Row::new(vec![
             Cell::from(entry.perm_string()),
             Cell::from(owner_label(entry.extra.uid, remote, true)),

@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.60.0 - 2026-09-25
+
+- **Disk usage mode.** ncdu's view, as a panel mode (F9 → Command →
+  Disk usage mode, or `disk-usage` in the palette): every directory is
+  sized as you enter it, the listing goes biggest first with files and
+  directories together, and the Full listing's date column becomes a
+  bar against the biggest entry. Sizes are kept for the session, so
+  climbing back up does not walk again, and anything that may have
+  changed the tree (a job, the shell) drops them. The same entry turns
+  the mode off and puts the order back.
+
+- **A size scan stops when its panel moves.** Ctrl+X Space went on
+  sizing the old directory's names in the new one.
+
 ## 4.59.0 - 2026-09-25
 
 - **Flat view, Ctrl+B.** Every file under the panel's directory in one

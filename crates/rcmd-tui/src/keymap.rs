@@ -283,6 +283,7 @@ pub const ACTIONS: &[(&str, Action)] = &[
     ("other-open-dir", Action::OtherOpenDir),
     ("reload", Action::Reload),
     ("flat-view", Action::FlatView),
+    ("disk-usage", Action::DiskUsage),
     ("swap-panels", Action::SwapPanels),
     ("toggle-hidden", Action::ToggleHidden),
     ("options", Action::Options),

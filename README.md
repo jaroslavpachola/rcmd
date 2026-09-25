@@ -304,6 +304,7 @@ window was left in is where the next terminal session starts.
 | Ctrl+X d | Compare directories (marks differences in both panels) |
 | Ctrl+X m | Put back the marks the last operation spent |
 | Ctrl+X Space | Size every directory in the panel, one after the other |
+| F9 → Command → Disk usage mode (`disk-usage`) | ncdu's view: every directory sized as you go, biggest first, a bar each; again to go back |
 | Ctrl+X 0…9 | The ten numbered places: go there, or set an empty one here |
 | Ctrl+Ins / Ctrl+Alt+Ins | Copy the marked names / full paths to the clipboard |
 | Ctrl+F1 / Ctrl+F2 | Hide the left / right panel, and give the other the screen |
