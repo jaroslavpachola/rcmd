@@ -22,9 +22,10 @@ pub struct DiffSide {
     /// that is no file - the HEAD version of one.
     source: Option<(Arc<dyn FsProvider>, PathBuf)>,
     charset: Option<&'static rcmd_core::charset::Encoding>,
-    /// CRLF line ends, and a newline after the last line: what a save
-    /// writes back, so a merge changes only the lines it merged.
-    crlf: bool,
+    /// Each line's own ending - CRLF or not - and whether the last line
+    /// has one: what a save writes back, so a merge changes only the
+    /// lines it merged, in a file whose endings are mixed as well.
+    crlf: Vec<bool>,
     trailing_newline: bool,
     /// Changed by a merge and not saved.
     pub modified: bool,
@@ -37,15 +38,42 @@ impl DiffSide {
         charset: Option<&'static rcmd_core::charset::Encoding>,
     ) -> Self {
         let text = rcmd_core::charset::decode(bytes, charset);
+        let (mut lines, mut crlf) = (Vec::new(), Vec::new());
+        for line in text.lines() {
+            // `lines` takes a "\r\n" off whole: see which it took
+            let end = line.as_ptr() as usize - text.as_ptr() as usize + line.len();
+            crlf.push(text.as_bytes().get(end) == Some(&b'\r'));
+            lines.push(line.to_string());
+        }
         DiffSide {
             title,
-            lines: text.lines().map(str::to_string).collect(),
+            lines,
             source: None,
             charset,
-            crlf: text.contains("\r\n"),
+            crlf,
             trailing_newline: text.ends_with('\n'),
             modified: false,
         }
+    }
+
+    /// The ending a line merged into this side gets: the one most of its
+    /// lines have, so a merge into a CRLF file writes CRLF.
+    fn usual_crlf(&self) -> bool {
+        self.crlf.iter().filter(|&&c| c).count() * 2 > self.crlf.len()
+    }
+
+    /// The text a save writes.
+    fn text(&self) -> String {
+        let mut text = String::new();
+        let last = self.lines.len().saturating_sub(1);
+        for (at, line) in self.lines.iter().enumerate() {
+            text.push_str(line);
+            if at < last || self.trailing_newline {
+                let crlf = self.crlf.get(at).copied().unwrap_or(false);
+                text.push_str(if crlf { "\r\n" } else { "\n" });
+            }
+        }
+        text
     }
 
     fn save(&mut self) -> std::io::Result<()> {
@@ -58,11 +86,7 @@ impl DiffSide {
         let writer = fs.writer().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::ReadOnlyFilesystem, "read-only")
         })?;
-        let eol = if self.crlf { "\r\n" } else { "\n" };
-        let mut text = self.lines.join(eol);
-        if self.trailing_newline && !self.lines.is_empty() {
-            text.push_str(eol);
-        }
+        let text = self.text();
         let mut out = writer.open_write(path)?;
         std::io::Write::write_all(&mut out, &rcmd_core::charset::encode(&text, self.charset))?;
         std::io::Write::flush(&mut out)?;
@@ -251,7 +275,9 @@ impl DiffView {
             self.note = Some(" that side is not a file ".into());
             return;
         }
-        let lines: Vec<String> = from.lines[taken].to_vec();
+        let lines: Vec<String> = from.lines[taken.clone()].to_vec();
+        let crlf = to.usual_crlf();
+        to.crlf.splice(into.clone(), taken.map(|_| crlf));
         to.lines.splice(into, lines);
         to.modified = true;
         self.current = Some(at);
@@ -513,4 +539,50 @@ fn read_side(fs: &Arc<dyn FsProvider>, path: &Path, size: u64) -> std::io::Resul
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut fs.open_read(path)?, &mut bytes)?;
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_side_writes_back_each_line_with_its_own_ending() {
+        for text in [
+            "a\nb\r\nc\n",
+            "a\r\nb\r\nc",
+            "only\n",
+            "no end",
+            "",
+            "\r\n\n",
+        ] {
+            let side = DiffSide::new(String::new(), text.as_bytes(), None);
+            assert_eq!(side.text(), text, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_merge_touches_only_the_lines_it_merged() {
+        // 100 LF lines and one CRLF one: the old save wrote 101 CRLFs
+        let mut left_text = String::new();
+        for n in 0..100 {
+            left_text.push_str(&format!("line {n}\n"));
+        }
+        left_text.push_str("windows\r\n");
+        let right_text = left_text.replace("line 50\n", "fifty\n");
+        let mut left = DiffSide::new("l".into(), left_text.as_bytes(), None);
+        left.source = Some((
+            Arc::new(rcmd_core::vfs::LocalFs),
+            PathBuf::from("/nonexistent"),
+        ));
+        let right = DiffSide::new("r".into(), right_text.as_bytes(), None);
+        let mut view = DiffView::new(left, right);
+        while view.pending.is_some() {
+            view.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        view.top = 45;
+        view.height = 20;
+        view.merge(false);
+        assert_eq!(view.left.text(), right_text);
+    }
 }

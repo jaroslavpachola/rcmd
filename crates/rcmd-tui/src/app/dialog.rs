@@ -101,6 +101,10 @@ impl App {
             _ => None,
         };
         let undo_len = self.undo.len();
+        let saved_len = match self.dialog {
+            Some(Dialog::Connections(_)) => self.saved_connections().len(),
+            _ => 0,
+        };
         match self.dialog.as_mut() {
             Some(Dialog::Hotlist(d)) => {
                 if let Some(at) = count(hotlist_len.unwrap_or(0)) {
@@ -165,6 +169,24 @@ impl App {
             Some(Dialog::Filters(d)) => {
                 if let Some(at) = count(d.on.len()) {
                     d.row = at;
+                }
+                true
+            }
+            Some(Dialog::Connections(row)) => {
+                if let Some(at) = count(saved_len) {
+                    *row = at;
+                }
+                true
+            }
+            Some(Dialog::RemoteMenu(d)) => {
+                if let Some(at) = count(d.items.len()) {
+                    d.selected = at;
+                }
+                true
+            }
+            Some(Dialog::FileHistory(row)) => {
+                if let Some(at) = count(self.file_history.len()) {
+                    *row = at;
                 }
                 true
             }

@@ -2956,11 +2956,46 @@ pub fn spawn_archive_edit(archive: PathBuf, ops: Vec<ArchiveOp>) -> JobHandle {
 
 /// Filenames [`spawn_archive_edit`] and the pack jobs treat as tar.
 pub fn is_tar_name(name: &str) -> bool {
-    [
-        ".tar", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tbz",
-    ]
-    .iter()
-    .any(|ext| name.ends_with(ext))
+    TarComp::of(name).is_some()
+}
+
+/// What a tar rcmd writes is wrapped in, by its name - every suffix
+/// named, so a name nobody taught it is refused rather than written
+/// as whatever the last branch happened to be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TarComp {
+    Plain,
+    Gz,
+    Xz,
+    Bz2,
+}
+
+impl TarComp {
+    fn of(name: &str) -> Option<TarComp> {
+        const SUFFIXES: [(&str, TarComp); 8] = [
+            (".tar", TarComp::Plain),
+            (".tar.gz", TarComp::Gz),
+            (".tgz", TarComp::Gz),
+            (".tar.xz", TarComp::Xz),
+            (".txz", TarComp::Xz),
+            (".tar.bz2", TarComp::Bz2),
+            (".tbz2", TarComp::Bz2),
+            (".tbz", TarComp::Bz2),
+        ];
+        SUFFIXES
+            .iter()
+            .find(|(ext, _)| name.ends_with(ext))
+            .map(|&(_, comp)| comp)
+    }
+
+    fn named(name: &str) -> io::Result<TarComp> {
+        TarComp::of(name).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{name}: not a tar name rcmd can write"),
+            )
+        })
+    }
 }
 
 fn edit_zip(
@@ -3140,21 +3175,19 @@ impl Write for TarSink {
 
 impl TarSink {
     fn create(path: &Path, archive_name: &str) -> io::Result<TarSink> {
+        let comp = TarComp::named(archive_name)?;
         let file = fs::File::create(path)?;
-        Ok(if archive_name.ends_with(".tar") {
-            TarSink::Plain(file)
-        } else if archive_name.ends_with(".tar.gz") || archive_name.ends_with(".tgz") {
-            TarSink::Gz(flate2::write::GzEncoder::new(
+        Ok(match comp {
+            TarComp::Plain => TarSink::Plain(file),
+            TarComp::Gz => TarSink::Gz(flate2::write::GzEncoder::new(
                 file,
                 flate2::Compression::default(),
-            ))
-        } else if archive_name.ends_with(".tar.xz") || archive_name.ends_with(".txz") {
-            TarSink::Xz(xz2::write::XzEncoder::new(file, 6))
-        } else {
-            TarSink::Bz(bzip2::write::BzEncoder::new(
+            )),
+            TarComp::Xz => TarSink::Xz(xz2::write::XzEncoder::new(file, 6)),
+            TarComp::Bz2 => TarSink::Bz(bzip2::write::BzEncoder::new(
                 file,
                 bzip2::Compression::default(),
-            ))
+            )),
         })
     }
 
@@ -3169,15 +3202,13 @@ impl TarSink {
 }
 
 fn tar_source(path: &Path, archive_name: &str) -> io::Result<Box<dyn Read>> {
+    let comp = TarComp::named(archive_name)?;
     let file = fs::File::open(path)?;
-    Ok(if archive_name.ends_with(".tar") {
-        Box::new(file)
-    } else if archive_name.ends_with(".tar.gz") || archive_name.ends_with(".tgz") {
-        Box::new(flate2::read::GzDecoder::new(file))
-    } else if archive_name.ends_with(".tar.xz") || archive_name.ends_with(".txz") {
-        Box::new(xz2::read::XzDecoder::new(file))
-    } else {
-        Box::new(bzip2::read::BzDecoder::new(file))
+    Ok(match comp {
+        TarComp::Plain => Box::new(file),
+        TarComp::Gz => Box::new(flate2::read::GzDecoder::new(file)),
+        TarComp::Xz => Box::new(xz2::read::XzDecoder::new(file)),
+        TarComp::Bz2 => Box::new(bzip2::read::BzDecoder::new(file)),
     })
 }
 
@@ -5005,6 +5036,23 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, ["solo.txt", "tree"]);
+    }
+
+    #[test]
+    fn a_tar_name_nobody_taught_it_is_refused_not_bzipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["x.tar", "x.tgz", "x.tar.xz", "x.tbz"] {
+            assert!(
+                TarSink::create(&tmp.path().join(name), name).is_ok(),
+                "{name}"
+            );
+        }
+        let err = TarSink::create(&tmp.path().join("x.tar.lz"), "x.tar.lz")
+            .err()
+            .expect("a .tar.lz was written");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(!tmp.path().join("x.tar.lz").exists());
+        assert!(tar_source(&tmp.path().join("x.tar"), "x.tar.lz").is_err());
     }
 
     #[test]

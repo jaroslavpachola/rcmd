@@ -2050,19 +2050,18 @@ fn mini_line(app: &App, side: usize) -> Option<Line<'static>> {
 }
 
 fn draw_cmdline(frame: &mut Frame, area: Rect, app: &mut App) {
+    use unicode_width::UnicodeWidthStr;
     // the shell's own prompt when it has one to show, mc's way;
     // otherwise where the panel is
     let prompt = app
         .subshell_prompt()
         .unwrap_or_else(|| format!("{}$ ", abbrev_home(&app.panels[app.active].local_cwd())));
     let prompt = tail(&prompt, (area.width / 2) as usize);
-    let prompt_len = prompt.chars().count();
+    let prompt_len = UnicodeWidthStr::width(prompt.as_str());
     let field_width = (area.width as usize).saturating_sub(prompt_len).max(1);
 
     let cl = &app.cmdline;
-    let chars: Vec<char> = cl.value.chars().collect();
-    let start = cl.cursor.saturating_sub(field_width.saturating_sub(1));
-    let visible: String = chars[start..].iter().take(field_width).collect();
+    let (visible, before) = cmdline_window(&cl.value, cl.cursor, field_width);
 
     frame.render_widget(
         Line::from(vec![
@@ -2072,8 +2071,33 @@ fn draw_cmdline(frame: &mut Frame, area: Rect, app: &mut App) {
         area,
     );
     if app.dialog.is_none() && app.fg_job().is_none() {
-        frame.set_cursor_position((area.x + (prompt_len + cl.cursor - start) as u16, area.y));
+        frame.set_cursor_position((area.x + (prompt_len + before) as u16, area.y));
     }
+}
+
+/// The part of the command line that fits `width` cells with the
+/// cursor on screen, and how many cells come before the cursor. Cells,
+/// not characters: a CJK character or an emoji takes two, and a cursor
+/// placed by count sat left of where typing goes.
+fn cmdline_window(value: &str, cursor: usize, width: usize) -> (String, usize) {
+    use unicode_width::UnicodeWidthChar;
+    let chars: Vec<char> = value.chars().collect();
+    let cells = |c: &char| UnicodeWidthChar::width(*c).unwrap_or(0);
+    let cursor = cursor.min(chars.len());
+    let (mut start, mut before) = (cursor, 0);
+    while start > 0 && before + cells(&chars[start - 1]) < width {
+        start -= 1;
+        before += cells(&chars[start]);
+    }
+    let mut used = 0;
+    let visible = chars[start..]
+        .iter()
+        .take_while(|c| {
+            used += cells(c);
+            used <= width
+        })
+        .collect();
+    (visible, before)
 }
 
 pub(crate) fn abbrev_home(path: &std::path::Path) -> String {
@@ -2372,7 +2396,7 @@ fn draw_diff(frame: &mut Frame, app: &mut App) {
         let (ltext, rtext) = (d.line(at, false), d.line(at, true));
         // a line changed on both sides says which words changed
         let (lwords, rwords) = match (entry.same, ltext, rtext) {
-            (false, Some(l), Some(r)) => rcmd_core::diff::inline(l, r),
+            (false, Some(l), Some(r)) => rcmd_core::diff::inline_with(l, r, d.opts),
             _ => (Vec::new(), Vec::new()),
         };
         let cell = |text: Option<&str>, words: &[std::ops::Range<usize>]| -> Vec<Span<'static>> {
@@ -5807,6 +5831,17 @@ fn draw_ask(frame: &mut Frame, ask: &Ask, button: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_command_line_cursor_counts_cells() {
+        // two wide characters, then the cursor: four cells in, not two
+        assert_eq!(cmdline_window("日本", 2, 20), ("日本".to_string(), 4));
+        assert_eq!(cmdline_window("ab", 1, 20), ("ab".to_string(), 1));
+        // a line wider than the field scrolls so the cursor stays on it
+        let (visible, before) = cmdline_window("一二三四五六", 6, 7);
+        assert_eq!((visible.as_str(), before), ("四五六", 6));
+        assert_eq!(cmdline_window("", 0, 5), (String::new(), 0));
+    }
 
     #[test]
     fn the_inspector_reads_both_ways() {

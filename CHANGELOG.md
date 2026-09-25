@@ -1,5 +1,30 @@
 # Changelog
 
+## 4.47.0 - 2026-09-25
+
+- **A merge in the diff view keeps each line's ending.** The view
+  called a whole file CRLF if any one line was, and wrote every line
+  back with that ending: a file of a hundred LF lines and one CRLF
+  line, merged and saved, came back with a hundred and one CRLFs. Each
+  line now keeps its own ending, and a merged line takes the ending
+  most of the file's lines have.
+
+- **The highlight inside a changed line follows -w and -i.** With
+  whitespace or case ignored, a doubled space or a capital letter no
+  longer lights up inside a line that changed in some other way.
+
+- **Clicks work in the connections list, a remote script's menu and
+  the file history.** Their rows were mapped for the mouse and then
+  ignored.
+
+- **The command-line cursor sits where typing goes after wide text.**
+  It was placed by counting characters, so after CJK text or an emoji
+  it sat to the left of the insertion point.
+
+- **A tar name rcmd cannot write is refused.** Packing and editing a
+  tar treated any suffix they did not recognize as bzip2. Nothing
+  reached that branch yet, but the first new suffix would have.
+
 ## 4.46.0 - 2026-09-25
 
 - **rar, 7z, lha, arj and cab extract in one run of the tool.** Every

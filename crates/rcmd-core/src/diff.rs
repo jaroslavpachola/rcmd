@@ -198,7 +198,26 @@ pub fn block_lines(rows: &[Row], (start, end): (usize, usize)) -> (Range<usize>,
 // a list of ranges that happens to hold one, not a range's contents
 #[allow(clippy::single_range_in_vec_init)]
 pub fn inline(left: &str, right: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
-    let (lt, rt) = (tokens(left), tokens(right));
+    inline_with(left, right, Options::default())
+}
+
+/// [`inline`] under the same options as the rows: with `-w` whitespace
+/// is no word at all, and with `-i` case is no difference - so what the
+/// options call the same is not lit up inside a line that changed in
+/// some other way.
+#[allow(clippy::single_range_in_vec_init)]
+pub fn inline_with(
+    left: &str,
+    right: &str,
+    opts: Options,
+) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
+    let keep = |(text, _): &(&str, Range<usize>)| {
+        !(opts.ignore_space && text.chars().all(char::is_whitespace))
+    };
+    let mut lt = tokens(left);
+    let mut rt = tokens(right);
+    lt.retain(keep);
+    rt.retain(keep);
     // too long to be worth it: all of it changed
     if lt.len() + rt.len() > 4000 {
         return (
@@ -206,10 +225,14 @@ pub fn inline(left: &str, right: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>)
             vec![0..right.chars().count()],
         );
     }
-    let mut ids: HashMap<&str, u32> = HashMap::new();
-    let mut id = |t| {
+    let mut ids: HashMap<String, u32> = HashMap::new();
+    let mut id = |t: &str| {
         let next = ids.len() as u32;
-        *ids.entry(t).or_insert(next)
+        let key = match opts.ignore_case {
+            true => t.to_lowercase(),
+            false => t.to_string(),
+        };
+        *ids.entry(key).or_insert(next)
     };
     let a: Vec<u32> = lt.iter().map(|&(t, _)| id(t)).collect();
     let b: Vec<u32> = rt.iter().map(|&(t, _)| id(t)).collect();
@@ -508,5 +531,25 @@ mod tests {
         assert_eq!(r, [8..16, 18..21]);
         assert!(is_binary(b"ab\0cd"));
         assert!(!is_binary("plain text".as_bytes()));
+    }
+
+    #[test]
+    fn the_inline_highlight_follows_the_options() {
+        let (l, r) = ("let  a = B;", "let a = b; x");
+        let (lw, rw) = inline(l, r);
+        assert!(!lw.is_empty() && !rw.is_empty());
+        let opts = Options {
+            ignore_space: true,
+            ignore_case: true,
+            ..Options::default()
+        };
+        let (lw, rw) = inline_with(l, r, opts);
+        // only the added word is a change: not the doubled space, not B
+        assert!(lw.is_empty(), "{lw:?}");
+        let lit: Vec<String> = rw
+            .iter()
+            .map(|w| r.chars().skip(w.start).take(w.len()).collect())
+            .collect();
+        assert_eq!(lit, ["x"]);
     }
 }
