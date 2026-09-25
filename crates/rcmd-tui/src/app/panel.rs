@@ -2661,6 +2661,24 @@ impl App {
             return;
         }
         self.cmdline.push_history(&cmd);
+        // `= 2*(3+4)`: worked out here rather than handed to a shell,
+        // the answer on the status line and, bare, on the command line
+        // to go on from
+        if let Some(expr) = cmd.trim_start().strip_prefix('=') {
+            match rcmd_core::calc::eval(expr) {
+                Ok(value) => {
+                    self.status = Some(format!(" {} = {value} ", expr.trim()));
+                    let bare = value.to_string();
+                    let bare = bare.split_whitespace().next().unwrap_or_default();
+                    self.cmdline.set_line(&format!("= {bare}"));
+                }
+                Err(err) => {
+                    self.status = Some(format!(" = {err} "));
+                    self.cmdline.set_line(&cmd);
+                }
+            }
+            return;
+        }
         if let Some(dir) = parse_cd(&cmd) {
             // no macro expansion here: the expansion shell-quotes, and a
             // quoted path is not what `cd` wants

@@ -72,6 +72,10 @@ pub struct Config {
     /// the info panel (MC's `free_space`). The marked-files total stays
     /// either way: it is only there while something is marked.
     pub show_free_space: bool,
+    /// A scrollbar on a panel's right edge while its listing is longer
+    /// than the panel, as mc and Far draw one; clicked or dragged, it
+    /// moves the cursor there.
+    pub scrollbars: bool,
     /// Draw the status line showing the cursor entry.
     pub show_status: bool,
     /// Draw the command line. With it hidden, plain characters only
@@ -580,6 +584,7 @@ impl Default for Config {
             show_menubar: false,
             show_mini_status: false,
             show_free_space: true,
+            scrollbars: true,
             show_status: true,
             show_cmdline: true,
             show_keybar: true,

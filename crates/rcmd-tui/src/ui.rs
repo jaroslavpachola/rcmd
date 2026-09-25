@@ -671,6 +671,12 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
                     format: &app.listing_format,
                 },
             );
+            if app.config.scrollbars
+                && app.panels[i].list_mode != ListMode::Tree
+                && let Some(track) = panel_scroll_track(area, app.panel_mini(i))
+            {
+                draw_scrollbar(frame, track, &app.panels[i], app.config.columns());
+            }
         }
     }
     draw_quick_search(frame, active_area, app);
@@ -908,6 +914,44 @@ struct Chrome<'a> {
     tree: Option<&'a Tree>,
     /// The parsed `listing_format`, drawn in user mode.
     format: &'a Format,
+}
+
+/// The column a panel's scrollbar runs down: its right border, beside
+/// the listing's rows. `None` for a panel too short to have one.
+pub fn panel_scroll_track(area: Rect, mini: bool) -> Option<Rect> {
+    let rows = area
+        .height
+        .saturating_sub(3 + MINI_STATUS_ROWS * u16::from(mini));
+    (rows >= 2 && area.width >= 3).then(|| Rect {
+        x: area.x + area.width - 1,
+        y: area.y + 2,
+        width: 1,
+        height: rows,
+    })
+}
+
+/// The bar, only while there is more listing than fits.
+fn draw_scrollbar(frame: &mut Frame, track: Rect, panel: &Panel, columns: u16) {
+    use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
+    let per_screen = track.height as usize
+        * match panel.list_mode {
+            ListMode::Brief => columns.max(1) as usize,
+            _ => 1,
+        };
+    let len = panel.entries.len();
+    if len <= per_screen {
+        return;
+    }
+    let mut state = ScrollbarState::new(len)
+        .position(panel.cursor)
+        .viewport_content_length(per_screen);
+    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(Some("│"))
+        .thumb_symbol("█")
+        .style(Style::new().fg(th().panel_fg).bg(th().panel_bg));
+    frame.render_stateful_widget(bar, track, &mut state);
 }
 
 fn draw_panel(

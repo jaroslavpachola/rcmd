@@ -4625,6 +4625,14 @@ impl App {
         if self.dialog.is_some() || self.help.is_some() || self.menu.is_some() {
             return;
         }
+        // dragging a panel's scrollbar walks the cursor with it
+        for (side, area) in [(0, self.areas.left), (1, self.areas.right)] {
+            if let Some(index) = self.scrollbar_entry(side, area, x, y) {
+                self.active = side;
+                self.panels[side].cursor = index;
+                return;
+            }
+        }
         if let Some(pos) = self.editor_pos_at(x, y)
             && let Some(st) = self.editor_mut()
         {
@@ -4793,9 +4801,29 @@ impl App {
         self.config.show_mini_status || (self.config.show_status && self.active == side)
     }
 
+    /// The entry a point on panel `side`'s scrollbar stands for: the
+    /// top of the bar is the first entry, the bottom the last.
+    fn scrollbar_entry(&self, side: usize, area: Rect, x: u16, y: u16) -> Option<usize> {
+        if !self.config.scrollbars || self.panels[side].list_mode == ListMode::Tree {
+            return None;
+        }
+        let track = crate::ui::panel_scroll_track(area, self.panel_mini(side))?;
+        let len = self.panels[side].entries.len();
+        if x != track.x || y < track.y || y >= track.y + track.height || len < 2 {
+            return None;
+        }
+        let at = (y - track.y) as usize;
+        let span = track.height.saturating_sub(1).max(1) as usize;
+        Some((at * (len - 1) + span / 2) / span)
+    }
+
     fn panel_click(&mut self, side: usize, area: Rect, x: u16, y: u16, double: bool) {
         self.active = side;
         if self.quick_view.as_ref().is_some_and(|q| q.side == side) || self.info == Some(side) {
+            return;
+        }
+        if let Some(index) = self.scrollbar_entry(side, area, x, y) {
+            self.panels[side].cursor = index;
             return;
         }
         // The tree has no header row and scrolls itself, so a click in

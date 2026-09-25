@@ -55,13 +55,17 @@ A find of its own: files grouped by size, then by a hash of the first
 groups are confirmed. Marks go on every file of a group but the first,
 so F8 after it keeps one of each.
 
-### U4 - panel scrollbars
+### U4 - panel scrollbars - DONE (2026-09-25, 4.58.0)
 
 A one-column bar on the panel's right border when the listing is longer
 than the panel, draggable and clickable, as mc and Far draw it. Off in
 the config for anyone who wants the column back.
 
-### U5 - a calculator on the command line
+### U5 - a calculator on the command line - DONE (2026-09-25, 4.58.0)
+
+Shipped with one difference: Enter shows the answer and leaves
+`= answer` on the command line at once, rather than on a second Enter,
+so the next operator can simply be typed after it.
 
 `= 2*(3+4)` or `= 0x1f + 1` evaluated in place, the result shown on the
 status line and put on the command line on a second Enter. Integers,

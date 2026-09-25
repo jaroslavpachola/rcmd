@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.58.0 - 2026-09-25
+
+- **A calculator on the command line.** A line starting with `=` is
+  worked out rather than run: `= 2*(3+4)`, `= 0x1f + 1`, `= 3G / 4K`.
+  The answer goes on the status line, with hex beside an integer, and
+  `= answer` stays on the command line to go on from. It takes hex,
+  octal and binary, `+ - * / % **`, parentheses and the size suffixes.
+  Integers stay exact until a division or an overflow needs a float.
+
+- **Panel scrollbars.** A listing longer than its panel draws a
+  scrollbar on the panel's right edge, and clicking or dragging it moves
+  the cursor through the listing. `scrollbars = false` gives the plain
+  border back.
+
 ## 4.57.0 - 2026-09-25
 
 - **The editor moves by the character you see**, as the line editor

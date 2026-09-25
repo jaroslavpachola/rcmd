@@ -1955,6 +1955,48 @@ def test_clickconfirm():
     shutil.rmtree(root)
 
 
+def test_calc():
+    """PLAN7 U5: `= expr` on the command line is worked out in place -
+    the answer on the status line and on the command line, never run."""
+    root, play, home = sandbox()
+    s = Session(play, home)
+    s.send(b"= 2*(3+4) + 0x10\r", wait=STEP * 2)
+    scr = s.screen()
+    check("calc: the answer is on the status line", "= 30  (0x1e)" in scr, scr)
+    check("calc: and on the command line to go on from", "$ = 30" in scr, scr)
+    s.send(b" / 4\r", wait=STEP * 2)
+    check("calc: going on from it", "= 7.5" in s.screen(), s.screen())
+    s.send(b"\x1b", wait=STEP)                 # Esc Esc clears the line
+    s.send(b"\x1b", wait=STEP)
+    s.send(b"= 1 / 0\r", wait=STEP * 2)
+    check("calc: nonsense says so", "division by zero" in s.screen(), s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_scrollbar():
+    """PLAN7 U4: a listing longer than the panel draws a scrollbar on
+    its right edge, and a click at the bar's foot goes to the end."""
+    root, play, home = sandbox()
+    for n in range(80):
+        open(os.path.join(play, f"file{n:02}.txt"), "w").write("x")
+    s = Session(play, home)
+    rows = s.screen().split("\n")
+    thumb = [(r, line.find("█")) for r, line in enumerate(rows) if "█" in line]
+    check("scrollbar: a long listing draws one", bool(thumb), s.screen())
+    if thumb:
+        col = thumb[0][1]
+        # the track runs down from the thumb to the frame's separator
+        foot = thumb[0][0]
+        while len(rows[foot + 1]) > col and rows[foot + 1][col] in "│█":
+            foot += 1
+        s.send(click(col + 1, foot + 1), wait=STEP * 2)
+        check("scrollbar: a click at its foot goes to the end",
+              "file79.txt" in status_line(s), status_line(s))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_kittykeys():
     """PLAN5 S7: in a terminal that has the kitty keyboard protocol, rcmd
     turns it on - and an Esc is an Esc at once, with no prefix to wait
@@ -7253,6 +7295,8 @@ def main():
         test_gutter,
         test_findarchives,
         test_clickconfirm,
+        test_calc,
+        test_scrollbar,
         test_editdrag,
         test_uservfs,
         test_kittykeys,

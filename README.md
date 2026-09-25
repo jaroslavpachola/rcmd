@@ -325,7 +325,12 @@ window was left in is where the next terminal session starts.
 Typing goes to the **command line** at the bottom; Enter runs it in the
 active panel's directory (`cd` changes the panel instead, and `cd -`
 goes back to where the panel came from; a relative `cd` that misses
-locally also tries `$CDPATH`). Every dialog field remembers what was
+locally also tries `$CDPATH`). A line starting with `=` is a
+**calculator** rather than a command: `= 2*(3+4)`, `= 0x1f + 1` or
+`= 3G / 4K` puts the answer on the status line, with hex beside an
+integer, and leaves `= answer` on the command line to go on from.
+Integers stay exact, and a division that does not come out even or an
+overflow turns into a float. Every dialog field remembers what was
 typed into it before - Alt+P and Alt+N walk a field's own history, Alt+H
 lists it to pick from, kept per kind of question (copy and move
 destinations, find's three fields, select patterns, `mkdir`, `cd`,
@@ -1217,6 +1222,7 @@ split_ratio = 50           # percent for the left/top panel, 20..80
 show_menubar = false       # MC's permanent menu bar (F9 works either way; the window has its own)
 show_mini_status = false   # a status row inside each panel (MC's)
 show_free_space = true     # free space in each local panel's footer
+scrollbars = true          # a clickable, draggable bar on a long listing's edge
 show_status = true         # the cursor-entry row inside the active panel
                            # (messages and job progress show there too)
 show_cmdline = true        # the command line
