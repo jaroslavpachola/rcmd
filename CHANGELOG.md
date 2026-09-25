@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.59.0 - 2026-09-25
+
+- **Flat view, Ctrl+B.** Every file under the panel's directory in one
+  listing, with its path below here as the name: Total Commander's
+  branch view. Directories are walked into but not listed, and hidden
+  files follow the panel's setting. F3, F5, F6 and F8 work on it as on
+  any panelized listing, and Ctrl+B again (or Ctrl+R) puts the
+  directory back.
+
 ## 4.58.0 - 2026-09-25
 
 - **A calculator on the command line.** A line starting with `=` is

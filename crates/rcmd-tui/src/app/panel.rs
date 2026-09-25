@@ -544,6 +544,7 @@ impl App {
             Action::OtherSameDir => self.other_panel_dir(false),
             Action::OtherOpenDir => self.other_panel_dir(true),
             Action::Reload => self.fallible(|p| p.reload().map(|()| true)),
+            Action::FlatView => self.flat_view(),
             Action::SwapPanels => {
                 self.panels.swap(0, 1);
                 self.table_states.swap(0, 1);

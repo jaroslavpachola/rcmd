@@ -41,7 +41,7 @@ climbs back, F8 deletes from inside it, and the sizes of the parents
 drop by what went. The sizes are cached per directory for the session,
 so climbing back does not walk again.
 
-### U2 - flat view (TC's Ctrl+B)
+### U2 - flat view (TC's Ctrl+B) - DONE (2026-09-25, 4.59.0)
 
 Every file under the current directory in one listing, relative paths
 as names - what a find for `*` and panelize gives, one key away and

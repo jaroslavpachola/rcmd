@@ -95,6 +95,8 @@ pub struct Query {
     /// itself: the formats an external tool opens cost a process for
     /// every member, which is not a search.
     pub archives: bool,
+    /// Report files, never directories - they are still walked into.
+    pub files_only: bool,
 }
 
 /// The "containing text" half, and what the text means.
@@ -127,6 +129,7 @@ impl Default for Query {
             max_depth: None,
             ignore_dirs: Vec::new(),
             archives: false,
+            files_only: false,
         }
     }
 }
@@ -300,6 +303,9 @@ pub fn spawn_find(root: PathBuf, query: Query, skip: Option<SkipFn>) -> Result<F
                 }
             }
             let name = entry.file_name.to_string_lossy();
+            if query.files_only && entry.file_type.is_dir() {
+                continue;
+            }
             if !matcher.matches(&name) || (criteria && entry.file_type.is_dir()) {
                 continue;
             }
@@ -1007,6 +1013,21 @@ mod tests {
         let (names, _) =
             collect(spawn_find(dir.path().to_path_buf(), containing("needle"), None).unwrap());
         assert_eq!(names, ["big.bin"]);
+    }
+
+    #[test]
+    fn files_only_walks_into_directories_without_listing_them() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        fs::write(dir.path().join("a/b/deep.txt"), "x").unwrap();
+        fs::write(dir.path().join("top.txt"), "x").unwrap();
+        let query = Query {
+            files_only: true,
+            ..Query::default()
+        };
+        let (mut names, _) = collect(spawn_find(dir.path().to_path_buf(), query, None).unwrap());
+        names.sort();
+        assert_eq!(names, ["a/b/deep.txt", "top.txt"]);
     }
 
     #[test]

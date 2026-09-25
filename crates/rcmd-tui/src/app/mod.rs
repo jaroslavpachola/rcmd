@@ -2869,6 +2869,9 @@ pub enum Action {
     UpDir,
     Enter,
     FindFile,
+    /// C-b: every file under the panel's directory in one listing -
+    /// TC's branch view - or, on it already, the directory back.
+    FlatView,
     /// M-/: the fuzzy finder over the tree under the panel.
     FuzzyFind,
     Panelize,

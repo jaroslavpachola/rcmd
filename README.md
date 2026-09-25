@@ -318,6 +318,7 @@ window was left in is where the next terminal session starts.
 | Alt+, | Panels side by side, or one above the other |
 | Ctrl+Space | Directory size (background scan into the Size column) |
 | Ctrl+R | Reload panel (also restores listing after find/panelize) |
+| Ctrl+B | Flat view: every file under the directory in one listing (TC's branch view); again to go back |
 | Esc | Cancel dialog / running operation / clear command line |
 | Esc *key* | MC meta prefix: Esc 1…0 = F1…F10, Esc x = Alt+X, Esc Esc = Esc |
 | F10 | Quit |

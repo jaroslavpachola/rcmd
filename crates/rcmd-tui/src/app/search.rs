@@ -1,5 +1,8 @@
 use super::*;
 
+/// How a flat view's listing is labelled, and known again.
+const FLAT: &str = "flat:";
+
 impl App {
     pub(super) fn drain_find(&mut self) {
         let Some(find) = self.find.as_mut() else {
@@ -395,6 +398,7 @@ impl App {
             max_depth,
             ignore_dirs: find::parse_ignore_dirs(&dialog.ignore.value),
             archives: dialog.archives,
+            files_only: false,
         };
         let root = match dialog.start.value.trim() {
             "" => self.panels[self.active].local_cwd(),
@@ -442,6 +446,49 @@ impl App {
             panel: panel_idx,
             count: 0,
             window,
+        });
+    }
+
+    /// Every file under the panel's directory, as one listing: a find
+    /// for any name, files only, streamed into the panel the way a
+    /// panelizing find is. On a flat view already, the directory again.
+    pub(super) fn flat_view(&mut self) {
+        let side = self.active;
+        if self.panels[side]
+            .panelized
+            .as_deref()
+            .is_some_and(|label| label.starts_with(FLAT))
+        {
+            self.fallible(|p| p.reload().map(|()| true));
+            return;
+        }
+        if self.find.is_some() || !self.require_local() {
+            return;
+        }
+        let root = self.panels[side].local_cwd();
+        let query = find::Query {
+            name: rcmd_core::pattern::Pattern {
+                text: "*".into(),
+                shell: true,
+                ..rcmd_core::pattern::Pattern::default()
+            },
+            skip_hidden: !self.panels[side].show_hidden,
+            files_only: true,
+            ..find::Query::default()
+        };
+        let handle = match find::spawn_find(root.clone(), query, None) {
+            Ok(handle) => handle,
+            Err(err) => {
+                self.status = Some(format!(" {err} "));
+                return;
+            }
+        };
+        self.panels[side].panelize(Vec::new(), format!("{FLAT} {}", root.display()));
+        self.find = Some(FindState {
+            handle,
+            panel: side,
+            count: 0,
+            window: false,
         });
     }
 

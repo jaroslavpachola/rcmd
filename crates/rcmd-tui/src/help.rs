@@ -84,6 +84,8 @@ const TEXT: &[&str] = &[
     "                  whole paths (the clipboard file always, a desktop",
     "                  clipboard where a tool for one is installed)",
     "  C-r             reload both panels",
+    "  C-b             flat view: every file below here in one listing,",
+    "                  paths as names (again, or C-r, to go back)",
     "  Panels auto-reload when their directory changes on disk",
     "  (watch = false in config disables). Slow directories load in the",
     "  background: old listing + spinner stay up, Esc cancels the load.",

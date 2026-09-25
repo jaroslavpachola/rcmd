@@ -1997,6 +1997,31 @@ def test_scrollbar():
     shutil.rmtree(root)
 
 
+def test_flatview():
+    """PLAN7 U2: Ctrl+B lists every file under the panel's directory in
+    one listing, and Ctrl+B again puts the directory back."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "sub", "deeper"))
+    open(os.path.join(play, "top.txt"), "w").write("t")
+    open(os.path.join(play, "sub", "mid.txt"), "w").write("m")
+    open(os.path.join(play, "sub", "deeper", "low.txt"), "w").write("l")
+    s = Session(play, home)
+    s.send(b"\x02", wait=STEP * 2)
+    wait_for(s, "match(es)")
+    scr = s.screen()
+    check("flatview: every file, relative paths as names",
+          "sub/deeper/low.txt" in scr and "sub/mid.txt" in scr and "top.txt" in scr, scr)
+    left = "\n".join(line[:COLS // 2] for line in scr.split("\n"))
+    check("flatview: files only - no directory rows",
+          "/sub" not in left and "flat:" in left, left)
+    s.send(b"\x02", wait=STEP * 2)
+    scr = s.screen()
+    check("flatview: Ctrl+B again is the directory",
+          "sub/mid.txt" not in scr and "flat:" not in scr, scr)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_kittykeys():
     """PLAN5 S7: in a terminal that has the kitty keyboard protocol, rcmd
     turns it on - and an Esc is an Esc at once, with no prefix to wait
@@ -7297,6 +7322,7 @@ def main():
         test_clickconfirm,
         test_calc,
         test_scrollbar,
+        test_flatview,
         test_editdrag,
         test_uservfs,
         test_kittykeys,
