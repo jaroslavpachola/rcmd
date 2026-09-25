@@ -4952,6 +4952,61 @@ def test_fish():
     shutil.rmtree(root)
 
 
+def test_sftp_proxy():
+    """PLAN6 T2: a host whose ~/.ssh/config says ProxyCommand - pulled
+    in through an Include - is reached through that command, its
+    standard input and output being the connection."""
+    if os.environ.get("RCMD_E2E_SFTP") == "0":
+        print("SKIP sftp proxy (RCMD_E2E_SFTP=0)")
+        return
+    py = sftp_python()
+    if py is None or shutil.which("nc") is None:
+        print("SKIP sftp proxy (no paramiko python or no nc)")
+        return
+    root, play, home = sandbox()
+    remote = os.path.join(root, "remote")
+    os.makedirs(remote)
+    open(os.path.join(remote, "proxied.txt"), "w").write("came the long way\n")
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    marker = os.path.join(home, "proxy-used")
+    script = os.path.join(home, "proxy.sh")
+    open(script, "w").write(f"#!/bin/sh\necho \"$@\" > {marker}\nexec nc \"$1\" \"$2\"\n")
+    os.chmod(script, 0o755)
+    ssh = os.path.join(home, ".ssh")
+    os.makedirs(os.path.join(ssh, "config.d"), exist_ok=True)
+    open(os.path.join(ssh, "config"), "w").write("Include config.d/*\n")
+    open(os.path.join(ssh, "config.d", "proxied"), "w").write(
+        f"Host viaproxy\n    HostName 127.0.0.1\n    Port {port}\n"
+        f"    User tester\n    ProxyCommand {script} %h %p\n")
+    server = subprocess.Popen(
+        [py, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sftp_server.py"),
+         str(port)],
+        env={**os.environ, "RCMD_SFTP_PASSWORD": "secret"},
+        stdout=subprocess.PIPE,
+    )
+    try:
+        assert server.stdout.readline().strip() == b"READY", "sftp server failed to start"
+        s = Session(play, home)
+        s.send(f"cd sftp://viaproxy{remote}\r".encode(), wait=STEP * 2)
+        check("sftp proxy: host key dialog", wait_for(s, "Unknown host"), s.screen())
+        s.send(b"y")
+        check("sftp proxy: password prompt", wait_for(s, "SSH authentication"))
+        s.send(b"secret\r", wait=STEP * 2)
+        check("sftp proxy: listed through the ProxyCommand",
+              wait_for(s, "proxied.txt", timeout=15)
+              and os.path.exists(marker)
+              and open(marker).read().split() == ["127.0.0.1", str(port)],
+              s.screen())
+        s.quit()
+    finally:
+        server.terminate()
+        server.wait()
+    shutil.rmtree(root)
+
+
 def test_sftp_auth():
     """R2: passphrase-protected key + keyboard-interactive auth."""
     if os.environ.get("RCMD_E2E_SFTP") == "0":
@@ -7081,6 +7136,7 @@ def main():
         test_sftp,
         test_fish,
         test_shellpanel,
+        test_sftp_proxy,
         test_sftp_auth,
         test_scale,
     ):

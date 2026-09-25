@@ -43,6 +43,8 @@ pub struct SftpUrl {
     pub hostname: Option<String>,
     /// `IdentityFile`s for this host, tried before the default keys.
     pub identities: Vec<PathBuf>,
+    /// The way there when it is not a straight connection.
+    pub proxy: Option<Proxy>,
     user_given: bool,
     port_given: bool,
 }
@@ -84,6 +86,7 @@ impl SftpUrl {
             path,
             hostname: None,
             identities: Vec::new(),
+            proxy: None,
             user_given,
             port_given,
         })
@@ -114,7 +117,44 @@ impl SftpUrl {
             .iter()
             .map(|template| crate::sshconfig::identity_path(template, &self.host, &self.user))
             .collect();
+        // `none` is ssh's way of saying no proxy, whatever comes later
+        let set =
+            |value: &Option<String>| value.clone().filter(|v| !v.eq_ignore_ascii_case("none"));
+        self.proxy = match (set(&config.proxy_jump), set(&config.proxy_command)) {
+            (Some(hops), _) => Some(Proxy::Jump(hops)),
+            (None, Some(command)) if config.proxy_jump.is_none() => {
+                Some(Proxy::Command(self.proxy_tokens(&command)))
+            }
+            _ => None,
+        };
         self
+    }
+
+    /// A `ProxyCommand` with its tokens filled in: `%h` the address to
+    /// dial, `%p` the port, `%r` the remote user, `%n` the name as
+    /// typed, `%%` a percent sign.
+    fn proxy_tokens(&self, command: &str) -> String {
+        let mut out = String::with_capacity(command.len());
+        let mut chars = command.chars();
+        while let Some(c) = chars.next() {
+            if c != '%' {
+                out.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('h') => out.push_str(self.dial_host()),
+                Some('p') => out.push_str(&self.port.to_string()),
+                Some('r') => out.push_str(&self.user),
+                Some('n') => out.push_str(&self.host),
+                Some('%') => out.push('%'),
+                Some(other) => {
+                    out.push('%');
+                    out.push(other);
+                }
+                None => out.push('%'),
+            }
+        }
+        out
     }
 
     /// The address to connect to: the alias's `HostName`, or the host.
@@ -136,6 +176,124 @@ impl SftpUrl {
 
     pub fn display(&self) -> String {
         format!("{}{}", self.prefix(), self.path.display())
+    }
+}
+
+/// How a connection reaches a server it does not dial itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Proxy {
+    /// `ProxyJump`: through these hosts, comma-separated, the way
+    /// `ssh -J` takes them.
+    Jump(String),
+    /// `ProxyCommand`, its tokens filled in: a shell command whose
+    /// standard input and output are the connection.
+    Command(String),
+}
+
+impl Proxy {
+    /// The program that carries the connection, and its arguments.
+    fn argv(&self, url: &SftpUrl) -> Vec<String> {
+        match self {
+            Proxy::Jump(hops) => {
+                let hops: Vec<&str> = hops.split(',').map(str::trim).collect();
+                let (last, before) = hops.split_last().expect("split yields one at least");
+                // BatchMode: ssh must not ask anything on the terminal
+                // rcmd is drawing on - the jump host needs a key or the
+                // agent, as it would in a script
+                let mut argv: Vec<String> = ["ssh", "-o", "BatchMode=yes", "-o", "LogLevel=ERROR"]
+                    .map(String::from)
+                    .to_vec();
+                if !before.is_empty() {
+                    argv.push("-J".into());
+                    argv.push(before.join(","));
+                }
+                argv.push("-W".into());
+                argv.push(format!(
+                    "{}:{}",
+                    crate::remote::url_host(url.dial_host()),
+                    url.port
+                ));
+                argv.push("--".into());
+                argv.push(last.to_string());
+                argv
+            }
+            Proxy::Command(command) => vec!["sh".into(), "-c".into(), command.clone()],
+        }
+    }
+}
+
+/// A connection that is a program's standard input and output: one end
+/// of a socket pair, the other end being the program's. libssh2 talks
+/// to a socket with send and recv, which a pipe does not take - hence
+/// the pair. The program lives exactly as long as the session.
+struct Proxied {
+    socket: std::os::unix::net::UnixStream,
+    child: std::process::Child,
+}
+
+impl std::os::fd::AsRawFd for Proxied {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        self.socket.as_raw_fd()
+    }
+}
+
+impl Drop for Proxied {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Proxied {
+    /// Start the proxy, and a thread keeping what it says on stderr -
+    /// the reason, when it fails.
+    fn spawn(proxy: &Proxy, url: &SftpUrl) -> Result<(Proxied, Arc<Mutex<String>>), String> {
+        use std::os::unix::process::CommandExt;
+        let argv = proxy.argv(url);
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().map_err(|e| e.to_string())?;
+        let input = theirs.try_clone().map_err(|e| e.to_string())?;
+        let mut command = std::process::Command::new(&argv[0]);
+        command
+            .args(&argv[1..])
+            .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(input)))
+            .stdout(std::process::Stdio::from(std::os::fd::OwnedFd::from(
+                theirs,
+            )))
+            .stderr(std::process::Stdio::piped());
+        // a session of its own: no controlling terminal, so nothing it
+        // runs can read rcmd's keys or write over its screen
+        // SAFETY: setsid is async-signal-safe and touches no memory
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().map_err(|e| format!("{}: {e}", argv[0]))?;
+        drop(command); // closes the parent's copies of the child's end
+        let said = Arc::new(Mutex::new(String::new()));
+        if let Some(mut stderr) = child.stderr.take() {
+            let said = Arc::clone(&said);
+            thread::spawn(move || {
+                let mut buf = [0u8; 1024];
+                while let Ok(n) = stderr.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    let mut said = said.lock().unwrap_or_else(|p| p.into_inner());
+                    if said.len() < 4096 {
+                        said.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    }
+                }
+            });
+        }
+        Ok((
+            Proxied {
+                socket: ours,
+                child,
+            },
+            said,
+        ))
     }
 }
 
@@ -295,27 +453,44 @@ impl Ask for Replay<'_> {
 
 fn dial(url: &SftpUrl, ask: &mut dyn Ask) -> Result<Session, String> {
     let host = url.dial_host();
-    ask.info(format!("Connecting to {host}:{}…", url.port));
-    let addrs = (host, url.port)
-        .to_socket_addrs()
-        .map_err(|e| format!("{host}: {e}"))?;
-    let mut tcp = None;
-    let mut last_err = format!("{host}: no addresses");
-    for addr in addrs {
-        match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
-            Ok(s) => {
-                tcp = Some(s);
-                break;
-            }
-            Err(e) => last_err = format!("{addr}: {e}"),
-        }
-    }
-    let tcp = tcp.ok_or(last_err)?;
-
     let mut sess = Session::new().map_err(|e| e.to_string())?;
     sess.set_timeout(IO_TIMEOUT_MS);
-    sess.set_tcp_stream(tcp);
-    sess.handshake().map_err(|e| format!("handshake: {e}"))?;
+    let proxy_said = match &url.proxy {
+        None => {
+            ask.info(format!("Connecting to {host}:{}…", url.port));
+            sess.set_tcp_stream(tcp_to(host, url.port)?);
+            None
+        }
+        Some(proxy) => {
+            let via = match proxy {
+                Proxy::Jump(hops) => format!("via {hops}"),
+                Proxy::Command(_) => "via its ProxyCommand".to_string(),
+            };
+            ask.info(format!("Connecting to {host}:{} {via}…", url.port));
+            let (stream, said) = Proxied::spawn(proxy, url)?;
+            sess.set_tcp_stream(stream);
+            Some(said)
+        }
+    };
+    if let Err(err) = sess.handshake() {
+        // the proxy's own words say more than "handshake failed": they
+        // are complete once it is gone, which dropping the session sees to
+        drop(sess);
+        let said = proxy_said
+            .map(|said| {
+                std::thread::sleep(Duration::from_millis(100));
+                let said = said.lock().unwrap_or_else(|p| p.into_inner());
+                said.lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        return Err(match said {
+            Some(said) => format!("proxy: {said}"),
+            None => format!("handshake: {err}"),
+        });
+    }
 
     check_host_key(url, &sess, ask)?;
 
@@ -324,6 +499,21 @@ fn dial(url: &SftpUrl, ask: &mut dyn Ask) -> Result<Session, String> {
     // keepalives are sent only when asked for; `keep_alive` asks
     sess.set_keepalive(false, KEEPALIVE.as_secs() as u32);
     Ok(sess)
+}
+
+/// A TCP connection to the first of the host's addresses that answers.
+fn tcp_to(host: &str, port: u16) -> Result<TcpStream, String> {
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("{host}: {e}"))?;
+    let mut last_err = format!("{host}: no addresses");
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
+            Ok(s) => return Ok(s),
+            Err(e) => last_err = format!("{addr}: {e}"),
+        }
+    }
+    Err(last_err)
 }
 
 /// Whether an error says the connection itself is gone - the socket
@@ -966,6 +1156,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_proxy_that_fails_says_why_in_its_own_words() {
+        let mut url = SftpUrl::parse("sftp://bob@box/x").unwrap();
+        url.proxy = Some(Proxy::Command(
+            "echo 'gate: no route to box' >&2; exit 1".into(),
+        ));
+        let login = Login::default();
+        let Err(err) = dial(
+            &url,
+            &mut Replay {
+                login: &login,
+                next: 0,
+            },
+        ) else {
+            panic!("a failing proxy connected");
+        };
+        assert_eq!(err, "proxy: gate: no route to box");
+    }
+
+    #[test]
+    fn a_proxy_from_the_config_becomes_the_command_that_carries_it() {
+        let url = SftpUrl::parse("sftp://bob@box:2200/x").unwrap();
+        let jump = crate::sshconfig::HostConfig {
+            hostname: Some("10.0.0.5".into()),
+            proxy_jump: Some("alice@gate, inner:2022".into()),
+            ..Default::default()
+        };
+        let via = url.clone().with_host_config(&jump);
+        assert_eq!(
+            via.proxy,
+            Some(Proxy::Jump("alice@gate, inner:2022".into()))
+        );
+        let argv = via.proxy.as_ref().unwrap().argv(&via);
+        assert_eq!(
+            argv[5..],
+            [
+                "-J",
+                "alice@gate",
+                "-W",
+                "10.0.0.5:2200",
+                "--",
+                "inner:2022"
+            ]
+        );
+        let command = crate::sshconfig::HostConfig {
+            proxy_command: Some("nc %h %p # %r %n 100%%".into()),
+            ..Default::default()
+        };
+        let via = url.clone().with_host_config(&command);
+        assert_eq!(
+            via.proxy,
+            Some(Proxy::Command("nc box 2200 # bob box 100%".into()))
+        );
+        // none is none, even with the other kind set
+        let off = crate::sshconfig::HostConfig {
+            proxy_jump: Some("none".into()),
+            proxy_command: Some("nc %h %p".into()),
+            ..Default::default()
+        };
+        assert_eq!(url.with_host_config(&off).proxy, None);
+    }
+
+    #[test]
     fn a_redial_says_what_the_login_was_told_and_nothing_more() {
         let login = Login {
             answers: vec!["wrong".into(), "secret".into()],
@@ -1012,6 +1264,7 @@ mod tests {
             user: Some("alice".into()),
             port: Some(2222),
             identities: vec!["/keys/%r_%h".into()],
+            ..Default::default()
         };
         let url = SftpUrl::parse("sftp://box/srv")
             .unwrap()

@@ -1071,7 +1071,11 @@ whether or not the ordinary exit question is switched on.
 defaults to your login, path to the remote home. `~/.ssh/config` is
 read the way `ssh` reads it: an alias's `HostName`, `User`, `Port` and
 `IdentityFile` fill in whatever the URL left out, so `sftp://box` goes
-where `ssh box` does. An IPv6 address goes in brackets
+where `ssh box` does. `Include` pulls in other files (wildcards
+allowed, relative to `~/.ssh`). `ProxyJump` goes through a jump host by
+running `ssh -W`, and `ProxyCommand` through any command whose input and
+output are the connection. The jump host is reached in batch mode,
+since rcmd owns the terminal, so it needs a key or the agent. An IPv6 address goes in brackets
 (`sftp://[::1]:2222`). An idle connection sends a keepalive every half
 minute, so a NAT box or firewall does not drop it. A connection that
 drops anyway - the server restarted, the laptop slept - is dialed again

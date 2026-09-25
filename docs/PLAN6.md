@@ -91,7 +91,11 @@ same dead session again, and typing the URL again reuses it. [audit]
 - **FTP** keeps its log-in-again, but a dead link no longer
   permanently records MLSD as unsupported (`ftp.rs:460-464`). [audit]
 
-### T2 - `~/.ssh/config` as ssh reads it
+### T2 - `~/.ssh/config` as ssh reads it - DONE (2026-09-25, 4.49.0)
+
+Shipped as below. An `Include` wildcard takes `*` and `?`, not `[...]`
+classes. The proxy runs in a session of its own, with no controlling
+terminal, and a proxy that fails is reported in its own words.
 
 - **`Include`**, with globs, relative to `~/.ssh`, to OpenSSH's depth
   limit, first value still winning across files.

@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.49.0 - 2026-09-25
+
+- **`~/.ssh/config`'s `Include`, `ProxyJump` and `ProxyCommand`.** A
+  host reached through a bastion was out of reach unless rcmd ran on
+  the bastion, and a config split into `config.d/` files was read only
+  up to the split. `Include` now reads other files where it stands,
+  with wildcards, relative to `~/.ssh`. `ProxyJump` goes through its
+  hosts by running `ssh -W` (in batch mode: the jump host needs a key
+  or the agent, since rcmd owns the terminal), and `ProxyCommand` runs
+  its command with `%h`, `%p`, `%r` and `%n` filled in. The connection
+  is the command's input and output. A proxy that fails is reported
+  in its own words rather than as a failed handshake.
+
 ## 4.48.0 - 2026-09-25
 
 - **A dropped SFTP or FISH connection comes back by itself.** A server
