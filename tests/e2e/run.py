@@ -2076,6 +2076,23 @@ def test_pack():
     s.send(b"\x15" + os.path.join(play, "out", "both.tar.gz").encode() + b"\r",
            wait=STEP * 3)
     check("pack: the second job ran", wait_for(s, "done -"))
+
+    # PLAN6 T5: a .tar.zst, stored, the level set with M-0 on the form
+    s.send(HOME_K, wait=STEP)
+    s.send(b"\x13src", wait=STEP)
+    s.send(ALT_F5, wait=STEP)
+    check("pack: the form offers a level", "M-0..M-9" in s.screen(), s.screen())
+    s.send(b"\x1b0", wait=STEP)
+    check("pack: M-0 sets it", "level 0" in s.screen(), s.screen())
+    zst = os.path.join(play, "out", "src.tar.zst")
+    s.send(b"\x15" + zst.encode() + b"\r", wait=STEP * 3)
+    check("pack: the .tar.zst job ran", wait_for(s, "done -"))
+    if shutil.which("zstd"):
+        listing = subprocess.run(f"zstd -dc '{zst}' | tar tf -", shell=True,
+                                 capture_output=True, text=True).stdout.split()
+        check("pack: zstd and tar read it back",
+              sorted(n.rstrip("/") for n in listing) == ["src", "src/one.txt", "src/two.txt"],
+              listing)
     s.quit()
     with tarfile.open(os.path.join(play, "out", "both.tar.gz")) as t:
         names = sorted(m.name for m in t.getmembers() if m.isfile())

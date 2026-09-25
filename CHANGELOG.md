@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.52.0 - 2026-09-25
+
+- **A compression level when packing.** Alt+F5's form takes Alt+0 to
+  Alt+9 for the level and Alt+- for each format's default, and says
+  which is set. 0 stores a zip, gz or zst as it is, while xz and bzip2
+  compress at their lowest, as `xz -0` and `bzip2 -1` do.
+
+- **Packing writes `.tar.zst`.** zstd tarballs could be browsed but
+  not written. They are now written by the pure-Rust encoder rcmd
+  already uses to read them, which keeps the static build free of
+  another C library. Its only real level is about `zstd -1`.
+
 ## 4.51.0 - 2026-09-25
 
 - **The line editor moves by the character you see.** Left, Right,

@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "4.51.0"
+version = "4.52.0"
 edition = "2024"
 license = "MIT"
 
@@ -39,8 +39,9 @@ flate2 = "1"
 crc32fast = "1"
 xz2 = { version = "0.1", features = ["static"] }
 bzip2 = { version = "0.4", features = ["static"] }
-# decode-only and pure Rust: a read-only VFS never compresses, and the
-# musl static build stays free of another C library
+# pure Rust, so the musl static build stays free of another C library;
+# it decodes all of zstd and encodes at its "fastest" (about zstd -1),
+# which is what .tar.zst packing gets
 ruzstd = "0.9"
 # SHA-256 for the checksum files: pure Rust, so the static musl build
 # stays free of another C library

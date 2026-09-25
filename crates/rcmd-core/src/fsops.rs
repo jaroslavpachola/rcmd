@@ -2760,7 +2760,12 @@ fn try_extract_file(
 /// shadowed by a second copy of the name. Appending in place was
 /// cheaper and left two members with one name, which every reader
 /// resolves its own way.
-pub fn spawn_pack_zip(sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) -> JobHandle {
+pub fn spawn_pack_zip(
+    sources: Vec<PathBuf>,
+    archive: PathBuf,
+    inside: PathBuf,
+    level: Option<u32>,
+) -> JobHandle {
     spawn(move |ctx| {
         let (files, bytes) = scan(&sources);
         let _ = ctx.tx.send(JobEvent::Total { files, bytes });
@@ -2823,7 +2828,7 @@ pub fn spawn_pack_zip(sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) 
                 break;
             }
             let name = src.file_name().unwrap_or_default();
-            if let Err(abort) = pack_tree(ctx, &mut zip, src, &inside.join(name)) {
+            if let Err(abort) = pack_tree(ctx, &mut zip, src, &inside.join(name), level) {
                 outcome = Err(abort);
                 break;
             }
@@ -2968,11 +2973,12 @@ enum TarComp {
     Gz,
     Xz,
     Bz2,
+    Zstd,
 }
 
 impl TarComp {
     fn of(name: &str) -> Option<TarComp> {
-        const SUFFIXES: [(&str, TarComp); 8] = [
+        const SUFFIXES: [(&str, TarComp); 10] = [
             (".tar", TarComp::Plain),
             (".tar.gz", TarComp::Gz),
             (".tgz", TarComp::Gz),
@@ -2981,6 +2987,8 @@ impl TarComp {
             (".tar.bz2", TarComp::Bz2),
             (".tbz2", TarComp::Bz2),
             (".tbz", TarComp::Bz2),
+            (".tar.zst", TarComp::Zstd),
+            (".tzst", TarComp::Zstd),
         ];
         SUFFIXES
             .iter()
@@ -3064,7 +3072,7 @@ fn edit_tar(
     name: &str,
     temp: &Path,
 ) -> Result<Result<(), io::Error>, Aborted> {
-    let mut tar = match TarSink::create(temp, name) {
+    let mut tar = match TarSink::create(temp, name, None) {
         Ok(sink) => tar::Builder::new(sink),
         Err(err) => return Ok(Err(err)),
     };
@@ -3114,7 +3122,14 @@ fn edit_tar(
 /// compressors, so the whole archive is rewritten - existing entries
 /// stream into a temp file with the same compression, the new trees
 /// are appended behind them, and the temp renames over the original.
-pub fn spawn_pack_tar(sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) -> JobHandle {
+/// Pack into a tar, plain or compressed as its name says, at `level`
+/// (0 to 9) or the format's default.
+pub fn spawn_pack_tar(
+    sources: Vec<PathBuf>,
+    archive: PathBuf,
+    inside: PathBuf,
+    level: Option<u32>,
+) -> JobHandle {
     spawn(move |ctx| {
         let (files, bytes) = scan(&sources);
         let _ = ctx.tx.send(JobEvent::Total { files, bytes });
@@ -3123,7 +3138,7 @@ pub fn spawn_pack_tar(sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) 
             let name = archive.file_name().unwrap_or_default().to_string_lossy();
             dir.join(format!(".{name}.rcmd-{}", std::process::id()))
         };
-        match rewrite_tar(ctx, &sources, &archive, &inside, &temp) {
+        match rewrite_tar(ctx, &sources, &archive, &inside, &temp, level) {
             Ok(Ok(())) => {
                 if let Err(err) = fs::rename(&temp, &archive) {
                     let _ = fs::remove_file(&temp);
@@ -3151,6 +3166,35 @@ enum TarSink {
     Gz(flate2::write::GzEncoder<fs::File>),
     Xz(xz2::write::XzEncoder<fs::File>),
     Bz(bzip2::write::BzEncoder<fs::File>),
+    /// ruzstd compresses from a reader rather than as a writer, so the
+    /// tar goes into a pipe and a thread compresses what comes out.
+    Zstd {
+        pipe: io::PipeWriter,
+        worker: thread::JoinHandle<io::Result<()>>,
+    },
+}
+
+/// A file that keeps the first error it meets and takes everything
+/// after it without a word: ruzstd's compressor has no way to hand a
+/// write error back, so it is kept here to be asked about at the end.
+struct Recorded {
+    file: fs::File,
+    err: Option<io::Error>,
+}
+
+impl Write for Recorded {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.err.is_none()
+            && let Err(err) = self.file.write_all(buf)
+        {
+            self.err = Some(err);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 impl Write for TarSink {
@@ -3160,6 +3204,7 @@ impl Write for TarSink {
             TarSink::Gz(w) => w.write(buf),
             TarSink::Xz(w) => w.write(buf),
             TarSink::Bz(w) => w.write(buf),
+            TarSink::Zstd { pipe, .. } => pipe.write(buf),
         }
     }
 
@@ -3169,25 +3214,49 @@ impl Write for TarSink {
             TarSink::Gz(w) => w.flush(),
             TarSink::Xz(w) => w.flush(),
             TarSink::Bz(w) => w.flush(),
+            TarSink::Zstd { pipe, .. } => pipe.flush(),
         }
     }
 }
 
 impl TarSink {
-    fn create(path: &Path, archive_name: &str) -> io::Result<TarSink> {
+    /// A tar written to `path`, wrapped as `archive_name` says, at
+    /// `level` (0 to 9) or each format's default.
+    fn create(path: &Path, archive_name: &str, level: Option<u32>) -> io::Result<TarSink> {
         let comp = TarComp::named(archive_name)?;
         let file = fs::File::create(path)?;
         Ok(match comp {
             TarComp::Plain => TarSink::Plain(file),
             TarComp::Gz => TarSink::Gz(flate2::write::GzEncoder::new(
                 file,
-                flate2::Compression::default(),
+                level.map_or(flate2::Compression::default(), |l| {
+                    flate2::Compression::new(l.min(9))
+                }),
             )),
-            TarComp::Xz => TarSink::Xz(xz2::write::XzEncoder::new(file, 6)),
+            TarComp::Xz => TarSink::Xz(xz2::write::XzEncoder::new(file, level.unwrap_or(6).min(9))),
             TarComp::Bz2 => TarSink::Bz(bzip2::write::BzEncoder::new(
                 file,
-                bzip2::Compression::default(),
+                level.map_or(bzip2::Compression::default(), |l| {
+                    bzip2::Compression::new(l.clamp(1, 9))
+                }),
             )),
+            TarComp::Zstd => {
+                // ruzstd has two levels: stored, and about zstd's 1
+                let level = match level {
+                    Some(0) => ruzstd::encoding::CompressionLevel::Uncompressed,
+                    _ => ruzstd::encoding::CompressionLevel::Fastest,
+                };
+                let (reader, pipe) = io::pipe()?;
+                let worker = thread::spawn(move || {
+                    let mut out = Recorded { file, err: None };
+                    ruzstd::encoding::compress(reader, &mut out, level);
+                    match out.err {
+                        Some(err) => Err(err),
+                        None => out.file.sync_data(),
+                    }
+                });
+                TarSink::Zstd { pipe, worker }
+            }
         })
     }
 
@@ -3197,6 +3266,12 @@ impl TarSink {
             TarSink::Gz(w) => w.finish().map(|_| ()),
             TarSink::Xz(w) => w.finish().map(|_| ()),
             TarSink::Bz(w) => w.finish().map(|_| ()),
+            TarSink::Zstd { pipe, worker } => {
+                drop(pipe); // the end of the tar, for the compressor
+                worker
+                    .join()
+                    .unwrap_or_else(|_| Err(io::Error::other("the zstd compressor failed")))
+            }
         }
     }
 }
@@ -3209,6 +3284,10 @@ fn tar_source(path: &Path, archive_name: &str) -> io::Result<Box<dyn Read>> {
         TarComp::Gz => Box::new(flate2::read::GzDecoder::new(file)),
         TarComp::Xz => Box::new(xz2::read::XzDecoder::new(file)),
         TarComp::Bz2 => Box::new(bzip2::read::BzDecoder::new(file)),
+        TarComp::Zstd => Box::new(
+            ruzstd::decoding::StreamingDecoder::new(file)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?,
+        ),
     })
 }
 
@@ -3221,13 +3300,14 @@ fn rewrite_tar(
     archive: &Path,
     inside: &Path,
     temp: &Path,
+    level: Option<u32>,
 ) -> Result<Result<(), io::Error>, Aborted> {
     let name = archive
         .file_name()
         .unwrap_or_default()
         .to_string_lossy()
         .to_lowercase();
-    let mut tar = match TarSink::create(temp, &name) {
+    let mut tar = match TarSink::create(temp, &name, level) {
         Ok(sink) => tar::Builder::new(sink),
         Err(err) => return Ok(Err(err)),
     };
@@ -3311,6 +3391,7 @@ fn pack_tree(
     zip: &mut zip::ZipWriter<fs::File>,
     src: &Path,
     dst_rel: &Path,
+    level: Option<u32>,
 ) -> Result<(), Aborted> {
     if ctx.cancelled() {
         return Err(Aborted);
@@ -3322,6 +3403,12 @@ fn pack_tree(
     let options = zip::write::SimpleFileOptions::default()
         .unix_permissions(if entry.mode == 0 { 0o644 } else { entry.mode })
         .large_file(true);
+    // 0 is stored as it is; 1 to 9 is deflate's own scale
+    let options = match level {
+        Some(0) => options.compression_method(zip::CompressionMethod::Stored),
+        Some(level) => options.compression_level(Some(i64::from(level.min(9)))),
+        None => options,
+    };
     match entry.kind {
         EntryKind::Dir => {
             let _ = zip.add_directory(format!("{rel_name}/"), options);
@@ -3329,7 +3416,7 @@ fn pack_tree(
                 return Ok(());
             };
             for name in names {
-                pack_tree(ctx, zip, &src.join(&name), &dst_rel.join(&name))?;
+                pack_tree(ctx, zip, &src.join(&name), &dst_rel.join(&name), level)?;
             }
             Ok(())
         }
@@ -5038,16 +5125,76 @@ mod tests {
         assert_eq!(left, ["solo.txt", "tree"]);
     }
 
+    /// A level reaches the archive: stored is bigger than best, a
+    /// .tar.zst reads back through the reader and the zstd tool, and
+    /// the same goes for a zip at 0 and at 9.
+    #[test]
+    fn packing_takes_a_level_and_writes_tar_zst() {
+        let tmp = tempfile::tempdir().unwrap();
+        let payload = tmp.path().join("payload");
+        fs::create_dir(&payload).unwrap();
+        let text = "a line that repeats, and compresses well\n".repeat(4000);
+        fs::write(payload.join("big.txt"), &text).unwrap();
+        let size = |name: &str, level: Option<u32>| {
+            let archive = tmp.path().join(name);
+            let _ = fs::remove_file(&archive);
+            type Pack = fn(Vec<PathBuf>, PathBuf, PathBuf, Option<u32>) -> JobHandle;
+            let pack: Pack = match name.ends_with(".zip") {
+                true => spawn_pack_zip,
+                false => spawn_pack_tar,
+            };
+            let out = run(
+                pack(
+                    vec![payload.clone()],
+                    archive.clone(),
+                    PathBuf::new(),
+                    level,
+                ),
+                vec![],
+            );
+            assert!(!out.aborted, "{name} at {level:?}");
+            let afs = crate::archive::ArchiveFs::open(&archive).unwrap();
+            let mut back = String::new();
+            afs.open_read(Path::new("payload/big.txt"))
+                .unwrap()
+                .read_to_string(&mut back)
+                .unwrap();
+            assert!(back == text, "{name} at {level:?} did not read back");
+            fs::metadata(&archive).unwrap().len()
+        };
+        // 0 stores, where the format has a way to: xz's 0 and bzip2's
+        // lowest still compress, as `xz -0` and `bzip2 -1` do
+        for name in ["x.tar.gz", "x.zip", "x.tar.zst"] {
+            let (stored, best) = (size(name, Some(0)), size(name, Some(9)));
+            assert!(stored > best * 4, "{name}: {stored} stored, {best} at 9");
+            assert!(size(name, None) < stored, "{name}: the default compresses");
+        }
+        for name in ["x.tar.xz", "x.tar.bz2"] {
+            for level in [Some(0), Some(9), None] {
+                size(name, level);
+            }
+        }
+        let zst = tmp.path().join("x.tar.zst");
+        size("x.tar.zst", None);
+        if let Ok(status) = std::process::Command::new("zstd")
+            .args(["-q", "-t"])
+            .arg(&zst)
+            .status()
+        {
+            assert!(status.success(), "zstd -t refused what was written");
+        }
+    }
+
     #[test]
     fn a_tar_name_nobody_taught_it_is_refused_not_bzipped() {
         let tmp = tempfile::tempdir().unwrap();
         for name in ["x.tar", "x.tgz", "x.tar.xz", "x.tbz"] {
             assert!(
-                TarSink::create(&tmp.path().join(name), name).is_ok(),
+                TarSink::create(&tmp.path().join(name), name, None).is_ok(),
                 "{name}"
             );
         }
-        let err = TarSink::create(&tmp.path().join("x.tar.lz"), "x.tar.lz")
+        let err = TarSink::create(&tmp.path().join("x.tar.lz"), "x.tar.lz", None)
             .err()
             .expect("a .tar.lz was written");
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
@@ -5144,7 +5291,7 @@ mod tests {
         fs::write(payload.join("new.txt"), b"added").unwrap();
 
         let result = run(
-            spawn_pack_zip(vec![payload.clone()], archive.clone(), PathBuf::new()),
+            spawn_pack_zip(vec![payload.clone()], archive.clone(), PathBuf::new(), None),
             vec![],
         );
         assert!(!result.aborted);
@@ -5330,8 +5477,12 @@ mod tests {
             fs::write(payload.join("deep/two.txt"), b"second").unwrap();
 
             let handle = match name.ends_with(".zip") {
-                true => spawn_pack_zip(vec![payload.clone()], archive.clone(), PathBuf::new()),
-                false => spawn_pack_tar(vec![payload.clone()], archive.clone(), PathBuf::new()),
+                true => {
+                    spawn_pack_zip(vec![payload.clone()], archive.clone(), PathBuf::new(), None)
+                }
+                false => {
+                    spawn_pack_tar(vec![payload.clone()], archive.clone(), PathBuf::new(), None)
+                }
             };
             let result = run(handle, vec![]);
             assert!(!result.aborted, "{name}");
@@ -5369,7 +5520,7 @@ mod tests {
             }
             zip.finish().unwrap();
         } else {
-            let sink = TarSink::create(&archive, name).unwrap();
+            let sink = TarSink::create(&archive, name, None).unwrap();
             let mut tar = tar::Builder::new(sink);
             for (member, body) in [
                 ("keep.txt", &b"kept"[..]),
@@ -5513,7 +5664,7 @@ mod tests {
         fs::write(&payload, b"the new bytes").unwrap();
 
         let result = run(
-            spawn_pack_zip(vec![payload], archive.clone(), PathBuf::new()),
+            spawn_pack_zip(vec![payload], archive.clone(), PathBuf::new(), None),
             vec![],
         );
         assert!(!result.aborted);
@@ -5536,7 +5687,7 @@ mod tests {
             let archive = tmp.path().join(name);
             // existing archive with one member
             {
-                let sink = TarSink::create(&archive, name).unwrap();
+                let sink = TarSink::create(&archive, name, None).unwrap();
                 let mut tar = tar::Builder::new(sink);
                 let mut header = tar::Header::new_gnu();
                 header.set_size(8);
@@ -5552,7 +5703,7 @@ mod tests {
             std::os::unix::fs::symlink("new.txt", payload.join("link")).unwrap();
 
             let result = run(
-                spawn_pack_tar(vec![payload.clone()], archive.clone(), PathBuf::new()),
+                spawn_pack_tar(vec![payload.clone()], archive.clone(), PathBuf::new(), None),
                 vec![],
             );
             assert!(!result.aborted, "{name}");

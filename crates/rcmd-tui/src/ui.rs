@@ -3939,8 +3939,30 @@ fn buttons_line(labels: &[&str], selected: usize, base: Style, sel: Style) -> Li
 
 fn draw_input(frame: &mut Frame, d: &InputDialog) {
     let style = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
-    let area = centered(64, 5, frame.area());
+    // the pack form says what it will compress at, and how to change it
+    let level = match &d.action {
+        crate::app::InputAction::Pack { level, .. } => Some(*level),
+        _ => None,
+    };
+    let area = centered(64, if level.is_some() { 6 } else { 5 }, frame.area());
     let inner = popup(frame, area, &d.title, style);
+    if let Some(level) = level {
+        let text = match level {
+            Some(0) => "level 0 (zip, gz, zst: stored)".to_string(),
+            Some(level) => format!("level {level}"),
+            None => "level: the format's default".to_string(),
+        };
+        let row = Rect {
+            x: inner.x + 1,
+            y: inner.y + 3,
+            width: inner.width.saturating_sub(2),
+            height: 1,
+        };
+        frame.render_widget(
+            Line::from(format!("{text}  ·  M-0..M-9 set it, M-- default")).style(style),
+            row,
+        );
+    }
     draw_field(frame, inner, &d.field.value, d.field.cursor);
 }
 

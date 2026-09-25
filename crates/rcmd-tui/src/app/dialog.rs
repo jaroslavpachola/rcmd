@@ -228,6 +228,16 @@ impl App {
                     self.dialog = Some(Dialog::Input(d));
                     self.complete_focused(false);
                 }
+                // the pack form's level: M-0 to M-9, M-- for the default
+                KeyCode::Char(c @ ('0'..='9' | '-'))
+                    if key.modifiers.contains(KeyModifiers::ALT)
+                        && matches!(d.action, InputAction::Pack { .. }) =>
+                {
+                    if let InputAction::Pack { level, .. } = &mut d.action {
+                        *level = c.to_digit(10);
+                    }
+                    self.dialog = Some(Dialog::Input(d));
+                }
                 _ => {
                     d.field.key(key);
                     self.dialog = Some(Dialog::Input(d));
@@ -1671,13 +1681,13 @@ impl App {
                 }
             }
 
-            InputAction::Pack { sources } => {
+            InputAction::Pack { sources, level } => {
                 let archive = self.resolve(value.trim());
                 if archive.is_dir() {
                     self.status = Some(" that is a directory, not an archive name ".into());
                     return;
                 }
-                self.start_pack(sources, archive, PathBuf::new());
+                self.start_pack(sources, archive, PathBuf::new(), level);
             }
             InputAction::Apply => self.run_apply(&value),
             InputAction::Checksum { paths } => {

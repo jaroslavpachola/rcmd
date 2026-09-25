@@ -1870,7 +1870,7 @@ impl App {
         }
         match (split_vfs_dest(value), !src_archive) {
             (Some(_), false) => self.status = Some(" cannot copy from archive to archive ".into()),
-            (Some((archive, inside)), true) => self.start_pack(sources, archive, inside),
+            (Some((archive, inside)), true) => self.start_pack(sources, archive, inside, None),
             (None, true) => {
                 self.start_transfer(sources, value, fsops::spawn_copy, "copy", opts, rename)
             }
@@ -1989,23 +1989,25 @@ impl App {
 
     /// Copy INTO an archive: zip appends in place, tar (plain or
     /// compressed) goes through a full rewrite-append.
-    pub(super) fn start_pack(&mut self, sources: Vec<PathBuf>, archive: PathBuf, inside: PathBuf) {
+    pub(super) fn start_pack(
+        &mut self,
+        sources: Vec<PathBuf>,
+        archive: PathBuf,
+        inside: PathBuf,
+        level: Option<u32>,
+    ) {
         let name = archive
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .to_lowercase();
-        let is_tar = [
-            ".tar", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tbz",
-        ]
-        .iter()
-        .any(|ext| name.ends_with(ext));
         let handle = if name.ends_with(".zip") {
-            fsops::spawn_pack_zip(sources.clone(), archive.clone(), inside)
-        } else if is_tar {
-            fsops::spawn_pack_tar(sources.clone(), archive.clone(), inside)
+            fsops::spawn_pack_zip(sources.clone(), archive.clone(), inside, level)
+        } else if fsops::is_tar_name(&name) {
+            fsops::spawn_pack_tar(sources.clone(), archive.clone(), inside, level)
         } else {
-            self.status = Some(" only .zip and .tar[.gz/.xz/.bz2] archives can be written ".into());
+            self.status =
+                Some(" only .zip and .tar[.gz/.xz/.bz2/.zst] archives can be written ".into());
             return;
         };
         self.jobs.push(Job {
@@ -3246,7 +3248,10 @@ impl App {
         self.dialog = Some(Dialog::Input(InputDialog::new(
             format!(" Pack {} to: ", self.describe(&sources)),
             value,
-            InputAction::Pack { sources },
+            InputAction::Pack {
+                sources,
+                level: None,
+            },
         )));
     }
 

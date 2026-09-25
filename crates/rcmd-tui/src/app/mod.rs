@@ -194,6 +194,8 @@ pub enum InputAction {
     /// M-F5: the value is the archive to pack the marked files into.
     Pack {
         sources: Vec<PathBuf>,
+        /// 0 to 9, or `None` for each format's default.
+        level: Option<u32>,
     },
     /// F9 → Command → Remote link: the value is an sftp:// or ftp:// URL.
     SftpConnect,

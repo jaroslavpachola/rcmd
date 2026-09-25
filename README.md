@@ -961,13 +961,17 @@ at open; each member read decodes only that member.
 
 **Alt+F5 packs**: the marked entries (or the one under the cursor) go
 into an archive of their own. The **name decides the container** -
-`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.xz`/`.txz`, `.tar.bz2`/`.tbz2` -
-and it is offered in the other panel's directory, named after the single
+`.zip`, `.tar`, `.tar.gz`/`.tgz`, `.tar.xz`/`.txz`, `.tar.bz2`/`.tbz2`,
+`.tar.zst`/`.tzst` - and it is offered in the other panel's directory, named after the single
 entry or after the directory holding several, the way either would have
 been named by hand. One entry or a whole tree goes in; a name that is
 already an archive is added to rather than replaced, which is the same
 thing F5 into an open one does. Anything rcmd cannot write itself says
-so rather than producing an empty file.
+so rather than producing an empty file. On the form, **Alt+0 to Alt+9**
+set the compression level and **Alt+-** goes back to each format's
+default. 0 stores a zip, gz or zst as it is, while xz and bzip2 still
+compress at their lowest. zstd is written by a pure-Rust encoder, whose
+only real level is about `zstd -1`.
 
 **Alt+F6 extracts**: the marked archives (or the one under the cursor)
 unpack into the other panel, each into a directory named after it -

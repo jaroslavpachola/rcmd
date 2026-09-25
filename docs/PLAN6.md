@@ -135,7 +135,13 @@ cross. [audit] Snap those four to grapheme boundaries
 and measure `field_row` per grapheme. The cursor stays a character
 index, so none of its 134 uses elsewhere change.
 
-### T5 - packing with a choice
+### T5 - packing with a choice - DONE (2026-09-25, 4.52.0)
+
+Shipped as below, the level set with M-0..M-9 on the pack form rather
+than in a field of its own. Level 0 stores for zip, gz and zst; xz and
+bzip2 have no stored mode and compress at their lowest. ruzstd has no
+streaming encoder, so the tar goes through a pipe to a thread that
+compresses it.
 
 - **A compression level** on the pack form (M-F5), from 0 to 9, blank
   meaning the default: gz, xz, bz2 and zip each take one.
