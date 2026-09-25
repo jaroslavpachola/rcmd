@@ -42,6 +42,46 @@ pub trait FsProvider: Send + Sync {
     fn reopen(&self) -> Option<io::Result<std::sync::Arc<dyn FsProvider>>> {
         None
     }
+    /// Put the sources of a job in the order they are cheapest to read
+    /// in: an archive's own, where it is a stream that reading out of
+    /// order would start over. The default leaves them as they are.
+    fn read_order(&self, _paths: &mut [PathBuf]) {}
+    /// Get everything under `paths` ready to be read at once, ahead of a
+    /// job that reads it file by file - for a provider whose reads each
+    /// cost a whole pass (an archive only an external tool can open).
+    /// What it unpacks goes in a directory it makes under `scratch`,
+    /// and is gone when the returned guard is dropped. `step` hears the
+    /// percentage done and says whether to go on. A file it could not
+    /// get ready is read the slow way, so an error here costs time only.
+    fn prefetch(
+        &self,
+        _paths: &[PathBuf],
+        _scratch: &Path,
+        _step: &mut dyn FnMut(u64) -> bool,
+    ) -> io::Result<Prefetched> {
+        Ok(Prefetched::none())
+    }
+}
+
+/// What a [`FsProvider::prefetch`] left behind, cleared away on drop.
+pub struct Prefetched(Option<Box<dyn FnOnce() + Send>>);
+
+impl Prefetched {
+    pub fn none() -> Prefetched {
+        Prefetched(None)
+    }
+
+    pub fn with(clear: impl FnOnce() + Send + 'static) -> Prefetched {
+        Prefetched(Some(Box::new(clear)))
+    }
+}
+
+impl Drop for Prefetched {
+    fn drop(&mut self) {
+        if let Some(clear) = self.0.take() {
+            clear();
+        }
+    }
 }
 
 /// Write operations. Failures are ordinary `io::Error`s so the job

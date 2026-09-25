@@ -915,9 +915,13 @@ is forgotten - and a mount point says it is not rcmd's to free.
 Far keeps its drive menu.
 
 **rar, 7z, lha/lzh, arj and cab** browse through an installed `7z`
-(p7zip - rar needs its nonfree codec) or `unrar`, read-only and streamed
-one member at a time. Without one of those tools installed, opening one
-says which tool it wants rather than failing silently.
+(p7zip - rar needs its nonfree codec) or `unrar`, read-only. Viewing a
+member streams that one member; a copy out of the archive unpacks
+everything it takes in one run of the tool, beside the destination,
+with its progress on the file bar - so a solid 7z is decompressed once
+for the lot rather than once per file. Without one of those tools
+installed, opening one says which tool it wants rather than failing
+silently.
 
 An **mbox** (`.mbox`, `.mbx`, plain or compressed) browses as the
 messages in it, each numbered so name order is arrival order and named

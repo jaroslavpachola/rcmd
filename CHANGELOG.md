@@ -1,5 +1,36 @@
 # Changelog
 
+## 4.46.0 - 2026-09-25
+
+- **rar, 7z, lha, arj and cab extract in one run of the tool.** Every
+  file copied out of one started `7z` or `unrar` for that file alone
+  and held its output in memory, and a solid 7z decompressed its block
+  from the start for each - 3,000 files took most of a minute. A copy
+  out of one now unpacks everything it takes in a single run, into a
+  hidden directory beside the destination (its progress on the file
+  bar, Esc stopping it), and then copies from there as before, so the
+  overwrite questions and the report are what they were. The same
+  3,000 files take a second. Viewing a member still streams just that
+  member.
+
+- **Hard links in a tar.** A file with two names in a tar was listed
+  under the first only; the second is now there too, with the first's
+  size, and reads as its bytes - in a .deb's data half as well.
+
+- **Marked files come out of an archive in the archive's order.**
+  Members marked in a name-sorted panel were read in name order, and
+  in a compressed tar each read behind the last started the
+  decompression over - a pass per file. The job now takes its sources
+  in the order the archive holds them.
+
+- **A plain .tar goes to a member.** A member of an uncompressed tar
+  (or a .deb stored plain) is opened where it lies instead of read up
+  to from the top.
+
+- **A file that is not a rar is not an empty rar.** unrar says so and
+  exits cleanly, which read as an archive with nothing in it; it is an
+  error now, as with 7z.
+
 ## 4.45.0 - 2026-09-24
 
 - **Packages and cpio archives extract in one pass.** A file read out

@@ -25,7 +25,7 @@ use crate::iso;
 use crate::mail;
 use crate::patch;
 use crate::rpm;
-use crate::vfs::FsProvider;
+use crate::vfs::{FsProvider, Prefetched};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -118,10 +118,19 @@ pub struct ArchiveFs {
     stream: Kept,
     /// A zip, parsed once at open and kept.
     zip: Option<ZipIndex>,
+    /// Every path, and each directory above it, by when the index first
+    /// met it: the archive's own order, which a job reads its sources in.
+    order: HashMap<PathBuf, u64>,
+    /// Members of an external-tool archive unpacked ahead of a job, one
+    /// run of the tool for the lot.
+    unpacked: Arc<Mutex<Option<Unpacked>>>,
     /// How many times the container was opened and unwrapped from the
     /// top, for the tests to hold the reading to one pass.
     #[cfg(test)]
     opens: std::sync::atomic::AtomicUsize,
+    /// How many times a plain stream was opened at a member instead.
+    #[cfg(test)]
+    seeks: std::sync::atomic::AtomicUsize,
 }
 
 /// A run of bytes inside the container, and what it is wrapped in.
@@ -199,9 +208,13 @@ impl ArchiveFs {
             members: HashMap::new(),
             stream: Arc::new(Mutex::new(None)),
             zip: None,
+            order: HashMap::new(),
+            unpacked: Arc::new(Mutex::new(None)),
             slots: HashMap::new(),
             #[cfg(test)]
             opens: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            seeks: std::sync::atomic::AtomicUsize::new(0),
         };
         match kind {
             Kind::Zip => fs.index_zip()?,
@@ -318,8 +331,32 @@ impl ArchiveFs {
                 (EntryKind::SymlinkFile, link)
             } else if entry_type.is_file() {
                 (EntryKind::File, None)
+            } else if entry_type == tar::EntryType::Link {
+                // a second name for a file written earlier: listed as a
+                // file of that one's size, read as that one's bytes
+                let Some(target) = header.link_name().ok().flatten() else {
+                    continue;
+                };
+                let (name, target) = (
+                    normalize_rel(&prefix.join(normalize_rel(&rel))),
+                    normalize_rel(&prefix.join(normalize_rel(&target))),
+                );
+                let Some(&(_, _, size)) = self.members.get(&target) else {
+                    continue; // points at nothing this tar has
+                };
+                let mtime = header
+                    .mtime()
+                    .ok()
+                    .map(|secs| UNIX_EPOCH + Duration::from_secs(secs));
+                let mode = header.mode().unwrap_or(0) & 0o7777;
+                self.add(&name, EntryKind::File, size, mode, None, mtime);
+                self.links.insert(name, target);
+                continue;
             } else {
-                continue; // devices, fifos, hard links: skip for now
+                // devices, FIFOs and sockets have no bytes, and a copy
+                // out of an archive makes files: nothing to browse, as
+                // in a cpio
+                continue;
             };
             let mtime = header
                 .mtime()
@@ -737,6 +774,15 @@ impl ArchiveFs {
         if rel.as_os_str().is_empty() {
             return;
         }
+        let seen = self.order.len() as u64;
+        let mut up = Some(rel.as_path());
+        while let Some(path) = up.filter(|p| !p.as_os_str().is_empty()) {
+            if self.order.contains_key(path) {
+                break; // and so is everything above it
+            }
+            self.order.insert(path.to_path_buf(), seen);
+            up = path.parent();
+        }
         let parent = rel.parent().map(Path::to_path_buf).unwrap_or_default();
         self.ensure_dir_chain(&parent);
         let name = rel.file_name().unwrap_or_default().to_os_string();
@@ -849,6 +895,22 @@ impl ArchiveFs {
                 continue;
             }
             let text = String::from_utf8_lossy(&output.stdout);
+            // unrar says "x is not RAR archive" and exits 0; a listing
+            // names the archive before anything else
+            if backend.flavor == CmdFlavor::Unrar
+                && !text.lines().any(|l| l.trim_start().starts_with("Archive:"))
+            {
+                let first = text
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty() && !l.starts_with("UNRAR"))
+                    .unwrap_or("not a rar archive");
+                last = io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{}: {first}", backend.program),
+                );
+                continue;
+            }
             let members = match backend.flavor {
                 CmdFlavor::SevenZip => parse_7z_slt(&text),
                 CmdFlavor::Unrar => parse_unrar_vt(&text),
@@ -864,6 +926,21 @@ impl ArchiveFs {
 
     /// Stream one member out through the resolved tool.
     fn read_cmd(&self, rel: &Path) -> io::Result<Box<dyn Read + Send>> {
+        if let Some(unpacked) = self
+            .unpacked
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+            && unpacked.ready.remove(rel)
+        {
+            // read once: the name goes now and the bytes with the handle,
+            // so the scratch shrinks as the job's copies grow
+            let path = unpacked.tree.join(rel);
+            if let Ok(file) = File::open(&path) {
+                let _ = std::fs::remove_file(&path);
+                return Ok(Box::new(file));
+            }
+        }
         let backend = self
             .cmd
             .ok_or_else(|| io::Error::other("archive tool went away"))?;
@@ -890,6 +967,134 @@ impl ArchiveFs {
             return Err(io::Error::other(format!("{}: {first}", backend.program)));
         }
         Ok(Box::new(Cursor::new(output.stdout)))
+    }
+
+    /// Unpack every file under `paths` with one run of the tool, into a
+    /// directory of its own under `scratch`: a solid 7z decompresses its
+    /// block once for the lot, where a read per member went through it
+    /// from the start each time.
+    fn prefetch_cmd(
+        &self,
+        paths: &[PathBuf],
+        scratch: &Path,
+        step: &mut dyn FnMut(u64) -> bool,
+    ) -> io::Result<Prefetched> {
+        let Some(backend) = self.cmd else {
+            return Ok(Prefetched::none());
+        };
+        let mut files = Vec::new();
+        for path in paths {
+            self.files_under(&normalize_rel(path), &mut files);
+        }
+        // a list file is lines of UTF-8; a name it cannot carry is read
+        // the slow way
+        files.retain(|f| f.to_str().is_some_and(|name| !name.contains(['\n', '\r'])));
+        if files.is_empty() {
+            return Ok(Prefetched::none());
+        }
+        let dir = scratch_dir(scratch)?;
+        let guard = {
+            let (dir, unpacked) = (dir.clone(), Arc::clone(&self.unpacked));
+            Prefetched::with(move || {
+                *unpacked.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                let _ = std::fs::remove_dir_all(&dir);
+            })
+        };
+        let (tree, list) = (dir.join("tree"), dir.join("list"));
+        std::fs::create_dir(&tree)?;
+        let mut names = String::new();
+        for file in &files {
+            names.push_str(file.to_str().unwrap_or_default());
+            names.push('\n');
+        }
+        std::fs::write(&list, names)?;
+        let mut command = std::process::Command::new(backend.program);
+        match backend.flavor {
+            // -spd: a name in the list is a name, not a wildcard
+            CmdFlavor::SevenZip => command
+                .args(["x", "-y", "-bsp1", "-bso0", "-bse0", "-spd", "-scsUTF-8"])
+                .arg(format!("-o{}", tree.display()))
+                .arg(format!("-i@{}", list.display()))
+                .arg("--")
+                .arg(&self.path),
+            CmdFlavor::Unrar => command
+                .args(["x", "-y", "-o+", "-p-", "-idc", "-scfl", "--"])
+                .arg(&self.path)
+                .arg(format!("@{}", list.display()))
+                .arg(format!("{}/", tree.display())),
+        };
+        let mut child = command
+            .env("LC_ALL", "C")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        let mut out = child.stdout.take().expect("piped");
+        let mut buf = [0u8; 4096];
+        let mut digits = 0u64;
+        loop {
+            let n = match out.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            // the tools draw their percentage over and over in place;
+            // the last number before a '%' is how far they are
+            let mut at = None;
+            for &b in &buf[..n] {
+                match b {
+                    b'0'..=b'9' => digits = (digits * 10 + u64::from(b - b'0')).min(1000),
+                    b'%' => {
+                        at = Some(digits.min(100));
+                        digits = 0;
+                    }
+                    _ => digits = 0,
+                }
+            }
+            if let Some(percent) = at
+                && !step(percent)
+            {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+            }
+        }
+        let _ = child.wait();
+        // only a plain file inside the tree counts: not a name the tool
+        // led somewhere else through a link it unpacked
+        let root = tree.canonicalize()?;
+        let ready = files
+            .into_iter()
+            .filter(|file| {
+                let path = tree.join(file);
+                path.symlink_metadata().is_ok_and(|m| m.is_file())
+                    && path
+                        .canonicalize()
+                        .is_ok_and(|real| real.starts_with(&root))
+            })
+            .collect();
+        *self.unpacked.lock().unwrap_or_else(|p| p.into_inner()) = Some(Unpacked { tree, ready });
+        Ok(guard)
+    }
+
+    /// Every file at or under `rel`, by its path in the archive.
+    fn files_under(&self, rel: &Path, out: &mut Vec<PathBuf>) {
+        let Some(entry) = self.entry_at(rel) else {
+            if rel.as_os_str().is_empty() {
+                for child in self.index.get(rel).into_iter().flatten() {
+                    self.files_under(&rel.join(&child.name), out);
+                }
+            }
+            return;
+        };
+        match entry.kind {
+            EntryKind::File => out.push(rel.to_path_buf()),
+            EntryKind::Dir => {
+                for child in self.index.get(rel).into_iter().flatten() {
+                    self.files_under(&rel.join(&child.name), out);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// A stream unwrapped from its first byte. Counted, in the tests,
@@ -920,14 +1125,48 @@ impl ArchiveFs {
         }
     }
 
+    /// A stream that is not compressed, opened at `at` rather than read
+    /// up to it: a plain .tar, or a .deb's data.tar when it is stored
+    /// plain. `None` where the stream has to be decoded from the top.
+    fn seek_stream(&self, source: Source, at: u64) -> io::Result<Option<Box<dyn Read + Send>>> {
+        let (start, len) = match source {
+            Source::Root => match self.kind {
+                Kind::Tar(Comp::None) | Kind::Cpio(Comp::None) => (0, None),
+                _ => return Ok(None),
+            },
+            Source::Slice(slice) if slice.comp == Comp::None => (slice.at, Some(slice.len)),
+            Source::Slice(_) => return Ok(None),
+        };
+        #[cfg(test)]
+        self.seeks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(start + at))?;
+        let file = io::BufReader::new(file);
+        Ok(Some(match len {
+            Some(len) => Box::new(file.take(len.saturating_sub(at))),
+            None => Box::new(file),
+        }))
+    }
+
     /// A member's bytes, streamed from its stream: on from where the
     /// last member left it when that is the same stream and not past
     /// this one, from the top otherwise.
     fn read_member(&self, source: Source, at: u64, len: u64) -> io::Result<Box<dyn Read + Send>> {
         let kept = self.stream.lock().unwrap_or_else(|p| p.into_inner()).take();
         let (pos, mut stream) = match kept {
-            Some((was, pos, stream)) if was == source && pos <= at => (pos, stream),
-            _ => (0, self.open_stream(source)?),
+            // the next member, straight on - past the header between
+            Some((was, pos, stream)) if was == source && pos <= at && at - pos <= NEAR => {
+                (pos, stream)
+            }
+            kept => match self.seek_stream(source, at)? {
+                // a plain stream is the file itself: go to the member
+                Some(stream) => (at, stream),
+                None => match kept {
+                    Some((was, pos, stream)) if was == source && pos <= at => (pos, stream),
+                    _ => (0, self.open_stream(source)?),
+                },
+            },
         };
         let skip = at - pos;
         if io::copy(&mut (&mut stream).take(skip), &mut io::sink())? < skip {
@@ -949,6 +1188,27 @@ impl ArchiveFs {
 impl FsProvider for ArchiveFs {
     fn reopen(&self) -> Option<io::Result<Arc<dyn FsProvider>>> {
         Some(ArchiveFs::open(&self.path).map(|fs| Arc::new(fs) as Arc<dyn FsProvider>))
+    }
+
+    fn read_order(&self, paths: &mut [PathBuf]) {
+        paths.sort_by_cached_key(|path| {
+            self.order
+                .get(&normalize_rel(path))
+                .copied()
+                .unwrap_or(u64::MAX)
+        });
+    }
+
+    fn prefetch(
+        &self,
+        paths: &[PathBuf],
+        scratch: &Path,
+        step: &mut dyn FnMut(u64) -> bool,
+    ) -> io::Result<Prefetched> {
+        match self.kind {
+            Kind::Cmd => self.prefetch_cmd(paths, scratch, step),
+            _ => Ok(Prefetched::none()),
+        }
     }
 
     fn read_dir(&self, dir: &Path) -> io::Result<Vec<Entry>> {
@@ -973,28 +1233,12 @@ impl FsProvider for ArchiveFs {
         let rel = normalize_rel(path);
         match self.kind {
             Kind::Cmd => self.read_cmd(&rel),
-            Kind::Cpio(_) | Kind::Ar | Kind::Deb | Kind::Rpm => self.read_streamed(&rel),
             Kind::Iso => self.read_iso(&rel),
             Kind::Patch(_) => self.read_patch(&rel),
             Kind::Mbox(_) => self.read_mbox(&rel),
             Kind::Zip => self.read_zip(&rel),
-            _ => {
-                if let Some(&(source, at, len)) = self.members.get(&rel) {
-                    return self.read_member(source, at, len);
-                }
-                let mut archive = tar::Archive::new(self.open_stream(Source::Root)?);
-                for member in archive.entries()? {
-                    let mut member = member?;
-                    if normalize_rel(&member.path()?) == rel {
-                        let mut buf = Vec::with_capacity(member.size() as usize);
-                        member.read_to_end(&mut buf)?;
-                        return Ok(Box::new(Cursor::new(buf)));
-                    }
-                }
-                Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "not found in archive",
-                ))
+            Kind::Tar(_) | Kind::Cpio(_) | Kind::Ar | Kind::Deb | Kind::Rpm => {
+                self.read_streamed(&rel)
             }
         }
     }
@@ -1160,6 +1404,10 @@ impl Read for Checked {
 /// it stands.
 type Kept = Arc<Mutex<Option<(Source, u64, Box<dyn Read + Send>)>>>;
 
+/// How far ahead a kept stream is read on to a member rather than the
+/// file opened again where the member is: a tar header or two.
+const NEAR: u64 = 64 * 1024;
+
 /// A reader that counts what went through it.
 struct Counting {
     inner: Box<dyn Read>,
@@ -1213,6 +1461,27 @@ impl Drop for Member {
         {
             *self.keep.lock().unwrap_or_else(|p| p.into_inner()) =
                 Some((self.source, self.end, stream));
+        }
+    }
+}
+
+/// Files an external tool unpacked ahead of a job: where, and which of
+/// them are still there to be read.
+struct Unpacked {
+    tree: PathBuf,
+    ready: std::collections::HashSet<PathBuf>,
+}
+
+/// A fresh hidden directory under `parent`, for unpacking into.
+fn scratch_dir(parent: &Path) -> io::Result<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = parent.join(format!(".rcmd-unpack-{}-{n}", std::process::id()));
+        match std::fs::create_dir(&dir) {
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            other => return other.map(|()| dir),
         }
     }
 }
@@ -2760,5 +3029,221 @@ From here on it is just body text.
                 .unwrap();
             assert_eq!(content, format!("I am {name}\n"));
         }
+    }
+
+    #[test]
+    fn a_tar_hard_link_lists_and_reads_as_what_it_links_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("links.tar.gz");
+        let gz = flate2::write::GzEncoder::new(
+            File::create(&path).unwrap(),
+            flate2::Compression::fast(),
+        );
+        let mut tar = tar::Builder::new(gz);
+        let body = b"one file, two names\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o640);
+        header.set_cksum();
+        tar.append_data(&mut header, "dir/first.txt", &body[..])
+            .unwrap();
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Link);
+        header.set_size(0);
+        header.set_mode(0o640);
+        tar.append_link(&mut header, "other/second.txt", "dir/first.txt")
+            .unwrap();
+        // a link to nothing in the archive is left out, not listed empty
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Link);
+        header.set_size(0);
+        tar.append_link(&mut header, "dangling.txt", "not/here.txt")
+            .unwrap();
+        // and a FIFO has nothing to copy out
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Fifo);
+        header.set_size(0);
+        header.set_cksum();
+        tar.append_data(&mut header, "pipe", &[][..]).unwrap();
+        tar.into_inner().unwrap().finish().unwrap();
+
+        let fs = ArchiveFs::open(&path).unwrap();
+        let second = fs.stat(Path::new("other/second.txt")).unwrap();
+        assert_eq!(second.kind, EntryKind::File);
+        assert_eq!(second.size, body.len() as u64);
+        assert_eq!(second.mode, 0o640);
+        let mut got = Vec::new();
+        fs.open_read(Path::new("other/second.txt"))
+            .unwrap()
+            .read_to_end(&mut got)
+            .unwrap();
+        assert_eq!(got, body);
+        assert!(fs.stat(Path::new("dangling.txt")).is_err());
+        assert!(fs.stat(Path::new("pipe")).is_err());
+    }
+
+    #[test]
+    fn a_plain_tar_goes_straight_to_a_member() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("plain.tar");
+        let members = sixty();
+        std::fs::write(&path, tar_of(&members)).unwrap();
+        let fs = ArchiveFs::open(&path).unwrap();
+        let before = fs.opens.load(std::sync::atomic::Ordering::Relaxed);
+        // backwards: every read is behind the last, and none starts over
+        let backwards: Vec<_> = members.iter().rev().cloned().collect();
+        assert_eq!(passes_to_read(&fs, "", &backwards), 0);
+        assert_eq!(fs.opens.load(std::sync::atomic::Ordering::Relaxed), before);
+        assert_eq!(fs.seeks.load(std::sync::atomic::Ordering::Relaxed), 60);
+        // and forwards goes on from one member to the next, as it stands
+        let seeks = fs.seeks.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(passes_to_read(&fs, "", &members[1..]), 0);
+        assert_eq!(fs.seeks.load(std::sync::atomic::Ordering::Relaxed), seeks);
+    }
+
+    #[test]
+    fn a_job_reads_an_archive_in_its_own_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("order.tar.gz");
+        // written in readdir order, which is no order by name
+        let names = [
+            "zeta/a.txt",
+            "zeta/b.txt",
+            "alpha.txt",
+            "mid/c.txt",
+            "beta.txt",
+        ];
+        let members: Vec<_> = names
+            .iter()
+            .map(|n| (n.to_string(), n.as_bytes().to_vec()))
+            .collect();
+        let gz = flate2::write::GzEncoder::new(
+            File::create(&path).unwrap(),
+            flate2::Compression::fast(),
+        );
+        let mut gz = gz;
+        std::io::Write::write_all(&mut gz, &tar_of(&members)).unwrap();
+        gz.finish().unwrap();
+        let fs = ArchiveFs::open(&path).unwrap();
+        // marked in a name-sorted panel
+        let mut sources: Vec<PathBuf> = ["alpha.txt", "beta.txt", "mid", "nowhere", "zeta"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        fs.read_order(&mut sources);
+        assert_eq!(
+            sources,
+            ["zeta", "alpha.txt", "mid", "beta.txt", "nowhere"]
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>()
+        );
+        // read in that order - a directory's files in listing order - it
+        // is one pass
+        let before = fs.opens.load(std::sync::atomic::Ordering::Relaxed);
+        for name in [
+            "zeta/a.txt",
+            "zeta/b.txt",
+            "alpha.txt",
+            "mid/c.txt",
+            "beta.txt",
+        ] {
+            let mut got = String::new();
+            fs.open_read(Path::new(name))
+                .unwrap()
+                .read_to_string(&mut got)
+                .unwrap();
+            assert_eq!(got, name);
+        }
+        assert_eq!(
+            fs.opens.load(std::sync::atomic::Ordering::Relaxed) - before,
+            1
+        );
+    }
+
+    #[test]
+    fn an_external_tool_archive_unpacks_once_for_a_job() {
+        let Some(packer) = ["7za", "7z", "7zz"]
+            .into_iter()
+            .find(|tool| tool_available(tool, "-h"))
+        else {
+            eprintln!("skipping: no 7z binary");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("deep/er")).unwrap();
+        for n in 0..40 {
+            std::fs::write(src.join(format!("deep/er/f{n}.txt")), format!("file {n}\n")).unwrap();
+        }
+        std::fs::write(src.join("top.txt"), b"top\n").unwrap();
+        std::fs::write(src.join("left.txt"), b"left alone\n").unwrap();
+        std::fs::write(src.join("*.txt"), b"a star\n").unwrap();
+        let status = std::process::Command::new(packer)
+            .args(["a", "-bd", "-ms=on", "../box.7z", "."])
+            .current_dir(&src)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let fs = ArchiveFs::open(&tmp.path().join("box.7z")).unwrap();
+        let scratch = tmp.path().join("scratch");
+        std::fs::create_dir(&scratch).unwrap();
+        let mut steps = Vec::new();
+        let sources = [
+            PathBuf::from("deep"),
+            PathBuf::from("top.txt"),
+            PathBuf::from("*.txt"),
+        ];
+        let unpacked = fs
+            .prefetch(&sources, &scratch, &mut |p| {
+                steps.push(p);
+                true
+            })
+            .unwrap();
+        assert!(steps.iter().all(|&p| p <= 100), "{steps:?}");
+        let files_in = |dir: &Path| {
+            let mut n = 0;
+            let mut stack = vec![dir.to_path_buf()];
+            while let Some(d) = stack.pop() {
+                for e in std::fs::read_dir(d).unwrap() {
+                    let e = e.unwrap();
+                    if e.file_type().unwrap().is_dir() {
+                        stack.push(e.path());
+                    } else if e.file_name() != "list" {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        // the selection, and only it, is on disk
+        assert_eq!(files_in(&scratch), 42);
+        let read = |name: &str| {
+            let mut got = String::new();
+            fs.open_read(Path::new(name))
+                .unwrap()
+                .read_to_string(&mut got)
+                .unwrap();
+            got
+        };
+        for n in 0..40 {
+            assert_eq!(read(&format!("deep/er/f{n}.txt")), format!("file {n}\n"));
+        }
+        assert_eq!(read("top.txt"), "top\n");
+        assert_eq!(read("*.txt"), "a star\n");
+        // each file was read from the unpacked tree, which let it go
+        assert_eq!(files_in(&scratch), 0);
+        // a second read, and one outside the selection, go to the tool
+        assert_eq!(read("top.txt"), "top\n");
+        assert_eq!(read("left.txt"), "left alone\n");
+        drop(unpacked);
+        assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
+        // and a cancel stops the tool and leaves nothing behind
+        let err = fs.prefetch(&sources, &scratch, &mut |_| false).err();
+        if let Some(err) = err {
+            assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        }
+        assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
     }
 }

@@ -476,23 +476,13 @@ not repeated here.
   changed-line marks in the editor gutter and ORTHODOX-DIFF §7's git
   actions (S9). (A real Help page - topics, links, Back, contents and
   an About entry - was named here too, and landed in 4.42.0.)
-- **Speed** (an audit of the archive readers after 4.44.0 found zip
-  re-parsing itself for every member, and 4.45.0 gave deb, rpm and
-  cpio the tar reader's kept stream; what was left):
-  - *The external-tool formats* (rar, 7z, lha, arj, cab) start one
-    `7z` or `unrar` per member and hold its output whole, and a solid
-    7z decompresses its block from the start for every member - a few
-    thousand files take minutes. A bulk hook on the provider: an
-    extraction of a tree, or of many marked members, is one
-    `7z x -o<dest>` or `unrar x`, with progress from its output.
-  - *tar read out of order* starts the decompression over: F5 of
-    members marked in a name-sorted panel, from a tar written in
-    readdir order, costs a pass per member. Sort a job's archive
-    sources by their position in the stream before reading them.
-  - *A plain `.tar`* reads its way to a member it could seek to.
-  - *tar's hard links, devices and FIFOs* are left out of the listing
-    ("skip for now" in `index_tar_from`): a hard-linked file is not
-    there at all, which is a gap in what is shown, not only in speed.
+- **Speed**: done. An audit of the archive readers after 4.44.0 found
+  zip re-parsing itself for every member; 4.45.0 gave deb, rpm and
+  cpio the tar reader's kept stream, and 4.46.0 finished the list - the
+  external-tool formats unpack a job's worth in one run of the tool,
+  a job reads its sources in the archive's order, a plain tar seeks,
+  and tar's hard links are listed. tar's devices and FIFOs stay out of
+  the listing, as cpio's do: a copy out of an archive makes files.
 
 The other source is ORTHODOX-DIFF itself: its `Adopt-later` rows
 (yank registers or a collector panel, find inside archives, the fuzzy

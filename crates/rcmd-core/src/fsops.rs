@@ -782,8 +782,11 @@ fn overwrite(path: &Path, len: u64) -> io::Result<()> {
 /// filesystem, with the same progress/overwrite/error protocol as copy.
 pub fn spawn_extract(fs: Arc<dyn FsProvider>, sources: Vec<PathBuf>, dest: PathBuf) -> JobHandle {
     spawn(move |ctx| {
+        let mut sources = sources;
+        fs.read_order(&mut sources);
         let (files, bytes) = scan_provider(&*fs, &sources);
         let _ = ctx.tx.send(JobEvent::Total { files, bytes });
+        let _unpacked = prefetch(ctx, &*fs, &sources, Some(&dest))?;
         let into_dir = dest.is_dir() || sources.len() > 1;
         for src in &sources {
             if ctx.cancelled() {
@@ -831,7 +834,8 @@ pub fn spawn_transfer(
     rename: Option<Rename>,
 ) -> JobHandle {
     spawn_with(opts, move |ctx| {
-        let sources = filter_sources(sources, rename.as_ref());
+        let mut sources = filter_sources(sources, rename.as_ref());
+        src_fs.read_order(&mut sources);
         let multiple = sources.len() > 1;
         // where each source lands, the masks and the dive switch asked
         // of the provider rather than of a local path
@@ -870,6 +874,8 @@ pub fn spawn_transfer(
         } else {
             let (files, bytes) = scan_provider(&*src_fs, &sources);
             let _ = ctx.tx.send(JobEvent::Total { files, bytes });
+            let near = dst_fs.is_local().then_some(dest.as_path());
+            let _unpacked = prefetch(ctx, &*src_fs, &sources, near)?;
             for src in &sources {
                 if ctx.cancelled() {
                     return Err(Aborted);
@@ -2562,6 +2568,41 @@ fn delete_tree(ctx: &mut Ctx, path: &Path) -> Result<(), Aborted> {
         }
     }
     Ok(())
+}
+
+/// Have the source unpack what the job is about to read, where it can
+/// do that in one go, into a scratch directory beside `near` (the local
+/// destination, which has the room the copies need anyway) or in the
+/// temporary directory. How far it is shows on the file bar under the
+/// first source's name, and a cancel stops it; a failure is only lost
+/// time, as each file is then read the way it would have been.
+fn prefetch(
+    ctx: &mut Ctx,
+    fs: &dyn FsProvider,
+    sources: &[PathBuf],
+    near: Option<&Path>,
+) -> Result<crate::vfs::Prefetched, Aborted> {
+    let scratch = match near {
+        Some(dest) if dest.is_dir() => dest.to_path_buf(),
+        Some(dest) => match dest.parent().filter(|p| p.is_dir()) {
+            Some(parent) => parent.to_path_buf(),
+            None => std::env::temp_dir(),
+        },
+        None => std::env::temp_dir(),
+    };
+    let label = sources.first().cloned().unwrap_or_default();
+    ctx.begin_file(100);
+    let unpacked = fs.prefetch(sources, &scratch, &mut |percent| {
+        ctx.file_done = percent;
+        ctx.progress(&label);
+        !ctx.cancelled()
+    });
+    ctx.begin_file(0);
+    match unpacked {
+        Ok(unpacked) => Ok(unpacked),
+        Err(_) if ctx.cancelled() => Err(Aborted),
+        Err(_) => Ok(crate::vfs::Prefetched::none()),
+    }
 }
 
 fn scan_provider(fs: &dyn FsProvider, paths: &[PathBuf]) -> (u64, u64) {
@@ -4908,6 +4949,62 @@ mod tests {
         assert!(!result.aborted);
         let mode = fs::metadata(out.join("tool")).unwrap().permissions().mode();
         assert_eq!(mode & 0o7777, 0o755, "{mode:o}");
+    }
+
+    /// A 7z's members come out of one run of the tool, unpacked beside
+    /// the destination and gone from there once the job is done.
+    #[test]
+    fn extracting_a_7z_unpacks_it_once_and_cleans_up() {
+        let Some(packer) = ["7za", "7z", "7zz"].into_iter().find(|tool| {
+            std::process::Command::new(tool)
+                .arg("-h")
+                .stdout(std::process::Stdio::null())
+                .status()
+                .is_ok()
+        }) else {
+            eprintln!("skipping: no 7z binary");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(src.join("tree/sub")).unwrap();
+        for n in 0..20 {
+            fs::write(src.join(format!("tree/sub/{n}.txt")), format!("{n}\n")).unwrap();
+        }
+        fs::write(src.join("solo.txt"), b"solo\n").unwrap();
+        let status = std::process::Command::new(packer)
+            .args(["a", "-bd", "../box.7z", "."])
+            .current_dir(&src)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let afs = Arc::new(crate::archive::ArchiveFs::open(&tmp.path().join("box.7z")).unwrap());
+        let out = tmp.path().join("out");
+        fs::create_dir(&out).unwrap();
+        let result = run(
+            spawn_extract(
+                afs,
+                vec![PathBuf::from("solo.txt"), PathBuf::from("tree")],
+                out.clone(),
+            ),
+            vec![],
+        );
+        assert!(!result.aborted);
+        assert_eq!(result.files_done, 21);
+        for n in 0..20 {
+            assert_eq!(
+                fs::read_to_string(out.join(format!("tree/sub/{n}.txt"))).unwrap(),
+                format!("{n}\n")
+            );
+        }
+        assert_eq!(fs::read_to_string(out.join("solo.txt")).unwrap(), "solo\n");
+        let mut left: Vec<_> = fs::read_dir(&out)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["solo.txt", "tree"]);
     }
 
     #[test]
