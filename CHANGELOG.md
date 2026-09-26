@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.62.2 - 2026-09-26
+
+- **The editor saves more carefully.** The file a save writes into is
+  made fresh, never opened over something already at its name, and is
+  born with the original's permissions, so a private file is never
+  readable by others halfway through a save; it is flushed to disk
+  before it replaces the original, so a crash cannot leave an empty
+  file behind.
+- **A crash gives the terminal back whole.** Mouse reporting, bracketed
+  paste, the kitty keyboard protocol and the window title are put back
+  on a panic as on a normal exit, where the shell used to be left
+  receiving mouse escape codes.
+
 ## 4.62.1 - 2026-09-26
 
 - **A job or a search nobody watches stops.** Dropping the handle of a

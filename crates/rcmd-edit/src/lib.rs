@@ -290,7 +290,6 @@ impl Editor {
         let target = std::fs::canonicalize(&self.path).unwrap_or_else(|_| self.path.clone());
         let dir = target.parent().unwrap_or_else(|| Path::new("."));
         let name = target.file_name().unwrap_or_default().to_string_lossy();
-        let tmp = dir.join(format!(".{name}.rcmd-{}", std::process::id()));
         // the backup is of what is on disk now, so it is taken before
         // anything is written - and a missing target has nothing to
         // back up, which is not a failure to save
@@ -298,8 +297,9 @@ impl Editor {
             let backup = dir.join(format!("{name}~"));
             std::fs::copy(&target, &backup)?;
         }
+        let (tmp, file) = temp_beside(dir, &name, &target)?;
         let result = (|| -> io::Result<()> {
-            let mut out = io::BufWriter::new(std::fs::File::create(&tmp)?);
+            let mut out = io::BufWriter::new(file);
             // a chunk boundary can fall inside a character sequence
             // the codepage encodes as a unit, so the encoder is handed
             // whole chunks and never half of one
@@ -326,6 +326,9 @@ impl Editor {
             if let Ok(meta) = std::fs::metadata(&target) {
                 let _ = std::fs::set_permissions(&tmp, meta.permissions());
             }
+            // on disk before the rename, or a crash can leave the name
+            // pointing at a file the data never reached
+            out.get_ref().sync_all()?;
             std::fs::rename(&tmp, &target)
         })();
         if result.is_err() {
@@ -1374,6 +1377,34 @@ impl LineSource for Editor {
     }
 }
 
+/// A new file next to `target` to save into. Made fresh, never opened
+/// over something already there (which in a shared directory may be a
+/// link someone else put down), and born with the target's mode, so a
+/// private file is never readable by others halfway through a save.
+fn temp_beside(dir: &Path, name: &str, target: &Path) -> io::Result<(PathBuf, std::fs::File)> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        let mode = std::fs::metadata(target).map_or(0o666, |m| m.permissions().mode() & 0o777);
+        options.mode(mode);
+    }
+    let pid = std::process::id();
+    for n in 0.. {
+        let tmp = dir.join(match n {
+            0 => format!(".{name}.rcmd-{pid}"),
+            n => format!(".{name}.rcmd-{pid}-{n}"),
+        });
+        match options.open(&tmp) {
+            Ok(file) => return Ok((tmp, file)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && n < 100 => {}
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!()
+}
+
 /// `$0`..`$9` become capture groups (empty when the group didn't
 /// participate), `$$` a literal `$`; any other `$` stays verbatim.
 fn expand_replacement(caps: &regex::Captures, replacement: &str) -> String {
@@ -1433,6 +1464,31 @@ mod tests {
         ed.goto(Pos { line: 0, col: 1 }, false);
         ed.move_vert(1, false);
         assert_eq!(ed.cursor, Pos { line: 1, col: 0 });
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_save_writes_through_no_planted_link_and_keeps_a_private_file_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("f.txt");
+        std::fs::write(&path, "secret\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        // someone put a link where the save's temp file would go
+        let victim = tmp.path().join("victim");
+        std::fs::write(&victim, "untouched").unwrap();
+        let planted = tmp
+            .path()
+            .join(format!(".f.txt.rcmd-{}", std::process::id()));
+        std::os::unix::fs::symlink(&victim, &planted).unwrap();
+
+        let mut ed = Editor::open(&path).unwrap();
+        ed.insert("x");
+        ed.save().unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+        assert!(std::fs::read_to_string(&path).unwrap().starts_with('x'));
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

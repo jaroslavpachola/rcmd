@@ -91,6 +91,14 @@ fn main() -> Result<()> {
     let mouse = cfg.mouse;
     let title = cfg.terminal_title;
     let mut terminal = ratatui::init();
+    // ratatui's panic hook leaves raw mode and the alternate screen; the
+    // modes turned on below are ours to turn off, or a panic hands the
+    // shell a terminal still reporting the mouse and the kitty keys
+    let restore = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        release_terminal(title);
+        restore(info);
+    }));
     // keep the title the terminal had, to put back on the way out (the
     // xterm title stack: CSI 22 t pushes, CSI 23 t pops)
     if cfg.terminal_title {
@@ -106,6 +114,13 @@ fn main() -> Result<()> {
     let result = run(args, cfg, warnings, &mut terminal);
     // after run(): the App, and the subshell in it, are gone by now
     rcmd_tui::scratch::cleanup();
+    release_terminal(title);
+    ratatui::restore();
+    result
+}
+
+/// Turn off what main turned on, and put the title back.
+fn release_terminal(title: bool) {
     // Unconditional: the options form can turn the mouse on mid-session
     // (disabling an inactive capture is a harmless escape sequence).
     app::set_mouse_capture(false);
@@ -114,8 +129,6 @@ fn main() -> Result<()> {
     if title {
         print!("\x1b[23;0t");
     }
-    ratatui::restore();
-    result
 }
 
 fn run(
