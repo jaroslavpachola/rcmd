@@ -88,6 +88,8 @@ const TEXT: &[&str] = &[
     "                  whole paths (the clipboard file always, a desktop",
     "                  clipboard where a tool for one is installed)",
     "  C-r             reload both panels",
+    "  Find duplicates (F9 > Command): files below here with a twin,",
+    "                  group by group, all but one of each marked",
     "  C-b             flat view: every file below here in one listing,",
     "                  paths as names (again, or C-r, to go back)",
     "  Panels auto-reload when their directory changes on disk",

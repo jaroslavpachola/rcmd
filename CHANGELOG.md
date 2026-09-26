@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.62.0 - 2026-09-25
+
+- **Find duplicates.** F9 → Command → Find duplicates (or
+  `find-duplicates` in the palette) lists the files under the panel's
+  directory that have a twin, group by group, biggest files first. The
+  groups are found by size, then by a hash of the first 64 KiB, then by
+  a hash of the whole file, so each step reads only what the one before
+  could not tell apart. Every copy but the first of each group is
+  marked, so F8 afterwards keeps one of each.
+
 ## 4.61.0 - 2026-09-25
 
 - **An archive opens wherever it is.** Enter opened an archive only on

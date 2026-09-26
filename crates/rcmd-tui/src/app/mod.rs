@@ -2872,6 +2872,9 @@ pub enum Action {
     /// C-b: every file under the panel's directory in one listing -
     /// TC's branch view - or, on it already, the directory back.
     FlatView,
+    /// Files under the panel's directory that have a twin, in groups,
+    /// every copy but the first marked.
+    FindDuplicates,
     /// M-/: the fuzzy finder over the tree under the panel.
     FuzzyFind,
     Panelize,
@@ -3092,6 +3095,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Directory ho&tlist...", "C-\\", Action::Hotlist)),
             Some(("Directory tr&ee...", "", Action::DirTree)),
             Some(("&Find file...", "M-F7", Action::FindFile)),
+            Some(("Find duplicates", "", Action::FindDuplicates)),
             Some(("Fuzzy find by &path...", "M-/", Action::FuzzyFind)),
             Some(("&Compare directories", "C-x d", Action::CompareDirs)),
             Some(("Synchroni&ze directories...", "", Action::Sync)),

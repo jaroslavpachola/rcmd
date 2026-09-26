@@ -2083,6 +2083,34 @@ def test_nestedarchive():
     shutil.rmtree(root)
 
 
+def test_duplicates():
+    """PLAN7 U3: find duplicates lists files with a twin, group by group,
+    every copy but the first marked - F8 then keeps one of each."""
+    root, play, home = sandbox()
+    os.makedirs(os.path.join(play, "sub"))
+    for name in ("a.txt", "sub/b.txt", "sub/c.txt"):
+        open(os.path.join(play, name), "w").write("the same words\n")
+    open(os.path.join(play, "alone.txt"), "w").write("nobody else\n")
+    s = Session(play, home)
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"find-duplicates\r", wait=STEP * 2)
+    wait_for(s, "match(es)")
+    scr = s.screen()
+    left = "\n".join(line[:COLS // 2] for line in scr.split("\n"))
+    check("duplicates: the three copies are listed, the loner is not",
+          "a.txt" in left and "sub/b.txt" in left and "sub/c.txt" in left
+          and "alone.txt" not in left, left)
+    check("duplicates: all but one are marked", "in 2 file(s)" in scr, scr)
+    s.send(F8, wait=STEP * 2)
+    s.send(b"y", wait=STEP * 3)
+    wait_for(s, "done", timeout=5)
+    left_over = [n for n in ("a.txt", "sub/b.txt", "sub/c.txt")
+                 if os.path.exists(os.path.join(play, n))]
+    check("duplicates: F8 keeps one of each", left_over == ["a.txt"], left_over)
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_kittykeys():
     """PLAN5 S7: in a terminal that has the kitty keyboard protocol, rcmd
     turns it on - and an Esc is an Esc at once, with no prefix to wait
@@ -7400,6 +7428,7 @@ def main():
         test_flatview,
         test_diskusage,
         test_nestedarchive,
+        test_duplicates,
         test_editdrag,
         test_uservfs,
         test_kittykeys,

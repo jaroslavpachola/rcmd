@@ -46,12 +46,16 @@ impl App {
             // a listing is of one filesystem: a member of an archive
             // is only in the results window, which can go into it
             for hit in found.into_iter().filter(|hit| hit.inside.is_none()) {
-                let entries = &mut self.panels[panel].entries;
-                if entries
+                let panel = &mut self.panels[panel];
+                if hit.mark {
+                    panel.marked.insert(hit.entry.name.clone());
+                }
+                if panel
+                    .entries
                     .last()
                     .is_none_or(|last| last.name != hit.entry.name)
                 {
-                    entries.push(hit.entry);
+                    panel.entries.push(hit.entry);
                 }
             }
         }
@@ -484,6 +488,27 @@ impl App {
             }
         };
         self.panels[side].panelize(Vec::new(), format!("{FLAT} {}", root.display()));
+        self.find = Some(FindState {
+            handle,
+            panel: side,
+            count: 0,
+            window: false,
+        });
+    }
+
+    /// The files under the panel's directory that have a twin, group by
+    /// group, biggest first, streamed into the panel - every copy but
+    /// the first marked, so F8 keeps one of each.
+    pub(super) fn find_duplicates(&mut self) {
+        if self.find.is_some() || !self.require_local() {
+            return;
+        }
+        let side = self.active;
+        let root = self.panels[side].local_cwd();
+        let handle =
+            rcmd_core::dupes::spawn_duplicates(root.clone(), !self.panels[side].show_hidden);
+        // the label is short: the marked total shares the bottom edge
+        self.panels[side].panelize(Vec::new(), "duplicates".into());
         self.find = Some(FindState {
             handle,
             panel: side,

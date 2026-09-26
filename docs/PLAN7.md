@@ -29,7 +29,6 @@ screen while it comes down, as viewing a big file there already does.
 The panel keeps a stack of where each nested archive was entered from,
 so archives nest any number deep.
 
-
 Enter opens an archive only on a local panel (`Panel::enter`,
 `panel.rs:583`) [read]. An archive on an SFTP panel or inside another
 archive is just a file. Copy it to a temporary file through its
@@ -48,7 +47,6 @@ The size cache is emptied by anything that may have changed the tree
 (a finished job, the shell, a save), so a delete shows in the parents'
 sizes on the next look.
 
-
 A listing mode that shows every directory's recursive size, computed on
 a thread (the `C-space` walker, all of them at once), with a bar
 relative to the biggest entry, sorted by size. Enter drills in, `..`
@@ -63,7 +61,11 @@ as names - what a find for `*` and panelize gives, one key away and
 without the dialog. F5, F6 and F8 work on it as on any panelized
 listing. A key toggles it back.
 
-### U3 - duplicate finder
+### U3 - duplicate finder - DONE (2026-09-25, 4.62.0)
+
+Shipped into a panelized listing rather than the find window: marks,
+F5, F6 and F8 live in a panel. Within a group, the copy left unmarked is
+the first by path.
 
 A find of its own: files grouped by size, then by a hash of the first
 64 KiB, then by a whole-file hash, streamed into the find window as

@@ -34,6 +34,9 @@ pub struct Found {
     /// For a member of an archive: the archive, relative to the root,
     /// and where the member is inside it.
     pub inside: Option<(PathBuf, PathBuf)>,
+    /// To be marked where it lands: every copy of a duplicate but the
+    /// first.
+    pub mark: bool,
 }
 
 /// One line of a file the content was found on.
@@ -60,6 +63,18 @@ pub struct FindHandle {
 }
 
 impl FindHandle {
+    pub(crate) fn new(
+        events: Receiver<FindEvent>,
+        cancel: Arc<AtomicBool>,
+        thread: JoinHandle<()>,
+    ) -> FindHandle {
+        FindHandle {
+            events,
+            cancel,
+            thread: Some(thread),
+        }
+    }
+
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
@@ -326,6 +341,7 @@ pub fn spawn_find(root: PathBuf, query: Query, skip: Option<SkipFn>) -> Result<F
                         entry: found,
                         hit: None,
                         inside: None,
+                        mark: false,
                     })
                 {
                     flag.store(true, Ordering::Relaxed);
@@ -358,6 +374,7 @@ pub fn spawn_find(root: PathBuf, query: Query, skip: Option<SkipFn>) -> Result<F
                     entry: found.clone(),
                     hit: Some(hit),
                     inside: None,
+                    mark: false,
                 };
                 if !send(result) {
                     flag.store(true, Ordering::Relaxed);
@@ -443,6 +460,7 @@ fn search_archive(
                     entry: member,
                     hit: None,
                     inside,
+                    mark: false,
                 });
                 continue;
             };
@@ -461,6 +479,7 @@ fn search_archive(
                     entry: member.clone(),
                     hit: Some(hit),
                     inside: inside.clone(),
+                    mark: false,
                 });
             }
         }
