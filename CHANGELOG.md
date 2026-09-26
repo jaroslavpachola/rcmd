@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.62.1 - 2026-09-26
+
+- **A job or a search nobody watches stops.** Dropping the handle of a
+  copy, move or delete, or of a find, now cancels it, and a job whose
+  progress has nowhere to go stops at its next file rather than
+  running to the end unseen.
+- Sorting by extension, owner or group works each entry's key out once
+  instead of twice per comparison, which a directory of tens of
+  thousands of files notices.
+
 ## 4.62.0 - 2026-09-25
 
 - **Find duplicates.** F9 → Command → Find duplicates (or

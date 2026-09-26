@@ -80,6 +80,14 @@ impl FindHandle {
     }
 }
 
+/// Dropping the handle stops the walk, rather than leaving it to notice
+/// at its next match that nobody is listening.
+impl Drop for FindHandle {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
 /// "Skip this path?" - supplied by the caller (e.g. a gitignore check);
 /// a skipped directory is not descended into. Sync because the walk
 /// calls it from several threads at once.
@@ -895,17 +903,16 @@ mod tests {
         let thread = handle.thread.take().unwrap();
         // keep draining: a walker blocked on a full channel would look
         // like a hang that has nothing to do with cancelling
-        let events = handle.events;
-        thread::spawn(move || while events.recv().is_ok() {});
+        thread::spawn(move || while handle.events.recv().is_ok() {});
         assert!(joins_within(thread, 30), "cancelled walk never stopped");
     }
 
     #[test]
-    fn dropping_the_receiver_stops_the_walk() {
+    fn dropping_the_handle_stops_the_walk() {
         let t = wide_tree();
         let mut handle = spawn_find(t.path().to_path_buf(), named("*"), None).unwrap();
         let thread = handle.thread.take().unwrap();
-        drop(handle.events); // the window closed on a search still running
+        drop(handle); // the window closed on a search still running
         assert!(
             joins_within(thread, 30),
             "walk never stopped after its receiver went away"

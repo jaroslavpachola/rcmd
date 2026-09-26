@@ -268,6 +268,13 @@ impl JobHandle {
     }
 }
 
+/// A job nobody holds a handle to is a job nobody can answer or stop.
+impl Drop for JobHandle {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
 thread_local! {
     static HOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -1351,14 +1358,20 @@ impl Ctx {
         }
     }
 
+    /// Report how far along the job is. Nobody left to report to means
+    /// the handle was dropped, and the job stops at its next look at
+    /// `cancel` rather than going on unwatched.
     fn progress(&self, current: &Path) {
-        let _ = self.tx.send(JobEvent::Progress {
+        let sent = self.tx.send(JobEvent::Progress {
             files_done: self.files_done,
             bytes_done: self.bytes_done,
             current: current.to_path_buf(),
             file_done: self.file_done,
             file_total: self.file_total,
         });
+        if sent.is_err() {
+            self.cancel.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Start counting a file's own bytes; `progress` reports them until
@@ -3580,6 +3593,24 @@ mod tests {
     /// A FIFO is recreated, not read: opening one for its "contents"
     /// blocks until a writer turns up, and nothing ever did, with the
     /// cancel flag unchecked all the while.
+    #[test]
+    fn dropping_the_handle_stops_the_job() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir(&src).unwrap();
+        for i in 0..2000 {
+            fs::write(src.join(format!("f{i:04}")), b"x").unwrap();
+        }
+        let dst = tmp.path().join("dst");
+
+        let mut handle = spawn_copy(vec![src], dst.clone(), TransferOpts::default(), None);
+        let thread = handle.thread.take().unwrap();
+        drop(handle); // the dialog went away with the copy still going
+        thread.join().unwrap();
+        let copied = fs::read_dir(&dst).map_or(0, |dir| dir.count());
+        assert!(copied < 2000, "the copy ran to the end unwatched");
+    }
+
     #[test]
     fn a_fifo_in_a_copied_tree_is_recreated_not_read() {
         use std::os::unix::fs::FileTypeExt;

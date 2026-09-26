@@ -78,9 +78,10 @@ impl Parser {
     /// The next character past blanks, taken if it is `want`.
     fn eat(&mut self, want: &str) -> bool {
         self.blank();
-        let want: Vec<char> = want.chars().collect();
-        if self.chars[self.at..].starts_with(&want) {
-            self.at += want.len();
+        let rest = &self.chars[self.at..];
+        let len = want.chars().count();
+        if rest.len() >= len && rest.iter().copied().zip(want.chars()).all(|(a, b)| a == b) {
+            self.at += len;
             true
         } else {
             false

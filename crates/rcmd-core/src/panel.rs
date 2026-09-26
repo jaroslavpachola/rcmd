@@ -1071,7 +1071,7 @@ fn sort_entries(
         }
         return;
     }
-    let mut decorated: Vec<(bool, String, Entry)> = std::mem::take(entries)
+    let mut decorated: Vec<(bool, String, Entry, String)> = std::mem::take(entries)
         .into_iter()
         .map(|e| {
             let name = crate::charset::decode_name(&e.name, charset);
@@ -1079,7 +1079,15 @@ fn sort_entries(
                 true => name,
                 false => name.to_lowercase(),
             };
-            (!e.is_dir() && !order.mix_dirs, key, e)
+            // The keys that are strings made on the way are made here,
+            // once, rather than twice in every comparison.
+            let by = match order.key {
+                SortKey::Ext => e.ext(),
+                SortKey::Owner => owner_of(&e),
+                SortKey::Group => group_of(&e),
+                _ => String::new(),
+            };
+            (!e.is_dir() && !order.mix_dirs, key, e, by)
         })
         .collect();
     decorated.sort_by(|a, b| {
@@ -1090,7 +1098,9 @@ fn sort_entries(
         let ord = match key {
             SortKey::Name | SortKey::Unsorted => name_cmp(a, b),
             SortKey::Version => natural_cmp(&a.1, &b.1).then_with(|| a.2.name.cmp(&b.2.name)),
-            SortKey::Ext => a.2.ext().cmp(&b.2.ext()).then_with(|| name_cmp(a, b)),
+            SortKey::Ext | SortKey::Owner | SortKey::Group => {
+                a.3.cmp(&b.3).then_with(|| name_cmp(a, b))
+            }
             SortKey::Size => a.2.size.cmp(&b.2.size).then_with(|| name_cmp(a, b)),
             SortKey::Mtime => a.2.mtime.cmp(&b.2.mtime).then_with(|| name_cmp(a, b)),
             SortKey::Atime => {
@@ -1105,16 +1115,10 @@ fn sort_entries(
                     .cmp(&b.2.extra.ctime)
                     .then_with(|| name_cmp(a, b))
             }
-            SortKey::Owner => owner_of(&a.2)
-                .cmp(&owner_of(&b.2))
-                .then_with(|| name_cmp(a, b)),
-            SortKey::Group => group_of(&a.2)
-                .cmp(&group_of(&b.2))
-                .then_with(|| name_cmp(a, b)),
         };
         if reverse { ord.reverse() } else { ord }
     });
-    *entries = decorated.into_iter().map(|(_, _, e)| e).collect();
+    *entries = decorated.into_iter().map(|(_, _, e, _)| e).collect();
 }
 
 /// The owner as the panel writes it: the name where there is one, the
@@ -1173,7 +1177,7 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     }
 }
 
-fn name_cmp(a: &(bool, String, Entry), b: &(bool, String, Entry)) -> Ordering {
+fn name_cmp(a: &(bool, String, Entry, String), b: &(bool, String, Entry, String)) -> Ordering {
     a.1.cmp(&b.1).then_with(|| a.2.name.cmp(&b.2.name))
 }
 
