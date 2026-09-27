@@ -90,7 +90,12 @@ floats, hex, octal and binary in, `+ - * / % ** ( )` and the size
 suffixes (`= 3G / 4K`). No crate: a small recursive-descent parser in
 core.
 
-### U6 - sort groups (Far's)
+### U6 - sort groups (Far's) - DONE (2026-09-27, 4.64.0)
+
+Per panel, like Mix directories, and on by default wherever groups
+are configured. Groups rank inside the directories and inside the
+files rather than across them, so directories-first needs no
+exception; a reversed key does not reverse the groups.
 
 Masks that pin classes of file to the top of a listing, whatever the
 sort key: `*.rs *.toml` first, `*.o *.tmp` last. They share the mask

@@ -656,6 +656,21 @@ impl App {
                 };
                 self.status = Some(now.into());
             }
+            Action::SortGroups => {
+                let panel = self.panel();
+                if panel.sort_groups.is_none() {
+                    self.status =
+                        Some(" no sort groups: [[sort_group]] in the config makes them ".into());
+                    return;
+                }
+                panel.use_groups = !panel.use_groups;
+                panel.resort();
+                let now = match panel.use_groups {
+                    true => " sort groups on ",
+                    false => " sort groups off ",
+                };
+                self.status = Some(now.into());
+            }
             Action::SortCase => {
                 let panel = self.panel();
                 panel.sort_case = !panel.sort_case;

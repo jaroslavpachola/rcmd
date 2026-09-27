@@ -2168,6 +2168,39 @@ def test_processes():
     shutil.rmtree(root)
 
 
+def test_sortgroups():
+    """PLAN7 U6: [[sort_group]] pins masks ahead of the listing or
+    behind it whatever the key, and sort-groups turns them off."""
+    root, play, home = sandbox()
+    cfg = os.path.join(home, ".config", "rcmd", "config.toml")
+    os.makedirs(os.path.dirname(cfg), exist_ok=True)
+    open(cfg, "w").write(
+        '[[sort_group]]\nmatch = "*.rs"\n\n'
+        '[[sort_group]]\nmatch = "*.o"\nplace = "last"\n')
+    for name in ("a.o", "b.txt", "z.rs", "c.txt"):
+        open(os.path.join(play, name), "w").write(name)
+
+    def order(s):
+        left = [line[:COLS // 2] for line in s.screen().split("\n")]
+        names = []
+        for line in left:
+            for name in ("a.o", "b.txt", "c.txt", "z.rs"):
+                if f" {name} " in line or line.startswith(f"│ {name}"):
+                    names.append(name)
+        return names
+
+    s = Session(play, home)
+    s.send(b"\x12", wait=STEP)
+    check("sortgroups: *.rs first, *.o last",
+          order(s) == ["z.rs", "b.txt", "c.txt", "a.o"], order(s))
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"sort-groups\r", wait=STEP * 2)
+    check("sortgroups: off, the names alone decide",
+          order(s) == ["a.o", "b.txt", "c.txt", "z.rs"], order(s))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_kittykeys():
     """PLAN5 S7: in a terminal that has the kitty keyboard protocol, rcmd
     turns it on - and an Esc is an Esc at once, with no prefix to wait
@@ -7501,6 +7534,7 @@ def main():
         test_diskusage,
         test_nestedarchive,
         test_duplicates,
+        test_sortgroups,
         test_processes,
         test_editdrag,
         test_uservfs,

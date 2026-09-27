@@ -208,6 +208,9 @@ pub struct PanelLook {
     pub sort_reverse: bool,
     pub mix_dirs: bool,
     pub sort_case: bool,
+    /// The sort groups switched off here: said this way round so that
+    /// a state file from before them leaves them on.
+    pub groups_off: bool,
     pub listing: String,
 }
 
@@ -219,6 +222,7 @@ impl PanelLook {
             sort_reverse: panel.sort_reverse,
             mix_dirs: panel.mix_dirs,
             sort_case: panel.sort_case,
+            groups_off: !panel.use_groups,
             listing: crate::config::list_mode_name(panel.list_mode).to_string(),
         }
     }
@@ -229,6 +233,7 @@ impl PanelLook {
         panel.sort_reverse = self.sort_reverse;
         panel.mix_dirs = self.mix_dirs;
         panel.sort_case = self.sort_case;
+        panel.use_groups = !self.groups_off;
         panel.list_mode = crate::config::list_mode_from_name(&self.listing);
     }
 }

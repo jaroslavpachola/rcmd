@@ -320,6 +320,7 @@ pub const ACTIONS: &[(&str, Action)] = &[
     ("extract", Action::Extract),
     ("toggle-split", Action::ToggleSplit),
     ("sort-case", Action::SortCase),
+    ("sort-groups", Action::SortGroups),
     ("menu", Action::Menu),
     ("mark", Action::Mark),
     ("quick-search", Action::QuickSearch),

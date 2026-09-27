@@ -1329,6 +1329,14 @@ type = "exe"           # ...or what the entry is: dir linkdir exe link
 color = "magenta"      #    broken file
 bold = true            # optional; left out, the kind's own weight stands
 
+[[sort_group]]         # Far's sort groups: these come ahead of the rest
+match = "*.rs,*.toml"  # of the listing whatever the sort key (a mask
+                       # list as [[highlight]] takes, or type = "exe")
+[[sort_group]]
+match = "*.o,*.tmp"    # ...and these after it; directories stay first,
+place = "last"         # and F9 > Left/Right > Use sort groups (or
+                       # sort-groups) turns them off for a panel
+
 [[hotlist]]                 # Ctrl+\ - a tree, as in mc
 label = "projects"
 path = "/home/you/git"

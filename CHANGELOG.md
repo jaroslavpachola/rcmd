@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.64.0 - 2026-09-27
+
+- **Sort groups.** `[[sort_group]]` in the config pins classes of file
+  to the top of a listing, or with `place = "last"` to the bottom,
+  whatever it is sorted by: sources first, build output last. A group
+  is a mask list on the name, as `[[highlight]]` takes, or `type =`
+  what the entry is. Groups keep the order they are written in,
+  directories still come first, and a reversed sort reverses inside
+  each group. F9 → Left/Right → Use sort groups (`sort-groups`) turns
+  them off for a panel, and disk usage mode leaves them out.
+
 ## 4.63.1 - 2026-09-27
 
 - **The window's shell keeps what scrolled off.** Ctrl+O in `rcmd-egui`

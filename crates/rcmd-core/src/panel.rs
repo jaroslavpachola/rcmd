@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::archive::ArchiveFs;
-use crate::entry::Entry;
+use crate::entry::{Entry, EntryKind};
 use crate::vfs::{FsProvider, LocalFs, is_archive_name};
 
 /// How long a directory listing may take before the panel switches to a
@@ -61,7 +61,7 @@ pub enum SortKey {
 }
 
 /// How a listing is ordered: the key, and mc's switches beside it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Order {
     pub key: SortKey,
     pub reverse: bool,
@@ -69,6 +69,117 @@ pub struct Order {
     pub mix_dirs: bool,
     /// Names compared as they are spelled; off, case is folded.
     pub case_sensitive: bool,
+    /// Far's sort groups, when they are on.
+    pub groups: Option<Arc<SortGroups>>,
+}
+
+/// Far's sort groups: classes of file pinned ahead of the rest of a
+/// listing, or behind it, whatever the sort key - sources first, build
+/// output last. A group is a mask list on the name, as `[[highlight]]`
+/// takes, or what the entry is. The groups placed first come in the
+/// order given, then everything no group took, then the groups placed
+/// last; within each the sort key decides, and a reversed sort
+/// reverses inside the groups, not the groups themselves. Directories
+/// still come ahead of files unless they are mixed in.
+#[derive(Debug, Default)]
+pub struct SortGroups {
+    rules: Vec<GroupRule>,
+}
+
+#[derive(Debug)]
+struct GroupRule {
+    test: GroupTest,
+    last: bool,
+}
+
+#[derive(Debug)]
+enum GroupTest {
+    Masks(crate::pattern::Masks),
+    Kind(EntryClass),
+}
+
+/// What an entry is, as `type =` names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryClass {
+    Dir,
+    LinkDir,
+    Exe,
+    Link,
+    Broken,
+    File,
+}
+
+impl EntryClass {
+    fn parse(name: &str) -> Option<EntryClass> {
+        Some(match name {
+            "dir" => EntryClass::Dir,
+            "linkdir" => EntryClass::LinkDir,
+            "exe" => EntryClass::Exe,
+            "link" => EntryClass::Link,
+            "broken" => EntryClass::Broken,
+            "file" => EntryClass::File,
+            _ => return None,
+        })
+    }
+
+    fn of(entry: &Entry) -> EntryClass {
+        match entry.kind {
+            EntryKind::Dir => EntryClass::Dir,
+            EntryKind::SymlinkDir => EntryClass::LinkDir,
+            EntryKind::SymlinkFile => EntryClass::Link,
+            EntryKind::SymlinkBroken => EntryClass::Broken,
+            EntryKind::File if entry.is_executable() => EntryClass::Exe,
+            EntryKind::File => EntryClass::File,
+        }
+    }
+}
+
+impl SortGroups {
+    /// Add a group: `masks` on the name or `kind` (`dir linkdir exe
+    /// link broken file`), one of the two; placed after the rest of
+    /// the listing when `last`.
+    pub fn push(
+        &mut self,
+        masks: Option<&str>,
+        kind: Option<&str>,
+        last: bool,
+    ) -> Result<(), String> {
+        let test = match (masks, kind) {
+            (Some(masks), None) => GroupTest::Masks(crate::pattern::Masks::parse(masks, false)),
+            (None, Some(kind)) => GroupTest::Kind(
+                EntryClass::parse(kind).ok_or_else(|| format!("unknown type '{kind}'"))?,
+            ),
+            (Some(_), Some(_)) => return Err("a group has both match and type".into()),
+            (None, None) => return Err("a group has neither match nor type".into()),
+        };
+        self.rules.push(GroupRule { test, last });
+        Ok(())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
+    /// Where an entry goes: the groups placed first rank from 0 in the
+    /// order given, what none takes ranks after them, and the groups
+    /// placed last after that. The first group that takes it wins.
+    fn rank(&self, entry: &Entry, name: &str) -> usize {
+        let first = self.rules.iter().filter(|r| !r.last).count();
+        let (mut before, mut after) = (0, 0);
+        for rule in &self.rules {
+            let takes = match &rule.test {
+                GroupTest::Masks(masks) => masks.matches(name),
+                GroupTest::Kind(class) => *class == EntryClass::of(entry),
+            };
+            match (takes, rule.last) {
+                (true, false) => return before,
+                (true, true) => return first + 1 + after,
+                (false, false) => before += 1,
+                (false, true) => after += 1,
+            }
+        }
+        first
+    }
 }
 
 /// Panel listing format: name-only, the classic three columns, an
@@ -106,6 +217,11 @@ pub struct Panel {
     pub sort_reverse: bool,
     pub mix_dirs: bool,
     pub sort_case: bool,
+    /// Whether this panel's listing keeps to the sort groups.
+    pub use_groups: bool,
+    /// The sort groups there are, the same for both panels; `None`
+    /// when none are configured.
+    pub sort_groups: Option<Arc<SortGroups>>,
     pub show_hidden: bool,
     pub list_mode: ListMode,
     /// MC's "filter": which entries the listing shows at all, as the
@@ -163,6 +279,8 @@ impl Panel {
             sort_reverse: false,
             mix_dirs: false,
             sort_case: false,
+            use_groups: true,
+            sort_groups: None,
             show_hidden: true,
             list_mode: ListMode::Full,
             filter: None,
@@ -540,7 +658,7 @@ impl Panel {
                 dir,
                 self.show_hidden,
                 self.filter.as_ref(),
-                order,
+                order.clone(),
                 self.charset,
             )
         };
@@ -813,6 +931,7 @@ impl Panel {
             reverse: self.sort_reverse,
             mix_dirs: self.mix_dirs,
             case_sensitive: self.sort_case,
+            groups: self.sort_groups.clone().filter(|_| self.use_groups),
         }
     }
 
@@ -1079,6 +1198,7 @@ fn sort_entries(
     charset: Option<&'static crate::charset::Encoding>,
 ) {
     let Order { key, reverse, .. } = order;
+    let groups = order.groups.as_deref().filter(|g| !g.is_empty());
     // Unsorted means what it says, down to not grouping the directories
     // first: the order the listing arrived in is the whole of it. The
     // parent entry is put in front by the loader, and stays there.
@@ -1089,10 +1209,13 @@ fn sort_entries(
         }
         return;
     }
-    let mut decorated: Vec<(bool, String, Entry, String)> = std::mem::take(entries)
+    let mut decorated: Vec<Decorated> = std::mem::take(entries)
         .into_iter()
         .map(|e| {
             let name = crate::charset::decode_name(&e.name, charset);
+            // the groups test the name as it is shown, as the masks of
+            // the select and filter dialogs do
+            let group = groups.map_or(0, |g| g.rank(&e, &name));
             let key = match order.case_sensitive {
                 true => name,
                 false => name.to_lowercase(),
@@ -1105,7 +1228,7 @@ fn sort_entries(
                 SortKey::Group => group_of(&e),
                 _ => String::new(),
             };
-            (!e.is_dir() && !order.mix_dirs, key, e, by)
+            ((!e.is_dir() && !order.mix_dirs, group), key, e, by)
         })
         .collect();
     decorated.sort_by(|a, b| {
@@ -1201,7 +1324,12 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     }
 }
 
-fn name_cmp(a: &(bool, String, Entry, String), b: &(bool, String, Entry, String)) -> Ordering {
+/// An entry as the sort sees it: whether it goes after the directories
+/// and its sort group, which come ahead of the key and are never
+/// reversed; its name as compared; the entry; a key made for it.
+type Decorated = ((bool, usize), String, Entry, String);
+
+fn name_cmp(a: &Decorated, b: &Decorated) -> Ordering {
     a.1.cmp(&b.1).then_with(|| a.2.name.cmp(&b.2.name))
 }
 
@@ -1262,7 +1390,90 @@ mod tests {
             reverse,
             mix_dirs: false,
             case_sensitive: false,
+            groups: None,
         }
+    }
+
+    #[test]
+    fn sort_groups_pin_classes_ahead_and_behind_whatever_the_key() {
+        let mut groups = SortGroups::default();
+        groups.push(Some("*.rs,*.toml"), None, false).unwrap();
+        groups.push(Some("*.o|keep.o"), None, true).unwrap();
+        groups.push(None, Some("exe"), false).unwrap();
+        assert!(groups.push(None, Some("sock"), false).is_err());
+        assert!(groups.push(Some("*"), Some("dir"), false).is_err());
+        let groups = Arc::new(groups);
+        let file = |name: &str, size: u64, mode: u32| Entry {
+            name: name.into(),
+            kind: EntryKind::File,
+            size,
+            mode,
+            ..Entry::parent()
+        };
+        let entries = vec![
+            file("a.o", 1, 0o644),
+            file("run", 2, 0o755),
+            file("notes.txt", 3, 0o644),
+            file("main.rs", 4, 0o644),
+            file("Cargo.toml", 5, 0o644),
+            file("keep.o", 6, 0o644),
+            Entry {
+                name: "src".into(),
+                kind: EntryKind::Dir,
+                ..Entry::parent()
+            },
+        ];
+        let names = |key: SortKey, reverse: bool| {
+            let mut copy = entries.clone();
+            let order = Order {
+                groups: Some(groups.clone()),
+                ..order(key, reverse)
+            };
+            sort_entries(&mut copy, order, None);
+            copy.iter()
+                .map(|e| e.name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        // the directory first still; then *.rs and *.toml, then the
+        // executable, then what no group took (keep.o, which the
+        // group's own exclusion let go), then the object files
+        assert_eq!(
+            names(SortKey::Name, false),
+            [
+                "src",
+                "Cargo.toml",
+                "main.rs",
+                "run",
+                "keep.o",
+                "notes.txt",
+                "a.o"
+            ]
+        );
+        // a reversed key reverses inside the groups, not the groups
+        assert_eq!(
+            names(SortKey::Size, true),
+            [
+                "src",
+                "Cargo.toml",
+                "main.rs",
+                "run",
+                "keep.o",
+                "notes.txt",
+                "a.o"
+            ]
+        );
+        assert_eq!(
+            names(SortKey::Size, false),
+            [
+                "src",
+                "main.rs",
+                "Cargo.toml",
+                "run",
+                "notes.txt",
+                "keep.o",
+                "a.o"
+            ]
+        );
     }
 
     #[test]

@@ -203,6 +203,11 @@ pub struct Config {
     /// Per-name / per-type colour rules, in file order - the first
     /// matching one wins. MC's filehighlight, as TOML.
     pub highlight: Vec<HighlightRule>,
+    /// `[[sort_group]]`: Far's sort groups - masks (or a `type`) whose
+    /// files come ahead of the rest of a listing, or after it with
+    /// `place = "last"`, whatever the sort key.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sort_group: Vec<SortGroupRule>,
 }
 
 /// One row of the directory hotlist. mc's hotlist is a tree, so this is
@@ -466,6 +471,46 @@ pub struct HighlightRule {
     pub bold: Option<bool>,
 }
 
+/// `[[sort_group]]` - `match = "*.rs,*.toml"` or `type = "exe"`, as
+/// `[[highlight]]` takes them, and `place = "first"` (the default) or
+/// `"last"`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SortGroupRule {
+    #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default = "first_place")]
+    pub place: String,
+}
+
+fn first_place() -> String {
+    "first".into()
+}
+
+impl SortGroupRule {
+    /// The rules, ready for a panel's sort; a warning for each that
+    /// could not be understood, which is left out.
+    pub fn compile(rules: &[SortGroupRule]) -> (rcmd_core::panel::SortGroups, Vec<String>) {
+        let mut groups = rcmd_core::panel::SortGroups::default();
+        let mut warnings = Vec::new();
+        for rule in rules {
+            let last = match rule.place.as_str() {
+                "first" => false,
+                "last" => true,
+                other => {
+                    warnings.push(format!("sort_group: place is first or last, not '{other}'"));
+                    continue;
+                }
+            };
+            if let Err(err) = groups.push(rule.pattern.as_deref(), rule.kind.as_deref(), last) {
+                warnings.push(format!("sort_group: {err}"));
+            }
+        }
+        (groups, warnings)
+    }
+}
+
 /// `[[commands]]` - a named shell template with `%f %d %D %t` macros,
 /// shown in the F2 menu; `key` optionally binds it directly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -630,6 +675,7 @@ impl Default for Config {
             panelize: Vec::new(),
             filter: Vec::new(),
             highlight: Vec::new(),
+            sort_group: Vec::new(),
         }
     }
 }

@@ -2993,6 +2993,8 @@ pub enum Action {
     ToggleSplit,
     /// mc's "Case sensitive" sort switch.
     SortCase,
+    /// Far's sort groups on or off for the panel.
+    SortGroups,
     /// S-F4: open the editor on a file that need not exist yet.
     EditNew,
     /// S-F5 / S-F6: copy / rename the cursor file in place - the
@@ -3189,6 +3191,8 @@ const PANEL_MENU: &[MenuEntry] = &[
     Some(("Re&verse sort", "", Action::SortReverse)),
     Some(("Mi&x directories and files", "", Action::SortMix)),
     Some(("Case sensitive sort", "", Action::SortCase)),
+    // no letter: every one in the label is spoken for above
+    Some(("Use sort groups", "", Action::SortGroups)),
     None,
     // "Filter" cannot take a letter of its own here: f, i, l, t, e and
     // r are all spoken for by an entry above or by a menu title, and a
@@ -3586,7 +3590,7 @@ pub struct App {
     git_seen: [Option<PathBuf>; 2],
     /// Disk usage mode, per panel, with the order it replaced - the
     /// key, reverse and mix-directories switches - to go back to.
-    pub du_mode: [Option<(rcmd_core::panel::SortKey, bool, bool)>; 2],
+    pub du_mode: [Option<(rcmd_core::panel::SortKey, bool, bool, bool)>; 2],
     /// The directory each panel's sizes were last filled in for.
     du_seen: [Option<PathBuf>; 2],
     /// Every directory sized this session, by path: climbing back up
@@ -3667,7 +3671,11 @@ impl App {
         // shared settings where it does not (a first run, or a state
         // file older than per-panel looks)
         let looks = state::load().0.panels;
+        let (groups, group_warnings) = config::SortGroupRule::compile(&config.sort_group);
+        warnings.extend(group_warnings);
+        let groups = (!groups.is_empty()).then(|| Arc::new(groups));
         for (i, panel) in [&mut left, &mut right].into_iter().enumerate() {
+            panel.sort_groups = groups.clone();
             match looks.get(i) {
                 Some(look) => look.put_on(panel),
                 None => {
@@ -5303,19 +5311,27 @@ impl App {
         let side = self.active;
         let panel = &mut self.panels[side];
         match self.du_mode[side].take() {
-            Some((key, reverse, mix)) => {
+            Some((key, reverse, mix, groups)) => {
                 panel.sort_key = key;
                 panel.sort_reverse = reverse;
                 panel.mix_dirs = mix;
+                panel.use_groups = groups;
                 panel.resort();
                 self.status = Some(" disk usage off ".into());
             }
             None => {
-                self.du_mode[side] = Some((panel.sort_key, panel.sort_reverse, panel.mix_dirs));
-                // biggest first, directories among the files
+                self.du_mode[side] = Some((
+                    panel.sort_key,
+                    panel.sort_reverse,
+                    panel.mix_dirs,
+                    panel.use_groups,
+                ));
+                // biggest first, directories among the files, and no
+                // group keeping a big one down
                 panel.sort_key = rcmd_core::panel::SortKey::Size;
                 panel.sort_reverse = true;
                 panel.mix_dirs = true;
+                panel.use_groups = false;
                 panel.resort();
                 self.du_seen[side] = None;
                 self.status = Some(" disk usage: sizing every directory… ".into());
