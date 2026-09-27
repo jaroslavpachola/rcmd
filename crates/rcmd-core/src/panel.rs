@@ -645,12 +645,21 @@ impl Panel {
                 .request_dir(self.cwd.clone(), LoadKind::Reload)
                 .map(|_| ());
         }
-        self.panelized = None;
-        let keep = self.selected().map(|e| e.name.clone());
         // re-index the archive so appended members (F5 into a zip) appear
         if let Some(fresh) = self.fs.reopen() {
             self.fs = fresh?;
         }
+        self.relist()
+    }
+
+    /// List the current directory of an archive again from the index
+    /// the panel already has. Moving about inside an archive is this,
+    /// not a reload: re-indexing is a whole pass over the archive - for
+    /// a .deb or a .tar.xz, decompressing all of it - and nothing in it
+    /// changed by walking into a directory.
+    fn relist(&mut self) -> io::Result<()> {
+        self.panelized = None;
+        let keep = self.selected().map(|e| e.name.clone());
         let order = self.order();
         let listing = |dir: &Path, fs: &dyn FsProvider| {
             prepare_listing(
@@ -914,7 +923,13 @@ impl Panel {
         let prev_cursor = std::mem::replace(&mut self.cursor, 0);
         let prev_entries = std::mem::take(&mut self.entries);
         let prev_marked = std::mem::take(&mut self.marked);
-        if let Err(err) = self.reload() {
+        // inside an archive the index is at hand; anywhere else - a
+        // panel just come out of one included - the loader lists it
+        let listed = match self.archive.is_some() {
+            true => self.relist(),
+            false => self.reload(),
+        };
+        if let Err(err) = listed {
             self.cwd = prev_cwd;
             self.cursor = prev_cursor;
             self.entries = prev_entries;
@@ -969,7 +984,10 @@ impl Panel {
 
     pub fn toggle_hidden(&mut self) -> io::Result<()> {
         self.show_hidden = !self.show_hidden;
-        self.reload()
+        match self.archive.is_some() {
+            true => self.relist(),
+            false => self.reload(),
+        }
     }
 
     pub fn is_marked(&self, entry: &Entry) -> bool {
@@ -1474,6 +1492,46 @@ mod tests {
                 "a.o"
             ]
         );
+    }
+
+    #[test]
+    fn walking_about_an_archive_keeps_its_index() {
+        // a .tar.gz is decompressed whole to index it; entering and
+        // leaving a directory in it used to do that again every time
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("pkg.tar.gz");
+        {
+            let gz = flate2::write::GzEncoder::new(
+                fs::File::create(&path).unwrap(),
+                flate2::Compression::fast(),
+            );
+            let mut tar = tar::Builder::new(gz);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(2);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, "usr/share/doc/a.txt", &b"hi"[..])
+                .unwrap();
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+        let mut panel = Panel::new(tmp.path().to_path_buf()).unwrap();
+        panel.open_archive(path).unwrap();
+        let index = panel.fs.clone();
+        for dir in ["usr", "share", "doc"] {
+            panel.select_name(std::ffi::OsStr::new(dir));
+            assert!(panel.enter().unwrap(), "into {dir}");
+        }
+        assert!(panel.entries.iter().any(|e| e.name == "a.txt"));
+        panel.go_up().unwrap();
+        panel.toggle_hidden().unwrap();
+        assert!(
+            Arc::ptr_eq(&index, &panel.fs),
+            "walking re-read the archive"
+        );
+        // Ctrl+R is the one that reads it again, for what a copy added
+        panel.reload().unwrap();
+        assert!(!Arc::ptr_eq(&index, &panel.fs));
+        assert_eq!(panel.cwd, Path::new("usr/share"));
     }
 
     #[test]

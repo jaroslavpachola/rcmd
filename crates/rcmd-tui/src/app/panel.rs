@@ -2700,6 +2700,23 @@ impl App {
             _ => {}
         }
 
+        // A listing in columns: Left and Right go a column across, as
+        // in mc, lynx-like motion or not - there is somewhere sideways
+        // to go, and a directory is entered with Enter
+        if cmd_empty
+            && mods.is_empty()
+            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+            && let Some(rows) = self.column_rows()
+        {
+            let panel = self.panel();
+            let last = panel.entries.len().saturating_sub(1);
+            panel.cursor = match key.code {
+                KeyCode::Right => (panel.cursor + rows).min(last),
+                _ => panel.cursor.saturating_sub(rows),
+            };
+            return;
+        }
+
         // Action keys via the (config-driven) keymap. Plain characters and
         // Left/Right only qualify while the command line is empty - with
         // text present they belong to line editing.
@@ -3599,6 +3616,17 @@ impl App {
 }
 
 impl App {
+    /// How many names one column of the active panel holds, when its
+    /// listing is laid out in more than one column; `None` otherwise.
+    fn column_rows(&self) -> Option<usize> {
+        let columns = match self.panels[self.active].list_mode {
+            ListMode::Brief => usize::from(self.config.columns()),
+            ListMode::User => usize::from(self.listing_format.repeat.max(1)),
+            _ => 1,
+        };
+        (columns > 1).then(|| (self.panel_rows / columns).max(1))
+    }
+
     /// M-g / M-r / M-j: the first, the middle or the last row the panel
     /// has on screen - mc's way of getting across a screenful without
     /// counting.

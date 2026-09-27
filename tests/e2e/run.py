@@ -260,6 +260,7 @@ ALT_F5 = b"\x1b[15;3~"
 SF8 = b"\x1b[19;2~"
 DOWN, END, HOME_K, INSERT = b"\x1b[B", b"\x1b[F", b"\x1b[H", b"\x1b[2~"
 UP = b"\x1b[A"
+RIGHT, LEFT = b"\x1b[C", b"\x1b[D"
 BACKSPACE = b"\x7f"
 
 
@@ -2197,6 +2198,30 @@ def test_sortgroups():
     s.send(b"sort-groups\r", wait=STEP * 2)
     check("sortgroups: off, the names alone decide",
           order(s) == ["a.o", "b.txt", "c.txt", "z.rs"], order(s))
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_briefcolumns():
+    """Left and Right in a listing of several columns go a column
+    across, as mc's do - with lynx-like motion on too, where they
+    would otherwise leave or enter a directory."""
+    root, play, home = sandbox()
+    cfg = os.path.join(home, ".config", "rcmd", "config.toml")
+    os.makedirs(os.path.dirname(cfg), exist_ok=True)
+    open(cfg, "w").write('lynx = true\nlisting = "brief"\nbrief_columns = 2\n')
+    for n in range(60):
+        os.makedirs(os.path.join(play, f"d{n:02}"))
+    s = Session(play, home)
+    title = s.screen().split("\n")[0]
+    s.send(RIGHT, wait=STEP)
+    scr = s.screen()
+    mini = [l for l in scr.split("\n") if "d" in l and "drwx" in l]
+    check("briefcolumns: Right goes a column across, not into d00",
+          scr.split("\n")[0] == title and mini and "d00" not in mini[0], scr)
+    s.send(LEFT, wait=STEP)
+    check("briefcolumns: Left comes back, not up a directory",
+          s.screen().split("\n")[0] == title and "UP--DIR" in s.screen(), s.screen())
     s.quit()
     shutil.rmtree(root)
 
@@ -6453,6 +6478,10 @@ def test_helppages():
     s.send(b"\x7f", wait=STEP)
     check("help pages: Backspace goes back",
           "- Contents" in s.screen().split("\n")[0], s.screen())
+    s.send(b"\t\x1b[Z\r", wait=STEP * 2)   # from Listing (kept): on, and back
+    check("help pages: Shift+Tab picks the link before",
+          "- Listing" in s.screen().split("\n")[0], s.screen())
+    s.send(b"\x7f", wait=STEP)
     rows = s.screen().split("\n")
     y = next(i for i, l in enumerate(rows) if l.strip().startswith("About ")) + 1
     s.send(b"\x1b[<0;5;%dM\x1b[<0;5;%dm" % (y, y), wait=STEP * 2)
@@ -7535,6 +7564,7 @@ def main():
         test_nestedarchive,
         test_duplicates,
         test_sortgroups,
+        test_briefcolumns,
         test_processes,
         test_editdrag,
         test_uservfs,

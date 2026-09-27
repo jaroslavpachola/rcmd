@@ -1,5 +1,22 @@
 # Changelog
 
+## 4.64.1 - 2026-09-27
+
+- **Walking about an archive is quick again.** Entering or leaving a
+  directory inside an archive read the whole archive again - for a
+  .deb, a .tar.xz or a .tar.gz, decompressing all of it - so every
+  Enter in a big package took seconds. The index read on opening is
+  kept now, and only Ctrl+R (or a copy into the archive) reads it
+  again. Opening one reads it once, where it read it twice.
+- **Left and Right go across columns.** In a brief listing of two or
+  more columns (or a user format that repeats), Left and Right move a
+  column over, as mc's do - with lynx-like motion on as well, where
+  they left or entered a directory instead.
+- **Shift+Tab works in the window.** `rcmd-egui` delivered it as Tab
+  with Shift held, which nothing was listening for: the help's
+  previous link, a dialog's previous field and the editor's unindent
+  now get it, as they do in a terminal.
+
 ## 4.64.0 - 2026-09-27
 
 - **Sort groups.** `[[sort_group]]` in the config pins classes of file

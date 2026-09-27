@@ -103,6 +103,9 @@ pub fn collect(
                         KeyCode::Char(c.to_ascii_uppercase()),
                         mods_ct - KeyModifiers::SHIFT,
                     ),
+                    // Shift+Tab is a key of its own to a terminal, and
+                    // every "back one" in the app is waiting for it
+                    KeyCode::Tab if mods.shift => (KeyCode::BackTab, mods_ct - KeyModifiers::SHIFT),
                     _ => (code, mods_ct),
                 };
                 out.push(Input::Key(KeyEvent::new(code, mods_ct)));
@@ -504,6 +507,18 @@ mod tests {
         assert_eq!(
             collected(vec![egui::Event::Cut], egui::Modifiers::SHIFT),
             vec![KeyEvent::new(KeyCode::Delete, KeyModifiers::SHIFT)]
+        );
+    }
+
+    #[test]
+    fn shift_tab_is_back_tab_as_a_terminal_sends_it() {
+        // help's previous link, a dialog's previous field and the
+        // editor's unindent all wait for BackTab, which a window never
+        // said: it sent Tab with the Shift bit
+        let shift = egui::Modifiers::SHIFT;
+        assert_eq!(
+            collected(vec![key(egui::Key::Tab, shift)], shift),
+            vec![KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)]
         );
     }
 

@@ -1235,6 +1235,7 @@ syntax_theme = "auto"  # editor/viewer syntax colours: auto follows the
                        # .tmTheme file, by path or by its stem in syntax/
 keymap = "mc"       # or "modern" (= lynx-like motion on by default)
 lynx = false        # Left/Right = parent/enter; in the options form
+                    # (a listing in columns keeps them for the columns)
 watch = true        # auto-reload panels on external changes
 restore_other_dir = true  # the other panel starts where it was left
 mouse = true        # click/double-click/wheel support
