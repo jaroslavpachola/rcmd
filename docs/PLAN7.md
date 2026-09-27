@@ -96,7 +96,13 @@ Masks that pin classes of file to the top of a listing, whatever the
 sort key: `*.rs *.toml` first, `*.o *.tmp` last. They share the mask
 language with `[[highlight]]`, and are configured the same way.
 
-### U7 - a process panel
+### U7 - a process panel - DONE (2026-09-27, 4.63.0)
+
+A process is named `COMM PID`: the name has to be unique for the panel
+to address it, and a pid alone says nothing. The CPU share is counted
+from the listing before (the first waits 250 ms to have one), and a
+kill checks the process's start time against the listing's, so a
+reused pid is refused. Sort groups (U6) are still open.
 
 `proc://` as a listing: a process per row, its name, pid, user, CPU
 and resident memory as columns, sortable. F8 sends SIGTERM (Shift+F8

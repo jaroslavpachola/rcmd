@@ -1083,6 +1083,8 @@ pub enum ConfirmKind {
     Restore,
     /// `M-Del` about to overwrite and delete.
     Wipe,
+    /// F8 on a `proc://` panel: this signal to the processes.
+    Signal(i32),
 }
 
 /// mc's Learn keys: the keys a terminal is supposed to send, and which
@@ -2971,6 +2973,8 @@ pub enum Action {
     JobReport,
     /// The `trash://` panel.
     Trash,
+    /// The `proc://` panel: the running processes.
+    Processes,
     /// The cursor file against the last commit's version of it.
     DiffHead,
     /// Stage the marked files (or the cursor's) in git's index.
@@ -3116,6 +3120,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("&Jobs...", "C-x j", Action::Jobs)),
             Some(("Acti&ve VFS list...", "C-x a", Action::VfsList)),
             Some(("Tr&ash (trash://)", "", Action::Trash)),
+            Some(("Processes (proc://)", "", Action::Processes)),
             Some(("Command histor&y...", "M-h", Action::HistoryList)),
             Some(("Directory histo&ry...", "M-H", Action::DirHistory)),
             // mc has three of these - extension file, menu file,
@@ -3179,6 +3184,8 @@ const PANEL_MENU: &[MenuEntry] = &[
     // no letter: u is the full listing's, and every other letter in
     // the label is spoken for by an entry above or a menu title
     Some(("Unsorted (as listed)", "", Action::Sort(SortKey::Unsorted))),
+    // a process's share of a CPU: only proc:// has one
+    Some(("Sort by CPU", "", Action::Sort(SortKey::Cpu))),
     Some(("Re&verse sort", "", Action::SortReverse)),
     Some(("Mi&x directories and files", "", Action::SortMix)),
     Some(("Case sensitive sort", "", Action::SortCase)),
@@ -3461,6 +3468,9 @@ pub struct App {
     /// The `trash://` panel's filesystem, made the first time it is
     /// wanted: what F6 there and an undo of F8 restore through.
     trash: Option<Arc<rcmd_core::trashcan::TrashFs>>,
+    /// The `proc://` panel's filesystem, likewise: it remembers what
+    /// each process had used, which is what a CPU share is counted from.
+    procs: Option<Arc<rcmd_core::procs::ProcFs>>,
     /// The full-screen things open besides the panels - mc's screens,
     /// listed behind M-`. The panels are what is underneath them all
     /// rather than one of them, which is why this can be empty.
@@ -3734,6 +3744,7 @@ impl App {
             jobs: Vec::new(),
             undo: Vec::new(),
             trash: None,
+            procs: None,
             filter_sets_on: [Vec::new(), Vec::new()],
             file_history: state::load().0.file_history,
             du_queue: Vec::new(),
@@ -4992,6 +5003,20 @@ impl App {
             // handled above; neither reaches here
             ListMode::Tree | ListMode::User => None,
             ListMode::Brief => Some(SortKey::Name),
+            ListMode::Full if panel.is_processes() => {
+                // [Name (fill), User 8, CPU% 5, Memory 7, Started 12]
+                let name_w = inner_w.saturating_sub(36);
+                [
+                    (name_w, SortKey::Name),
+                    (name_w + 9, SortKey::Owner),
+                    (name_w + 15, SortKey::Cpu),
+                    (name_w + 23, SortKey::Size),
+                ]
+                .iter()
+                .find(|(end, _)| rel < *end)
+                .map(|(_, key)| *key)
+                .or(Some(SortKey::Mtime))
+            }
             ListMode::Full => {
                 // [Name (fill), Size 7, Modify time 12], spacing 1
                 let name_w = inner_w.saturating_sub(21);

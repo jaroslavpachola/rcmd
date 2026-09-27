@@ -2094,6 +2094,7 @@ impl App {
             ConfirmKind::Delete => self.start_delete(d.paths, d.permanent),
             ConfirmKind::Restore => self.start_restore(d.paths, false),
             ConfirmKind::Wipe => self.start_wipe(d.paths),
+            ConfirmKind::Signal(signal) => self.send_signal(d.paths, signal),
             ConfirmKind::Quit => self.quit_now(),
             ConfirmKind::HotlistDelete { group, index } => {
                 self.hotlist_drop(&group, index);

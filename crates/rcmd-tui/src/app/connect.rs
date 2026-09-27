@@ -14,6 +14,9 @@ impl App {
             // first listing
             let path = PathBuf::from("/").join(rest.trim_start_matches('/'));
             remote::spawn_reuse(self.trash_fs(), path, "the trash".into())
+        } else if input.starts_with(rcmd_core::procs::PREFIX) {
+            // one directory, and the first listing is the connection
+            remote::spawn_reuse(self.proc_fs(), PathBuf::from("/"), "the processes".into())
         } else if let Some(url) = fish::ShellUrl::parse(input) {
             // a container, a pod, a phone, root: a local command is the
             // way in, and there is nothing to log in to
@@ -340,8 +343,13 @@ impl App {
                     self.connections.retain(|(p, _)| p != &prefix);
                     self.connections.push((prefix.clone(), Arc::downgrade(&fs)));
                     self.panels[connect.panel].adopt_remote(fs, prefix.clone(), start, entries);
+                    let processes = prefix == rcmd_core::procs::PREFIX;
                     self.status = Some(match (prefix == rcmd_core::trashcan::PREFIX, kept) {
                         (true, _) => " the trash: F6 puts back, F8 deletes for good ".into(),
+                        _ if processes => {
+                            " the processes: F3 shows one, F8 ends it, S-F8 kills it, C-r again "
+                                .into()
+                        }
                         (false, true) => {
                             format!(" connected to {prefix} - the keyring keeps the password ")
                         }

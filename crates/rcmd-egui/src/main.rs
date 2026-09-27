@@ -62,6 +62,8 @@ fn main() -> Result<()> {
     {
         rcmd_edit::set_user_syntax_dir(dir.join("syntax"));
     }
+    // after the directory: a theme may be a file in it
+    warnings.extend(ui::set_syntax_theme(&cfg.syntax_theme));
 
     // $RCMD_EGUI_KEYS: keys played in at startup, spelled the way
     // `config.toml` spells them ("ctrl+o", "f5", "alt+H"), comma

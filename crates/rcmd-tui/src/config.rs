@@ -16,6 +16,11 @@ pub struct Config {
     /// "mc" (classic blue), "dark" (truecolor) or "bw" (no colour at
     /// all, mc's `-b`). Applied at startup.
     pub theme: String,
+    /// The colours the editor and viewer draw syntax in: "auto" picks
+    /// by the theme (a light one for a light background, none for
+    /// "bw"), "none" draws none, and anything else names one of
+    /// syntect's themes or a `.tmTheme` file.
+    pub syntax_theme: String,
     /// "mc" or "modern" (turns lynx-like motion on by default).
     pub keymap: String,
     /// Lynx-like motion: Left = parent directory, Right = enter the
@@ -565,6 +570,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             theme: "mc".into(),
+            syntax_theme: "auto".into(),
             keymap: "mc".into(),
             lynx: None,
             show_hidden: true,
@@ -757,6 +763,7 @@ pub fn sort_key_from_name(name: &str) -> SortKey {
         "group" => SortKey::Group,
         "unsorted" => SortKey::Unsorted,
         "version" => SortKey::Version,
+        "cpu" => SortKey::Cpu,
         _ => SortKey::Name,
     }
 }
@@ -773,6 +780,7 @@ pub fn sort_key_name(key: SortKey) -> &'static str {
         SortKey::Group => "group",
         SortKey::Unsorted => "unsorted",
         SortKey::Version => "version",
+        SortKey::Cpu => "cpu",
     }
 }
 
@@ -993,6 +1001,8 @@ run = "du -sh %t | less"
             SortKey::Owner,
             SortKey::Group,
             SortKey::Unsorted,
+            SortKey::Version,
+            SortKey::Cpu,
         ] {
             assert_eq!(sort_key_from_name(sort_key_name(key)), key);
         }

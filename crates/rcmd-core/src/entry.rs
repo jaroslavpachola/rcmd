@@ -23,6 +23,9 @@ pub struct EntryStat {
     pub ctime: Option<SystemTime>,
     pub nlink: Option<u64>,
     pub inode: Option<u64>,
+    /// A process's share of a CPU since the listing before, in tenths
+    /// of a percent: `proc://` has it, nothing else.
+    pub cpu: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +120,7 @@ fn extra_of(meta: &fs::Metadata) -> EntryStat {
         ctime,
         nlink: Some(meta.nlink()),
         inode: Some(meta.ino()),
+        cpu: None,
     }
 }
 

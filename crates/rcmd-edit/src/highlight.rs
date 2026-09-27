@@ -3,7 +3,7 @@
 //! from the edited line down and scrolling never re-parses from the top.
 
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use syntect::highlighting::{
     HighlightState, Highlighter as SynHl, RangedHighlightIterator, Theme, ThemeSet,
@@ -65,10 +65,80 @@ fn syntax_set() -> &'static SyntaxSet {
     })
 }
 
-fn theme() -> &'static Theme {
+fn builtin_themes() -> &'static ThemeSet {
     static TS: OnceLock<ThemeSet> = OnceLock::new();
-    let themes = TS.get_or_init(ThemeSet::load_defaults);
-    &themes.themes["base16-eighties.dark"]
+    TS.get_or_init(ThemeSet::load_defaults)
+}
+
+/// The colours syntax is drawn in, when not the ones it starts with.
+enum Chosen {
+    Default,
+    Off,
+    Theme(Arc<Theme>),
+}
+
+static CHOSEN: std::sync::RwLock<Chosen> = std::sync::RwLock::new(Chosen::Default);
+
+/// The theme syntax is coloured by now; `None` when it is not coloured.
+fn theme() -> Option<Arc<Theme>> {
+    static DEFAULT: OnceLock<Arc<Theme>> = OnceLock::new();
+    match &*CHOSEN.read().unwrap_or_else(|e| e.into_inner()) {
+        Chosen::Default => Some(
+            DEFAULT
+                .get_or_init(|| Arc::new(builtin_themes().themes[DEFAULT_THEME].clone()))
+                .clone(),
+        ),
+        Chosen::Off => None,
+        Chosen::Theme(theme) => Some(theme.clone()),
+    }
+}
+
+/// The syntax theme until another is chosen: a dark one, which is what
+/// a file manager's blue or black panel is.
+const DEFAULT_THEME: &str = "base16-eighties.dark";
+
+/// Colour syntax by the named theme - one syntect has built in (see
+/// [`syntax_theme_names`]), a `.tmTheme` file by its path, or one by
+/// its stem in the user syntax directory - or not at all, with `None`.
+/// A theme that cannot be loaded leaves the one before in place and
+/// says why. Highlighters already open take it up on their next frame.
+pub fn set_syntax_theme(name: Option<&str>) -> Result<(), String> {
+    let chosen = match name {
+        None => Chosen::Off,
+        Some(name) => Chosen::Theme(Arc::new(load_theme(name)?)),
+    };
+    *CHOSEN.write().unwrap_or_else(|e| e.into_inner()) = chosen;
+    Ok(())
+}
+
+fn load_theme(name: &str) -> Result<Theme, String> {
+    if let Some(theme) = builtin_themes().themes.get(name) {
+        return Ok(theme.clone());
+    }
+    let path = match name.contains('/') || name.ends_with(".tmTheme") {
+        true => std::path::PathBuf::from(name),
+        false => {
+            let dir = USER_SYNTAX
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            match dir.map(|dir| dir.join(format!("{name}.tmTheme"))) {
+                Some(path) if path.is_file() => path,
+                _ => {
+                    return Err(format!(
+                        "unknown syntax theme '{name}' (built in: {})",
+                        syntax_theme_names().join(", ")
+                    ));
+                }
+            }
+        }
+    };
+    ThemeSet::get_theme(&path).map_err(|err| format!("{}: {err}", path.display()))
+}
+
+/// The syntax themes syntect has built in, by name.
+pub fn syntax_theme_names() -> Vec<&'static str> {
+    builtin_themes().themes.keys().map(String::as_str).collect()
 }
 
 /// Every syntax syntect knows, by name and in order, for a picker.
@@ -90,6 +160,9 @@ pub struct Highlighter {
     /// Everything from this line on must be re-derived after an edit.
     dirty_from: usize,
     broken: bool,
+    /// The theme `states` were worked out in: another one since means
+    /// working them out again.
+    theme: Option<Arc<Theme>>,
 }
 
 impl Highlighter {
@@ -103,6 +176,7 @@ impl Highlighter {
             states: Vec::new(),
             dirty_from: 0,
             broken: false,
+            theme: None,
         })
     }
 
@@ -130,6 +204,7 @@ impl Highlighter {
             states: Vec::new(),
             dirty_from: 0,
             broken: false,
+            theme: None,
         })
     }
 
@@ -137,10 +212,10 @@ impl Highlighter {
         self.dirty_from = self.dirty_from.min(line);
     }
 
-    fn initial(&self) -> (ParseState, HighlightState) {
+    fn initial(&self, hl: &SynHl) -> (ParseState, HighlightState) {
         (
             ParseState::new(self.syntax),
-            HighlightState::new(&SynHl::new(theme()), ScopeStack::new()),
+            HighlightState::new(hl, ScopeStack::new()),
         )
     }
 
@@ -157,13 +232,28 @@ impl Highlighter {
         if self.broken {
             return plain;
         }
-        let hl = SynHl::new(theme());
+        let Some(theme) = theme() else {
+            return plain;
+        };
+        if !self
+            .theme
+            .as_ref()
+            .is_some_and(|had| Arc::ptr_eq(had, &theme))
+        {
+            self.states.clear();
+            self.theme = Some(theme.clone());
+        }
+        let hl = SynHl::new(&theme);
+        // text the theme leaves in its plain colour is drawn in the
+        // screen's own: the theme's is picked for its own background,
+        // which the screen behind it need not be
+        let plain_fg = theme.settings.foreground;
         // drop checkpoints past the first edited line
         let keep = self.dirty_from.div_ceil(CHECKPOINT).min(self.states.len());
         self.states.truncate(keep);
         self.dirty_from = self.states.len() * CHECKPOINT;
         if self.states.is_empty() {
-            self.states.push(self.initial());
+            self.states.push(self.initial(&hl));
             self.dirty_from = 0;
         }
 
@@ -211,7 +301,9 @@ impl Highlighter {
             for (style, piece, _) in RangedHighlightIterator::new(&mut hs, &ops, &text, &hl) {
                 let n = piece.chars().count();
                 let fg = style.foreground;
-                spans.push((col, col + n, [fg.r, fg.g, fg.b]));
+                if Some(fg) != plain_fg {
+                    spans.push((col, col + n, [fg.r, fg.g, fg.b]));
+                }
                 col += n;
             }
             out.push(spans);
@@ -239,5 +331,54 @@ impl Highlighter {
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Lines(Vec<&'static str>);
+
+    impl LineSource for Lines {
+        fn line_count(&mut self) -> usize {
+            self.0.len()
+        }
+        fn line_with_nl(&mut self, idx: usize) -> String {
+            format!("{}\n", self.0[idx])
+        }
+    }
+
+    /// One test for the one global: a theme switch reaches a highlighter
+    /// already open, "none" turns colour off, and text in the theme's
+    /// plain colour is left to the screen's.
+    #[test]
+    fn a_new_theme_reaches_an_open_highlighter() {
+        let mut src = Lines(vec!["fn main() {}"]);
+        let mut hl = Highlighter::new(Path::new("x.rs"), 12).unwrap();
+        let colours = |hl: &mut Highlighter, src: &mut Lines| hl.range_spans(src, 0, 1).remove(0);
+
+        set_syntax_theme(Some("InspiredGitHub")).unwrap();
+        let light = colours(&mut hl, &mut src);
+        let plain = builtin_themes().themes["InspiredGitHub"]
+            .settings
+            .foreground
+            .map(|c| [c.r, c.g, c.b]);
+        assert!(!light.is_empty(), "a keyword is coloured");
+        assert!(light.iter().all(|s| Some(s.2) != plain), "{light:?}");
+
+        set_syntax_theme(Some("base16-eighties.dark")).unwrap();
+        let dark = colours(&mut hl, &mut src);
+        assert_ne!(light, dark, "the open highlighter took the new theme up");
+
+        set_syntax_theme(None).unwrap();
+        assert!(colours(&mut hl, &mut src).is_empty());
+
+        assert!(set_syntax_theme(Some("no such theme")).is_err());
+        assert!(
+            colours(&mut hl, &mut src).is_empty(),
+            "a bad name changes nothing"
+        );
+        set_syntax_theme(Some(DEFAULT_THEME)).unwrap();
     }
 }

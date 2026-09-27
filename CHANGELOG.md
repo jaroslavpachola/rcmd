@@ -1,5 +1,24 @@
 # Changelog
 
+## 4.63.0 - 2026-09-27
+
+- **The processes as a panel.** `cd proc://`, or F9 → Command →
+  Processes, lists what is running: each process by its name and pid,
+  with its user, its share of a CPU, its resident memory and when it
+  started as the Full listing's columns, sortable by any of them.
+  Enter says how a process was started and F3 shows its command line,
+  directory and environment. F8 asks the marked processes to end
+  (SIGTERM) and Shift+F8 kills them (SIGKILL), each after asking; a pid
+  taken by another process since the listing is refused. Linux only.
+- **Syntax colours suit the theme.** The editor and viewer drew syntax
+  in one dark palette whatever the theme, which on a light background
+  left plain text pale grey. Plain text now takes the theme's own
+  colour, a light background gets a light syntax palette, and `bw`
+  gets none. `syntax_theme` in the config picks any of syntect's
+  themes or a `.tmTheme` file instead, or `"none"`.
+- The trash panel shows owners by name, as a local panel does, where
+  it showed their numbers.
+
 ## 4.62.2 - 2026-09-26
 
 - **The editor saves more carefully.** The file a save writes into is

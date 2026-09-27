@@ -23,6 +23,7 @@ pub mod mounts;
 pub mod panel;
 pub mod patch;
 pub mod pattern;
+pub mod procs;
 pub mod rclone;
 pub mod remote;
 pub mod rename;

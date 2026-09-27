@@ -88,6 +88,8 @@ fn main() -> Result<()> {
     {
         rcmd_edit::set_user_syntax_dir(dir.join("syntax"));
     }
+    // after the directory: a theme may be a file in it
+    warnings.extend(ui::set_syntax_theme(&cfg.syntax_theme));
     let mouse = cfg.mouse;
     let title = cfg.terminal_title;
     let mut terminal = ratatui::init();

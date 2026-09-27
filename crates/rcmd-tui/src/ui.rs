@@ -360,7 +360,75 @@ pub fn init_theme(name: &str) -> Option<String> {
         apply_color_spec(&spec, &mut theme);
     }
     *THEME.write().unwrap_or_else(|e| e.into_inner()) = Some(theme);
-    warning
+    // "auto" follows the theme, so a new theme can mean new syntax colours
+    let syntax = apply_syntax_theme();
+    match (warning, syntax) {
+        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+        (a, b) => a.or(b),
+    }
+}
+
+/// `syntax_theme` as configured; empty until set, which is "auto".
+static SYNTAX_THEME: std::sync::RwLock<String> = std::sync::RwLock::new(String::new());
+
+/// Choose the colours syntax is drawn in (`syntax_theme`); returns a
+/// warning for one that cannot be had, and the colours stay as they
+/// were.
+pub fn set_syntax_theme(choice: &str) -> Option<String> {
+    *SYNTAX_THEME.write().unwrap_or_else(|e| e.into_inner()) = choice.to_string();
+    apply_syntax_theme()
+}
+
+fn apply_syntax_theme() -> Option<String> {
+    let choice = SYNTAX_THEME
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let name = match choice.as_str() {
+        "" | "auto" => auto_syntax_theme(&th()).map(str::to_string),
+        "none" => None,
+        name => Some(name.to_string()),
+    };
+    rcmd_edit::set_syntax_theme(name.as_deref())
+        .err()
+        .map(|err| format!("syntax_theme: {err}"))
+}
+
+/// The syntax theme that reads on this theme's background: none on
+/// `bw`, which has no colour to give, a light one on a light panel,
+/// and the dark one everywhere else.
+fn auto_syntax_theme(theme: &Theme) -> Option<&'static str> {
+    if theme.panel_bg == Color::Reset && theme.panel_fg == Color::Reset {
+        return None;
+    }
+    Some(match is_light(theme.panel_bg) {
+        true => "InspiredGitHub",
+        false => "base16-eighties.dark",
+    })
+}
+
+/// Whether text is dark on this background, by its luminance. A named
+/// colour is judged by what terminals usually make of it, and the
+/// terminal's own default is taken to be dark, as most are.
+fn is_light(color: Color) -> bool {
+    let (r, g, b) = match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::White | Color::Gray => return true,
+        Color::LightYellow | Color::LightCyan | Color::LightGreen => return true,
+        // the 6x6x6 cube, then the gray ramp
+        Color::Indexed(n @ 16..=231) => {
+            let step = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
+            let n = n - 16;
+            (step(n / 36), step(n / 6 % 6), step(n % 6))
+        }
+        Color::Indexed(n @ 232..=255) => {
+            let v = 8 + (n - 232) * 10;
+            (v, v, v)
+        }
+        Color::Indexed(7 | 15) => return true,
+        _ => return false,
+    };
+    0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b) > 140.0
 }
 
 fn builtin(name: &str) -> Option<Theme> {
@@ -1088,6 +1156,16 @@ fn draw_panel(
         // brief columns, the tree and a user format have renderers
         // of their own; they never reach the table
         ListMode::Brief | ListMode::Tree | ListMode::User => (&["Name"], vec![Constraint::Fill(1)]),
+        ListMode::Full if panel.is_processes() => (
+            &["Name", "User", "CPU%", "Memory", "Started"],
+            vec![
+                Constraint::Fill(1),
+                Constraint::Length(8),
+                Constraint::Length(5),
+                Constraint::Length(7),
+                Constraint::Length(12),
+            ],
+        ),
         ListMode::Full if chrome.usage => (
             &["Name", "Size", "Usage"],
             vec![
@@ -1143,7 +1221,8 @@ fn draw_panel(
         offset = panel.cursor + 1 - shown;
     }
     offset = offset.min(len.saturating_sub(shown));
-    let remote = panel.is_remote();
+    let remote = !panel.owners_are_local();
+    let processes = panel.is_processes() && panel.list_mode == ListMode::Full;
     // ncdu's bar: each entry against the biggest one here
     let biggest = match chrome.usage {
         true => panel
@@ -1162,6 +1241,9 @@ fn draw_panel(
         .skip(offset)
         .take(shown)
         .map(|(i, entry)| {
+            if processes {
+                return process_row(entry, panel.is_marked(entry), active && i == panel.cursor);
+            }
             let git_mark = git.map(|g| g.marks.get(&entry.name).copied());
             let usage = biggest.filter(|_| !entry.is_parent()).map(|max| {
                 let filled = ((entry.size as f64 / max as f64) * 10.0).round() as usize;
@@ -1291,7 +1373,7 @@ fn draw_user_columns(
     let per_page = rows * sets as usize;
     let set_width = (inner.width / sets).max(1);
     let layout = format.layout(set_width);
-    let remote = panel.is_remote();
+    let remote = !panel.owners_are_local();
 
     // keep the cursor on screen, scrolling a whole column at a time
     let mut start = state.offset();
@@ -1755,6 +1837,26 @@ fn entry_row(
             name_cell,
         ]),
     }
+    .style(style)
+}
+
+/// A process in the Full listing of `proc://`: its name, its user, its
+/// share of a CPU, its resident memory and when it started.
+fn process_row(entry: &Entry, marked: bool, under_cursor: bool) -> Row<'static> {
+    let (marker, base) = entry_style(entry);
+    let style = cell_style(marked, under_cursor, base);
+    let cpu = entry
+        .extra
+        .cpu
+        .map(|c| format!("{}.{}", c / 10, c % 10))
+        .unwrap_or_default();
+    Row::new(vec![
+        Cell::from(format!("{marker}{}", entry.name.to_string_lossy())),
+        Cell::from(owner_label(entry.extra.uid, false, true)),
+        Cell::from(Line::from(cpu).right_aligned()),
+        Cell::from(Line::from(format_size(entry.size)).right_aligned()),
+        Cell::from(entry.mtime.map(format_time).unwrap_or_default()),
+    ])
     .style(style)
 }
 
@@ -6009,6 +6111,26 @@ fn draw_ask(frame: &mut Frame, ask: &Ask, button: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_syntax_theme_follows_the_background() {
+        assert_eq!(auto_syntax_theme(&mc_theme()), Some("base16-eighties.dark"));
+        assert_eq!(
+            auto_syntax_theme(&dark_theme()),
+            Some("base16-eighties.dark")
+        );
+        // bw has no colour to give, syntax included
+        assert_eq!(auto_syntax_theme(&bw_theme()), None);
+        let paper = Theme {
+            panel_bg: Color::Rgb(0xfa, 0xfa, 0xf5),
+            panel_fg: Color::Black,
+            ..mc_theme()
+        };
+        assert_eq!(auto_syntax_theme(&paper), Some("InspiredGitHub"));
+        assert!(is_light(Color::White) && is_light(Color::Indexed(255)));
+        assert!(!is_light(Color::Indexed(232)) && !is_light(Color::Blue));
+        assert!(is_light(Color::Indexed(231)) && !is_light(Color::Indexed(16)));
+    }
 
     #[test]
     fn the_command_line_cursor_counts_cells() {

@@ -2111,6 +2111,63 @@ def test_duplicates():
     shutil.rmtree(root)
 
 
+def test_processes():
+    """PLAN7 U7: proc:// lists the running processes; Enter says how one
+    was started, F3 shows its environment, F8 ends it with SIGTERM and
+    Shift+F8 with SIGKILL, each after asking."""
+    root, play, home = sandbox()
+    # a process of a name nothing else has: the kernel names it after
+    # the file it was started from, a link to python here
+    naps = []
+    for name in ("rcmdnapa", "rcmdnapb"):
+        os.symlink(sys.executable, os.path.join(play, name))
+        naps.append(subprocess.Popen(
+            [os.path.join(play, name), "-c", "import time; time.sleep(300)"],
+            env={"PATH": os.environ.get("PATH", ""), "RCMD_NAP": "marker-" + name}))
+    s = Session(play, home)
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"processes\r", wait=STEP * 2)
+    first = f"rcmdnapa {naps[0].pid}"
+    s.send(b"\x13rcmdnapa", wait=STEP)
+    s.send(b"\x1b", wait=STEP)
+    scr = s.screen()
+    left = "\n".join(line[:COLS // 2] for line in scr.split("\n"))
+    check("processes: listed as name and pid, with the process columns",
+          first in left and "CPU%" in left and "Started" in left, left)
+    s.send(b"\r", wait=STEP)
+    check("processes: Enter says how it was started",
+          "time.sleep(300)" in s.screen(), s.screen())
+    s.send(F3, wait=STEP * 2)
+    check("processes: F3 shows the environment",
+          wait_for(s, "RCMD_NAP=marker-rcmdnapa"), s.screen())
+    s.send(b"q", wait=STEP)
+    s.send(F8, wait=STEP)
+    check("processes: F8 asks first", "SIGTERM" in s.screen(), s.screen())
+    s.send(b"y", wait=STEP * 3)
+    try:
+        code = naps[0].wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        code = None
+    check("processes: F8 sent SIGTERM", code == -signal.SIGTERM, code)
+    s.send(b"\x12", wait=STEP * 2)             # C-r: reaped now, not a zombie
+    check("processes: the ended one leaves the listing", first not in s.screen(), s.screen())
+    s.send(b"\x13rcmdnapb", wait=STEP)
+    s.send(b"\x1b", wait=STEP)
+    s.send(SF8, wait=STEP)
+    check("processes: Shift+F8 asks to kill", "SIGKILL" in s.screen(), s.screen())
+    s.send(b"y", wait=STEP * 3)
+    try:
+        code = naps[1].wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        code = None
+    check("processes: Shift+F8 sent SIGKILL", code == -signal.SIGKILL, code)
+    for nap in naps:
+        if nap.poll() is None:
+            nap.kill()
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_kittykeys():
     """PLAN5 S7: in a terminal that has the kitty keyboard protocol, rcmd
     turns it on - and an Esc is an Esc at once, with no prefix to wait
@@ -7429,6 +7486,7 @@ def main():
         test_diskusage,
         test_nestedarchive,
         test_duplicates,
+        test_processes,
         test_editdrag,
         test_uservfs,
         test_kittykeys,

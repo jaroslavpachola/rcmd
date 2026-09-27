@@ -55,6 +55,9 @@ pub enum SortKey {
     /// mc's version sort: the name, with runs of digits compared as
     /// numbers, so `file2` comes before `file10`.
     Version,
+    /// A process's share of a CPU: `proc://` has one, and elsewhere
+    /// this is the name order.
+    Cpu,
 }
 
 /// How a listing is ordered: the key, and mc's switches beside it.
@@ -364,6 +367,21 @@ impl Panel {
 
     pub fn is_remote(&self) -> bool {
         self.remote.is_some()
+    }
+
+    /// Whether the owners in this listing are this machine's, though
+    /// the panel is not a local directory: the trash's and the
+    /// processes' are, a server's are not.
+    pub fn owners_are_local(&self) -> bool {
+        matches!(
+            self.remote.as_deref(),
+            None | Some(crate::trashcan::PREFIX | crate::procs::PREFIX)
+        )
+    }
+
+    /// Whether this panel lists the running processes.
+    pub fn is_processes(&self) -> bool {
+        self.remote.as_deref() == Some(crate::procs::PREFIX)
     }
 
     /// Panel location for titles: `path`, `archive.zip://inside` or
@@ -1103,6 +1121,12 @@ fn sort_entries(
             }
             SortKey::Size => a.2.size.cmp(&b.2.size).then_with(|| name_cmp(a, b)),
             SortKey::Mtime => a.2.mtime.cmp(&b.2.mtime).then_with(|| name_cmp(a, b)),
+            SortKey::Cpu => {
+                a.2.extra
+                    .cpu
+                    .cmp(&b.2.extra.cpu)
+                    .then_with(|| name_cmp(a, b))
+            }
             SortKey::Atime => {
                 a.2.extra
                     .atime

@@ -454,6 +454,17 @@ again if it has gone and never overwriting what has taken the name
 since; F8 there deletes for good; F3 and F5 look and copy out as
 anywhere else. It is the same trash the desktop's own tools use.
 
+**So are the processes**: `cd proc://` (or F9 → Command → Processes)
+lists what is running, one row a process, named by its short name and
+its pid. The Full listing's columns are the user, the share of a CPU
+since the listing before, the resident memory and when it started, and
+a click on a header sorts by it (`sort-cpu` in the palette for the CPU).
+Enter says how a process was started; F3 shows its command line,
+executable, directory and environment; F8 asks the marked processes to
+end with SIGTERM and Shift+F8 kills them with SIGKILL, each after
+asking, and a pid that has gone to another process since the listing is
+refused rather than signalled. Linux only: it reads `/proc`.
+
 **Jobs queue, pause, and say when they are done.** The copy form's
 **Queue** button starts the job only once nothing else is writing to
 that device or server - two copies onto one USB stick run in turn
@@ -1217,6 +1228,11 @@ files are installed rather than a two-way switch:
 
 ```toml
 theme = "mc"        # "dark", "bw", or the name of a theme file
+syntax_theme = "auto"  # editor/viewer syntax colours: auto follows the
+                       # theme (light on a light panel, none on bw);
+                       # "none", a syntect theme ("Solarized (light)",
+                       # "InspiredGitHub", "base16-ocean.dark"...) or a
+                       # .tmTheme file, by path or by its stem in syntax/
 keymap = "mc"       # or "modern" (= lynx-like motion on by default)
 lynx = false        # Left/Right = parent/enter; in the options form
 watch = true        # auto-reload panels on external changes

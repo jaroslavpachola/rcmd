@@ -617,6 +617,7 @@ impl App {
             }
             Action::JobReport => self.show_job_report(),
             Action::Trash => self.connect_remote(rcmd_core::trashcan::PREFIX),
+            Action::Processes => self.connect_remote(rcmd_core::procs::PREFIX),
             Action::DiffHead => self.open_diff_head(),
             Action::GitStage => self.git_index(true),
             Action::GitUnstage => self.git_index(false),
@@ -849,6 +850,15 @@ impl App {
         }
         let panel = &self.panels[self.active];
         if !panel.is_local() {
+            // a process has nothing to open; what it is asked about is
+            // how it was started
+            if panel.is_processes()
+                && let Some(entry) = panel.selected()
+                && let Some(command) = panel.fs.note(&panel.cwd.join(&entry.name))
+            {
+                self.status = Some(format!(" {command} - F3 shows more "));
+                return;
+            }
             // a file in the trash has nowhere to run; what it is asked
             // about is where it came from
             if let Some(entry) = panel.selected()
@@ -2903,6 +2913,10 @@ impl App {
             self.status = Some(" nothing selected ".into());
             return;
         }
+        if self.panels[self.active].is_processes() {
+            self.status = Some(" a process is not copied: F3 shows it, F8 ends it ".into());
+            return;
+        }
         let in_archive = self.panels[self.active].archive.is_some();
         let verb = if is_move { "Move" } else { "Copy" };
         let other = &self.panels[self.active ^ 1];
@@ -3303,6 +3317,41 @@ impl App {
             .clone()
     }
 
+    /// The running processes as a filesystem, one for the session.
+    pub(super) fn proc_fs(&mut self) -> Arc<rcmd_core::procs::ProcFs> {
+        self.procs
+            .get_or_insert_with(|| Arc::new(rcmd_core::procs::ProcFs::new()))
+            .clone()
+    }
+
+    /// F8 on the processes, once asked: `signal` to each, then the
+    /// listing again, which the ones that ended have left.
+    pub(super) fn send_signal(&mut self, paths: Vec<PathBuf>, signal: i32) {
+        let procs = self.proc_fs();
+        let mut failed = Vec::new();
+        for path in &paths {
+            if let Err(err) = procs.signal(path, signal) {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                failed.push(format!("{name}: {err}"));
+            }
+        }
+        let sent = paths.len() - failed.len();
+        let word = signal_name(signal);
+        self.status = Some(match failed.as_slice() {
+            [] => format!(" {word} sent to {sent} process(es) "),
+            [one] => format!(" {word} not sent - {one} "),
+            [first, ..] => format!(" {word} sent to {sent}, not to {} - {first} ", failed.len()),
+        });
+        // a process takes a moment to end; the listing waits a little
+        // for the ones signalled, so they are gone from it when it can
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline && !paths.iter().all(|p| procs.has_ended(p)) {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        self.panels[self.active].marked.clear();
+        self.fallible(|p| p.reload().map(|()| true));
+    }
+
     /// Whether the active panel is on `trash://`.
     pub(super) fn in_trash(&self) -> bool {
         self.panels[self.active].remote.as_deref() == Some(rcmd_core::trashcan::PREFIX)
@@ -3416,6 +3465,10 @@ impl App {
     /// The delete question for `paths`, wherever they came from.
     pub(super) fn open_delete_of(&mut self, permanent: bool, paths: Vec<PathBuf>) {
         let panel = &self.panels[self.active];
+        // Shift+F8 is the signal no process can ignore, and F8 the one
+        // it can - asked before a server's always-permanent turns one
+        // into the other
+        let kill = permanent;
         // no trash inside an archive or on a server: both delete outright
         let permanent = permanent || panel.is_remote() || panel.archive.is_some();
         if paths.is_empty() {
@@ -3423,6 +3476,24 @@ impl App {
             return;
         }
         let what = self.describe(&paths);
+        if panel.is_processes() {
+            // F8 asks a process to end, Shift+F8 makes it
+            let signal = if kill { libc::SIGKILL } else { libc::SIGTERM };
+            let message = match kill {
+                false => format!("Ask {what} to end (SIGTERM)?"),
+                true => format!("Kill {what} (SIGKILL)? It gets no chance to clean up"),
+            };
+            self.dialog = Some(Dialog::Confirm(ConfirmDialog {
+                title: format!(" {} ", signal_name(signal)),
+                message,
+                yes: !kill,
+                paths,
+                permanent: kill,
+                kind: ConfirmKind::Signal(signal),
+                command: None,
+            }));
+            return;
+        }
         let message = if self.in_trash() {
             format!("Delete {what} for good? Nothing comes back from here")
         } else if self.panels[self.active].is_remote() {
@@ -3540,5 +3611,13 @@ impl App {
             Ok(path) => self.open_viewer_on(&path),
             Err(err) => self.status = Some(format!(" report: {err} ")),
         }
+    }
+}
+
+/// A signal as `kill -l` names it.
+fn signal_name(signal: i32) -> &'static str {
+    match signal {
+        libc::SIGKILL => "SIGKILL",
+        _ => "SIGTERM",
     }
 }

@@ -26,7 +26,20 @@ pub fn syntax_names() -> Vec<&'static str> {
 }
 
 #[cfg(feature = "syntax")]
-pub use highlight::{set_user_syntax_dir, syntax_names, user_syntax_warning};
+pub use highlight::{
+    set_syntax_theme, set_user_syntax_dir, syntax_names, syntax_theme_names, user_syntax_warning,
+};
+
+/// Without the feature nothing is coloured, so any theme will do.
+#[cfg(not(feature = "syntax"))]
+pub fn set_syntax_theme(_name: Option<&str>) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(feature = "syntax"))]
+pub fn syntax_theme_names() -> Vec<&'static str> {
+    Vec::new()
+}
 
 /// Without the feature there is nowhere to put user syntax files.
 #[cfg(not(feature = "syntax"))]
