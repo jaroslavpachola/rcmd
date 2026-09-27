@@ -3204,7 +3204,26 @@ impl App {
             self.status = Some(" nothing selected ".into());
             return;
         };
-        let Some(target) = entry.link_target.clone() else {
+        // a server's listing leaves where a link points unasked; the
+        // one being edited is asked now
+        let target = entry.link_target.clone().or_else(|| {
+            let is_link = matches!(
+                entry.kind,
+                rcmd_core::entry::EntryKind::SymlinkDir
+                    | rcmd_core::entry::EntryKind::SymlinkFile
+                    | rcmd_core::entry::EntryKind::SymlinkBroken
+            );
+            is_link
+                .then(|| {
+                    panel
+                        .fs
+                        .stat(&panel.cwd.join(&entry.name))
+                        .ok()?
+                        .link_target
+                })
+                .flatten()
+        });
+        let Some(target) = target else {
             self.status = Some(" not a symlink ".into());
             return;
         };

@@ -1,5 +1,20 @@
 # Changelog
 
+## 4.63.1 - 2026-09-27
+
+- **The window's shell keeps what scrolled off.** Ctrl+O in `rcmd-egui`
+  kept only the screen itself, so the start of a long build's output
+  was gone. It now keeps 5,000 lines: the wheel and Shift+PageUp /
+  Shift+PageDown look back through them, a line at the top says how
+  far, new output does not pull the view along, and any key comes
+  back to the live screen. The terminal build is unchanged - its
+  scrollback is the terminal's own.
+- **SFTP listings ask less.** Every symlink in a listing cost two
+  round trips to the server, one after the other: one for where it
+  points, one for whether that is a directory. The first is now asked
+  only for the link the cursor is on, which a slow server notices in
+  any directory full of links. Copies and C-x C-s ask as before.
+
 ## 4.63.0 - 2026-09-27
 
 - **The processes as a panel.** `cd proc://`, or F9 → Command →

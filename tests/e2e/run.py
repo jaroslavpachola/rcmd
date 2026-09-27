@@ -5191,6 +5191,21 @@ def test_sftp():
         check("sftp: and .. is the server again",
               "sftp://tester@" in s.screen().split("\n")[0], s.screen())
 
+        # a listing leaves where a link points unasked, and the line
+        # under the panel asks for the cursor's; a copy still gets it
+        os.symlink("server.txt", os.path.join(remote, "pointer"))
+        s.send(b"\x12", wait=STEP)
+        s.send(b"\x13pointer", wait=STEP)
+        s.send(b"\x1b", wait=STEP)
+        check("sftp: a link's target shows once asked",
+              wait_for(s, "-> server.txt", timeout=6), s.screen())
+        s.send(F5 + b"\r", wait=STEP * 3)
+        copied = os.path.join(play, "pointer")
+        wait_for(s, "done -")
+        check("sftp: a copied link keeps its target",
+              os.path.islink(copied) and os.readlink(copied) == "server.txt",
+              os.path.islink(copied) and os.readlink(copied))
+
         khfile = os.path.join(home, ".ssh", "known_hosts")
         check(
             "sftp: host key saved",

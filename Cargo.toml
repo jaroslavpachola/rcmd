@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "4.63.0"
+version = "4.63.1"
 edition = "2024"
 license = "MIT"
 
@@ -57,7 +57,7 @@ encoding_rs = "0.8"
 # Held at 0.15 because 0.16 wants unicode-width 0.2.1 and ratatui
 # 0.29 pins that crate to exactly 0.2.0; 0.15 is on the 0.1 line,
 # a different major, so the two coexist instead of conflicting.
-vt100 = "0.15"
+vt100 = { package = "vt100-ctt", version = "0.17.1", default-features = false }
 notify = "8"
 ssh2 = "0.9"
 git2 = { version = "0.20", default-features = false }

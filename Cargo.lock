@@ -2793,7 +2793,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-egui"
-version = "4.63.0"
+version = "4.63.1"
 dependencies = [
  "anyhow",
  "eframe",
@@ -2806,12 +2806,12 @@ dependencies = [
  "serde",
  "toml",
  "unicode-width 0.2.0",
- "vt100",
+ "vt100-ctt",
 ]
 
 [[package]]
 name = "rcmd-tui"
-version = "4.63.0"
+version = "4.63.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2831,7 +2831,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-tui-core"
-version = "4.63.0"
+version = "4.63.1"
 dependencies = [
  "bzip2",
  "crc32fast",
@@ -2853,7 +2853,7 @@ dependencies = [
 
 [[package]]
 name = "rcmd-tui-edit"
-version = "4.63.0"
+version = "4.63.1"
 dependencies = [
  "encoding_rs",
  "regex",
@@ -3806,22 +3806,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "vt100"
-version = "0.15.2"
+name = "vt100-ctt"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84cd863bf0db7e392ba3bd04994be3473491b31e66340672af5d11943c6274de"
+checksum = "0e0333bcaa031b50f85eac76cb9d62a400be0915ac2d60c3cce28656c01e7e58"
 dependencies = [
  "itoa",
  "log",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.0",
  "vte",
 ]
 
 [[package]]
 name = "vte"
-version = "0.11.1"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5022b5fbf9407086c180e9557be968742d839e68346af7792b8592489732197"
+checksum = "9a0b683b20ef64071ff03745b14391751f6beab06a54347885459b77a3f2caa5"
 dependencies = [
  "arrayvec",
  "utf8parse",

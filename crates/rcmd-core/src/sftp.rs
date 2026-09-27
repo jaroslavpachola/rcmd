@@ -7,12 +7,13 @@
 //! serialized behind one mutex; SFTP round-trips dominate, the lock is
 //! noise. One connection is shared by both panels and any jobs on it.
 
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -559,7 +560,7 @@ fn connect(
     } else {
         url.path.clone()
     };
-    let fs = Arc::new(SftpFs {
+    let fs = Arc::new_cyclic(|me| SftpFs {
         raw: Mutex::new(Raw {
             session: sess,
             sftp,
@@ -567,6 +568,8 @@ fn connect(
         prefix: url.prefix(),
         redial,
         dead: AtomicBool::new(false),
+        me: me.clone(),
+        targets: Mutex::new(Targets::default()),
     });
     keep_alive(Arc::downgrade(&fs), |fs: &SftpFs| {
         // a keepalive that cannot be sent: the next operation dials
@@ -863,6 +866,24 @@ pub struct SftpFs {
     redial: Redial,
     /// The keepalive found the connection gone.
     dead: AtomicBool,
+    /// Itself, for the thread that fetches a link's target.
+    me: Weak<SftpFs>,
+    targets: Mutex<Targets>,
+}
+
+/// Where the symlinks of a listing point. A listing does not ask - it
+/// would be a round trip to the server for every link, one after the
+/// other, on top of the one that says whether the link leads to a
+/// directory - and the line under the panel asks for the one the
+/// cursor is on, on a thread of its own.
+#[derive(Default)]
+struct Targets {
+    /// The symlinks the listings have shown.
+    links: HashSet<PathBuf>,
+    known: HashMap<PathBuf, PathBuf>,
+    /// Asked for, answered or not: one that failed is not asked again
+    /// on every frame.
+    asked: HashSet<PathBuf>,
 }
 
 impl RemoteFs for SftpFs {
@@ -877,6 +898,10 @@ impl RemoteFs for SftpFs {
 }
 
 impl SftpFs {
+    fn targets(&self) -> MutexGuard<'_, Targets> {
+        self.targets.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     fn lock(&self) -> MutexGuard<'_, Raw> {
         self.raw.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -924,13 +949,24 @@ const S_IFMT: u32 = 0o170_000;
 const S_IFDIR: u32 = 0o040_000;
 const S_IFLNK: u32 = 0o120_000;
 
-fn entry_from(name: std::ffi::OsString, st: &FileStat, sftp: &ssh2::Sftp, path: &Path) -> Entry {
+/// An entry from what the server said about it. A symlink costs a
+/// `stat` more, to say where it leads, and with `target` a `readlink`
+/// more for its target.
+fn entry_from(
+    name: std::ffi::OsString,
+    st: &FileStat,
+    sftp: &ssh2::Sftp,
+    path: &Path,
+    target: bool,
+) -> Entry {
     let perm = st.perm.unwrap_or(0);
     let mut link_target = None;
     let kind = match perm & S_IFMT {
         S_IFDIR => EntryKind::Dir,
         S_IFLNK => {
-            link_target = sftp.readlink(path).ok();
+            if target {
+                link_target = sftp.readlink(path).ok();
+            }
             match sftp.stat(path) {
                 Ok(t) if t.perm.unwrap_or(0) & S_IFMT == S_IFDIR => EntryKind::SymlinkDir,
                 Ok(_) => EntryKind::SymlinkFile,
@@ -966,7 +1002,7 @@ fn ioerr(e: ssh2::Error) -> io::Error {
 
 impl FsProvider for SftpFs {
     fn read_dir(&self, dir: &Path) -> io::Result<Vec<Entry>> {
-        self.with(|raw| {
+        let entries = self.with(|raw| {
             let listed = raw.sftp.readdir(dir)?;
             let mut entries = Vec::with_capacity(listed.len());
             for (path, st) in listed {
@@ -976,10 +1012,50 @@ impl FsProvider for SftpFs {
                 if name == "." || name == ".." {
                     continue;
                 }
-                entries.push(entry_from(name.to_os_string(), &st, &raw.sftp, &path));
+                entries.push(entry_from(
+                    name.to_os_string(),
+                    &st,
+                    &raw.sftp,
+                    &path,
+                    false,
+                ));
             }
             Ok(entries)
-        })
+        })?;
+        // a listing is fresh: where its links point is asked again
+        let mut targets = self.targets();
+        for entry in entries.iter().filter(|e| e.link_target.is_none()) {
+            if matches!(
+                entry.kind,
+                EntryKind::SymlinkDir | EntryKind::SymlinkFile | EntryKind::SymlinkBroken
+            ) {
+                let path = dir.join(&entry.name);
+                targets.known.remove(&path);
+                targets.asked.remove(&path);
+                targets.links.insert(path);
+            }
+        }
+        Ok(entries)
+    }
+
+    /// Where a listed symlink points, once the thread asking has heard.
+    /// Until then nothing, and the question goes out.
+    fn note(&self, path: &Path) -> Option<String> {
+        let mut targets = self.targets();
+        if let Some(target) = targets.known.get(path) {
+            return Some(format!("-> {}", target.display()));
+        }
+        if !targets.links.contains(path) || !targets.asked.insert(path.to_path_buf()) {
+            return None;
+        }
+        let (me, path) = (self.me.clone(), path.to_path_buf());
+        thread::spawn(move || {
+            let Some(fs) = me.upgrade() else { return };
+            if let Ok(target) = fs.with(|raw| raw.sftp.readlink(&path)) {
+                fs.targets().known.insert(path, target);
+            }
+        });
+        None
     }
 
     fn stat(&self, path: &Path) -> io::Result<Entry> {
@@ -989,7 +1065,7 @@ impl FsProvider for SftpFs {
             .unwrap_or_else(|| "/".into());
         self.with(|raw| {
             let st = raw.sftp.lstat(path)?;
-            Ok(entry_from(name.clone(), &st, &raw.sftp, path))
+            Ok(entry_from(name.clone(), &st, &raw.sftp, path, true))
         })
     }
 

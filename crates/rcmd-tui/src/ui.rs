@@ -1914,6 +1914,12 @@ fn draw_info(
                     e.link_target
                         .as_ref()
                         .map(|t| t.display().to_string())
+                        // a server's listing leaves the target to be
+                        // asked for, and says it here once it is known
+                        .or_else(|| {
+                            let note = browse.fs.note(&browse.cwd.join(&e.name))?;
+                            note.strip_prefix("-> ").map(str::to_string)
+                        })
                         .unwrap_or_default()
                 ),
             };

@@ -34,7 +34,7 @@
 //! while a session is on screen, not only while the shell is hidden.
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use rcmd_tui::app::{App, Exec, SubshellSession, SubshellStep};
 
 use crate::grid::{Metrics, Palette};
@@ -43,6 +43,14 @@ use crate::keys::Input;
 /// Ctrl+O, as a byte. It never reaches the shell - MC-compatible, and
 /// yes, that shadows nano's save inside the subshell.
 const CTRL_O: u8 = 0x0F;
+
+/// Lines kept above the screen, for looking back at what scrolled off
+/// it. A terminal emulator keeps more; this is a panel's worth of
+/// build output many times over, at a few megabytes.
+const SCROLLBACK: usize = 5000;
+
+/// Lines one notch of the wheel moves, as terminals commonly do.
+const WHEEL_LINES: usize = 3;
 
 pub struct TerminalPane {
     /// The shell's screen, kept across sessions.
@@ -64,7 +72,7 @@ impl TerminalPane {
     /// A pane with nothing on it yet, sized to the window.
     pub fn new(cols: u16, rows: u16) -> Self {
         Self {
-            parser: vt100::Parser::new(rows, cols, 0),
+            parser: vt100::Parser::new(rows, cols, SCROLLBACK),
             session: None,
             size: (cols, rows),
             fed_command: false,
@@ -85,7 +93,7 @@ impl TerminalPane {
         // terminal build replays these onto the output screen at the
         // same point; here they land on the kept screen, so a Ctrl+O
         // finds the prompt - and whatever came before it - already on it.
-        self.parser.process(&app.take_subshell_output());
+        self.process(&app.take_subshell_output());
         self.session = Some(session);
         self.fed_command = fed_command;
         self.moving = true;
@@ -111,7 +119,7 @@ impl TerminalPane {
         };
         match app.step_subshell(session) {
             SubshellStep::Output(bytes) => {
-                self.parser.process(&bytes);
+                self.process(&bytes);
                 self.moving = true;
                 true
             }
@@ -138,23 +146,86 @@ impl TerminalPane {
             return;
         }
         self.size = (cols, rows);
-        self.parser.set_size(rows, cols);
+        self.parser.screen_mut().set_size(rows, cols);
         app.resize_subshell(cols, rows);
+    }
+
+    /// What the shell wrote, onto the screen. A view scrolled back
+    /// stays on the lines it shows while more arrive below, as a
+    /// terminal's does, rather than drifting with the output.
+    fn process(&mut self, bytes: &[u8]) {
+        let back = self.parser.screen().scrollback();
+        if back == 0 {
+            self.parser.process(bytes);
+            return;
+        }
+        let before = self.history();
+        self.parser.process(bytes);
+        let grown = self.history().saturating_sub(before);
+        self.parser.screen_mut().set_scrollback(back + grown);
+    }
+
+    /// How many lines are kept above the screen. vt100 clamps an offset
+    /// to that, which is the only way it will say it.
+    fn history(&mut self) -> usize {
+        let back = self.parser.screen().scrollback();
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        let len = self.parser.screen().scrollback();
+        self.parser.screen_mut().set_scrollback(back);
+        len
+    }
+
+    /// Look further back (`up`) or come forward by `lines`.
+    fn scroll(&mut self, up: bool, lines: usize) {
+        let back = self.parser.screen().scrollback();
+        let back = match up {
+            true => back.saturating_add(lines),
+            false => back.saturating_sub(lines),
+        };
+        self.parser.screen_mut().set_scrollback(back);
+    }
+
+    /// How far back the view is, in lines; 0 is the live screen.
+    #[cfg(test)]
+    fn scrolled_back(&self) -> usize {
+        self.parser.screen().scrollback()
     }
 
     /// Hand a frame's input to the shell. Returns `false` when Ctrl+O
     /// asked to close the pane, in which case everything typed before
     /// it has still been passed on.
+    ///
+    /// The wheel and Shift+PageUp/PageDown look back through what
+    /// scrolled off the top; they are the pane's, not the shell's. A
+    /// program on the alternate screen (less, vim) has no history, and
+    /// the keys go to it as they are. Anything else typed brings the
+    /// view back to the live screen first, where the typing shows.
     pub fn feed(&mut self, app: &mut App, input: &[Input]) -> bool {
+        let page = usize::from(self.size.1.saturating_sub(1)).max(1);
         let mut bytes = Vec::new();
         for event in input {
+            let history = !self.parser.screen().alternate_screen();
             match event {
+                Input::Key(key)
+                    if history
+                        && key.modifiers.contains(KeyModifiers::SHIFT)
+                        && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) =>
+                {
+                    self.scroll(key.code == KeyCode::PageUp, page);
+                }
                 Input::Key(key) => {
+                    self.parser.screen_mut().set_scrollback(0);
                     encode(key, self.parser.screen().application_cursor(), &mut bytes)
                 }
                 Input::Paste(text) => {
+                    self.parser.screen_mut().set_scrollback(0);
                     paste(text, self.parser.screen().bracketed_paste(), &mut bytes)
                 }
+                Input::Mouse(mouse) if history => match mouse.kind {
+                    MouseEventKind::ScrollUp => self.scroll(true, WHEEL_LINES),
+                    MouseEventKind::ScrollDown => self.scroll(false, WHEEL_LINES),
+                    _ => {}
+                },
                 Input::Mouse(_) | Input::Context { .. } => {}
             }
         }
@@ -175,7 +246,7 @@ impl TerminalPane {
         self.parser
             .screen()
             .cell(row, col)
-            .map_or_else(String::new, vt100::Cell::contents)
+            .map_or_else(String::new, |cell| cell.contents().to_string())
     }
 
     /// Paint the shell's screen. Same grid, same font, same origin as
@@ -238,7 +309,7 @@ impl TerminalPane {
                     painter.text(
                         rect.left_top(),
                         Align2::LEFT_TOP,
-                        &contents,
+                        contents,
                         font.clone(),
                         fg,
                     );
@@ -246,7 +317,7 @@ impl TerminalPane {
                         painter.text(
                             rect.left_top() + Vec2::new(0.6, 0.0),
                             Align2::LEFT_TOP,
-                            &contents,
+                            contents,
                             font.clone(),
                             fg,
                         );
@@ -258,7 +329,21 @@ impl TerminalPane {
             }
         }
 
-        if !screen.hide_cursor() {
+        // the cursor is on the live screen, which a view scrolled back
+        // is not showing
+        let back = screen.scrollback();
+        if back > 0 {
+            let label = format!(" {back} lines back - Shift+PgDn or a key returns ");
+            let width = label.chars().count() as f32 * metrics.width;
+            let right = origin.x + cols as f32 * metrics.width;
+            let rect = Rect::from_min_size(
+                Pos2::new(right - width, origin.y),
+                Vec2::new(width, metrics.height),
+            );
+            let (fg, bg) = (default_palette().bg, default_palette().fg);
+            painter.rect_filled(rect, 0.0, bg);
+            painter.text(rect.left_top(), Align2::LEFT_TOP, label, font.clone(), fg);
+        } else if !screen.hide_cursor() {
             let (row, col) = screen.cursor_position();
             if row < rows && col < cols {
                 let rect = cell_rect(col, row);
@@ -472,6 +557,32 @@ mod tests {
             bytes(KeyCode::F(12), KeyModifiers::NONE, false),
             b"\x1b[24~"
         );
+    }
+
+    #[test]
+    fn the_view_looks_back_past_a_screenful_and_holds_still() {
+        let mut pane = TerminalPane::new(20, 3);
+        let lines: String = (0..30).map(|n| format!("line {n}\r\n")).collect();
+        pane.process(lines.as_bytes());
+        let top = |pane: &TerminalPane| {
+            (0..8)
+                .map(|col| pane.symbol(col, 0))
+                .collect::<String>()
+                .trim()
+                .to_string()
+        };
+        // further back than the screen is tall, which vt100 0.15 could
+        // not do without an overflow
+        pane.scroll(true, 10);
+        assert_eq!(pane.scrolled_back(), 10);
+        assert_eq!(top(&pane), "line 18");
+        // more output: the view stays on the same line
+        pane.process(b"line 30\r\nline 31\r\n");
+        assert_eq!(top(&pane), "line 18");
+        assert_eq!(pane.scrolled_back(), 12);
+        pane.scroll(false, 100);
+        assert_eq!(pane.scrolled_back(), 0);
+        assert_eq!(top(&pane), "line 30");
     }
 
     #[test]
