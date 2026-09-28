@@ -1,7 +1,9 @@
 # rcmd 7.0 - the orthodox leftovers
 
-**Status:** drafted 2026-09-25, after PLAN6 closed at 4.56.0 and its
-two stragglers shipped as 4.57.0. **Baseline:** 4.57.0.
+**Status:** COMPLETE - drafted 2026-09-25, after PLAN6 closed at
+4.56.0 and its two stragglers shipped as 4.57.0; every phase done and
+shipped as 4.58.0 to 4.64.0 (2026-09-25 to 2026-09-27), and published
+to crates.io as 4.64.1 on 2026-09-28. **Baseline:** 4.57.0.
 
 PLAN5 and PLAN6 came from audits of what the code does. This one comes
 from what the rest of the orthodox family does and rcmd still does not:
@@ -107,7 +109,7 @@ A process is named `COMM PID`: the name has to be unique for the panel
 to address it, and a pid alone says nothing. The CPU share is counted
 from the listing before (the first waits 250 ms to have one), and a
 kill checks the process's start time against the listing's, so a
-reused pid is refused. Sort groups (U6) are still open.
+reused pid is refused.
 
 `proc://` as a listing: a process per row, its name, pid, user, CPU
 and resident memory as columns, sortable. F8 sends SIGTERM (Shift+F8
