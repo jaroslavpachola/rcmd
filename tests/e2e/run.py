@@ -6309,20 +6309,33 @@ def test_findhits():
     open(os.path.join(play, "d.log"), "w").write("needle far again\n")
     find(b"\x15*.log\tneedle far")
     s.send(HOME_K, wait=STEP)
-    if "d.log" in [l for l in s.screen().split("\n") if ".log:" in l][0]:
-        s.send(DOWN, wait=STEP)               # c.log first, whatever order
+    # the results come in the order the directory lists them, so c.log
+    # is either row: view it, and walk towards d.log from there - M-.
+    # when it is the first result, M-, when it is the second
+    d_first = "d.log" in [l for l in s.screen().split("\n") if ".log:" in l][0]
+    if d_first:
+        s.send(DOWN, wait=STEP)
+    step, other, end = ((b"\x1b,", "result 1 of 2", "first") if d_first
+                        else (b"\x1b.", "result 2 of 2", "last"))
     s.send(F3, wait=STEP * 2)
     scr = s.screen()
     shown = [l.strip() for l in scr.split("\n")]
     check("findhits: View went to the hit's line",
           "needle far" in shown and "filler 0" not in shown, scr)
-    s.send(b"\x1b.", wait=STEP * 2)
+    s.send(step, wait=STEP * 2)
     scr = s.screen()
-    check("findhits: M-. went on to the next file's hit",
-          "needle far again" in scr and "result 2 of 2" in scr, scr)
-    s.send(b"\x1b.", wait=STEP)
+    check("findhits: M-. / M-, went on to the other file's hit",
+          "needle far again" in scr and other in scr, scr)
+    s.send(step, wait=STEP)
     check("findhits: and knows when there are no more",
-          "that was the last result" in s.screen(), s.screen())
+          f"that was the {end} result" in s.screen(), s.screen())
+    # and the other key walks back to c.log's hit, so both are held
+    back, here = ((b"\x1b.", "result 2 of 2") if d_first
+                  else (b"\x1b,", "result 1 of 2"))
+    s.send(back, wait=STEP * 2)
+    scr = s.screen()
+    check("findhits: the other way walks back",
+          "needle far again" not in scr and "needle far" in scr and here in scr, scr)
     s.send(b"q", wait=STEP)
 
     # Panelize, then a copy job: the list is still there afterwards
