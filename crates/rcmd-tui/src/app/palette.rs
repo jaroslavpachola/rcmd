@@ -25,12 +25,20 @@ pub struct PaletteDialog {
 
 impl PaletteDialog {
     fn rank(&mut self) {
+        // the ranking is made for paths, where what follows the last
+        // `/` counts most: a label's `(disks://)` is not a path
         let texts: Vec<String> = self
             .rows
             .iter()
-            .map(|r| format!("{} {}", r.name, r.label))
+            .map(|r| format!("{} {}", r.name, r.label).replace('/', " "))
             .collect();
         self.shown = rcmd_core::fuzzy::rank(&self.field.value, texts.iter().map(String::as_str));
+        // an action typed out in full is the one meant
+        let typed = self.field.value.trim();
+        if let Some(at) = self.shown.iter().position(|&i| self.rows[i].name == typed) {
+            let exact = self.shown.remove(at);
+            self.shown.insert(0, exact);
+        }
         self.selected = 0;
     }
 }

@@ -80,7 +80,7 @@ pub fn facts(path: &std::path::Path) -> Option<FsFacts> {
 
 /// `/proc/mounts` writes a space as `\040`, and a tab, a newline and a
 /// backslash the same way.
-fn unescape(field: &str) -> String {
+pub(crate) fn unescape(field: &str) -> String {
     let bytes = field.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

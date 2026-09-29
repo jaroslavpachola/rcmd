@@ -15,7 +15,7 @@ pub enum EntryKind {
 
 /// Extended stat data for the info panel and the long listing; `None`
 /// where the provider cannot supply it (archives, partly sftp).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct EntryStat {
     pub uid: Option<u32>,
     pub gid: Option<u32>,
@@ -26,6 +26,8 @@ pub struct EntryStat {
     /// A process's share of a CPU since the listing before, in tenths
     /// of a percent: `proc://` has it, nothing else.
     pub cpu: Option<u32>,
+    /// What a volume in `disks://` is: its device, type and how full.
+    pub volume: Option<std::sync::Arc<crate::disks::Volume>>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,8 +67,11 @@ impl Entry {
         self.kind == EntryKind::File && self.mode & 0o111 != 0
     }
 
+    /// A dotfile - or, in `disks://`, a volume with no disk of its own.
     pub fn is_hidden(&self) -> bool {
-        !self.is_parent() && self.name.as_encoded_bytes().starts_with(b".")
+        !self.is_parent()
+            && (self.name.as_encoded_bytes().starts_with(b".")
+                || self.extra.volume.as_ref().is_some_and(|v| v.pseudo))
     }
 
     /// ls-style permission string, e.g. "drwxr-xr-x".
@@ -121,6 +126,7 @@ fn extra_of(meta: &fs::Metadata) -> EntryStat {
         nlink: Some(meta.nlink()),
         inode: Some(meta.ino()),
         cpu: None,
+        volume: None,
     }
 }
 

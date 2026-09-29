@@ -1158,6 +1158,7 @@ fn draw_panel(
     // on the line under it instead
     let kind = panel.list_mode == ListMode::Full
         && !panel.is_processes()
+        && !panel.is_disks()
         && !chrome.usage
         && panel.shows_group_names()
         && block.inner(area).width >= KIND_MIN_WIDTH;
@@ -1173,6 +1174,16 @@ fn draw_panel(
                 Constraint::Length(5),
                 Constraint::Length(7),
                 Constraint::Length(12),
+            ],
+        ),
+        ListMode::Full if panel.is_disks() => (
+            &["Mount point", "Type", "Size", "Free", "Use"],
+            vec![
+                Constraint::Fill(1),
+                Constraint::Length(8),
+                Constraint::Length(7),
+                Constraint::Length(7),
+                Constraint::Length(13),
             ],
         ),
         ListMode::Full if chrome.usage => (
@@ -1241,6 +1252,7 @@ fn draw_panel(
     offset = offset.min(len.saturating_sub(shown));
     let remote = !panel.owners_are_local();
     let processes = panel.is_processes() && panel.list_mode == ListMode::Full;
+    let disks = panel.is_disks() && panel.list_mode == ListMode::Full;
     // ncdu's bar: each entry against the biggest one here
     let biggest = match chrome.usage {
         true => panel
@@ -1261,6 +1273,9 @@ fn draw_panel(
         .map(|(i, entry)| {
             if processes {
                 return process_row(entry, panel.is_marked(entry), active && i == panel.cursor);
+            }
+            if disks {
+                return disk_row(entry, panel.is_marked(entry), active && i == panel.cursor);
             }
             let git_mark = git.map(|g| g.marks.get(&entry.name).copied());
             let usage = biggest.filter(|_| !entry.is_parent()).map(|max| {
@@ -1633,6 +1648,15 @@ fn draw_brief_columns(
 fn entry_summary(panel: &Panel) -> String {
     match panel.selected() {
         Some(e) if e.is_parent() => "UP--DIR".to_string(),
+        // a volume: where, from what, as what, and its inodes
+        Some(e) if let Some(v) = e.extra.volume.as_deref() => {
+            let inodes = v.inodes_total.saturating_sub(v.inodes_free);
+            let inodes = match v.inodes_total {
+                0 => String::new(),
+                all => format!("  inodes {}% used", (inodes * 100).div_ceil(all)),
+            };
+            format!("{}  {}  {}{inodes}", v.point, v.source, v.fstype)
+        }
         Some(e) => {
             let link = e
                 .link_target
@@ -1898,6 +1922,36 @@ fn process_row(entry: &Entry, marked: bool, under_cursor: bool) -> Row<'static> 
         Cell::from(Line::from(cpu).right_aligned()),
         Cell::from(Line::from(format_size(entry.size)).right_aligned()),
         Cell::from(entry.mtime.map(format_time).unwrap_or_default()),
+    ])
+    .style(style)
+}
+
+/// A volume in the Full listing of `disks://`: where it is mounted, as
+/// what, how big, how much is free, and a bar of how full, as `df`
+/// counts it.
+fn disk_row(entry: &Entry, marked: bool, under_cursor: bool) -> Row<'static> {
+    let (_, base) = entry_style(entry);
+    let style = cell_style(marked, under_cursor, base);
+    let Some(v) = entry.extra.volume.as_deref() else {
+        return Row::new(vec![Cell::from(entry.name.to_string_lossy().into_owned())]).style(style);
+    };
+    let known = |bytes: u64| match v.stalled {
+        true => "?".to_string(),
+        false => format_size(bytes),
+    };
+    let usage = v
+        .used_percent()
+        .map(|pct| {
+            let filled = ((pct as usize * 6) + 50) / 100;
+            format!("[{:<6}] {pct:>3}%", "#".repeat(filled.min(6)))
+        })
+        .unwrap_or_default();
+    Row::new(vec![
+        Cell::from(format!(" {}", v.point)),
+        Cell::from(v.fstype.clone()),
+        Cell::from(Line::from(known(v.total)).right_aligned()),
+        Cell::from(Line::from(known(v.free)).right_aligned()),
+        Cell::from(usage),
     ])
     .style(style)
 }

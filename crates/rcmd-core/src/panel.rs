@@ -521,13 +521,18 @@ impl Panel {
     pub fn owners_are_local(&self) -> bool {
         matches!(
             self.remote.as_deref(),
-            None | Some(crate::trashcan::PREFIX | crate::procs::PREFIX)
+            None | Some(crate::trashcan::PREFIX | crate::procs::PREFIX | crate::disks::PREFIX)
         )
     }
 
     /// Whether this panel lists the running processes.
     pub fn is_processes(&self) -> bool {
         self.remote.as_deref() == Some(crate::procs::PREFIX)
+    }
+
+    /// Whether this panel lists the disks.
+    pub fn is_disks(&self) -> bool {
+        self.remote.as_deref() == Some(crate::disks::PREFIX)
     }
 
     /// Panel location for titles: `path`, `archive.zip://inside` or

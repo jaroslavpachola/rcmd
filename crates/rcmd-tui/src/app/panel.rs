@@ -618,6 +618,7 @@ impl App {
             Action::JobReport => self.show_job_report(),
             Action::Trash => self.connect_remote(rcmd_core::trashcan::PREFIX),
             Action::Processes => self.connect_remote(rcmd_core::procs::PREFIX),
+            Action::Disks => self.connect_remote(rcmd_core::disks::PREFIX),
             Action::DiffHead => self.open_diff_head(),
             Action::GitStage => self.git_index(true),
             Action::GitUnstage => self.git_index(false),
@@ -870,6 +871,26 @@ impl App {
             return;
         }
         let panel = &self.panels[self.active];
+        // a volume opens where it is mounted, in the other panel: this
+        // one stays the list of them
+        if panel.is_disks() {
+            if let Some(point) = panel
+                .selected()
+                .and_then(|e| e.extra.volume.as_ref())
+                .map(|v| PathBuf::from(&v.point))
+            {
+                let other = &mut self.panels[self.active ^ 1];
+                let result = match other.is_local() {
+                    true => other.cd(point.clone()),
+                    false => other.to_local(point.clone()),
+                };
+                self.status = Some(match result {
+                    Ok(()) => format!(" {} in the other panel ", point.display()),
+                    Err(err) => format!(" {}: {err} ", point.display()),
+                });
+            }
+            return;
+        }
         if !panel.is_local() {
             // a process has nothing to open; what it is asked about is
             // how it was started
@@ -2955,6 +2976,11 @@ impl App {
             self.status = Some(" a process is not copied: F3 shows it, F8 ends it ".into());
             return;
         }
+        if self.panels[self.active].is_disks() {
+            self.status =
+                Some(" a volume is not copied: Enter opens it in the other panel ".into());
+            return;
+        }
         let in_archive = self.panels[self.active].archive.is_some();
         let verb = if is_move { "Move" } else { "Copy" };
         let other = &self.panels[self.active ^ 1];
@@ -3555,6 +3581,12 @@ impl App {
         let permanent = permanent || panel.is_remote() || panel.archive.is_some();
         if paths.is_empty() {
             self.status = Some(" nothing selected ".into());
+            return;
+        }
+        if panel.is_disks() {
+            // nothing here writes to a volume, and a delete would be the
+            // first thing that did
+            self.status = Some(" the disks are only looked at here ".into());
             return;
         }
         let what = self.describe(&paths);

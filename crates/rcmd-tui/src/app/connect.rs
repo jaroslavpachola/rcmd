@@ -17,6 +17,12 @@ impl App {
         } else if input.starts_with(rcmd_core::procs::PREFIX) {
             // one directory, and the first listing is the connection
             remote::spawn_reuse(self.proc_fs(), PathBuf::from("/"), "the processes".into())
+        } else if input.starts_with(rcmd_core::disks::PREFIX) {
+            let disks = self
+                .disks
+                .get_or_insert_with(|| Arc::new(rcmd_core::disks::DisksFs::new()))
+                .clone();
+            remote::spawn_reuse(disks, PathBuf::from("/"), "the disks".into())
         } else if let Some(url) = fish::ShellUrl::parse(input) {
             // a container, a pod, a phone, root: a local command is the
             // way in, and there is nothing to log in to
@@ -344,8 +350,14 @@ impl App {
                     self.connections.push((prefix.clone(), Arc::downgrade(&fs)));
                     self.panels[connect.panel].adopt_remote(fs, prefix.clone(), start, entries);
                     let processes = prefix == rcmd_core::procs::PREFIX;
+                    let disks = prefix == rcmd_core::disks::PREFIX;
                     self.status = Some(match (prefix == rcmd_core::trashcan::PREFIX, kept) {
                         (true, _) => " the trash: F6 puts back, F8 deletes for good ".into(),
+                        _ if disks => {
+                            " the disks: Enter opens one in the other panel, F3 tells more, \
+                             M-. the kernel's own "
+                                .into()
+                        }
                         _ if processes => {
                             " the processes: F3 shows one, F8 ends it, S-F8 kills it, C-r again "
                                 .into()

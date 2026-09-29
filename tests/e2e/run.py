@@ -2357,6 +2357,42 @@ def test_reloadconfig():
     shutil.rmtree(root)
 
 
+def test_disks():
+    """PLAN8 D0: disks:// lists the mounted filesystems with their type,
+    size, free space and a bar; the kernel's own sit behind the hidden
+    toggle; F3 describes one, Enter opens it in the other panel, and
+    nothing on the list is deleted."""
+    root, play, home = sandbox()
+    s = Session(play, home)
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"disks\r", wait=STEP * 3)
+    wait_for(s, "Mount point")
+    lines = [line[:COLS // 2] for line in s.screen().split("\n")]
+    rootrow = next((l for l in lines if l.startswith("│ / ")), "")
+    check("disks: the palette's exact name opens the list",
+          "disks://" in lines[0] and "Mount point" in lines[1], s.screen())
+    check("disks: / is a row with its size and how full",
+          "%" in rootrow and "[" in rootrow, rootrow)
+    shown = "/proc " in s.screen()
+    s.send(b"\x1b.", wait=STEP * 2)                   # M-. hidden files
+    check("disks: the kernel's own are behind the hidden toggle",
+          ("/proc " in s.screen()) != shown, s.screen())
+    s.send(HOME_K, wait=STEP)
+    s.send(F3, wait=STEP * 2)
+    check("disks: F3 describes the volume",
+          "mount point: /" in s.screen() and "inodes:" in s.screen(), s.screen())
+    s.send(b"q", wait=STEP)
+    s.send(b"\r", wait=STEP * 2)
+    right = [line[COLS // 2:] for line in s.screen().split("\n")]
+    check("disks: Enter opens it in the other panel",
+          right[0].startswith("┌ / ") and "in the other panel" in s.screen(), s.screen())
+    s.send(F8, wait=STEP)
+    check("disks: nothing is deleted from the list",
+          "only looked at" in s.screen(), s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_kittykeys():
     """PLAN5 S7: in a terminal that has the kitty keyboard protocol, rcmd
     turns it on - and an Esc is an Esc at once, with no prefix to wait
@@ -7719,6 +7755,7 @@ def main():
         test_sortgroups,
         test_sortgroupdialog,
         test_reloadconfig,
+        test_disks,
         test_briefcolumns,
         test_processes,
         test_editdrag,

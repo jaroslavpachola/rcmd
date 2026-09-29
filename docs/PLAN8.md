@@ -1,6 +1,7 @@
 # rcmd 8.0 - disks, and what to clear off them
 
-**Status:** drafted 2026-09-27, before any of it is built.
+**Status:** drafted 2026-09-27; D0 shipped as 4.68.0 (2026-09-29),
+D1 to D4 not built yet.
 **Baseline:** 4.63.1.
 
 A disk manager: which volumes there are, mounted or not, how full they
@@ -52,7 +53,18 @@ on nothing in the TUI. The TUI and egui only render its listings.
 
 ## Phases
 
-### D0 - a volume listing
+### D0 - a volume listing - DONE (2026-09-29, 4.68.0)
+
+Shipped reading `/proc/self/mountinfo` rather than `/proc/self/mounts`:
+its root field tells a bind mount (a directory of a volume listed
+already) from a mount of a whole filesystem, and binds go behind the
+hidden toggle with the pseudo-filesystems. Each `statvfs` runs on a
+thread of its own and the listing waits 800 ms for them all, so a
+network mount that does not answer is listed without its sizes. A
+volume is named by its mount point with `/` written `∕` (U+2215), one
+path component that still reads as the path. Nothing on the list is
+copied or deleted. The palette now puts an action typed out in full
+first: `disks` was losing to `disk-usage`.
 
 `disks://` as a listing, like `proc://`: a row per mounted filesystem -
 mount point, device, filesystem type, size, used, free, a usage bar,

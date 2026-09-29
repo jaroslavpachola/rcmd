@@ -2994,6 +2994,8 @@ pub enum Action {
     Trash,
     /// The `proc://` panel: the running processes.
     Processes,
+    /// The `disks://` panel: the mounted filesystems.
+    Disks,
     /// The cursor file against the last commit's version of it.
     DiffHead,
     /// Stage the marked files (or the cursor's) in git's index.
@@ -3146,6 +3148,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Some(("Acti&ve VFS list...", "C-x a", Action::VfsList)),
             Some(("Tr&ash (trash://)", "", Action::Trash)),
             Some(("Processes (proc://)", "", Action::Processes)),
+            Some(("Disks (disks://)", "", Action::Disks)),
             Some(("Command histor&y...", "M-h", Action::HistoryList)),
             Some(("Directory histo&ry...", "M-H", Action::DirHistory)),
             // mc has three of these - extension file, menu file,
@@ -3499,6 +3502,9 @@ pub struct App {
     /// The `proc://` panel's filesystem, likewise: it remembers what
     /// each process had used, which is what a CPU share is counted from.
     procs: Option<Arc<rcmd_core::procs::ProcFs>>,
+    /// The `disks://` panel's filesystem, likewise: it keeps the last
+    /// listing's volumes for F3 and the line under the panel.
+    disks: Option<Arc<rcmd_core::disks::DisksFs>>,
     /// The full-screen things open besides the panels - mc's screens,
     /// listed behind M-`. The panels are what is underneath them all
     /// rather than one of them, which is why this can be empty.
@@ -3780,6 +3786,7 @@ impl App {
             undo: Vec::new(),
             trash: None,
             procs: None,
+            disks: None,
             filter_sets_on: [Vec::new(), Vec::new()],
             file_history: state::load().0.file_history,
             du_queue: Vec::new(),
@@ -5055,8 +5062,18 @@ impl App {
                 .map(|(_, key)| *key)
                 .or(Some(SortKey::Mtime))
             }
+            ListMode::Full if panel.is_disks() => {
+                // [Mount point (fill), Type 8, Size 7, Free 7, Use 13]:
+                // the point is the name, and a size is a size
+                let name_w = inner_w.saturating_sub(39);
+                match rel < name_w + 9 {
+                    true => Some(SortKey::Name),
+                    false => Some(SortKey::Size),
+                }
+            }
             ListMode::Full => {
-                // [Name (fill), Size 7, Modify time 12], spacing 1
+                // [Name (fill), Size 7, Modify time 12], spacing 1; a
+                // Kind column sits left of Size, and sorts as the name
                 let name_w = inner_w.saturating_sub(21);
                 if rel < name_w {
                     Some(SortKey::Name)

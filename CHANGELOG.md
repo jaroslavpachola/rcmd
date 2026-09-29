@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.68.0 - 2026-09-29
+
+- **The disks, as a panel.** `cd disks://` (F9 → Command → Disks,
+  `disks` in the palette) lists the mounted filesystems: type, size,
+  free space and a bar of how full in the Full listing, the device and
+  inodes on the line under it. The kernel's own filesystems, the ones
+  in memory, snaps and bind mounts are behind the hidden-files toggle.
+  Enter opens a volume in the other panel, F3 describes it, and nothing
+  on the list is copied or deleted. A network mount that does not
+  answer is listed without its sizes instead of holding the list up.
+  The first step of PLAN8.
+- **The palette takes an action typed out in full** ahead of the fuzzy
+  matches, and no longer ranks a menu label like `(proc://)` as a path.
+
 ## 4.67.0 - 2026-09-29
 
 - **A first config to start from.** Edit config file with no config yet

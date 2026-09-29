@@ -465,6 +465,18 @@ end with SIGTERM and Shift+F8 kills them with SIGKILL, each after
 asking, and a pid that has gone to another process since the listing is
 refused rather than signalled. Linux only: it reads `/proc`.
 
+**So are the disks**: `cd disks://` (or F9 → Command → Disks, `disks`
+in the palette) lists what is mounted, one row a filesystem, named by
+where it is mounted. The Full listing's columns are the type, the size,
+the free space and a bar of how full, as `df` counts it; the line under
+the panel names the device and how many inodes are used. The kernel's
+own filesystems, the ones held in memory, a snap's squashfs and bind
+mounts (a directory of a volume listed already) are behind the
+hidden-files toggle. Enter opens the volume in the other panel, F3
+describes it, and nothing on the list is copied or deleted: it is only
+looked at. A network mount that does not answer is listed without its
+sizes rather than holding the listing up.
+
 **Jobs queue, pause, and say when they are done.** The copy form's
 **Queue** button starts the job only once nothing else is writing to
 that device or server - two copies onto one USB stick run in turn

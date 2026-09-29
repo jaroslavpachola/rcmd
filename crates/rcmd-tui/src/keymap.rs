@@ -311,6 +311,7 @@ pub const ACTIONS: &[(&str, Action)] = &[
     ("job-report", Action::JobReport),
     ("trash", Action::Trash),
     ("processes", Action::Processes),
+    ("disks", Action::Disks),
     ("diff-head", Action::DiffHead),
     ("git-stage", Action::GitStage),
     ("git-unstage", Action::GitUnstage),
