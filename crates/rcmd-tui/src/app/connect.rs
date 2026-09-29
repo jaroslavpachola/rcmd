@@ -219,6 +219,7 @@ impl App {
                 .collect();
             rows.push(VfsRow {
                 label: prefix.clone(),
+                detail: String::new(),
                 target: prefix.clone(),
                 used_by,
                 kind: VfsKind::Remote,
@@ -238,6 +239,7 @@ impl App {
             }
             rows.push(VfsRow {
                 label: format!("{target}://"),
+                detail: String::new(),
                 target,
                 used_by: vec![index],
                 kind: VfsKind::Archive,
@@ -248,25 +250,43 @@ impl App {
         // M-F1 / M-F2 and calls it the drive menu; on a unix the drives
         // are mount points, and the archives and connections are the
         // rest of the same question - where can this panel go
-        for mount in rcmd_core::mounts::mounts() {
-            let room = match mount.total {
-                0 => String::new(),
-                total => format!(
-                    "  {} / {} free",
-                    crate::ui::human_size(mount.free),
-                    crate::ui::human_size(total)
+        // the disks, as disks:// has them: not the kernel's own, the
+        // ones in memory or bind mounts
+        let disks: Vec<_> = rcmd_core::disks::volumes()
+            .into_iter()
+            .filter(|v| !v.pseudo)
+            .collect();
+        // a panel is on the one disk its directory is on: the deepest
+        // mount point above it, not / as well as /boot
+        let on = |panel: &Panel| -> Option<usize> {
+            let cwd = panel.local_cwd();
+            (panel.is_local() && panel.archive.is_none())
+                .then(|| {
+                    disks
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, v)| cwd.starts_with(&v.point))
+                        .max_by_key(|(_, v)| v.point.len())
+                        .map(|(i, _)| i)
+                })
+                .flatten()
+        };
+        let on: Vec<Option<usize>> = self.panels.iter().map(on).collect();
+        for (i, v) in disks.iter().enumerate() {
+            let room = match (v.stalled, v.total) {
+                (true, _) => "not answering".to_string(),
+                (false, 0) => String::new(),
+                (false, total) => format!(
+                    "{:>7} free of {:>7}",
+                    rcmd_core::disks::human(v.free),
+                    rcmd_core::disks::human(total)
                 ),
             };
-            let used_by = (0..self.panels.len())
-                .filter(|i| {
-                    self.panels[*i].is_local()
-                        && self.panels[*i].local_cwd().starts_with(&mount.point)
-                })
-                .collect();
             rows.push(VfsRow {
-                label: format!("{:<24} {}{room}", mount.point, mount.source),
-                target: mount.point,
-                used_by,
+                label: v.point.clone(),
+                detail: format!("{:<8} {room}", v.fstype),
+                target: v.point.clone(),
+                used_by: (0..on.len()).filter(|&p| on[p] == Some(i)).collect(),
                 kind: VfsKind::Mount,
             });
         }

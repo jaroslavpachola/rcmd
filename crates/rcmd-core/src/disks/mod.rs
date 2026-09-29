@@ -46,7 +46,7 @@ pub struct Volume {
     pub inodes_free: u64,
     /// The kernel's own and the in-memory kinds - proc, sysfs, tmpfs,
     /// a snap's squashfs - and a bind mount, which is a directory of a
-    /// volume listed already: behind the hidden-files toggle.
+    /// volume listed already: no disk, and not listed.
     pub pseudo: bool,
     /// The sizes did not come back in time (a network mount that has
     /// gone away).
@@ -292,6 +292,9 @@ impl DisksFs {
         self.seen.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// The disks: what is mounted with a disk of its own behind it. The
+    /// kernel's filesystems, the ones in memory, snaps and bind mounts
+    /// are a dozen rows of noise around the three that are the answer.
     fn list(&self) -> io::Result<Vec<Entry>> {
         let text = match &self.table {
             Some(path) => Some(std::fs::read_to_string(path)?),
@@ -299,6 +302,7 @@ impl DisksFs {
         };
         let entries: Vec<Entry> = volumes_from(text.as_deref())
             .into_iter()
+            .filter(|v| !v.pseudo)
             .map(entry_of)
             .collect();
         let mut seen = self.seen();
@@ -364,8 +368,9 @@ pub fn describe(v: &Volume) -> String {
     out
 }
 
-/// A size as the panels say it, to one decimal: 914.0G.
-fn human(n: u64) -> String {
+/// A size to one decimal in the largest unit it fills: 913.8G, not
+/// 935681M. Seven characters at most, a panel column's width.
+pub fn human(n: u64) -> String {
     const UNITS: [&str; 5] = ["", "K", "M", "G", "T"];
     let mut size = n as f64;
     let mut unit = 0;
@@ -509,11 +514,10 @@ mod tests {
         .unwrap();
         let fs = DisksFs::with_table(Some(table));
         let entries = fs.read_dir(Path::new("/")).unwrap();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 1, "proc is no disk, and not listed");
         let root = entries[0].extra.volume.clone().unwrap();
         assert_eq!(root.point, "/");
         assert!(root.total > 0 && !root.pseudo && !root.stalled);
-        assert!(entries[1].is_hidden(), "proc is behind the hidden toggle");
         let path = Path::new("/").join(&entries[0].name);
         assert_eq!(fs.note(&path).as_deref(), Some("/dev/root ext4"));
         let mut text = String::new();

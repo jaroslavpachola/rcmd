@@ -1,5 +1,39 @@
 # Changelog
 
+## 4.68.1 - 2026-09-29
+
+- **`disks://` lists disks only.** The kernel's filesystems, the ones in
+  memory, snaps and bind mounts were behind the hidden-files toggle, so
+  with hidden files shown they were all there around the few that
+  matter. They are left out now.
+- **Group by kind of file has one entry, a switch and buttons.** The
+  dialog is F9 → Left/Right → Group by kind of file...; the menu's Use
+  sort groups is gone, since with no groups made it opened the same
+  dialog, and its switch is now the dialog's first row. OK and Cancel
+  are there as in every other dialog, by key and by mouse, and Cancel
+  or Esc leaves everything as it was.
+- **A disk's size reads at a glance**: `913.8G`, not `935681M`, and the
+  Long listing and a user format show the disks' own columns rather
+  than permissions, owner and group, which say nothing about a drive.
+- **The Active VFS list (C-x a) is tidy.** Its disks are the ones
+  `disks://` lists, not tmpfs and efivarfs; the mount point, the type
+  and the room left are columns that line up, where a long line cut `/`
+  down to `…`; a panel is on the disk its directory is on, not on `/`
+  as well; and `disks://`, `proc://` and `trash://` say what they are
+  where they all said `sftp`.
+- **The menus offer what the panel can do.** An entry that means
+  nothing on the panel it acts on is left out - the Left and Right menus
+  go by their own panel, the others by the one with the focus. Sort by
+  CPU shows only on `proc://`; `disks://` and `proc://` drop the sorts,
+  the tree and Group by kind of file they have nothing for; the File
+  menu on `disks://` is View, on `proc://` View and ending a process
+  ("End process (SIGTERM)", "Kill process (SIGKILL)", where it said
+  Delete), in the trash View, Copy out, Put back and Delete for good;
+  and the git entries show in a work tree only. The palette still lists
+  every action.
+- **Sort by group is Sort by Unix group** in the menu: it sorts by the
+  group that owns the file, and sat right above the sort groups.
+
 ## 4.68.0 - 2026-09-29
 
 - **The disks, as a panel.** `cd disks://` (F9 → Command → Disks,

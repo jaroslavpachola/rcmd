@@ -865,6 +865,13 @@ def test_vfslist():
     scr = s.screen()
     check("vfslist: what is mounted is always there",
           "disk" in scr and "free" in scr, scr)
+    rows = [l for l in scr.split("\n") if "│ disk " in l]
+    check("vfslist: the disks, not the kernel's filesystems",
+          rows and not any("tmpfs" in l or "efivarfs" in l or " proc " in l for l in rows),
+          rows)
+    check("vfslist: / reads as itself, in a column with the rest",
+          any(" / " in l and "free of" in l for l in rows)
+          and len({l.index("free of") for l in rows if "free of" in l}) == 1, rows)
     s.send(b"f", wait=STEP)
     check("vfslist: a mount point is not ours to free",
           "not rcmd's to free" in s.screen(), s.screen())
@@ -890,6 +897,14 @@ def test_vfslist():
     s.send(b"\x1b[11;3~", wait=STEP)
     check("vfslist: M-F1 opens the same list",
           "Active VFS and mounts" in s.screen(), s.screen())
+    s.send(b"\x1b", wait=STEP)
+    # rcmd's own lists say what they are, not "sftp"
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"disks\r", wait=STEP * 3)
+    s.send(b"\x18a", wait=STEP * 2)
+    check("vfslist: disks:// is disks, not sftp",
+          "│ disks " in s.screen() and "sftp" not in s.screen(), s.screen())
+    s.send(b"\x1b", wait=STEP)
     s.send(b"\x1b", wait=STEP)
     s.quit()
     shutil.rmtree(root)
@@ -2261,7 +2276,7 @@ def test_sortgroupdialog():
     s.send(b"edit-sort-groups\r", wait=STEP * 2)
     scr = s.screen()
     check("sortgroupdialog: the categories are offered",
-          " Sort groups " in scr and "@pictures" in scr and "@ebooks" in scr, scr)
+          " Group by kind of file " in scr and "@pictures" in scr and "@ebooks" in scr, scr)
     # Pictures on; Ebooks on and moved above it
     s.send(b" ", wait=STEP)
     s.send(DOWN * 3, wait=STEP)
@@ -2278,6 +2293,37 @@ def test_sortgroupdialog():
     s.send(HOME_K + DOWN * 2, wait=STEP)
     check("sortgroupdialog: the line under the panel names the cursor's group",
           "a.jpg  [Pictures]" in s.screen(), s.screen())
+    # Cancel keeps what there was: untick Ebooks, Tab to the buttons,
+    # Right to Cancel, Enter
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"edit-sort-groups\r", wait=STEP * 2)
+    check("sortgroupdialog: the dialog has OK and Cancel",
+          "[ OK ] [ Cancel ]" in s.screen(), s.screen())
+    s.send(b" \t" + RIGHT + b"\r", wait=STEP * 2)
+    check("sortgroupdialog: Cancel changes nothing",
+          order(s)[:3] == ["book.epub", "a.jpg", "b.PNG"], order(s))
+    # and with the mouse: a click on Cancel closes it, nothing changed
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"edit-sort-groups\r", wait=STEP * 2)
+    s.send(b" ", wait=STEP)
+    lines = s.screen().split("\n")
+    at = next((i for i, l in enumerate(lines) if "[ Cancel ]" in l), None)
+    if at is not None:
+        s.send(click(lines[at].index("[ Cancel ]") + 3, at + 1), wait=STEP * 2)
+    check("sortgroupdialog: a click on Cancel closes it",
+          "Group by kind of file" not in s.screen()
+          and order(s)[:3] == ["book.epub", "a.jpg", "b.PNG"], s.screen())
+    # the switch: this panel by name alone, the groups kept for later
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"edit-sort-groups\r", wait=STEP * 2)
+    s.send(UP + b" \r", wait=STEP * 2)
+    check("sortgroupdialog: the switch turns them off for the panel",
+          order(s)[:3] == ["a.jpg", "b.PNG", "book.epub"], order(s))
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"edit-sort-groups\r", wait=STEP * 2)
+    s.send(UP + b" \r", wait=STEP * 2)
+    check("sortgroupdialog: ...and back on",
+          order(s)[:3] == ["book.epub", "a.jpg", "b.PNG"], order(s))
     # + on the last file: a group of its extension as it is spelled,
     # after the others
     s.send(END, wait=STEP)
@@ -2358,25 +2404,43 @@ def test_reloadconfig():
 
 
 def test_disks():
-    """PLAN8 D0: disks:// lists the mounted filesystems with their type,
-    size, free space and a bar; the kernel's own sit behind the hidden
-    toggle; F3 describes one, Enter opens it in the other panel, and
-    nothing on the list is deleted."""
+    """PLAN8 D0: disks:// lists the mounted disks with their type, size,
+    free space and a bar, and not the kernel's filesystems; F3 describes
+    one, Enter opens it in the other panel, and nothing on the list is
+    deleted."""
     root, play, home = sandbox()
     s = Session(play, home)
+    # the menus are the panel's own: no CPU where there are no processes
+    s.send(b"\x1b[20~", wait=STEP)
+    check("disks: a directory's menu has no Sort by CPU",
+          "Sort by size" in s.screen() and "Sort by CPU" not in s.screen(), s.screen())
+    s.send(b"\x1b", wait=STEP)
     s.send(b"\x1bx", wait=STEP)
     s.send(b"disks\r", wait=STEP * 3)
     wait_for(s, "Mount point")
+    s.send(b"\x1b[20~", wait=STEP)
+    check("disks: the disks' menu sorts by what a disk has",
+          "Sort by size" in s.screen() and "Sort by modify time" not in s.screen()
+          and "Group by kind" not in s.screen(), s.screen())
+    s.send(b"\x1b", wait=STEP)
     lines = [line[:COLS // 2] for line in s.screen().split("\n")]
     rootrow = next((l for l in lines if l.startswith("│ / ")), "")
     check("disks: the palette's exact name opens the list",
           "disks://" in lines[0] and "Mount point" in lines[1], s.screen())
     check("disks: / is a row with its size and how full",
           "%" in rootrow and "[" in rootrow, rootrow)
-    shown = "/proc " in s.screen()
-    s.send(b"\x1b.", wait=STEP * 2)                   # M-. hidden files
-    check("disks: the kernel's own are behind the hidden toggle",
-          ("/proc " in s.screen()) != shown, s.screen())
+    # 913.8G, not 935681M
+    check("disks: sizes are read at a glance",
+          re.search(r" \d+\.\dG ", rootrow) is not None, rootrow)
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"listing-long\r", wait=STEP * 2)
+    check("disks: the long listing has no permissions, owner or group",
+          "Perms" not in s.screen() and "Mount point" in s.screen(), s.screen())
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"listing-full\r", wait=STEP * 2)
+    # hidden files are shown here, and still: disks, not the kernel's
+    check("disks: only disks - no /proc, no tmpfs, no snaps",
+          "/proc " not in s.screen() and "tmpfs" not in s.screen(), s.screen())
     s.send(HOME_K, wait=STEP)
     s.send(F3, wait=STEP * 2)
     check("disks: F3 describes the volume",
@@ -2389,6 +2453,41 @@ def test_disks():
     s.send(F8, wait=STEP)
     check("disks: nothing is deleted from the list",
           "only looked at" in s.screen(), s.screen())
+    s.quit()
+    shutil.rmtree(root)
+
+
+def test_contextmenus():
+    """The menus offer what the panel can do: git's entries in a work
+    tree only, and on disks:// and proc:// a File menu of what those
+    lists answer to rather than a dozen refusals."""
+    root, play, home = sandbox()
+    s = Session(play, home)
+
+    def menu(right):
+        s.send(b"\x1b[20~" + RIGHT * right, wait=STEP)
+        scr = s.screen()
+        s.send(b"\x1b", wait=STEP)
+        return scr
+
+    check("contextmenus: no git outside a work tree",
+          "Git: stage" not in menu(2) and "Compare files" in menu(2), menu(2))
+    if shutil.which("git"):
+        subprocess.run(["git", "init", "-q", play], check=True)
+        check("contextmenus: git's entries in a work tree",
+              "Git: stage" in menu(2), menu(2))
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"disks\r", wait=STEP * 3)
+    scr = menu(1)
+    check("contextmenus: a disk's File menu is View, not a dozen refusals",
+          "View" in scr and "Copy..." not in scr and "Make directory" not in scr, scr)
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"processes\r", wait=STEP * 3)
+    wait_for(s, "Started")
+    scr = menu(1)
+    check("contextmenus: a process's File menu ends it, and says so",
+          "End process (SIGTERM)" in scr and "Kill process" in scr
+          and "Delete (trash)" not in scr and "Copy..." not in scr, scr)
     s.quit()
     shutil.rmtree(root)
 
@@ -7756,6 +7855,7 @@ def main():
         test_sortgroupdialog,
         test_reloadconfig,
         test_disks,
+        test_contextmenus,
         test_briefcolumns,
         test_processes,
         test_editdrag,

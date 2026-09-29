@@ -26,6 +26,14 @@ pub fn scan(_dir: &Path) -> Option<GitStatus> {
     None
 }
 
+/// Whether `dir` is inside a work tree, by a `.git` in it or above it -
+/// a few stats, cheap enough to ask whenever a menu is drawn, and no
+/// status walk. Always false without the feature, where nothing git
+/// can be done anyway.
+pub fn in_work_tree(dir: &Path) -> bool {
+    ENABLED && dir.ancestors().any(|d| d.join(".git").exists())
+}
+
 /// What the last commit has of a file - its bytes, and its path in the
 /// repository - for a diff against HEAD. `None` outside a work tree,
 /// or for a file the commit does not have.

@@ -45,6 +45,20 @@ impl App {
                 }
                 false
             }
+            // a group's row: the focus, and its tick; the switch too
+            (Some(Dialog::SortGroups(d)), FormHit::Row(row)) => {
+                d.row = row;
+                match d.group() {
+                    Some(at) => d.rows[at].on = !d.rows[at].on,
+                    None => d.use_here = !d.use_here,
+                }
+                false
+            }
+            (Some(Dialog::SortGroups(d)), FormHit::Button(button)) => {
+                d.row = d.buttons_row();
+                d.ok = button == 0;
+                true
+            }
             (Some(Dialog::Pattern(d)), FormHit::Button(button)) => {
                 d.row = PATTERN_ROWS;
                 d.ok = button == 0;
@@ -239,12 +253,6 @@ impl App {
                 }
                 true
             }
-            Some(Dialog::SortGroups(d)) => {
-                if let Some(at) = count(d.rows.len()) {
-                    d.row = at;
-                }
-                true
-            }
             Some(Dialog::Connections(row)) => {
                 if let Some(at) = count(saved_len) {
                     *row = at;
@@ -418,6 +426,7 @@ impl App {
                             Some(row) => {
                                 let row = VfsRow {
                                     label: row.label.clone(),
+                                    detail: row.detail.clone(),
                                     target: row.target.clone(),
                                     used_by: row.used_by.clone(),
                                     kind: row.kind,
@@ -885,35 +894,67 @@ impl App {
             }
             Dialog::SortGroups(mut d) => {
                 let alt = key.modifiers.contains(KeyModifiers::ALT);
-                let last = d.rows.len().saturating_sub(1);
+                let buttons = d.buttons_row();
+                let on_buttons = d.row == buttons;
                 match key.code {
                     KeyCode::Esc => return,
+                    // Enter is OK wherever the focus is, as in mc's
+                    // dialogs - unless it is on Cancel
                     KeyCode::Enter => {
-                        self.apply_sort_groups(&d);
+                        if !on_buttons || d.ok {
+                            self.apply_sort_groups(&d);
+                        }
                         return;
                     }
                     // the order is the point of the list, so the row
                     // moves as the hotlist's entries do
-                    KeyCode::Up if alt && d.row > 0 => {
-                        d.rows.swap(d.row, d.row - 1);
-                        d.row -= 1;
-                    }
-                    KeyCode::Down if alt && d.row < last => {
-                        d.rows.swap(d.row, d.row + 1);
-                        d.row += 1;
-                    }
-                    KeyCode::Up if !alt => d.row = d.row.saturating_sub(1),
-                    KeyCode::Down | KeyCode::Tab if !alt => d.row = (d.row + 1).min(last),
-                    KeyCode::Home => d.row = 0,
-                    KeyCode::End => d.row = last,
-                    KeyCode::Char(' ') => {
-                        if let Some(row) = d.rows.get_mut(d.row) {
-                            row.on = !row.on;
+                    KeyCode::Up if alt => {
+                        if let Some(at) = d.group().filter(|&at| at > 0) {
+                            d.rows.swap(at, at - 1);
+                            d.row -= 1;
                         }
                     }
+                    KeyCode::Down if alt => {
+                        if let Some(at) = d.group().filter(|&at| at + 1 < d.rows.len()) {
+                            d.rows.swap(at, at + 1);
+                            d.row += 1;
+                        }
+                    }
+                    KeyCode::Up => d.row = d.row.saturating_sub(1),
+                    KeyCode::Down => d.row = (d.row + 1).min(buttons),
+                    // Tab goes switch, list, buttons, and round
+                    KeyCode::Tab => {
+                        d.row = match d.row {
+                            0 => 1,
+                            row if row < buttons => buttons,
+                            _ => 0,
+                        }
+                    }
+                    KeyCode::BackTab => {
+                        d.row = match d.row {
+                            0 => buttons,
+                            row if row < buttons => 0,
+                            _ => 1,
+                        }
+                    }
+                    KeyCode::Home if !on_buttons => d.row = 1.min(buttons),
+                    KeyCode::End if !on_buttons => d.row = d.rows.len(),
+                    KeyCode::Left | KeyCode::Right if on_buttons => d.ok = !d.ok,
+                    KeyCode::Char(' ') => match d.group() {
+                        Some(at) => d.rows[at].on = !d.rows[at].on,
+                        None if d.row == 0 => d.use_here = !d.use_here,
+                        // Space on a button presses it
+                        None => {
+                            if d.ok {
+                                self.apply_sort_groups(&d);
+                            }
+                            return;
+                        }
+                    },
                     KeyCode::Char('l' | 'L') => {
-                        if let Some(row) = d.rows.get_mut(d.row) {
-                            row.rule.place = match row.rule.is_last() {
+                        if let Some(at) = d.group() {
+                            let rule = &mut d.rows[at].rule;
+                            rule.place = match rule.is_last() {
                                 true => "first".into(),
                                 false => "last".into(),
                             };
@@ -2155,12 +2196,12 @@ impl App {
             }
         };
         d.rows[at].on = true;
-        d.row = at;
+        d.row = at + 1;
     }
 
     /// OK in the sort groups dialog: the ticked rows are the groups,
-    /// for both panels and in the state file, and the panel it opened
-    /// on keeps to them - ticking a group is asking to see it.
+    /// for both panels and in the state file, and the switch says
+    /// whether the panel it opened on keeps to them.
     fn apply_sort_groups(&mut self, d: &SortGroupsDialog) {
         let rules: Vec<_> = d
             .rows
@@ -2172,13 +2213,11 @@ impl App {
         let groups = (!groups.is_empty()).then(|| Arc::new(groups));
         let saved = crate::state::update(|s| s.sort_group = Some(rules.clone()));
         self.config.sort_group = rules;
-        if groups.is_some() {
-            // disk usage mode has them off for now, and puts back
-            // what it found
-            match self.du_mode[d.panel].as_mut() {
-                Some(was) => was.3 = true,
-                None => self.panels[d.panel].use_groups = true,
-            }
+        // disk usage mode has them off for now, and puts back what it
+        // found
+        match self.du_mode[d.panel].as_mut() {
+            Some(was) => was.3 = d.use_here,
+            None => self.panels[d.panel].use_groups = d.use_here,
         }
         for panel in &mut self.panels {
             panel.sort_groups = groups.clone();

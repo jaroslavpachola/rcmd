@@ -1402,8 +1402,11 @@ pub struct FuzzyDialog {
 
 /// One line of the active VFS list.
 pub struct VfsRow {
-    /// What the row says.
+    /// What the row is: the prefix, the archive, the mount point.
     pub label: String,
+    /// What else there is to say, in a column of its own: a disk's
+    /// type and room.
+    pub detail: String,
     /// Where Enter goes: the `sftp://` prefix, the archive's path, or
     /// the mount point.
     pub target: String,
@@ -1421,7 +1424,7 @@ pub enum VfsKind {
     /// opened it - the only kind that is ever idle.
     Remote,
     Archive,
-    /// A mounted filesystem, from `df`.
+    /// A disk, as `disks://` lists them.
     Mount,
 }
 
@@ -1435,15 +1438,36 @@ pub struct FiltersDialog {
     pub panel: usize,
 }
 
-/// F9 > Left/Right > Sort groups: the groups there are, ticked, in
-/// their order, and below them the categories not used yet, unticked.
-/// OK keeps the ticked ones, in the state file, for both panels.
+/// F9 > Left/Right > Group by kind of file: whether the panel keeps to
+/// the groups, then the groups there are, ticked, in their order, and
+/// below them the categories not used yet, unticked, then OK and
+/// Cancel. OK keeps the ticked ones, in the state file, for both
+/// panels.
 pub struct SortGroupsDialog {
     pub rows: Vec<GroupRow>,
+    /// Where the focus is: 0 is the switch, 1 to `rows.len()` a group,
+    /// and one more the buttons.
     pub row: usize,
+    /// The switch: this panel sorted by the groups.
+    pub use_here: bool,
+    /// On the buttons: OK, or Cancel.
+    pub ok: bool,
     /// The panel it opened on: the one whose cursor `+` reads, and
-    /// whose groups OK switches on.
+    /// whose switch it is.
     pub panel: usize,
+}
+
+impl SortGroupsDialog {
+    pub fn buttons_row(&self) -> usize {
+        self.rows.len() + 1
+    }
+
+    /// The group the focus is on, if it is on one.
+    pub fn group(&self) -> Option<usize> {
+        (1..=self.rows.len())
+            .contains(&self.row)
+            .then(|| self.row - 1)
+    }
 }
 
 pub struct GroupRow {
@@ -3177,6 +3201,137 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
 pub const LEFT_MENU: usize = 0;
 pub const RIGHT_MENU: usize = 4;
 
+/// The menus as they are now: an entry that means nothing on the panel
+/// it would act on is left out - Sort by CPU where there are no
+/// processes, the file sorts and Group by kind of file on the disks - and
+/// the separators it leaves doubled go with it. The palette keeps the
+/// whole list; the menus are what is worth choosing here.
+pub type Menus = Vec<(&'static str, Vec<MenuEntry>)>;
+
+/// A borrowed view of [`Menus`], for what takes a [`MenuBar`].
+pub fn menu_bar(menus: &Menus) -> Vec<(&'static str, &[MenuEntry])> {
+    menus
+        .iter()
+        .map(|(title, e)| (*title, e.as_slice()))
+        .collect()
+}
+
+/// Whether `action` means anything on `panel`; `repo` is whether the
+/// panel is in a git work tree.
+fn applies(action: &Action, panel: &Panel, repo: bool) -> bool {
+    let (processes, disks) = (panel.is_processes(), panel.is_disks());
+    let trash = panel.remote.as_deref() == Some(rcmd_core::trashcan::PREFIX);
+    // rcmd's own lists do what they do and no more: a disk is looked
+    // at, a process looked at and ended, the trash looked at, copied
+    // out, put back and emptied. The rest of the File menu would only
+    // answer "not here"
+    let own_list = processes || disks || trash;
+    if own_list {
+        let kept = match action {
+            Action::View | Action::FileHistory | Action::Quit => true,
+            // the trash's F8 deletes for good already: one entry
+            Action::DeletePerm => processes,
+            Action::Delete
+            | Action::SelectGroup
+            | Action::UnselectGroup
+            | Action::InvertSelection => !disks,
+            Action::Copy | Action::Move => trash,
+            Action::FilteredView
+            | Action::Edit
+            | Action::BulkRename
+            | Action::Pack
+            | Action::Extract
+            | Action::Undo
+            | Action::Mkdir
+            | Action::Wipe
+            | Action::Apply
+            | Action::Checksum
+            | Action::VerifyChecksum
+            | Action::DirSize
+            | Action::DirSizeAll
+            | Action::DiskUsage => false,
+            _ => true,
+        };
+        if !kept {
+            return false;
+        }
+    }
+    match action {
+        // git works on a work tree, and says so everywhere else
+        Action::DiffHead | Action::GitStage | Action::GitUnstage | Action::GitBranch => repo,
+        // only a process has a share of a CPU
+        Action::Sort(SortKey::Cpu) => processes,
+        // a process has a name, a user, a size and a start; a disk a
+        // name and a size. Nothing else there sorts
+        Action::Sort(SortKey::Ext | SortKey::Atime | SortKey::Ctime | SortKey::Group)
+        | Action::Sort(SortKey::Version) => !processes && !disks,
+        Action::Sort(SortKey::Mtime | SortKey::Owner) => !disks,
+        // no directories to mix in, no kinds of file, no tree
+        Action::SortMix | Action::EditSortGroups | Action::Listing(ListMode::Tree) => {
+            !processes && !disks
+        }
+        _ => true,
+    }
+}
+
+/// What an entry is called on `panel`: F8 on a process ends it, and
+/// F6 in the trash puts a thing back - "Delete (trash)" and
+/// "Move/rename" would say something else. Hotkeys are left off: the
+/// letters are the file entries'.
+fn relabel(entry: MenuEntry, panel: &Panel) -> MenuEntry {
+    let (label, key, action) = entry?;
+    let trash = panel.remote.as_deref() == Some(rcmd_core::trashcan::PREFIX);
+    let label = match (action, panel.is_processes(), trash) {
+        (Action::Delete, true, _) => "End process (SIGTERM)",
+        (Action::DeletePerm, true, _) => "Kill process (SIGKILL)",
+        (Action::Delete, _, true) => "Delete for good",
+        (Action::Move, _, true) => "Put back where it came from",
+        (Action::Copy, _, true) => "Copy out...",
+        _ => label,
+    };
+    Some((label, key, action))
+}
+
+fn contextual(entries: &[MenuEntry], panel: &Panel, repo: bool) -> Vec<MenuEntry> {
+    let mut out: Vec<MenuEntry> = Vec::with_capacity(entries.len());
+    for entry in entries.iter().map(|e| relabel(*e, panel)) {
+        match entry {
+            Some((_, _, action)) if !applies(&action, panel, repo) => {}
+            // a separator only between two entries
+            None if out.last().is_none_or(Option::is_none) => {}
+            _ => out.push(entry),
+        }
+    }
+    if out.last().is_some_and(Option::is_none) {
+        out.pop();
+    }
+    out
+}
+
+impl App {
+    /// [`MENUS`] shaped to the panels: Left and Right to their own,
+    /// the rest to the one with the focus.
+    pub fn menus(&self) -> Menus {
+        let repo: Vec<bool> = self
+            .panels
+            .iter()
+            .map(|p| p.is_local() && p.archive.is_none() && git::in_work_tree(&p.local_cwd()))
+            .collect();
+        MENUS
+            .iter()
+            .enumerate()
+            .map(|(i, (title, entries))| {
+                let side = match i {
+                    LEFT_MENU => 0,
+                    RIGHT_MENU => 1,
+                    _ => self.active,
+                };
+                (*title, contextual(entries, &self.panels[side], repo[side]))
+            })
+            .collect()
+    }
+}
+
 /// The Left and Right menus have identical entries: mc's per-panel
 /// commands, in mc's order. Which panel they land on comes from which
 /// menu is open. No entry here may take `f`, `c`, `o` or `r`: an entry
@@ -3202,7 +3357,7 @@ const PANEL_MENU: &[MenuEntry] = &[
     // no letter for group: the ones in the word are the menu titles' or
     // already spoken for above, and shadowing Right to save an arrow
     // key would be a bad trade
-    Some(("Sort by group", "", Action::Sort(SortKey::Group))),
+    Some(("Sort by Unix group", "", Action::Sort(SortKey::Group))),
     // no letter either: every one in "version" is spoken for
     Some((
         "Sort by version (2 < 10)",
@@ -3218,8 +3373,8 @@ const PANEL_MENU: &[MenuEntry] = &[
     Some(("Mi&x directories and files", "", Action::SortMix)),
     Some(("Case sensitive sort", "", Action::SortCase)),
     // no letter: every one in the label is spoken for above
-    Some(("Use sort groups", "", Action::SortGroups)),
-    Some(("Sort groups...", "", Action::EditSortGroups)),
+    // the switch is in the dialog: one entry, not two that open it
+    Some(("Group by kind of file...", "", Action::EditSortGroups)),
     None,
     // "Filter" cannot take a letter of its own here: f, i, l, t, e and
     // r are all spoken for by an entry above or by a menu title, and a
@@ -4852,7 +5007,7 @@ impl App {
         if self.areas.menubar.height > 0 && self.areas.menubar.contains(pos) {
             self.menu = Some(MenuState {
                 menu: 0,
-                item: first_menu_item(MENUS[0].1),
+                item: first_menu_item(&self.menus()[0].1),
             });
             self.menu_click(x, y);
             return;
@@ -5015,7 +5170,7 @@ impl App {
         }
         // a user-defined format sorts by whichever field was clicked,
         // through the same layout the renderer used
-        if self.panels[side].list_mode == ListMode::User {
+        if self.panels[side].list_mode == ListMode::User && !self.panels[side].is_disks() {
             let sets = self.listing_format.repeat.max(1);
             let set_width = (area.width.saturating_sub(2) / sets).max(1);
             let mut x = rel as u16 % set_width.max(1);
@@ -5046,7 +5201,7 @@ impl App {
         let key = match panel.list_mode {
             // the tree draws no header row, and a user format was
             // handled above; neither reaches here
-            ListMode::Tree | ListMode::User => None,
+            ListMode::Tree => None,
             ListMode::Brief => Some(SortKey::Name),
             ListMode::Full if panel.is_processes() => {
                 // [Name (fill), User 8, CPU% 5, Memory 7, Started 12]
@@ -5062,7 +5217,7 @@ impl App {
                 .map(|(_, key)| *key)
                 .or(Some(SortKey::Mtime))
             }
-            ListMode::Full if panel.is_disks() => {
+            ListMode::Full | ListMode::Long | ListMode::User if panel.is_disks() => {
                 // [Mount point (fill), Type 8, Size 7, Free 7, Use 13]:
                 // the point is the name, and a size is a size
                 let name_w = inner_w.saturating_sub(39);
@@ -5093,6 +5248,8 @@ impl App {
                     Some(SortKey::Name)
                 }
             }
+            // a user format was handled above, but for the disks'
+            ListMode::User => None,
         };
         if let Some(key) = key {
             panel.set_sort(key);
@@ -5100,13 +5257,15 @@ impl App {
     }
 
     fn menu_click(&mut self, x: u16, y: u16) {
+        let menus = self.menus();
         let Some(ms) = self.menu.as_mut() else { return };
-        let (titles, dropdown) = crate::ui::menu_layout(ms.menu, self.areas.screen);
+        let (titles, dropdown) =
+            crate::ui::menu_layout(&menu_bar(&menus), ms.menu, self.areas.screen);
         if y == self.areas.screen.y {
             match titles.iter().position(|(tx, tw)| x >= *tx && x < tx + tw) {
                 Some(menu) => {
                     ms.menu = menu;
-                    ms.item = first_menu_item(MENUS[menu].1);
+                    ms.item = first_menu_item(&menus[menu].1);
                 }
                 None => self.menu = None,
             }
@@ -5121,7 +5280,7 @@ impl App {
         if inner.contains(Position { x, y }) {
             let idx = (y - inner.y) as usize;
             // a separator click keeps the menu open
-            if let Some(Some((_, _, action))) = MENUS[ms.menu].1.get(idx) {
+            if let Some(Some((_, _, action))) = menus[ms.menu].1.get(idx) {
                 let (action, menu) = (*action, ms.menu);
                 self.menu = None;
                 self.run_menu_action(menu, action);
@@ -6723,6 +6882,86 @@ fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Left and Right menus hold what means something on their own
+    /// panel, and no separator is left doubled or at an end.
+    #[test]
+    fn a_panel_menu_is_shaped_to_its_panel() {
+        let mut panel = Panel::new(std::env::temp_dir()).unwrap();
+        let has = |entries: &[MenuEntry], key: SortKey| {
+            entries
+                .iter()
+                .flatten()
+                .any(|(_, _, a)| matches!(a, Action::Sort(k) if *k == key))
+        };
+        let tidy = |entries: &[MenuEntry]| {
+            entries.first().is_some_and(Option::is_some)
+                && entries.last().is_some_and(Option::is_some)
+                && !entries.windows(2).any(|w| w[0].is_none() && w[1].is_none())
+        };
+        let files = contextual(PANEL_MENU, &panel, false);
+        assert!(!has(&files, SortKey::Cpu), "no processes, no CPU");
+        assert!(has(&files, SortKey::Ext) && has(&files, SortKey::Group));
+        assert!(tidy(&files));
+        panel.remote = Some(rcmd_core::procs::PREFIX.into());
+        let processes = contextual(PANEL_MENU, &panel, false);
+        assert!(has(&processes, SortKey::Cpu) && has(&processes, SortKey::Owner));
+        assert!(!has(&processes, SortKey::Ext));
+        assert!(tidy(&processes));
+        panel.remote = Some(rcmd_core::disks::PREFIX.into());
+        let disks = contextual(PANEL_MENU, &panel, false);
+        assert!(has(&disks, SortKey::Size) && has(&disks, SortKey::Name));
+        assert!(!has(&disks, SortKey::Cpu) && !has(&disks, SortKey::Mtime));
+        assert!(
+            !disks
+                .iter()
+                .flatten()
+                .any(|(_, _, a)| matches!(a, Action::EditSortGroups))
+        );
+        assert!(tidy(&disks));
+
+        // the File menu: a disk is only looked at, a process looked at
+        // and ended, the trash looked at, copied out and emptied
+        let file_menu = MENUS[1].1;
+        let offers = |entries: &[MenuEntry], wanted: fn(&Action) -> bool| {
+            entries.iter().flatten().any(|(_, _, a)| wanted(a))
+        };
+        let on_disks = contextual(file_menu, &panel, false);
+        assert!(offers(&on_disks, |a| matches!(a, Action::View)));
+        assert!(!offers(&on_disks, |a| matches!(
+            a,
+            Action::Copy | Action::Delete | Action::Mkdir
+        )));
+        assert!(tidy(&on_disks));
+        panel.remote = Some(rcmd_core::procs::PREFIX.into());
+        let on_processes = contextual(file_menu, &panel, false);
+        assert!(offers(&on_processes, |a| matches!(a, Action::Delete)));
+        assert!(!offers(&on_processes, |a| matches!(
+            a,
+            Action::Copy | Action::Edit
+        )));
+        panel.remote = Some(rcmd_core::trashcan::PREFIX.into());
+        let in_trash = contextual(file_menu, &panel, false);
+        assert!(offers(&in_trash, |a| matches!(
+            a,
+            Action::Copy | Action::Move
+        )));
+        assert!(!offers(&in_trash, |a| matches!(
+            a,
+            Action::Mkdir | Action::Pack
+        )));
+        panel.remote = None;
+        assert!(offers(&contextual(file_menu, &panel, false), |a| matches!(
+            a,
+            Action::Mkdir
+        )));
+
+        // git's entries only in a work tree
+        let command_menu = MENUS[2].1;
+        let git = |a: &Action| matches!(a, Action::GitStage | Action::DiffHead);
+        assert!(!offers(&contextual(command_menu, &panel, false), git));
+        assert!(offers(&contextual(command_menu, &panel, true), git));
+    }
 
     /// Every setting must have a row, or it exists in the config and in
     /// the values array while being unreachable in the form - which is

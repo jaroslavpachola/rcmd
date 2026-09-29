@@ -19,7 +19,7 @@
 
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Button, Color32, Id, Popup, TextStyle, Ui};
-use rcmd_tui::app::{App, EDIT_MENUS, MENUS, MenuBar, MenuBarFor, menu_hotkey, menu_label};
+use rcmd_tui::app::{App, EDIT_MENUS, MenuBar, MenuBarFor, menu_bar, menu_hotkey, menu_label};
 
 /// What the bar is told each frame, beyond the app itself.
 #[derive(Clone, Copy, Default)]
@@ -54,9 +54,12 @@ pub fn show(
     let mut extra = None;
     match kind {
         MenuBarFor::Panels => {
+            // shaped to the panels as they are: no Sort by CPU where
+            // there are no processes
+            let menus = app.menus();
             if let Some((menu, action)) = bar(
                 ui,
-                MENUS,
+                &menu_bar(&menus),
                 enabled,
                 request.open_first,
                 focus_first,
@@ -226,6 +229,7 @@ fn typed_letter(ctx: &egui::Context) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcmd_tui::app::MENUS;
 
     /// Every letter the terminal build underlines is one this bar can
     /// act on: `typed_letter` lowercases, and so does `menu_hotkey`,

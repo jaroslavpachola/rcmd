@@ -57,8 +57,10 @@ on nothing in the TUI. The TUI and egui only render its listings.
 
 Shipped reading `/proc/self/mountinfo` rather than `/proc/self/mounts`:
 its root field tells a bind mount (a directory of a volume listed
-already) from a mount of a whole filesystem, and binds go behind the
-hidden toggle with the pseudo-filesystems. Each `statvfs` runs on a
+already) from a mount of a whole filesystem. The pseudo-filesystems
+and binds went behind the hidden-files toggle in 4.68.0, which showed
+them all to anyone with hidden files on - a dozen rows of noise around
+the disks; 4.68.1 leaves them out of the list. Each `statvfs` runs on a
 thread of its own and the listing waits 800 ms for them all, so a
 network mount that does not answer is listed without its sizes. A
 volume is named by its mount point with `/` written `∕` (U+2215), one

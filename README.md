@@ -469,10 +469,10 @@ refused rather than signalled. Linux only: it reads `/proc`.
 in the palette) lists what is mounted, one row a filesystem, named by
 where it is mounted. The Full listing's columns are the type, the size,
 the free space and a bar of how full, as `df` counts it; the line under
-the panel names the device and how many inodes are used. The kernel's
-own filesystems, the ones held in memory, a snap's squashfs and bind
-mounts (a directory of a volume listed already) are behind the
-hidden-files toggle. Enter opens the volume in the other panel, F3
+the panel names the device and how many inodes are used. Only disks
+are listed: not the kernel's own filesystems, the ones held in memory,
+a snap's squashfs or bind mounts (a directory of a volume listed
+already). Enter opens the volume in the other panel, F3
 describes it, and nothing on the list is copied or deleted: it is only
 looked at. A network mount that does not answer is listed without its
 sizes rather than holding the listing up.
@@ -1255,18 +1255,21 @@ is not taken back by an edit to `config.toml`.
 
 **Sort groups** keep classes of file together - pictures, then ebooks,
 then the rest - whatever the listing is sorted by. They can be written
-as `[[sort_group]]` (below), or made in **F9 → Left/Right → Sort
-groups...** (`edit-sort-groups`): the groups there are come ticked and
-in their order, the categories no group is yet come after them
-unticked, Space ticks one, Alt+Up/Alt+Down move it, `l` puts it after
-the rest of the listing instead of ahead, and `+` makes a group of the
-cursor file's extension (or ticks its category, if it has one). OK
-keeps them in the state file, which from then on owns the list as it
-does the hotlist's. A named group is named in the **Kind** column of
-the Full listing, where the panel is wide enough to keep sixteen cells
-for the name beside it, and on the line under the panel otherwise;
-`sgroup` puts it in a user format. Use sort groups turns them off for
-a panel, the column with them.
+as `[[sort_group]]` (below), or made in **F9 → Left/Right → Group by
+kind of file...** (`edit-sort-groups`): the groups there are come
+ticked and in their order, the categories no group is yet come after
+them unticked, Space ticks one, Alt+Up/Alt+Down move it, `l` puts it
+after the rest of the listing instead of ahead, and `+` makes a group
+of the cursor file's extension (or ticks its category, if it has one).
+The switch at the top turns the groups off for that panel and on
+again (`sort-groups` in the palette does too). OK keeps them in the
+state file, which from then on owns the list as it does the hotlist's;
+Cancel or Esc leaves everything as it was. A named group is named in
+the **Kind** column of the Full listing, where the panel is wide
+enough to keep sixteen cells for the name beside it, and on the line
+under the panel otherwise; `sgroup` puts it in a user format. (Sort by
+Unix group, in the same menu, is another thing: the group that owns
+the file.)
 
 The settings live in one sectioned checkbox form under **F9 → Options →
 Panel options**, applied live: *Layout* (split direction and size, the
@@ -1392,8 +1395,8 @@ name = "Code"          # list as [[highlight]] takes, or type = "exe"),
 match = "@pictures"    # a category alone is named for it: Pictures
 [[sort_group]]
 match = "*.o,*.tmp"    # ...and these after it; directories stay first,
-place = "last"         # and F9 > Left/Right > Use sort groups (or
-                       # sort-groups) turns them off for a panel
+place = "last"         # and F9 > Left/Right > Group by kind of file
+                       # turns them off for a panel
 
 [[hotlist]]                 # Ctrl+\ - a tree, as in mc
 label = "projects"

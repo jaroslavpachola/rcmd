@@ -13,7 +13,7 @@ use crate::format::{Field, Format, Item};
 
 use crate::app::{
     App, Ask, ConfirmDialog, ConnectAsk, Dialog, EditPrompt, FindDialog, FormHit, InputDialog, Job,
-    MENUS, MenuState, OptionsDialog, QuickView, VfsDialog, ViewSearch, menu_label,
+    MenuState, OptionsDialog, QuickView, VfsDialog, ViewSearch, menu_label,
 };
 use rcmd_core::view::SearchKind;
 
@@ -781,7 +781,8 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
     }
 
     if let Some(menu) = &app.menu {
-        draw_menu(frame, menu);
+        let menus = app.menus();
+        draw_menu(frame, menu, &crate::app::menu_bar(&menus));
     }
     // where the open dialog's rows landed, for the mouse; the list
     // dialogs fill it in, everything else leaves it empty
@@ -821,7 +822,7 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
             Dialog::Filters(d) => {
                 dialog_rows = draw_filters(frame, &app.config.filter, d);
             }
-            Dialog::SortGroups(d) => dialog_rows = draw_sort_groups(frame, d),
+            Dialog::SortGroups(d) => draw_sort_groups(frame, d, &mut form_hits),
             Dialog::Charset(row) => {
                 dialog_rows =
                     draw_pick_list(frame, " Character set ", &crate::app::CHARSET_ROWS, *row, 0)
@@ -1141,7 +1142,9 @@ fn draw_panel(
         }
         return;
     }
-    if panel.list_mode == ListMode::User {
+    // a drive has no permissions, owner or group worth a column: the
+    // disks list as themselves in every listing but the brief one
+    if panel.list_mode == ListMode::User && !panel.is_disks() {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         draw_user_columns(frame, inner, panel, state, &chrome, git);
@@ -1165,7 +1168,7 @@ fn draw_panel(
     let (labels, constraints): (&[&str], Vec<Constraint>) = match panel.list_mode {
         // brief columns, the tree and a user format have renderers
         // of their own; they never reach the table
-        ListMode::Brief | ListMode::Tree | ListMode::User => (&["Name"], vec![Constraint::Fill(1)]),
+        ListMode::Brief | ListMode::Tree => (&["Name"], vec![Constraint::Fill(1)]),
         ListMode::Full if panel.is_processes() => (
             &["Name", "User", "CPU%", "Memory", "Started"],
             vec![
@@ -1176,7 +1179,7 @@ fn draw_panel(
                 Constraint::Length(12),
             ],
         ),
-        ListMode::Full if panel.is_disks() => (
+        ListMode::Full | ListMode::Long | ListMode::User if panel.is_disks() => (
             &["Mount point", "Type", "Size", "Free", "Use"],
             vec![
                 Constraint::Fill(1),
@@ -1221,6 +1224,8 @@ fn draw_panel(
                 Constraint::Fill(1),
             ],
         ),
+        // a user format has a renderer of its own, but for the disks'
+        ListMode::User => (&["Name"], vec![Constraint::Fill(1)]),
     };
     let header = Row::new(labels.iter().map(|l| Cell::from(Line::from(*l).centered())))
         .style(Style::new().fg(th().header_fg));
@@ -1252,7 +1257,7 @@ fn draw_panel(
     offset = offset.min(len.saturating_sub(shown));
     let remote = !panel.owners_are_local();
     let processes = panel.is_processes() && panel.list_mode == ListMode::Full;
-    let disks = panel.is_disks() && panel.list_mode == ListMode::Full;
+    let disks = panel.is_disks() && panel.list_mode != ListMode::Brief;
     // ncdu's bar: each entry against the biggest one here
     let biggest = match chrome.usage {
         true => panel
@@ -1935,9 +1940,11 @@ fn disk_row(entry: &Entry, marked: bool, under_cursor: bool) -> Row<'static> {
     let Some(v) = entry.extra.volume.as_deref() else {
         return Row::new(vec![Cell::from(entry.name.to_string_lossy().into_owned())]).style(style);
     };
+    // 913.8G, not 935681M: a disk's size is read, not compared digit
+    // by digit with the file above it
     let known = |bytes: u64| match v.stalled {
         true => "?".to_string(),
-        false => format_size(bytes),
+        false => rcmd_core::disks::human(bytes),
     };
     let usage = v
         .used_percent()
@@ -4037,8 +4044,12 @@ fn hot_spans(label: &str, style: Style, hot_fg: Color, spans: &mut Vec<Span<'sta
     spans.push(Span::styled(post.to_string(), style));
 }
 
-pub fn menu_layout(menu: usize, area: Rect) -> (Vec<(u16, u16)>, Rect) {
-    menu_layout_of(MENUS, menu, area)
+pub fn menu_layout(
+    menus: crate::app::MenuBar<crate::app::Action>,
+    menu: usize,
+    area: Rect,
+) -> (Vec<(u16, u16)>, Rect) {
+    menu_layout_of(menus, menu, area)
 }
 
 /// The same geometry for any menu bar - the panel's and the editor's
@@ -4078,8 +4089,8 @@ fn menu_layout_of<A>(
     (titles, dropdown)
 }
 
-fn draw_menu(frame: &mut Frame, ms: &MenuState) {
-    draw_menu_of(frame, ms, MENUS);
+fn draw_menu(frame: &mut Frame, ms: &MenuState, menus: crate::app::MenuBar<crate::app::Action>) {
+    draw_menu_of(frame, ms, menus);
 }
 
 /// Draw an open menu bar and its dropdown. Generic over what the
@@ -5797,12 +5808,22 @@ fn draw_vfs(frame: &mut Frame, dialog: &VfsDialog) {
         return;
     }
     let selected = dialog.selected.min(dialog.rows.len() - 1);
-    for (i, row) in dialog.rows.iter().enumerate() {
-        if i as u16 >= inner.height {
-            break;
-        }
+    // the selected row stays in view in a list longer than the dialog
+    let shown = inner.height as usize;
+    let offset = (selected + 1).saturating_sub(shown);
+    let width = inner.width as usize;
+    // kind, who is on it, the name, then the detail in a column of its
+    // own, as wide as the widest one there is
+    let detail_w = dialog
+        .rows
+        .iter()
+        .map(|r| r.detail.chars().count())
+        .max()
+        .unwrap_or(0);
+    let name_w = width.saturating_sub(15 + detail_w + usize::from(detail_w > 0));
+    for (i, row) in dialog.rows.iter().enumerate().skip(offset).take(shown) {
         let area = Rect {
-            y: inner.y + i as u16,
+            y: inner.y + (i - offset) as u16,
             height: 1,
             ..inner
         };
@@ -5812,14 +5833,23 @@ fn draw_vfs(frame: &mut Frame, dialog: &VfsDialog) {
             [1] => "right".to_string(),
             _ => "both".to_string(),
         };
+        // a connection says what it is by its scheme: sftp, ftp, fish,
+        // rclone - and rcmd's own lists, disks and proc and trash
         let kind = match row.kind {
-            crate::app::VfsKind::Remote => "sftp",
+            crate::app::VfsKind::Remote => row.label.split("://").next().unwrap_or("vfs"),
             crate::app::VfsKind::Archive => "arch",
             crate::app::VfsKind::Mount => "disk",
         };
-        let width = inner.width as usize;
-        let label = tail(&row.label, width.saturating_sub(13));
-        let text = format!(" {kind} {used:>5}  {label}");
+        // a long path keeps its end, where the name is
+        let name = match row.label.chars().count() > name_w {
+            true => tail(&row.label, name_w),
+            false => format!("{:<name_w$}", row.label),
+        };
+        let text = format!(
+            " {:<6} {used:<5}  {name} {}",
+            fit(kind, 6, false),
+            row.detail
+        );
         frame.render_widget(
             Line::from(format!("{text:<width$}")).style(if i == selected { sel } else { base }),
             area,
@@ -5884,34 +5914,60 @@ fn draw_filters(
     })
 }
 
-/// The sort groups dialog: a switch per group, what it matches, and
-/// whether it goes ahead of the listing or after it; the keys along
-/// the bottom, since four of them are this dialog's own.
+/// The sort groups dialog: whether this panel keeps to the groups, a
+/// switch per group with what it matches and whether it goes ahead of
+/// the listing or after it, the keys that are this dialog's own, and
+/// OK and Cancel.
 fn draw_sort_groups(
     frame: &mut Frame,
     d: &crate::app::SortGroupsDialog,
-) -> Option<crate::app::DialogRows> {
+    hits: &mut Vec<(Rect, FormHit)>,
+) {
     let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
     let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
     let hint = base.add_modifier(Modifier::DIM);
-    let room = frame.area().height.saturating_sub(5) as usize;
+    // the switch, a rule, the list, a rule, the keys, the buttons
+    let room = frame.area().height.saturating_sub(8) as usize;
     let shown = d.rows.len().min(room).max(1);
     let inner = popup(
         frame,
-        centered(64, shown as u16 + 3, frame.area()),
-        " Sort groups ",
+        centered(66, shown as u16 + 7, frame.area()),
+        " Group by kind of file ",
         base,
     );
-    // the cursor stays in view in a list longer than the screen
-    let offset = (d.row + 1).saturating_sub(shown);
-    let name_width = 14.min((inner.width as usize).saturating_sub(30));
-    let masks_width = (inner.width as usize).saturating_sub(name_width + 16);
+    let line = |y: u16| Rect {
+        y: inner.y + y,
+        height: 1,
+        ..inner
+    };
+    let width = (inner.width as usize).saturating_sub(1);
+    let row_text = |text: String, focused: bool| {
+        Line::from(format!("{text:<width$}")).style(if focused { sel } else { base })
+    };
+    let side = match d.panel {
+        0 => "left",
+        _ => "right",
+    };
+    frame.render_widget(
+        row_text(
+            format!(
+                " [{}] Sort the {side} panel by these groups",
+                if d.use_here { "x" } else { " " }
+            ),
+            d.row == 0,
+        ),
+        line(0),
+    );
+    hits.push((line(0), FormHit::Row(0)));
+    let rule = "\u{2500}".repeat(inner.width as usize);
+    frame.render_widget(Line::from(rule.clone()).style(base), line(1));
+    // the focused group stays in view in a list longer than the screen
+    let focused = d.group().unwrap_or(0);
+    let offset = (focused + 1).saturating_sub(shown);
+    let name_width = 14.min(width.saturating_sub(30));
+    let masks_width = width.saturating_sub(name_width + 16);
     for (i, row) in d.rows.iter().enumerate().skip(offset).take(shown) {
-        let area = Rect {
-            y: inner.y + (i - offset) as u16,
-            height: 1,
-            ..inner
-        };
+        let at = line(2 + (i - offset) as u16);
         let matches = row.rule.pattern.as_deref().or(row.rule.kind.as_deref());
         let text = format!(
             " [{}] {}  {}  {}",
@@ -5920,30 +5976,35 @@ fn draw_sort_groups(
             fit(matches.unwrap_or_default(), masks_width, false),
             if row.rule.is_last() { "last " } else { "first" },
         );
-        frame.render_widget(
-            Line::from(format!(
-                "{text:<w$}",
-                w = (inner.width as usize).saturating_sub(1)
-            ))
-            .style(if i == d.row { sel } else { base }),
-            area,
-        );
+        frame.render_widget(row_text(text, d.group() == Some(i)), at);
+        hits.push((at, FormHit::Row(i + 1)));
     }
+    let below = 2 + shown as u16;
+    frame.render_widget(Line::from(rule).style(base), line(below));
     frame.render_widget(
-        Line::from(" Space on/off  M-Up/Down move  l first/last  + cursor's type").style(hint),
-        Rect {
-            y: inner.y + inner.height.saturating_sub(1),
-            height: 1,
-            ..inner
-        },
+        Line::from(" Space tick  M-Up/Down order  l first/last  + cursor's type").style(hint),
+        line(below + 1),
     );
-    Some(crate::app::DialogRows {
-        area: Rect {
-            height: shown as u16,
-            ..inner
-        },
-        rows: (offset..offset + shown).map(Some).collect(),
-    })
+    let buttons = line(below + 2);
+    for (i, rect) in button_rects(&["OK", "Cancel"], buttons)
+        .into_iter()
+        .enumerate()
+    {
+        hits.push((rect, FormHit::Button(i)));
+    }
+    let on_buttons = d.row == d.buttons_row();
+    frame.render_widget(
+        buttons_line(
+            &["OK", "Cancel"],
+            match on_buttons {
+                true => usize::from(!d.ok),
+                false => usize::MAX,
+            },
+            base,
+            sel,
+        ),
+        buttons,
+    );
 }
 
 /// The synchronize plan: one row per difference, the arrow saying

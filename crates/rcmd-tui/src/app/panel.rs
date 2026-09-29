@@ -216,22 +216,23 @@ impl App {
     }
 
     pub(super) fn on_menu_key(&mut self, key: KeyEvent) {
+        let menus = self.menus();
         let Some(ms) = self.menu.as_mut() else { return };
         match key.code {
             KeyCode::Esc | KeyCode::F(9) | KeyCode::F(10) => self.menu = None,
             KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
-                let len = MENUS.len();
+                let len = menus.len();
                 ms.menu = if key.code == KeyCode::Left {
                     (ms.menu + len - 1) % len
                 } else {
                     (ms.menu + 1) % len
                 };
-                ms.item = first_menu_item(MENUS[ms.menu].1);
+                ms.item = first_menu_item(&menus[ms.menu].1);
             }
-            KeyCode::Up => ms.item = menu_step(MENUS[ms.menu].1, ms.item, -1),
-            KeyCode::Down => ms.item = menu_step(MENUS[ms.menu].1, ms.item, 1),
+            KeyCode::Up => ms.item = menu_step(&menus[ms.menu].1, ms.item, -1),
+            KeyCode::Down => ms.item = menu_step(&menus[ms.menu].1, ms.item, 1),
             KeyCode::Enter => {
-                if let Some((_, _, action)) = MENUS[ms.menu].1[ms.item] {
+                if let Some(&Some((_, _, action))) = menus[ms.menu].1.get(ms.item) {
                     let menu = ms.menu;
                     self.menu = None;
                     self.run_menu_action(menu, action);
@@ -241,7 +242,7 @@ impl App {
                 // MC-style hotkeys: an entry letter of the open menu
                 // runs it; otherwise a title letter switches menus.
                 let c = c.to_ascii_lowercase();
-                let entry = MENUS[ms.menu]
+                let entry = menus[ms.menu]
                     .1
                     .iter()
                     .flatten()
@@ -250,12 +251,12 @@ impl App {
                     let menu = ms.menu;
                     self.menu = None;
                     self.run_menu_action(menu, action);
-                } else if let Some(menu) = MENUS
+                } else if let Some(menu) = menus
                     .iter()
                     .position(|(title, _)| menu_hotkey(title) == Some(c))
                 {
                     ms.menu = menu;
-                    ms.item = first_menu_item(MENUS[menu].1);
+                    ms.item = first_menu_item(&menus[menu].1);
                 }
             }
             _ => {}
@@ -358,7 +359,7 @@ impl App {
                 } else {
                     self.menu = Some(MenuState {
                         menu: 0,
-                        item: first_menu_item(MENUS[0].1),
+                        item: first_menu_item(&self.menus()[0].1),
                     })
                 }
             }
@@ -3366,8 +3367,9 @@ impl App {
         })));
     }
 
-    /// F9 > Left/Right > Sort groups: the groups there are, ticked and
-    /// in their order, then every category no group is yet, unticked.
+    /// F9 > Left/Right > Group by kind of file: the groups there are,
+    /// ticked and in their order, then every category no group is yet,
+    /// unticked.
     fn open_sort_groups(&mut self) {
         let mut rows: Vec<GroupRow> = self
             .config
@@ -3386,7 +3388,9 @@ impl App {
         }
         self.dialog = Some(Dialog::SortGroups(Box::new(SortGroupsDialog {
             rows,
-            row: 0,
+            row: 1,
+            use_here: self.panels[self.active].use_groups,
+            ok: true,
             panel: self.active,
         })));
     }

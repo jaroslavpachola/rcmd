@@ -67,11 +67,8 @@ impl Entry {
         self.kind == EntryKind::File && self.mode & 0o111 != 0
     }
 
-    /// A dotfile - or, in `disks://`, a volume with no disk of its own.
     pub fn is_hidden(&self) -> bool {
-        !self.is_parent()
-            && (self.name.as_encoded_bytes().starts_with(b".")
-                || self.extra.volume.as_ref().is_some_and(|v| v.pseudo))
+        !self.is_parent() && self.name.as_encoded_bytes().starts_with(b".")
     }
 
     /// ls-style permission string, e.g. "drwxr-xr-x".
