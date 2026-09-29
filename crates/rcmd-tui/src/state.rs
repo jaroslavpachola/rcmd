@@ -112,6 +112,11 @@ pub struct State {
     /// Once `a`/`d` touches it, this owns the list outright.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hotlist: Option<Vec<HotEntry>>,
+    /// Sort groups, as the sort groups dialog left them. `None` = never
+    /// touched there, so `config.toml`'s `[[sort_group]]` list stands;
+    /// once OK is pressed in it, this owns the list outright.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_group: Option<Vec<crate::config::SortGroupRule>>,
     /// Panelize presets. `None` = never touched here, so the config
     /// file's list stands; once one is saved or dropped, this owns it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -507,6 +512,9 @@ pub fn apply(state: &State, config: &mut Config) {
     }
     if let Some(panelize) = state.panelize.clone() {
         config.panelize = panelize;
+    }
+    if let Some(groups) = state.sort_group.clone() {
+        config.sort_group = groups;
     }
 }
 

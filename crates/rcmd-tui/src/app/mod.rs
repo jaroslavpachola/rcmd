@@ -1339,6 +1339,8 @@ pub enum Dialog {
     Sync(Box<SyncDialog>),
     /// `C-x f`: the named filter sets and which are on.
     Filters(Box<FiltersDialog>),
+    /// F9 > Left/Right > Sort groups: which groups, in what order.
+    SortGroups(Box<SortGroupsDialog>),
     /// External panelize: the saved commands and the one being typed.
     Panelize(Box<PanelizeDialog>),
     /// Select / unselect group, and the panel filter.
@@ -1431,6 +1433,22 @@ pub struct FiltersDialog {
     pub row: usize,
     /// Which panel it applies to - the active one when it opened.
     pub panel: usize,
+}
+
+/// F9 > Left/Right > Sort groups: the groups there are, ticked, in
+/// their order, and below them the categories not used yet, unticked.
+/// OK keeps the ticked ones, in the state file, for both panels.
+pub struct SortGroupsDialog {
+    pub rows: Vec<GroupRow>,
+    pub row: usize,
+    /// The panel it opened on: the one whose cursor `+` reads, and
+    /// whose groups OK switches on.
+    pub panel: usize,
+}
+
+pub struct GroupRow {
+    pub rule: crate::config::SortGroupRule,
+    pub on: bool,
 }
 
 pub struct VfsDialog {
@@ -2995,6 +3013,8 @@ pub enum Action {
     SortCase,
     /// Far's sort groups on or off for the panel.
     SortGroups,
+    /// The sort groups dialog: which groups, in what order.
+    EditSortGroups,
     /// S-F4: open the editor on a file that need not exist yet.
     EditNew,
     /// S-F5 / S-F6: copy / rename the cursor file in place - the
@@ -3193,6 +3213,7 @@ const PANEL_MENU: &[MenuEntry] = &[
     Some(("Case sensitive sort", "", Action::SortCase)),
     // no letter: every one in the label is spoken for above
     Some(("Use sort groups", "", Action::SortGroups)),
+    Some(("Sort groups...", "", Action::EditSortGroups)),
     None,
     // "Filter" cannot take a letter of its own here: f, i, l, t, e and
     // r are all spoken for by an entry above or by a menu title, and a

@@ -90,6 +90,8 @@ pub struct SortGroups {
 struct GroupRule {
     test: GroupTest,
     last: bool,
+    /// What the listing calls what it takes, in the Kind column.
+    name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -137,9 +139,10 @@ impl EntryClass {
 impl SortGroups {
     /// Add a group: `masks` on the name or `kind` (`dir linkdir exe
     /// link broken file`), one of the two; placed after the rest of
-    /// the listing when `last`.
+    /// the listing when `last`, and called `name` where it is shown.
     pub fn push(
         &mut self,
+        name: Option<&str>,
         masks: Option<&str>,
         kind: Option<&str>,
         last: bool,
@@ -152,7 +155,11 @@ impl SortGroups {
             (Some(_), Some(_)) => return Err("a group has both match and type".into()),
             (None, None) => return Err("a group has neither match nor type".into()),
         };
-        self.rules.push(GroupRule { test, last });
+        let name = name
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(String::from);
+        self.rules.push(GroupRule { test, last, name });
         Ok(())
     }
 
@@ -160,25 +167,46 @@ impl SortGroups {
         self.rules.is_empty()
     }
 
+    /// Whether any group has a name to show: none, and there is no
+    /// Kind column to give room to.
+    pub fn has_names(&self) -> bool {
+        self.rules.iter().any(|r| r.name.is_some())
+    }
+
+    /// The group that takes an entry: the first whose test it passes.
+    fn which(&self, entry: &Entry, name: &str) -> Option<usize> {
+        self.rules.iter().position(|rule| match &rule.test {
+            GroupTest::Masks(masks) => masks.matches(name),
+            GroupTest::Kind(class) => *class == EntryClass::of(entry),
+        })
+    }
+
+    /// What the group that takes an entry is called, if it is called
+    /// anything. `name` is the name as shown, as for the sort.
+    pub fn name_of(&self, entry: &Entry, name: &str) -> Option<&str> {
+        if entry.is_parent() {
+            return None;
+        }
+        self.rules[self.which(entry, name)?].name.as_deref()
+    }
+
     /// Where an entry goes: the groups placed first rank from 0 in the
     /// order given, what none takes ranks after them, and the groups
     /// placed last after that. The first group that takes it wins.
     fn rank(&self, entry: &Entry, name: &str) -> usize {
         let first = self.rules.iter().filter(|r| !r.last).count();
-        let (mut before, mut after) = (0, 0);
-        for rule in &self.rules {
-            let takes = match &rule.test {
-                GroupTest::Masks(masks) => masks.matches(name),
-                GroupTest::Kind(class) => *class == EntryClass::of(entry),
-            };
-            match (takes, rule.last) {
-                (true, false) => return before,
-                (true, true) => return first + 1 + after,
-                (false, false) => before += 1,
-                (false, true) => after += 1,
-            }
+        let Some(at) = self.which(entry, name) else {
+            return first;
+        };
+        let rule = &self.rules[at];
+        let before = self.rules[..at]
+            .iter()
+            .filter(|r| r.last == rule.last)
+            .count();
+        match rule.last {
+            false => before,
+            true => first + 1 + before,
         }
-        first
     }
 }
 
@@ -939,6 +967,23 @@ impl Panel {
         Ok(())
     }
 
+    /// What the sort group that takes `entry` is called, while the
+    /// groups are on here: the Kind column and the line under the
+    /// panel say it.
+    pub fn group_name_of(&self, entry: &Entry) -> Option<&str> {
+        let groups = self.sort_groups.as_deref().filter(|_| self.use_groups)?;
+        groups.name_of(entry, &self.name_of(entry))
+    }
+
+    /// Whether this listing has a Kind column's worth of group names.
+    pub fn shows_group_names(&self) -> bool {
+        self.use_groups
+            && self
+                .sort_groups
+                .as_deref()
+                .is_some_and(SortGroups::has_names)
+    }
+
     /// The order this panel lists in.
     pub fn order(&self) -> Order {
         Order {
@@ -1415,11 +1460,14 @@ mod tests {
     #[test]
     fn sort_groups_pin_classes_ahead_and_behind_whatever_the_key() {
         let mut groups = SortGroups::default();
-        groups.push(Some("*.rs,*.toml"), None, false).unwrap();
-        groups.push(Some("*.o|keep.o"), None, true).unwrap();
-        groups.push(None, Some("exe"), false).unwrap();
-        assert!(groups.push(None, Some("sock"), false).is_err());
-        assert!(groups.push(Some("*"), Some("dir"), false).is_err());
+        groups
+            .push(Some("Code"), Some("*.rs,*.toml"), None, false)
+            .unwrap();
+        groups.push(None, Some("*.o|keep.o"), None, true).unwrap();
+        groups.push(Some(" "), None, Some("exe"), false).unwrap();
+        assert!(groups.push(None, None, Some("sock"), false).is_err());
+        assert!(groups.push(None, Some("*"), Some("dir"), false).is_err());
+        assert!(groups.has_names());
         let groups = Arc::new(groups);
         let file = |name: &str, size: u64, mode: u32| Entry {
             name: name.into(),
@@ -1492,6 +1540,12 @@ mod tests {
                 "a.o"
             ]
         );
+        // the name of the group that took it; a blank name is none
+        let name_of = |i: usize| groups.name_of(&entries[i], &entries[i].name.to_string_lossy());
+        assert_eq!(name_of(3), Some("Code"));
+        assert_eq!(name_of(1), None);
+        assert_eq!(name_of(0), None);
+        assert_eq!(groups.name_of(&Entry::parent(), "*.rs"), None);
     }
 
     #[test]

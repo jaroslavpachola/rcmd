@@ -2,6 +2,7 @@ pub mod ar;
 pub mod archive;
 pub mod attrs;
 pub mod calc;
+pub mod category;
 pub mod charset;
 pub mod compare;
 pub mod complete;

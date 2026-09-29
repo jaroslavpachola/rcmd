@@ -239,6 +239,12 @@ impl App {
                 }
                 true
             }
+            Some(Dialog::SortGroups(d)) => {
+                if let Some(at) = count(d.rows.len()) {
+                    d.row = at;
+                }
+                true
+            }
             Some(Dialog::Connections(row)) => {
                 if let Some(at) = count(saved_len) {
                     *row = at;
@@ -876,6 +882,47 @@ impl App {
                     }
                     _ => self.dialog = Some(Dialog::Filters(d)),
                 }
+            }
+            Dialog::SortGroups(mut d) => {
+                let alt = key.modifiers.contains(KeyModifiers::ALT);
+                let last = d.rows.len().saturating_sub(1);
+                match key.code {
+                    KeyCode::Esc => return,
+                    KeyCode::Enter => {
+                        self.apply_sort_groups(&d);
+                        return;
+                    }
+                    // the order is the point of the list, so the row
+                    // moves as the hotlist's entries do
+                    KeyCode::Up if alt && d.row > 0 => {
+                        d.rows.swap(d.row, d.row - 1);
+                        d.row -= 1;
+                    }
+                    KeyCode::Down if alt && d.row < last => {
+                        d.rows.swap(d.row, d.row + 1);
+                        d.row += 1;
+                    }
+                    KeyCode::Up if !alt => d.row = d.row.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Tab if !alt => d.row = (d.row + 1).min(last),
+                    KeyCode::Home => d.row = 0,
+                    KeyCode::End => d.row = last,
+                    KeyCode::Char(' ') => {
+                        if let Some(row) = d.rows.get_mut(d.row) {
+                            row.on = !row.on;
+                        }
+                    }
+                    KeyCode::Char('l' | 'L') => {
+                        if let Some(row) = d.rows.get_mut(d.row) {
+                            row.rule.place = match row.rule.is_last() {
+                                true => "first".into(),
+                                false => "last".into(),
+                            };
+                        }
+                    }
+                    KeyCode::Char('+') => self.sort_group_from_cursor(&mut d),
+                    _ => {}
+                }
+                self.dialog = Some(Dialog::SortGroups(d));
             }
             Dialog::Learn(mut d) => {
                 let name = keymap::key_name(key.code, key.modifiers);
@@ -2059,6 +2106,89 @@ impl App {
                 w.symlink(&target, p)
             }),
         }
+    }
+
+    /// `+` in the sort groups dialog: a group for the extension under
+    /// the panel's cursor, ticked. An extension a category has ticks
+    /// the category instead, since that is the group it belongs in.
+    fn sort_group_from_cursor(&mut self, d: &mut SortGroupsDialog) {
+        let panel = &self.panels[d.panel];
+        // as the name spells it: a group's masks keep to case
+        let spelled = panel
+            .selected()
+            .filter(|e| !e.is_parent() && !e.is_dir())
+            .and_then(|e| {
+                let name = panel.name_of(e);
+                let (stem, ext) = name.rsplit_once('.')?;
+                (!stem.is_empty() && !ext.is_empty()).then(|| ext.to_string())
+            });
+        let Some(spelled) = spelled else {
+            self.status = Some(" + makes a group of the cursor file's extension ".into());
+            return;
+        };
+        let ext = spelled.to_lowercase();
+        let category = rcmd_core::category::CATEGORIES
+            .iter()
+            .find(|c| c.exts.contains(&ext.as_str()));
+        let masks = match category {
+            Some(c) => format!("@{}", c.key),
+            None if spelled == ext => format!("*.{ext}"),
+            None => format!("*.{spelled},*.{ext}"),
+        };
+        let at = match d
+            .rows
+            .iter()
+            .position(|r| r.rule.pattern.as_deref() == Some(&masks))
+        {
+            Some(at) => at,
+            None => {
+                // after the ticked rows, where a new group is last
+                let at = d.rows.iter().take_while(|r| r.on).count();
+                let rule = crate::config::SortGroupRule {
+                    name: Some(ext.to_uppercase()),
+                    pattern: Some(masks),
+                    kind: None,
+                    place: "first".into(),
+                };
+                d.rows.insert(at, GroupRow { rule, on: true });
+                at
+            }
+        };
+        d.rows[at].on = true;
+        d.row = at;
+    }
+
+    /// OK in the sort groups dialog: the ticked rows are the groups,
+    /// for both panels and in the state file, and the panel it opened
+    /// on keeps to them - ticking a group is asking to see it.
+    fn apply_sort_groups(&mut self, d: &SortGroupsDialog) {
+        let rules: Vec<_> = d
+            .rows
+            .iter()
+            .filter(|r| r.on)
+            .map(|r| r.rule.clone())
+            .collect();
+        let (groups, warnings) = crate::config::SortGroupRule::compile(&rules);
+        let groups = (!groups.is_empty()).then(|| Arc::new(groups));
+        let saved = crate::state::update(|s| s.sort_group = Some(rules.clone()));
+        self.config.sort_group = rules;
+        if groups.is_some() {
+            // disk usage mode has them off for now, and puts back
+            // what it found
+            match self.du_mode[d.panel].as_mut() {
+                Some(was) => was.3 = true,
+                None => self.panels[d.panel].use_groups = true,
+            }
+        }
+        for panel in &mut self.panels {
+            panel.sort_groups = groups.clone();
+            panel.resort();
+        }
+        self.status = match (saved, warnings.first()) {
+            (Err(err), _) => Some(format!(" state: {err} ")),
+            (_, Some(warning)) => Some(format!(" {warning} ")),
+            _ => None,
+        };
     }
 
     /// OK on that list: the ticked sets become the panel's filter, and

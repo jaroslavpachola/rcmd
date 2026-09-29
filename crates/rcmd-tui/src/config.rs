@@ -473,9 +473,12 @@ pub struct HighlightRule {
 
 /// `[[sort_group]]` - `match = "*.rs,*.toml"` or `type = "exe"`, as
 /// `[[highlight]]` takes them, and `place = "first"` (the default) or
-/// `"last"`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `"last"`. `name` is what the Kind column calls it; a group that is
+/// one category alone (`match = "@pictures"`) is named for it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SortGroupRule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
@@ -503,11 +506,47 @@ impl SortGroupRule {
                     continue;
                 }
             };
-            if let Err(err) = groups.push(rule.pattern.as_deref(), rule.kind.as_deref(), last) {
+            let masks = rule.pattern.as_deref();
+            for unknown in masks.map(rcmd_core::category::unknown).unwrap_or_default() {
+                warnings.push(format!("sort_group: no category {unknown}"));
+            }
+            let name = rule
+                .name
+                .as_deref()
+                .or(masks.and_then(rcmd_core::category::label_of));
+            if let Err(err) = groups.push(name, masks, rule.kind.as_deref(), last) {
                 warnings.push(format!("sort_group: {err}"));
             }
         }
         (groups, warnings)
+    }
+
+    /// A group of one category, placed first, as the sort groups
+    /// dialog offers the categories nobody has used yet.
+    pub fn of_category(category: &rcmd_core::category::Category) -> Self {
+        SortGroupRule {
+            name: None,
+            pattern: Some(format!("@{}", category.key)),
+            kind: None,
+            place: first_place(),
+        }
+    }
+
+    /// What the dialog and the Kind column call it: its own name, its
+    /// category's, or else what it matches.
+    pub fn label(&self) -> String {
+        let masks = self.pattern.as_deref();
+        self.name
+            .as_deref()
+            .or(masks.and_then(rcmd_core::category::label_of))
+            .or(masks)
+            .or(self.kind.as_deref())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    pub fn is_last(&self) -> bool {
+        self.place == "last"
     }
 }
 
@@ -832,6 +871,30 @@ pub fn sort_key_name(key: SortKey) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_sort_group_of_one_category_is_named_for_it() {
+        let rules: Vec<super::SortGroupRule> = toml::from_str::<super::Config>(
+            "[[sort_group]]\nmatch = \"@pictures\"\n\n\
+             [[sort_group]]\nname = \"Code\"\nmatch = \"@sources,*.toml\"\n\n\
+             [[sort_group]]\nmatch = \"@picturs\"\nplace = \"last\"\n",
+        )
+        .unwrap()
+        .sort_group;
+        assert_eq!(rules[0].label(), "Pictures");
+        assert_eq!(rules[1].label(), "Code");
+        assert_eq!(rules[2].label(), "@picturs");
+        assert!(rules[2].is_last());
+        let (groups, warnings) = super::SortGroupRule::compile(&rules);
+        assert_eq!(warnings, ["sort_group: no category @picturs"]);
+        let photo = rcmd_core::entry::Entry {
+            name: "IMG_1.JPG".into(),
+            kind: rcmd_core::entry::EntryKind::File,
+            ..rcmd_core::entry::Entry::parent()
+        };
+        assert_eq!(groups.name_of(&photo, "IMG_1.JPG"), Some("Pictures"));
+        assert_eq!(groups.name_of(&photo, "Cargo.toml"), Some("Code"));
+    }
+
     #[test]
     fn a_toml_error_says_where_and_why_on_one_line() {
         let err = toml::from_str::<Config>("theme = 3\nsplit = \"x")

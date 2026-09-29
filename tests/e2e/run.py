@@ -2226,6 +2226,81 @@ def test_briefcolumns():
     shutil.rmtree(root)
 
 
+def test_sortgroupdialog():
+    """Sort groups made in the dialog: the categories ticked and put in
+    order, a group from the cursor's extension, the Kind column naming
+    them, and the state file keeping them."""
+    root, play, home = sandbox()
+    names = ("a.jpg", "b.PNG", "c.txt", "clip.mkv", "book.epub", "data.XYZ")
+    for name in names:
+        open(os.path.join(play, name), "w").write(name)
+
+    def left(s):
+        # the listing only: the line under it repeats the cursor's name
+        lines = [line[:COLS // 2] for line in s.screen().split("\n")]
+        end = next((i for i, l in enumerate(lines) if l.startswith("├")), len(lines))
+        return lines[:end]
+
+    def order(s):
+        found = []
+        for line in left(s):
+            for name in names:
+                if f" {name} " in line or line.startswith(f"│ {name}"):
+                    found.append(name)
+        return found
+
+    def kind(s, name):
+        # what stands under the Kind heading on the entry's row
+        lines = left(s)
+        at = next((l.find("Kind") for l in lines if "Kind" in l), -1)
+        line = next((l for l in lines if f" {name} " in l), "")
+        return line[at - 2:at + 6].strip() if at >= 0 and line else None
+
+    s = Session(play, home)
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"edit-sort-groups\r", wait=STEP * 2)
+    scr = s.screen()
+    check("sortgroupdialog: the categories are offered",
+          " Sort groups " in scr and "@pictures" in scr and "@ebooks" in scr, scr)
+    # Pictures on; Ebooks on and moved above it
+    s.send(b" ", wait=STEP)
+    s.send(DOWN * 3, wait=STEP)
+    s.send(b" ", wait=STEP)
+    s.send(b"\x1b[1;3A" * 3, wait=STEP)
+    s.send(b"\r", wait=STEP * 2)
+    check("sortgroupdialog: ebooks, pictures, then the rest",
+          order(s) == ["book.epub", "a.jpg", "b.PNG", "c.txt", "clip.mkv", "data.XYZ"],
+          order(s))
+    check("sortgroupdialog: a Kind column names the groups",
+          kind(s, "book.epub") == "Ebooks"
+          and kind(s, "b.PNG") == "Pictures" and kind(s, "c.txt") == "",
+          [kind(s, n) for n in names])
+    s.send(HOME_K + DOWN * 2, wait=STEP)
+    check("sortgroupdialog: the line under the panel names the cursor's group",
+          "a.jpg  [Pictures]" in s.screen(), s.screen())
+    # + on the last file: a group of its extension as it is spelled,
+    # after the others
+    s.send(END, wait=STEP)
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"edit-sort-groups\r", wait=STEP * 2)
+    s.send(b"+", wait=STEP)
+    s.send(b"\r", wait=STEP * 2)
+    check("sortgroupdialog: + grouped the cursor's extension",
+          order(s)[:4] == ["book.epub", "a.jpg", "b.PNG", "data.XYZ"]
+          and kind(s, "data.XYZ") == "XYZ", order(s))
+    s.quit()
+    state = open(os.path.join(home, ".local", "state", "rcmd", "state.toml")).read()
+    check("sortgroupdialog: the state file keeps the groups",
+          state.index('"@ebooks"') < state.index('"@pictures"') < state.index('"*.XYZ,*.xyz"'),
+          state)
+    # the next start has them without the dialog
+    s = Session(play, home)
+    check("sortgroupdialog: a new start lists in the groups",
+          order(s)[:4] == ["book.epub", "a.jpg", "b.PNG", "data.XYZ"], order(s))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_kittykeys():
     """PLAN5 S7: in a terminal that has the kitty keyboard protocol, rcmd
     turns it on - and an Esc is an Esc at once, with no prefix to wait
@@ -7564,6 +7639,7 @@ def main():
         test_nestedarchive,
         test_duplicates,
         test_sortgroups,
+        test_sortgroupdialog,
         test_briefcolumns,
         test_processes,
         test_editdrag,

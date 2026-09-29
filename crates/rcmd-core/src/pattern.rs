@@ -168,6 +168,10 @@ pub struct Masks {
     /// The masks are lowercased already; the name has to be lowered on
     /// the way in.
     fold: bool,
+    /// What `@pictures` and its kind stand for, lowercased and matched
+    /// in any case whatever `fold` says: `IMG_0001.JPG` is a picture.
+    any_case: Vec<String>,
+    any_case_exclude: Vec<String>,
 }
 
 /// Put several mask lists together into one: every include from every
@@ -213,20 +217,29 @@ impl Masks {
             Some((left, right)) => (left, right),
             None => (text, ""),
         };
-        let list = |part: &str| -> Vec<String> {
-            part.split(',')
-                .map(str::trim)
-                .filter(|mask| !mask.is_empty())
-                .map(|mask| match fold {
-                    true => mask.to_lowercase(),
-                    false => mask.to_string(),
-                })
-                .collect()
+        // a category's masks go to a list of their own; an `@name`
+        // that is none stays a mask, for a file that is called that
+        let list = |part: &str| -> (Vec<String>, Vec<String>) {
+            let (mut plain, mut any_case) = (Vec::new(), Vec::new());
+            for mask in part.split(',').map(str::trim).filter(|m| !m.is_empty()) {
+                match mask.strip_prefix('@').and_then(crate::category::find) {
+                    Some(category) => {
+                        any_case.extend(category.exts.iter().map(|ext| format!("*.{ext}")))
+                    }
+                    None if fold => plain.push(mask.to_lowercase()),
+                    None => plain.push(mask.to_string()),
+                }
+            }
+            (plain, any_case)
         };
+        let (include, any_case) = list(included);
+        let (exclude, any_case_exclude) = list(excluded);
         Masks {
-            include: list(included),
-            exclude: list(excluded),
+            include,
+            exclude,
             fold,
+            any_case,
+            any_case_exclude,
         }
     }
 
@@ -235,15 +248,25 @@ impl Masks {
             true => std::borrow::Cow::Owned(name.to_lowercase()),
             false => std::borrow::Cow::Borrowed(name),
         };
-        let matched =
-            self.include.is_empty() || self.include.iter().any(|mask| glob_match(mask, &name));
-        matched && !self.exclude.iter().any(|mask| glob_match(mask, &name))
+        let any = |masks: &[String], name: &str| masks.iter().any(|mask| glob_match(mask, name));
+        let (mut matched, mut dropped) = (
+            self.include.is_empty() && self.any_case.is_empty() || any(&self.include, &name),
+            any(&self.exclude, &name),
+        );
+        if !self.any_case.is_empty() || !self.any_case_exclude.is_empty() {
+            let lower = name.to_lowercase();
+            matched |= any(&self.any_case, &lower);
+            dropped |= any(&self.any_case_exclude, &lower);
+        }
+        matched && !dropped
     }
 
     /// Everything is in and nothing is taken back out, which is how a
     /// filter is cleared.
     pub fn is_open(&self) -> bool {
         self.exclude.is_empty()
+            && self.any_case.is_empty()
+            && self.any_case_exclude.is_empty()
             && self
                 .include
                 .iter()
@@ -401,6 +424,24 @@ mod tests {
         assert!(m.matches("main.c"));
         assert!(!m.matches("main_test.c"));
         assert!(!shell("*.C", true).matches("main.c"));
+    }
+
+    #[test]
+    fn categories_stand_for_their_extensions_in_any_case() {
+        let m = shell("@pictures,*.blend|thumb_*", true);
+        assert!(m.matches("IMG_0001.JPG"));
+        assert!(m.matches("scan.png"));
+        assert!(m.matches("scene.blend"));
+        assert!(
+            !m.matches("scene.BLEND"),
+            "the plain masks keep the list's case"
+        );
+        assert!(!m.matches("thumb_1.jpg"));
+        assert!(!m.matches("notes.txt"));
+        assert!(shell("*|@videos", true).matches("notes.txt"));
+        assert!(!shell("*|@videos", true).matches("clip.MKV"));
+        // not a category: a name like any other
+        assert!(shell("@picturs", true).matches("@picturs"));
     }
 
     #[test]

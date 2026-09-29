@@ -1,5 +1,23 @@
 # Changelog
 
+## 4.65.0 - 2026-09-29
+
+- **Sort groups can be made in rcmd, and are named.** F9 → Left/Right
+  → Sort groups... (`edit-sort-groups`) lists the groups there are and
+  the categories not used yet: Space ticks one, Alt+Up/Alt+Down order
+  them, `l` puts one after the rest, `+` groups the cursor file's
+  extension. OK keeps them in the state file. Use sort groups with
+  none made yet opens it.
+- **Categories.** `@pictures`, `@videos`, `@audio`, `@ebooks`,
+  `@documents`, `@archives` and `@sources` stand for their extensions
+  in any mask list - sort groups, `[[highlight]]`, `[[open]]`, filter
+  sets, the select dialog - in any case. An unknown one in a sort group
+  is a startup warning.
+- **The Kind column.** `[[sort_group]]` takes a `name` (a group of one
+  category is named for it), and the Full listing shows it in a Kind
+  column when a panel is wide enough, the line under the panel when it
+  is not, and `sgroup` in a user format.
+
 ## 4.64.1 - 2026-09-27
 
 - **Walking about an archive is quick again.** Entering or leaving a

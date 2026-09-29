@@ -821,6 +821,7 @@ fn draw_screens(frame: &mut Frame, app: &mut App) {
             Dialog::Filters(d) => {
                 dialog_rows = draw_filters(frame, &app.config.filter, d);
             }
+            Dialog::SortGroups(d) => dialog_rows = draw_sort_groups(frame, d),
             Dialog::Charset(row) => {
                 dialog_rows =
                     draw_pick_list(frame, " Character set ", &crate::app::CHARSET_ROWS, *row, 0)
@@ -1152,6 +1153,14 @@ fn draw_panel(
         draw_brief_columns(frame, inner, panel, state, &chrome, git);
         return;
     }
+    // the sort groups' names, in a column of their own where the name
+    // keeps room enough beside it; a narrower panel says the cursor's
+    // on the line under it instead
+    let kind = panel.list_mode == ListMode::Full
+        && !panel.is_processes()
+        && !chrome.usage
+        && panel.shows_group_names()
+        && block.inner(area).width >= KIND_MIN_WIDTH;
     let (labels, constraints): (&[&str], Vec<Constraint>) = match panel.list_mode {
         // brief columns, the tree and a user format have renderers
         // of their own; they never reach the table
@@ -1170,6 +1179,15 @@ fn draw_panel(
             &["Name", "Size", "Usage"],
             vec![
                 Constraint::Fill(1),
+                Constraint::Length(7),
+                Constraint::Length(12),
+            ],
+        ),
+        ListMode::Full if kind => (
+            &["Name", "Kind", "Size", "Modify time"],
+            vec![
+                Constraint::Fill(1),
+                Constraint::Length(KIND_WIDTH),
                 Constraint::Length(7),
                 Constraint::Length(12),
             ],
@@ -1250,6 +1268,7 @@ fn draw_panel(
                 let filled = filled.min(10);
                 format!("[{}{}]", "#".repeat(filled), " ".repeat(10 - filled))
             });
+            let group = kind.then(|| panel.group_name_of(entry).unwrap_or_default().to_string());
             entry_row(
                 entry,
                 panel.is_marked(entry),
@@ -1259,6 +1278,7 @@ fn draw_panel(
                 remote,
                 panel.charset,
                 usage,
+                group,
             )
         });
 
@@ -1318,6 +1338,8 @@ fn field_text(
         Field::Owner => owner_label(entry.extra.uid, remote, true),
         Field::Group => owner_label(entry.extra.gid, remote, false),
         Field::Inode => number(entry.extra.inode),
+        // the panel's groups decide it, which draw_user_columns has
+        Field::SortGroup => String::new(),
     }
 }
 
@@ -1424,7 +1446,12 @@ fn draw_user_columns(
                     (Item::Space, _) | (_, None) => " ".repeat(width),
                     (Item::Bar, _) => fit("│", width, false),
                     (Item::Field(field, _), Some(entry)) => {
-                        let mut text = field_text(*field, entry, marked, remote, panel.charset);
+                        let mut text = match field {
+                            Field::SortGroup => {
+                                panel.group_name_of(entry).unwrap_or_default().to_string()
+                            }
+                            _ => field_text(*field, entry, marked, remote, panel.charset),
+                        };
                         // the git column only exists inside a work tree,
                         // and rides on the name like the other listings
                         if *field == Field::Name
@@ -1617,12 +1644,18 @@ fn entry_summary(panel: &Panel) -> String {
                     Some(format!("  {note}"))
                 })
                 .unwrap_or_default();
+            // the sort group it is in, for a panel with no Kind column
+            let group = panel
+                .group_name_of(e)
+                .map(|name| format!("  [{name}]"))
+                .unwrap_or_default();
             format!(
-                "{} {:>9} {}{}",
+                "{} {:>9} {}{}{}",
                 e.perm_string(),
                 e.size,
                 panel.name_of(e),
-                link
+                link,
+                group
             )
         }
         None => String::new(),
@@ -1765,6 +1798,12 @@ fn cell_style(marked: bool, under_cursor: bool, base: Style) -> Style {
     }
 }
 
+/// The Kind column: a sort group's name, cut to this.
+const KIND_WIDTH: u16 = 8;
+/// The inside of a Full panel that has room for it - what leaves the
+/// name sixteen cells beside Kind, Size and the date.
+const KIND_MIN_WIDTH: u16 = 16 + 1 + KIND_WIDTH + 1 + 7 + 1 + 12;
+
 #[allow(clippy::too_many_arguments)]
 fn entry_row(
     entry: &Entry,
@@ -1775,6 +1814,7 @@ fn entry_row(
     remote: bool,
     charset: Option<&'static rcmd_core::charset::Encoding>,
     usage: Option<String>,
+    group: Option<String>,
 ) -> Row<'static> {
     let (marker, base) = entry_style(entry);
     let style = cell_style(marked, under_cursor, base);
@@ -1823,12 +1863,14 @@ fn entry_row(
         // the tree and the user format have their own renderers; they
         // never build table rows
         ListMode::Brief | ListMode::Tree | ListMode::User => Row::new(vec![name_cell]),
-        // disk usage mode trades the date for a bar
-        ListMode::Full => Row::new(vec![
-            name_cell,
-            size_cell,
-            Cell::from(usage.unwrap_or(mtime)),
-        ]),
+        // disk usage mode trades the date for a bar; the sort groups'
+        // names, when they have a column, come after the name
+        ListMode::Full => Row::new(
+            [Some(name_cell), group.map(Cell::from)]
+                .into_iter()
+                .flatten()
+                .chain([size_cell, Cell::from(usage.unwrap_or(mtime))]),
+        ),
         ListMode::Long => Row::new(vec![
             Cell::from(entry.perm_string()),
             Cell::from(owner_label(entry.extra.uid, remote, true)),
@@ -5785,6 +5827,68 @@ fn draw_filters(
             ..inner
         },
         rows: (0..shown).map(Some).collect(),
+    })
+}
+
+/// The sort groups dialog: a switch per group, what it matches, and
+/// whether it goes ahead of the listing or after it; the keys along
+/// the bottom, since four of them are this dialog's own.
+fn draw_sort_groups(
+    frame: &mut Frame,
+    d: &crate::app::SortGroupsDialog,
+) -> Option<crate::app::DialogRows> {
+    let base = Style::new().fg(th().dialog_fg).bg(th().dialog_bg);
+    let sel = Style::new().fg(th().select_fg).bg(th().select_bg);
+    let hint = base.add_modifier(Modifier::DIM);
+    let room = frame.area().height.saturating_sub(5) as usize;
+    let shown = d.rows.len().min(room).max(1);
+    let inner = popup(
+        frame,
+        centered(64, shown as u16 + 3, frame.area()),
+        " Sort groups ",
+        base,
+    );
+    // the cursor stays in view in a list longer than the screen
+    let offset = (d.row + 1).saturating_sub(shown);
+    let name_width = 14.min((inner.width as usize).saturating_sub(30));
+    let masks_width = (inner.width as usize).saturating_sub(name_width + 16);
+    for (i, row) in d.rows.iter().enumerate().skip(offset).take(shown) {
+        let area = Rect {
+            y: inner.y + (i - offset) as u16,
+            height: 1,
+            ..inner
+        };
+        let matches = row.rule.pattern.as_deref().or(row.rule.kind.as_deref());
+        let text = format!(
+            " [{}] {}  {}  {}",
+            if row.on { "x" } else { " " },
+            fit(&row.rule.label(), name_width, false),
+            fit(matches.unwrap_or_default(), masks_width, false),
+            if row.rule.is_last() { "last " } else { "first" },
+        );
+        frame.render_widget(
+            Line::from(format!(
+                "{text:<w$}",
+                w = (inner.width as usize).saturating_sub(1)
+            ))
+            .style(if i == d.row { sel } else { base }),
+            area,
+        );
+    }
+    frame.render_widget(
+        Line::from(" Space on/off  M-Up/Down move  l first/last  + cursor's type").style(hint),
+        Rect {
+            y: inner.y + inner.height.saturating_sub(1),
+            height: 1,
+            ..inner
+        },
+    );
+    Some(crate::app::DialogRows {
+        area: Rect {
+            height: shown as u16,
+            ..inner
+        },
+        rows: (offset..offset + shown).map(Some).collect(),
     })
 }
 

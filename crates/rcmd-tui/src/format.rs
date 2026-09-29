@@ -41,6 +41,9 @@ pub enum Field {
     Owner,
     Group,
     Inode,
+    /// The name of the sort group that takes the entry, while the
+    /// groups are on: `sgroup`, since `group` is the owning group's.
+    SortGroup,
 }
 
 impl Field {
@@ -62,6 +65,7 @@ impl Field {
             "owner" => Field::Owner,
             "group" => Field::Group,
             "inode" => Field::Inode,
+            "sgroup" => Field::SortGroup,
             _ => return None,
         })
     }
@@ -84,6 +88,7 @@ impl Field {
             Field::Owner => "Owner",
             Field::Group => "Group",
             Field::Inode => "Inode",
+            Field::SortGroup => "Kind",
         }
     }
 
@@ -98,7 +103,7 @@ impl Field {
             Field::Perm => 10,
             Field::Mode => 4,
             Field::Nlink | Field::Ngid | Field::Nuid => 5,
-            Field::Owner | Field::Group => 8,
+            Field::Owner | Field::Group | Field::SortGroup => 8,
             Field::Inode => 9,
         }
     }
@@ -311,6 +316,23 @@ mod tests {
                 Item::Field(Field::Mtime, Width::Auto),
             ]
         );
+    }
+
+    #[test]
+    fn sgroup_is_the_sort_groups_column_and_group_the_owners() {
+        let (format, warnings) = parse("half name | sgroup:10 | group");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            fields(&format),
+            vec![
+                Item::Field(Field::Name, Width::Auto),
+                Item::Bar,
+                Item::Field(Field::SortGroup, Width::Fixed(10)),
+                Item::Bar,
+                Item::Field(Field::Group, Width::Auto),
+            ]
+        );
+        assert_eq!(Field::SortGroup.label(), "Kind");
     }
 
     #[test]

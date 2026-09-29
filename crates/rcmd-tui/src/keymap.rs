@@ -321,6 +321,7 @@ pub const ACTIONS: &[(&str, Action)] = &[
     ("toggle-split", Action::ToggleSplit),
     ("sort-case", Action::SortCase),
     ("sort-groups", Action::SortGroups),
+    ("edit-sort-groups", Action::EditSortGroups),
     ("menu", Action::Menu),
     ("mark", Action::Mark),
     ("quick-search", Action::QuickSearch),

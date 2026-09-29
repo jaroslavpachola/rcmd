@@ -658,9 +658,10 @@ impl App {
             }
             Action::SortGroups => {
                 let panel = self.panel();
+                // nothing to switch on yet: the dialog is where they
+                // are made
                 if panel.sort_groups.is_none() {
-                    self.status =
-                        Some(" no sort groups: [[sort_group]] in the config makes them ".into());
+                    self.open_sort_groups();
                     return;
                 }
                 panel.use_groups = !panel.use_groups;
@@ -671,6 +672,7 @@ impl App {
                 };
                 self.status = Some(now.into());
             }
+            Action::EditSortGroups => self.open_sort_groups(),
             Action::SortCase => {
                 let panel = self.panel();
                 panel.sort_case = !panel.sort_case;
@@ -3329,6 +3331,31 @@ impl App {
         };
         self.dialog = Some(Dialog::Filters(Box::new(FiltersDialog {
             on,
+            row: 0,
+            panel: self.active,
+        })));
+    }
+
+    /// F9 > Left/Right > Sort groups: the groups there are, ticked and
+    /// in their order, then every category no group is yet, unticked.
+    fn open_sort_groups(&mut self) {
+        let mut rows: Vec<GroupRow> = self
+            .config
+            .sort_group
+            .iter()
+            .map(|rule| GroupRow {
+                rule: rule.clone(),
+                on: true,
+            })
+            .collect();
+        for category in rcmd_core::category::CATEGORIES {
+            let rule = crate::config::SortGroupRule::of_category(category);
+            if !rows.iter().any(|row| row.rule.pattern == rule.pattern) {
+                rows.push(GroupRow { rule, on: false });
+            }
+        }
+        self.dialog = Some(Dialog::SortGroups(Box::new(SortGroupsDialog {
+            rows,
             row: 0,
             panel: self.active,
         })));

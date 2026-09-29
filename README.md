@@ -772,6 +772,13 @@ Those are mc.ext's four matchers (`match`, `regex`, `type`,
 exception; so does `[[highlight]]`'s. `file` is only asked
 when a rule has `type =`, and `[[view]]` rules take the same keys.
 
+A mask list can name a **category** instead of its extensions:
+`@pictures`, `@videos`, `@audio`, `@ebooks`, `@documents`, `@archives`
+and `@sources`, so `match = "@videos"` opens every film one way and
+`@pictures,*.kra` is the pictures and one more. A category matches in
+any case whatever the rest of the list does - `IMG_0001.JPG` is a
+picture - and goes by the name alone, as every mask does.
+
 A file no rule claims goes to the **desktop** - `xdg-open`, or `open`
 on macOS - as long as there is a display (`$DISPLAY` or
 `$WAYLAND_DISPLAY`) to open it on; over a bare ssh Enter stays quiet,
@@ -1216,6 +1223,21 @@ clobber each other. The state keys (`show_hidden`, `sort_key`,
 `config.toml` as your defaults; what the UI changes goes to the state
 file on top of them.
 
+**Sort groups** keep classes of file together - pictures, then ebooks,
+then the rest - whatever the listing is sorted by. They can be written
+as `[[sort_group]]` (below), or made in **F9 → Left/Right → Sort
+groups...** (`edit-sort-groups`): the groups there are come ticked and
+in their order, the categories no group is yet come after them
+unticked, Space ticks one, Alt+Up/Alt+Down move it, `l` puts it after
+the rest of the listing instead of ahead, and `+` makes a group of the
+cursor file's extension (or ticks its category, if it has one). OK
+keeps them in the state file, which from then on owns the list as it
+does the hotlist's. A named group is named in the **Kind** column of
+the Full listing, where the panel is wide enough to keep sixteen cells
+for the name beside it, and on the line under the panel otherwise;
+`sgroup` puts it in a user format. Use sort groups turns them off for
+a panel, the column with them.
+
 The settings live in one sectioned checkbox form under **F9 → Options →
 Panel options**, applied live: *Layout* (split direction and size, the
 per-panel mini status, and which of the menu bar / status line /
@@ -1289,7 +1311,8 @@ listing = "full"    # brief | full | long | tree | user
 # "user" draws listing_format: a panel size (half/full), an optional
 # repeat count 1-9, then fields with optional :width (:width+ grows) -
 # name size bsize type mark mtime atime ctime perm mode nlink ngid nuid
-# owner group inode, plus "space" and "|". MC's Full listing written out:
+# owner group inode sgroup (the sort group's name), plus "space" and
+# "|". MC's Full listing written out:
 listing_format = "half type name | size | mtime"
 
 [window]            # the window build only; see "In a window"
@@ -1332,7 +1355,10 @@ bold = true            # optional; left out, the kind's own weight stands
 
 [[sort_group]]         # Far's sort groups: these come ahead of the rest
 match = "*.rs,*.toml"  # of the listing whatever the sort key (a mask
-                       # list as [[highlight]] takes, or type = "exe")
+name = "Code"          # list as [[highlight]] takes, or type = "exe"),
+                       # and the Full listing's Kind column says Code
+[[sort_group]]
+match = "@pictures"    # a category alone is named for it: Pictures
 [[sort_group]]
 match = "*.o,*.tmp"    # ...and these after it; directories stay first,
 place = "last"         # and F9 > Left/Right > Use sort groups (or
