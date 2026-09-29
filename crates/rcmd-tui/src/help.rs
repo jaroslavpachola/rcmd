@@ -643,7 +643,10 @@ const TEXT: &[&str] = &[
     "  [keys] adds custom bindings, e.g. \"ctrl+y\" = \"swap-panels\";",
     "  [keys.viewer] and [keys.editor] rebind inside the viewer/editor",
     "  rcmd --print-config prints every setting, commented, to start from;",
-    "  F9 > Command > Edit config file opens it in the editor",
+    "  F9 > Command > Edit config file opens it in the editor, and F2",
+    "  there applies what the save changed - a mistake is said on the",
+    "  editor's line and nothing of the file applies; reload-config reads",
+    "  it after an edit made anywhere else",
     "  See also: {{Openers and commands}}, {{Menus and options}},",
     "  {{About}}                   (where the files are)",
 ];

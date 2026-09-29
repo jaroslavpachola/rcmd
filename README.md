@@ -1223,6 +1223,20 @@ clobber each other. The state keys (`show_hidden`, `sort_key`,
 `config.toml` as your defaults; what the UI changes goes to the state
 file on top of them.
 
+**F9 → Command → Edit config file** (`edit-config`) opens `config.toml`
+in the editor, and **F2 there applies what the save changed** without a
+restart: the keys, the sort groups, the highlight rules, the listing
+format, the theme and the rest, with a line saying which settings it
+took. Only what the file changed is applied, so a command-line flag
+(`-S dark`, `-d`) and what the options form set stand until the file
+says otherwise. A file that does not parse applies nothing, and the
+editor's line says where it went wrong. After an edit made anywhere
+else, `reload-config` in the palette reads it the same way. The
+subshell, the kitty keyboard and terminal title switches and the
+window's `[window]` table still wait for the next start, and a list
+the state file owns (the hotlist, sort groups made in their dialog)
+is not taken back by an edit to `config.toml`.
+
 **Sort groups** keep classes of file together - pictures, then ebooks,
 then the rest - whatever the listing is sorted by. They can be written
 as `[[sort_group]]` (below), or made in **F9 → Left/Right → Sort
@@ -1343,6 +1357,7 @@ font_size = 14
 #   listing-full listing-long listing-tree listing-user listing-cycle
 #   other-same-dir other-open-dir sftp-link find-file panelize
 #   compare-dirs dir-size dir-tree appearance learn-keys edit-config
+#   reload-config edit-sort-groups
 
 [[highlight]]          # MC's filehighlight, as rules: first match wins
 match = "*.tar.gz"     # a mask list on the name (*.c,*.h|*_test.*)...

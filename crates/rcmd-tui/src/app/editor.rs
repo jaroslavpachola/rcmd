@@ -363,7 +363,17 @@ impl App {
         let before = self
             .editor()
             .map(|st| (st.ed.line_count(), st.ed.cursor.line));
+        // on config.toml: when it was last written, to see a save
+        let config = config::config_path();
+        let on_config = self
+            .editor()
+            .is_some_and(|st| Some(&st.ed.path) == config.as_ref());
+        let written = || config.as_ref()?.metadata().ok()?.modified().ok();
+        let before_key = on_config.then(written).flatten();
         self.on_editor_key_inner(key);
+        if on_config && written() != before_key {
+            self.reload_after_save();
+        }
         if let (Some((lines, at)), Some(st)) = (before, self.editor_mut())
             && st.ed.line_count() != lines
         {

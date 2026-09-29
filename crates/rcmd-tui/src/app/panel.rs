@@ -407,7 +407,7 @@ impl App {
                 {
                     // on the editor's own status line, not the panel's:
                     // the panels are not what you are looking at now
-                    st.note = Some(" changes apply on the next start ".into());
+                    st.note = Some(" F2 saves and applies what changed ".into());
                 }
             }
             Action::LearnKeys => {
@@ -673,6 +673,10 @@ impl App {
                 self.status = Some(now.into());
             }
             Action::EditSortGroups => self.open_sort_groups(),
+            Action::ReloadConfig => {
+                let said = self.reload_config();
+                self.status = Some(format!(" {said} "));
+            }
             Action::SortCase => {
                 let panel = self.panel();
                 panel.sort_case = !panel.sort_case;

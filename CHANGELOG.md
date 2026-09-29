@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.66.0 - 2026-09-29
+
+- **The config applies without a restart.** Saving `config.toml` in the
+  editor Edit config file opened applies what the save changed - the
+  keys, sort groups, highlight rules, listing format, theme and the
+  rest - and says which settings it took. Only what the file changed
+  goes in, so command-line flags and options-form choices stand. A file
+  that does not parse applies nothing and says where. `reload-config`
+  in the palette reads an edit made anywhere else.
+
 ## 4.65.0 - 2026-09-29
 
 - **Sort groups can be made in rcmd, and are named.** F9 → Left/Right

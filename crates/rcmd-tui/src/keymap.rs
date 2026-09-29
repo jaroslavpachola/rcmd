@@ -322,6 +322,7 @@ pub const ACTIONS: &[(&str, Action)] = &[
     ("sort-case", Action::SortCase),
     ("sort-groups", Action::SortGroups),
     ("edit-sort-groups", Action::EditSortGroups),
+    ("reload-config", Action::ReloadConfig),
     ("menu", Action::Menu),
     ("mark", Action::Mark),
     ("quick-search", Action::QuickSearch),

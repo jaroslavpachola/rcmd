@@ -2397,6 +2397,7 @@ mod focus;
 mod fuzzy;
 mod palette;
 mod panel;
+mod reload;
 mod search;
 mod viewer;
 
@@ -3015,6 +3016,8 @@ pub enum Action {
     SortGroups,
     /// The sort groups dialog: which groups, in what order.
     EditSortGroups,
+    /// `config.toml` read again, what it changed applied.
+    ReloadConfig,
     /// S-F4: open the editor on a file that need not exist yet.
     EditNew,
     /// S-F5 / S-F6: copy / rename the cursor file in place - the
@@ -3620,6 +3623,9 @@ pub struct App {
     git_tx: std::sync::mpsc::Sender<(usize, PathBuf, Option<git::GitStatus>)>,
     git_rx: std::sync::mpsc::Receiver<(usize, PathBuf, Option<git::GitStatus>)>,
     pub config: Config,
+    /// The config as the file and the state file last said it, before
+    /// the command line's flags: what a reload compares an edit with.
+    loaded: Config,
     keymap: Keymap,
     /// Action keys inside the F3 viewer and the F4 editor; rebindable
     /// through `[keys.viewer]` / `[keys.editor]`.
@@ -3828,6 +3834,9 @@ impl App {
             du_cache: std::collections::HashMap::new(),
             git_tx,
             git_rx,
+            // what the file said, apart from the command line's flags,
+            // for a reload to tell an edit from them
+            loaded: config::load().0,
             config,
             keymap,
             viewer_keys,

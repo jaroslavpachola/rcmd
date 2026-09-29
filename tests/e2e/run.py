@@ -2301,6 +2301,62 @@ def test_sortgroupdialog():
     shutil.rmtree(root)
 
 
+def test_reloadconfig():
+    """config.toml saved in the editor edit-config opened is read again
+    and what it changed applies at once; a file that does not parse
+    changes nothing and says where; reload-config reads an edit made
+    anywhere else."""
+    root, play, home = sandbox()
+    cfg = os.path.join(home, ".config", "rcmd", "config.toml")
+    for name in ("a.o", "b.txt", "z.rs"):
+        open(os.path.join(play, name), "w").write(name)
+
+    def order(s):
+        lines = [line[:COLS // 2] for line in s.screen().split("\n")]
+        end = next((i for i, l in enumerate(lines) if l.startswith("├")), len(lines))
+        found = []
+        for line in lines[:end]:
+            for name in ("a.o", "b.txt", "z.rs"):
+                if f" {name} " in line:
+                    found.append(name)
+        return found
+
+    s = Session(play, home)
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"edit-config\r", wait=STEP * 2)
+    # at the end: the harness's own subshell line is at the top, and a
+    # table above it would take it in
+    s.send(b"\x1b[1;5F", wait=STEP)
+    s.send(b'\r[[sort_group]]\rmatch = "*.rs"\r', wait=STEP)
+    s.send(F2, wait=STEP * 2)
+    check("reloadconfig: the save says what it applied",
+          "config reloaded - sort_group changed" in s.screen(), s.screen())
+    s.send(F10, wait=STEP * 2)
+    check("reloadconfig: the listing is grouped without a restart",
+          order(s) == ["z.rs", "a.o", "b.txt"], order(s))
+
+    # a typo: nothing of the file is applied, and the note says where
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"edit-config\r", wait=STEP * 2)
+    s.send(b"theme = [\r", wait=STEP)
+    s.send(F2, wait=STEP * 2)
+    check("reloadconfig: a file that does not parse says where",
+          "config: line " in s.screen() and "invalid array" in s.screen(), s.screen())
+    s.send(F10, wait=STEP * 2)
+    check("reloadconfig: ...and the groups it had stand",
+          order(s) == ["z.rs", "a.o", "b.txt"], order(s))
+
+    # written by another program, read on asking
+    open(cfg, "w").write('[[sort_group]]\nmatch = "*.o"\n')
+    s.send(b"\x1bx", wait=STEP)
+    s.send(b"reload-config\r", wait=STEP * 2)
+    check("reloadconfig: reload-config reads an edit made elsewhere",
+          order(s) == ["a.o", "b.txt", "z.rs"] and "config reloaded" in s.screen(),
+          (order(s), s.screen()))
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_kittykeys():
     """PLAN5 S7: in a terminal that has the kitty keyboard protocol, rcmd
     turns it on - and an Esc is an Esc at once, with no prefix to wait
@@ -7164,7 +7220,7 @@ def test_learnkeys():
     check("learnkeys: the config opens in the editor",
           wait_for(s, "config.toml"), s.screen())
     check("learnkeys: ...and says when it takes effect",
-          wait_for(s, "next start"), s.screen())
+          wait_for(s, "F2 saves and applies what changed"), s.screen())
     s.send(b"\x1b[21~", wait=STEP * 2)               # F10 out of the editor
     check("learnkeys: the config file was created",
           os.path.isfile(os.path.join(home, ".config", "rcmd", "config.toml")))
@@ -7653,6 +7709,7 @@ def main():
         test_duplicates,
         test_sortgroups,
         test_sortgroupdialog,
+        test_reloadconfig,
         test_briefcolumns,
         test_processes,
         test_editdrag,
