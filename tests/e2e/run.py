@@ -7215,6 +7215,8 @@ def test_learnkeys():
 
     # F9 > Command > Edit config file - mc's "edit extension/menu file",
     # of which rcmd has one, and it writes a first one if there is none
+    # (the harness wrote one before the start, for its subshell line)
+    os.remove(os.path.join(home, ".config", "rcmd", "config.toml"))
     s.keys(b"\x1b[20~", b"\x1b[C" * 2, wait=STEP)
     s.send(b"g", wait=STEP * 2)
     check("learnkeys: the config opens in the editor",
@@ -7222,8 +7224,15 @@ def test_learnkeys():
     check("learnkeys: ...and says when it takes effect",
           wait_for(s, "F2 saves and applies what changed"), s.screen())
     s.send(b"\x1b[21~", wait=STEP * 2)               # F10 out of the editor
+    cfg = os.path.join(home, ".config", "rcmd", "config.toml")
     check("learnkeys: the config file was created",
-          os.path.isfile(os.path.join(home, ".config", "rcmd", "config.toml")))
+          os.path.isfile(cfg))
+    # ...with every setting in it to start from, and an example of each
+    # list, all commented out
+    text = open(cfg).read() if os.path.isfile(cfg) else ""
+    check("learnkeys: the first config is a commented template",
+          "every setting at its default" in text and "# sort_key = " in text
+          and "# [[sort_group]]" in text and "# [keys]" in text, text[:300])
     s.quit()
     shutil.rmtree(root)
 

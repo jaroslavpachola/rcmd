@@ -1224,7 +1224,11 @@ clobber each other. The state keys (`show_hidden`, `sort_key`,
 file on top of them.
 
 **F9 → Command → Edit config file** (`edit-config`) opens `config.toml`
-in the editor, and **F2 there applies what the save changed** without a
+in the editor - with no file yet, it writes a first one: every setting
+at its default and an example of each list and table (`[[sort_group]]`,
+`[[highlight]]`, `[[open]]`, `[keys]` and the rest), all commented out,
+so changing one is uncommenting it (`rcmd --print-config` prints the
+same) - and **F2 there applies what the save changed** without a
 restart: the keys, the sort groups, the highlight rules, the listing
 format, the theme and the rest, with a line saying which settings it
 took. Only what the file changed is applied, so a command-line flag

@@ -802,20 +802,84 @@ pub fn print_config() -> String {
     let body = toml::to_string_pretty(&Config::default()).unwrap_or_default();
     let mut out = String::from(
         "# rcmd configuration - every setting at its default.\n\
-         # Uncomment a line to change it; the README says what each does.\n\n",
+         # Uncomment a line to change it; the README says what each does.\n\
+         # Saved in the editor Edit config file opens, it applies at once.\n\n",
     );
+    // the plain settings; the lists and tables are empty by default,
+    // which says nothing of what goes in them - the examples below do
     for line in body.lines() {
-        match line.is_empty() {
-            true => out.push('\n'),
-            false => {
-                out.push_str("# ");
-                out.push_str(line);
-                out.push('\n');
-            }
+        if line.starts_with('[') {
+            break;
         }
+        if line.ends_with("= []") {
+            continue;
+        }
+        out.push_str("# ");
+        out.push_str(line);
+        out.push('\n');
     }
+    out.push_str(EXAMPLES);
     out
 }
+
+/// The tables and lists, one example of each, commented out as the
+/// settings are: taking an example is uncommenting it. The plain
+/// settings come before them in the file, as TOML needs them to.
+const EXAMPLES: &str = r#"
+# # ---- lists and tables: an example of each ----
+
+# [[sort_group]]            # classes of file kept together, whatever the
+# match = "@pictures"       # sort: a mask list, a category (@pictures
+#                           # @videos @audio @ebooks @documents @archives
+#                           # @sources) or type = "exe"; a category alone
+#                           # names the group, as the Kind column shows it
+# [[sort_group]]
+# name = "Code"
+# match = "*.rs,*.toml"
+# [[sort_group]]
+# match = "*.o,*.tmp"
+# place = "last"            # after the rest of the listing, not ahead
+
+# [[highlight]]             # colours by name or kind: first match wins
+# match = "*.tar.gz,@archives"
+# color = "brightred"       # mc's colour names, #rrggbb or "default"
+# [[highlight]]
+# type = "exe"              # dir linkdir exe link broken file
+# color = "magenta"
+# bold = true
+
+# [[filter]]                # named filter sets, C-x f
+# name = "sources"
+# mask = "*.c,*.h|*_test.*"
+
+# [[open]]                  # Enter on a matching file runs this
+# match = "@videos"         # match (masks) / regex (name) / type (file -b)
+# run = "mpv %f"            # / directory (path): all given must hold
+
+# [[hotlist]]               # Ctrl+\ - a tree, as in mc
+# label = "projects"
+# path = "/home/you/git"
+
+# [[panelize]]              # saved panelize commands
+# name = "modified"
+# run = "git ls-files -m"
+
+# [[commands]]              # the F2 user menu; key binds one directly
+# name = "git status"
+# run = "git status | less"
+# key = "ctrl+g"
+
+# [keys]                    # bindings on top of the preset, by action
+# "ctrl+y" = "swap-panels"  # name - the palette (M-x) lists them all
+# [keys.viewer]
+# "ctrl+w" = "wrap"
+# [keys.editor]
+# "ctrl+q" = "quit"
+
+# [window]                  # rcmd-egui only
+# font = "DejaVu Sans Mono"
+# font_size = 14
+"#;
 
 pub fn list_mode_from_name(name: &str) -> ListMode {
     match name {
@@ -915,14 +979,32 @@ mod tests {
                 .filter(|l| !l.is_empty())
                 .all(|l| l.starts_with('#'))
         );
-        let uncommented: String = printed
+        // past the header, which is prose; the rest, every line
+        // uncommented at once, is a config
+        let (_, body) = printed.split_once("\n\n").unwrap();
+        let uncommented: String = body
             .lines()
-            .skip(2)
             .map(|l| l.strip_prefix("# ").unwrap_or(l))
             .collect::<Vec<_>>()
             .join("\n");
         let back: Config = toml::from_str(&uncommented).expect("the template is valid TOML");
-        assert_eq!(back.sort_key, Config::default().sort_key);
+        // the settings are the defaults...
+        let (settings, _) = uncommented.split_once("[[").unwrap();
+        let settings: Config = toml::from_str(settings).unwrap();
+        assert_eq!(
+            toml::to_string(&settings).unwrap(),
+            toml::to_string(&Config::default()).unwrap()
+        );
+        // ...and each list and table has an example that takes
+        assert_eq!(back.sort_group.len(), 3);
+        assert_eq!(back.highlight.len(), 2);
+        assert!(!back.filter.is_empty() && !back.open.is_empty());
+        assert!(!back.hotlist.is_empty() && !back.panelize.is_empty());
+        assert!(!back.commands.is_empty() && !back.keys.is_empty());
+        let (_, warnings) = SortGroupRule::compile(&back.sort_group);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let (_, warnings) = back.key_contexts();
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]

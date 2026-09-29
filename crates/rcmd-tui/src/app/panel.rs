@@ -397,9 +397,9 @@ impl App {
                     let _ = std::fs::create_dir_all(dir);
                 }
                 // the file need not exist yet: this is how the first
-                // one gets written
+                // one gets written, every setting in it to start from
                 if !path.exists() {
-                    let _ = std::fs::write(&path, "# rcmd configuration - see the README\n");
+                    let _ = std::fs::write(&path, config::print_config());
                 }
                 let title = path.display().to_string();
                 if self.open_internal_editor(&path, title)

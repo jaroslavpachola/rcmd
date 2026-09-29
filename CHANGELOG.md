@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.67.0 - 2026-09-29
+
+- **A first config to start from.** Edit config file with no config yet
+  writes every setting at its default and an example of each list and
+  table - sort groups, highlight rules, filter sets, openers, the
+  hotlist, panelize commands, user commands, `[keys]` and `[window]` -
+  all commented out, where it wrote one line pointing at the README.
+  `rcmd --print-config` prints the same, and no longer lists the empty
+  lists as `hotlist = []`.
+
 ## 4.66.0 - 2026-09-29
 
 - **The config applies without a restart.** Saving `config.toml` in the
