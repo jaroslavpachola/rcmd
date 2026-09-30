@@ -2819,8 +2819,9 @@ def test_ftp():
         # C-x a lists the connection as a remote one
         s.send(b"\x18a", wait=STEP)
         scr = s.screen()
-        check("ftp: listed in the active VFS list",
-              "Active VFS" in scr and "ftp://tester@127.0.0.1" in scr and "sftp" in scr)
+        check("ftp: listed in the active VFS list, as ftp",
+              "Active VFS" in scr and "ftp://tester@127.0.0.1" in scr
+              and "│ ftp " in scr and "sftp" not in scr, scr)
         s.send(b"\x1b", wait=STEP)
 
         # a password written into the URL connects, and is not kept:

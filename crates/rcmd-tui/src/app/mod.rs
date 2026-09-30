@@ -3412,6 +3412,15 @@ pub fn menu_label(label: &str) -> (&str, Option<char>, &str) {
 
 /// A fresh filesystem watcher for panel auto-reload; the warning is
 /// set when the platform watcher cannot start.
+/// Whether a watch event says the directory changed. notify reports a
+/// file being opened, read and closed too - and a reload opens the
+/// directory, and the git scan after it opens the files it hashes, so
+/// counting those reloaded the panel over and over, four times a
+/// second, for as long as it stood there.
+fn is_change(event: &notify::Event) -> bool {
+    !matches!(event.kind, notify::EventKind::Access(_))
+}
+
 fn build_watch() -> (Option<WatchState>, Option<String>) {
     let (tx, rx) = std::sync::mpsc::channel();
     match notify::recommended_watcher(move |event| {
@@ -4051,6 +4060,10 @@ impl App {
     /// event loop can do the same work: `rcmd-egui` calls this once per
     /// egui frame and then draws the same [`ui::draw`] into a window.
     pub fn tick(&mut self) -> bool {
+        // what the background work says on the status line is worth a
+        // frame of its own: a job that ends, the last directory sized,
+        // arrive with nothing else moving to draw them
+        let status_before = self.status.clone();
         self.note_visits();
         self.drain_remote();
         self.drain_job();
@@ -4080,6 +4093,9 @@ impl App {
             self.esc_at = None;
             self.dirty = true;
             self.dispatch_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        }
+        if self.status != status_before {
+            self.dirty = true;
         }
         let loading = self.panels.iter().any(Panel::is_loading);
         // a change waiting on a dialog to close is not something
@@ -4385,6 +4401,9 @@ impl App {
         let Some(du) = self.du.as_ref() else { return };
         match du.rx.try_recv() {
             Ok((files, bytes)) => {
+                // the last size arrives with nothing else moving: it
+                // has to ask for the frame that shows it
+                self.dirty = true;
                 let du = self.du.take().expect("du present");
                 let panel = &mut self.panels[du.panel];
                 if panel.cwd == du.cwd
@@ -4470,6 +4489,9 @@ impl App {
             return;
         };
         while let Ok(Ok(event)) = watch.rx.try_recv() {
+            if !is_change(&event) {
+                continue;
+            }
             for i in 0..2 {
                 if let Some(dir) = &watch.watched[i]
                     && event
@@ -6882,6 +6904,22 @@ fn shell_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reading a directory or a file in it is no change to it: the
+    /// reload that followed one reopened the directory, and so on.
+    #[test]
+    fn opening_and_reading_is_no_change() {
+        use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind};
+        use notify::{Event, EventKind};
+        let opened = Event::new(EventKind::Access(AccessKind::Open(AccessMode::Any)));
+        let closed = Event::new(EventKind::Access(AccessKind::Close(AccessMode::Read)));
+        assert!(!is_change(&opened) && !is_change(&closed));
+        assert!(is_change(&Event::new(EventKind::Create(CreateKind::File))));
+        assert!(is_change(&Event::new(EventKind::Modify(ModifyKind::Any))));
+        assert!(is_change(&Event::new(EventKind::Remove(
+            notify::event::RemoveKind::Any
+        ))));
+    }
 
     /// The Left and Right menus hold what means something on their own
     /// panel, and no separator is left doubled or at an end.

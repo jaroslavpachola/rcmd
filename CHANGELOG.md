@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.68.2 - 2026-09-29
+
+- **A panel no longer reloads itself over and over.** The watcher that
+  reloads a panel when its directory changes also heard files being
+  opened and read - and a reload opens the directory, and the git scan
+  after it opens the changed files to hash them. Each reload set off
+  the next, four or five a second, for as long as the panel stood
+  there: "loading" came back after every Esc wherever a listing was
+  slow enough to show it, and elsewhere it only cost the CPU. Opening
+  and reading are no change now; creating, writing, renaming and
+  removing still reload.
+- **What background work says is drawn when it says it.** The last
+  directory sized by Ctrl+X Space and a copy that ended with a skip
+  changed the screen with nothing asking for a frame, and showed only
+  at the next key; the reloads above had been drawing them by chance.
+
 ## 4.68.1 - 2026-09-29
 
 - **`disks://` lists disks only.** The kernel's filesystems, the ones in
