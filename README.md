@@ -791,7 +791,13 @@ and `@sources`, so `match = "@videos"` opens every film one way and
 any case whatever the rest of the list does - `IMG_0001.JPG` is a
 picture - and goes by the name alone, as every mask does.
 
-A file no rule claims goes to the **desktop** - `xdg-open`, or `open`
+An **executable** file no rule claims is run, as mc runs it: `./name`
+in the panel's directory, as if typed on the command line - it goes in
+the command history and waits for Enter after it, so what it printed
+can be read. Only a regular file with an `x` bit counts; a rule for
+`*.py` still wins over a script's mode.
+
+Any other file no rule claims goes to the **desktop** - `xdg-open`, or `open`
 on macOS - as long as there is a display (`$DISPLAY` or
 `$WAYLAND_DISPLAY`) to open it on; over a bare ssh Enter stays quiet,
 since the browser would open on the wrong machine. `desktop_open =
@@ -1315,7 +1321,7 @@ kitty_keyboard = true      # the kitty keyboard protocol where the terminal has 
 confirm_overwrite = true   # ask before overwriting during copy/move
 confirm_exit = false       # ask before F10 quits (MC asks; rcmd does not)
 confirm_hotlist_delete = true   # ask before dropping a hotlist entry
-confirm_execute = false    # ask before Enter runs an [[open]] command
+confirm_execute = false    # ask before Enter runs an [[open]] command or a program
 esc_timeout_ms = 250 # how long a lone Esc waits for its meta follow-up
                      # (1000 = MC's roomier window for typing Esc 1..0)
 edit_tab_size = 8          # the built-in editor, F9 > Options > General
@@ -1330,7 +1336,7 @@ builtin_view = true        # F3 on a PDF, man page, tarball, image or video
 time_format = "%b %e %H:%M"      # the listing's times, as strftime -
 time_format_old = "%b %e  %Y"    # this one past six months, as ls -l
 si_units = false           # sizes in powers of 1000 instead of 1024
-desktop_open = true        # Enter on a file no [[open]] rule claims: xdg-open
+desktop_open = true        # Enter on a file no [[open]] rule claims, not executable: xdg-open
                            # (open on macOS) when there is a display
                            # (false = straight into the panel listing)
 edit_line_numbers = false  # the line-number gutter (Alt+N toggles it)

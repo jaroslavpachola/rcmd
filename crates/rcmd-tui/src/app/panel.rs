@@ -921,6 +921,7 @@ impl App {
             return;
         }
         let name = entry.name.to_string_lossy().into_owned();
+        let executable = entry.is_executable();
         let dir = panel.cwd.clone();
         let path = dir.join(&entry.name);
         // `file -b` is asked once, and only if a rule has type =
@@ -937,12 +938,26 @@ impl App {
             .find(|rule| rule.matches(&name, &dir, &mut file_type))
         {
             Some(rule) => rule.run.clone(),
+            // mc's rule: an executable no rule claims is run, as if
+            // typed on the command line - in the history, and with the
+            // pause after it, since what it prints is why it was run
+            None if executable => {
+                let cmd = format!("./{}", shell_quote(&name));
+                self.cmdline.push_history(&cmd);
+                self.run_on_enter(cmd, false);
+                return;
+            }
             None => {
                 self.desktop_open(&path);
                 return;
             }
         };
         let cmd = self.expand_macros(&run);
+        self.run_on_enter(cmd, true);
+    }
+
+    /// Enter's command: asked about first when confirm_execute is on.
+    fn run_on_enter(&mut self, cmd: String, quiet: bool) {
         if self.config.confirm_execute {
             self.dialog = Some(Dialog::Confirm(ConfirmDialog {
                 title: " Execute ".into(),
@@ -950,12 +965,15 @@ impl App {
                 yes: true,
                 paths: Vec::new(),
                 permanent: false,
-                kind: ConfirmKind::Execute,
+                kind: ConfirmKind::Execute { quiet },
                 command: Some(cmd),
             }));
             return;
         }
-        self.pending_exec = Some(Exec::Quiet(cmd));
+        self.pending_exec = Some(match quiet {
+            true => Exec::Quiet(cmd),
+            false => Exec::Command(cmd),
+        });
     }
 
     /// `%f` cursor file, `%d` this directory, `%D` the other panel's,

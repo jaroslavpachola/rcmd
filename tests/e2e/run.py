@@ -3932,6 +3932,88 @@ def test_extensibility():
     shutil.rmtree(root)
 
 
+def test_runexecutable():
+    """Enter on an executable no [[open]] rule claims runs it, as mc
+    does, where it went to xdg-open and ran nothing."""
+    root, play, home = sandbox()
+    # the desktop is there, so a file that went to it would leave a mark
+    bindir = os.path.join(root, "bin")
+    os.makedirs(bindir)
+    desktop = os.path.join(root, "desktop.out")
+    fake = os.path.join(bindir, "xdg-open")
+    open(fake, "w").write("#!/bin/sh\necho \"$1\" >> %s\n" % desktop)
+    os.chmod(fake, 0o755)
+    ran = os.path.join(root, "ran.out")
+    script = os.path.join(play, "a script.py")
+    open(script, "w").write(
+        "#!/usr/bin/env python3\nimport os\nprint('script says hi')\n"
+        "open(%r, 'a').write(os.getcwd() + '\\n')\n" % ran)
+    os.chmod(script, 0o755)
+    shell = os.path.join(play, "b.sh")
+    open(shell, "w").write("#!/bin/sh\necho sh >> %s\n" % ran)
+    os.chmod(shell, 0o755)
+    open(os.path.join(play, "c.txt"), "w").write("not a program\n")
+    saved = dict(os.environ)
+    os.environ["PATH"] = bindir + ":" + os.environ["PATH"]
+    s = Session(play, home, env={"DISPLAY": ":0"})
+    os.environ.clear(); os.environ.update(saved)
+
+    s.send(b"\x13a script\r", wait=STEP * 3)
+    if not SUBSHELL:
+        # the harness's screen does not scroll: the pause line is drawn
+        # over the output, so the output is looked for in what came
+        check("runexecutable: the output stays to be read",
+              b"script says hi" in s.buf and "Press Enter" in s.screen(), s.screen())
+        s.send(b"\r", wait=STEP * 2)
+    wait_file(ran, play)
+    check("runexecutable: Enter runs an executable in its directory",
+          os.path.isfile(ran) and open(ran).read() == play + "\n",
+          open(ran).read() if os.path.isfile(ran) else "")
+    check("runexecutable: and not the desktop", not os.path.exists(desktop))
+    s.send(b"\x1bp", wait=STEP)
+    # a space is skipped over rather than drawn, and the harness's
+    # screen keeps what was under it
+    check("runexecutable: the run is in the command history",
+          re.search(r"\./'a.script\.py'", s.screen()), s.screen())
+    s.send(b"\x1b", wait=STEP)            # clear the command line
+    s.send(b"\x1b", wait=STEP)
+
+    # a file without the x bit still goes to the desktop
+    s.send(b"\x13c.txt\r", wait=STEP * 3)
+    wait_file(desktop, "c.txt")
+    check("runexecutable: a plain file still goes to xdg-open",
+          os.path.isfile(desktop) and "c.txt" in open(desktop).read())
+    s.quit()
+
+    # a rule wins over the mode, and confirm_execute asks first
+    os.remove(ran)
+    cfg = os.path.join(home, ".config", "rcmd", "config.toml")
+    open(cfg, "w").write(
+        "confirm_execute = true\n"
+        "[[open]]\nmatch = \"*.py\"\nrun = \"echo rule >> %s\"\n" % ran)
+    s = Session(play, home)
+    s.send(b"\x13b.sh\r", wait=STEP * 2)
+    check("runexecutable: confirm_execute asks",
+          "Execute" in s.screen() and "Run: ./b.sh" in s.screen(), s.screen())
+    s.send(b"n", wait=STEP)
+    check("runexecutable: No runs nothing", not os.path.exists(ran))
+    s.send(b"\r", wait=STEP * 2)
+    s.send(b"y", wait=STEP * 3)
+    if not SUBSHELL:
+        s.send(b"\r", wait=STEP * 2)      # the pause after it
+    wait_file(ran, "sh")
+    check("runexecutable: Yes runs it",
+          os.path.isfile(ran) and open(ran).read() == "sh\n")
+    s.send(b"\x13a script\r", wait=STEP * 2)
+    s.send(b"y", wait=STEP * 3)
+    wait_file(ran, "rule")
+    check("runexecutable: an [[open]] rule wins over the x bit",
+          os.path.isfile(ran) and open(ran).read() == "sh\nrule\n",
+          open(ran).read() if os.path.isfile(ran) else "")
+    s.quit()
+    shutil.rmtree(root)
+
+
 def test_brief():
     """PLAN4 S1: MC's brief listing shows names in several columns,
     filled column by column so Down stays "the next file"."""
@@ -4764,7 +4846,7 @@ def test_confirmations():
     )
     scr = s.screen()
     check("confirm: the form offers both toggles",
-          "hotlist entry" in scr and "opener" in scr, scr[:600])
+          "hotlist entry" in scr and "Enter runs a file" in scr, scr[:600])
     s.send(b"\x1b", wait=STEP)
     s.quit()
     shutil.rmtree(root)
@@ -7894,6 +7976,7 @@ def main():
         test_jobs,
         test_cxops,
         test_extensibility,
+        test_runexecutable,
         test_brief,
         test_layout,
         test_tree,

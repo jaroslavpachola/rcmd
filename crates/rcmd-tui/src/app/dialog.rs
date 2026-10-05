@@ -2271,9 +2271,12 @@ impl App {
                 let last = self.hotlist_rows(&d).len().saturating_sub(1);
                 self.dialog = Some(Dialog::Hotlist(HotlistDialog::at(d.group, index.min(last))));
             }
-            ConfirmKind::Execute => {
+            ConfirmKind::Execute { quiet } => {
                 if let Some(cmd) = d.command {
-                    self.pending_exec = Some(Exec::Quiet(cmd));
+                    self.pending_exec = Some(match quiet {
+                        true => Exec::Quiet(cmd),
+                        false => Exec::Command(cmd),
+                    });
                 }
             }
         }

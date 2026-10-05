@@ -98,8 +98,8 @@ pub struct Config {
     /// Ask before dropping an entry from the directory hotlist. There
     /// is no undo for that list, so this one starts on.
     pub confirm_hotlist_delete: bool,
-    /// Ask before Enter runs an `[[open]]` command. MC's "confirm
-    /// execute", and off for the same reason: you configured the rule.
+    /// Ask before Enter runs an `[[open]]` command or an executable
+    /// file. MC's "confirm execute", and off for the same reason.
     pub confirm_execute: bool,
     /// How long a lone Esc waits for its follow-up key before acting as
     /// a plain Escape (MC's meta prefix: Esc 1..0 = F1..F10, Esc x =
@@ -132,9 +132,9 @@ pub struct Config {
     /// where they stream straight into the panel as a panelized
     /// listing - which is one keystroke shorter and loses the list.
     pub find_window: bool,
-    /// Enter on a file no `[[open]]` rule claims hands it to the
-    /// desktop (`xdg-open`, or `open` on macOS) when there is a display
-    /// to open it on. Off: such an Enter does nothing, as before 4.9.
+    /// Enter on a file no `[[open]]` rule claims, and not executable,
+    /// hands it to the desktop (`xdg-open`, or `open` on macOS) when
+    /// there is a display to open it on. Off: such an Enter does nothing, as before 4.9.
     pub desktop_open: bool,
     /// F3 on a PDF, a man page, an image or a tarball shows what it
     /// says rather than its bytes, through rcmd's own small set of

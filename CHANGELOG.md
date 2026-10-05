@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.69.0 - 2026-10-05
+
+- **Enter runs a program.** An executable file no `[[open]]` rule
+  claims is run as mc runs it: `./name` in the panel's directory, as if
+  typed on the command line - it goes in the command history, and what
+  it printed stays on screen (the pause, or Ctrl+O with the subshell). It went
+  to `xdg-open` before, which ran nothing: a script with its `x` bit
+  set opened in an editor, or not at all. Only a regular file with an
+  `x` bit counts, and a rule still wins - `match = "*.py"` opens every
+  script its way, executable or not. `confirm_execute` asks before
+  this run too.
+
 ## 4.68.2 - 2026-09-29
 
 - **A panel no longer reloads itself over and over.** The watcher that

@@ -1077,8 +1077,11 @@ pub enum ConfirmKind {
         group: Vec<usize>,
         index: usize,
     },
-    /// Enter about to run an `[[open]]` command.
-    Execute,
+    /// Enter about to run an `[[open]]` command, or an executable file
+    /// - that one with the pause after it, as the command line has.
+    Execute {
+        quiet: bool,
+    },
     /// F6 on a `trash://` panel: put these back where they came from.
     Restore,
     /// `M-Del` about to overwrite and delete.
@@ -1701,7 +1704,7 @@ pub const OPTION_ROWS: &[OptRow] = &[
         Opt::ConfirmHotlistDelete,
         "Ask before dropping a hotlist entry",
     ),
-    OptRow::Check(Opt::ConfirmExecute, "Ask before Enter runs an opener"),
+    OptRow::Check(Opt::ConfirmExecute, "Ask before Enter runs a file"),
     OptRow::Head("Shell and editor"),
     OptRow::Check(Opt::Subshell, "Persistent subshell"),
     OptRow::Radio(Opt::ExternalEditor, "Editor", "internal", "external"),
