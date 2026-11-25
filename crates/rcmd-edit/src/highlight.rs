@@ -8,7 +8,9 @@ use std::sync::{Arc, OnceLock};
 use syntect::highlighting::{
     HighlightState, Highlighter as SynHl, RangedHighlightIterator, Theme, ThemeSet,
 };
-use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
+use syntect::parsing::{
+    ParseState, ScopeStack, SyntaxDefinition, SyntaxReference, SyntaxSet, SyntaxSetBuilder,
+};
 
 use crate::LineSource;
 
@@ -41,18 +43,50 @@ pub fn user_syntax_warning() -> Option<String> {
         .clone()
 }
 
-fn syntax_set() -> &'static SyntaxSet {
-    static SS: OnceLock<SyntaxSet> = OnceLock::new();
-    SS.get_or_init(|| {
-        let defaults = SyntaxSet::load_defaults_newlines();
+/// Syntaxes rcmd carries beyond syntect's own.
+const BUNDLED: &[&str] = &[include_str!("syntax/lean4.sublime-syntax")];
+
+fn add_bundled(builder: &mut SyntaxSetBuilder) {
+    for text in BUNDLED {
+        // one that does not parse is a bug the tests catch; at run time
+        // it costs only itself
+        if let Ok(def) = SyntaxDefinition::load_from_str(text, true, None) {
+            builder.add(def);
+        }
+    }
+}
+
+/// Where syntaxes are looked up. Adding to syntect's own set rebuilds
+/// all of it, a fifth of a second before the first file is coloured,
+/// so rcmd's syntaxes are a set of their own, searched after syntect's
+/// and built only when a lookup gets that far - reading their YAML is
+/// itself a cost every first F3 of a `.txt` would pay. They are for
+/// languages syntect lacks, so the order changes nothing else. A user
+/// with syntax files pays the rebuild anyway and gets one set of
+/// everything, theirs added last so that theirs win.
+enum Sets {
+    Split {
+        defaults: SyntaxSet,
+        bundled: OnceLock<SyntaxSet>,
+    },
+    Merged(SyntaxSet),
+}
+
+fn syntax_sets() -> &'static Sets {
+    static SETS: OnceLock<Sets> = OnceLock::new();
+    SETS.get_or_init(|| {
         let dir = USER_SYNTAX
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         let Some(dir) = dir.filter(|dir| dir.is_dir()) else {
-            return defaults;
+            return Sets::Split {
+                defaults: SyntaxSet::load_defaults_newlines(),
+                bundled: OnceLock::new(),
+            };
         };
-        let mut builder = defaults.into_builder();
+        let mut builder = SyntaxSet::load_defaults_newlines().into_builder();
+        add_bundled(&mut builder);
         // a broken syntax file costs its own file and a warning, never
         // the highlighting of everything else
         if let Err(err) = builder.add_from_folder(&dir, true) {
@@ -61,8 +95,33 @@ fn syntax_set() -> &'static SyntaxSet {
                 .unwrap_or_else(|e| e.into_inner()) =
                 Some(format!("syntax: {}: {err}", dir.display()));
         }
-        builder.build()
+        Sets::Merged(builder.build())
     })
+}
+
+impl Sets {
+    /// Every set, in lookup order; rcmd's own is built when the
+    /// iteration reaches it, not before.
+    fn each(&'static self) -> impl Iterator<Item = &'static SyntaxSet> {
+        let (first, rest): (&SyntaxSet, Option<&OnceLock<SyntaxSet>>) = match self {
+            Sets::Split { defaults, bundled } => (defaults, Some(bundled)),
+            Sets::Merged(set) => (set, None),
+        };
+        std::iter::once(first).chain(rest.into_iter().map(|bundled| {
+            bundled.get_or_init(|| {
+                let mut builder = SyntaxSetBuilder::new();
+                add_bundled(&mut builder);
+                builder.build()
+            })
+        }))
+    }
+}
+
+/// The first syntax `find` turns up, with the set it belongs to.
+fn find_syntax(
+    find: impl Fn(&'static SyntaxSet) -> Option<&'static SyntaxReference>,
+) -> Option<(&'static SyntaxSet, &'static SyntaxReference)> {
+    syntax_sets().each().find_map(|set| Some((set, find(set)?)))
 }
 
 fn builtin_themes() -> &'static ThemeSet {
@@ -143,9 +202,9 @@ pub fn syntax_theme_names() -> Vec<&'static str> {
 
 /// Every syntax syntect knows, by name and in order, for a picker.
 pub fn syntax_names() -> Vec<&'static str> {
-    let mut names: Vec<&'static str> = syntax_set()
-        .syntaxes()
-        .iter()
+    let mut names: Vec<&'static str> = syntax_sets()
+        .each()
+        .flat_map(SyntaxSet::syntaxes)
         .map(|s| s.name.as_str())
         .collect();
     names.sort_unstable();
@@ -154,6 +213,8 @@ pub fn syntax_names() -> Vec<&'static str> {
 }
 
 pub struct Highlighter {
+    /// The set `syntax` is from, which parsing it needs.
+    set: &'static SyntaxSet,
     syntax: &'static SyntaxReference,
     /// `states[k]` = parser/highlight state *before* line `k * CHECKPOINT`.
     states: Vec<(ParseState, HighlightState)>,
@@ -170,8 +231,9 @@ impl Highlighter {
     /// which is the point of being asked rather than guessing from the
     /// extension.
     pub fn by_name(name: &str) -> Option<Highlighter> {
-        let syntax = syntax_set().find_syntax_by_name(name)?;
+        let (set, syntax) = find_syntax(|set| set.find_syntax_by_name(name))?;
         Some(Highlighter {
+            set,
             syntax,
             states: Vec::new(),
             dirty_from: 0,
@@ -191,15 +253,15 @@ impl Highlighter {
         if len_bytes > MAX_BYTES {
             return None;
         }
-        let ss = syntax_set();
         let ext = path.extension()?.to_str()?;
-        let syntax = ss
-            .find_syntax_by_extension(ext)
-            .or_else(|| ss.find_syntax_by_extension(path.file_name()?.to_str()?))?;
+        let name = path.file_name()?.to_str()?;
+        let (set, syntax) = find_syntax(|set| set.find_syntax_by_extension(ext))
+            .or_else(|| find_syntax(|set| set.find_syntax_by_extension(name)))?;
         if syntax.name == "Plain Text" {
             return None;
         }
         Some(Highlighter {
+            set,
             syntax,
             states: Vec::new(),
             dirty_from: 0,
@@ -291,7 +353,7 @@ impl Highlighter {
                 out.push(Vec::new());
                 continue;
             }
-            let Ok(ops) = ps.parse_line(&text, syntax_set()) else {
+            let Ok(ops) = ps.parse_line(&text, self.set) else {
                 self.broken = true;
                 out.resize(count, Vec::new());
                 return out;
@@ -321,7 +383,7 @@ impl Highlighter {
         if text.chars().count() > MAX_LINE_CHARS {
             return true; // skip styling huge lines but keep going
         }
-        match ps.parse_line(text, syntax_set()) {
+        match ps.parse_line(text, self.set) {
             Ok(ops) => {
                 for _ in RangedHighlightIterator::new(hs, &ops, text, hl) {}
                 true
@@ -347,6 +409,119 @@ mod tests {
         fn line_with_nl(&mut self, idx: usize) -> String {
             format!("{}\n", self.0[idx])
         }
+    }
+
+    #[test]
+    fn the_bundled_syntaxes_load() {
+        for text in BUNDLED {
+            SyntaxDefinition::load_from_str(text, true, None).unwrap();
+        }
+    }
+
+    /// The innermost scope each named piece of `text` is parsed into,
+    /// by syntect's own parser rather than by a theme's colours.
+    fn scopes_of(path: &str, text: &str, pieces: &[&str]) -> Vec<String> {
+        use syntect::parsing::ScopeStackOp;
+        let ext = Path::new(path).extension().unwrap().to_str().unwrap();
+        let (ss, syntax) = find_syntax(|set| set.find_syntax_by_extension(ext)).unwrap();
+        let mut ps = ParseState::new(syntax);
+        let mut stack = ScopeStack::new();
+        // (byte offset in text, innermost scope from there on)
+        let mut marks: Vec<(usize, String)> = Vec::new();
+        let mut base = 0;
+        for line in text.split_inclusive('\n') {
+            for (at, op) in ps.parse_line(line, ss).unwrap() {
+                stack.apply(&op).unwrap();
+                if !matches!(op, ScopeStackOp::Noop) {
+                    let top = stack.as_slice().last().map(|s| s.build_string());
+                    marks.push((base + at, top.unwrap_or_default()));
+                }
+            }
+            base += line.len();
+        }
+        pieces
+            .iter()
+            .map(|piece| {
+                let at = text
+                    .find(piece)
+                    .unwrap_or_else(|| panic!("{piece} in text"));
+                marks
+                    .iter()
+                    .rev()
+                    .find(|(pos, _)| *pos <= at)
+                    .map(|(_, s)| s.clone())
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn lean_is_highlighted() {
+        let text = "\
+import Mathlib.Data.Nat
+/-- doc /- nested -/ still doc -/
+@[simp, inline] private theorem add_zero' (n : ℕ) : n + 0 = n := by
+  simp [Nat.add_zero] -- done
+def «weird name» (x₁ : Nat) : String := s!\"x = {x₁ + 1} ok\"
+structure Point where
+  x : Float := 3.5e2
+#eval 'a'
+example : Type* := sorry
+def h' := `Nat.succ
+";
+        let got = scopes_of(
+            "a.lean",
+            text,
+            &[
+                "import",
+                "doc",
+                "still doc",
+                "simp,",
+                "private",
+                "theorem",
+                "add_zero'",
+                "by",
+                "Nat.add_zero",
+                "-- done",
+                "«weird name»",
+                "s!",
+                "x = ",
+                "x₁ +",
+                " ok",
+                "Point",
+                "3.5e2",
+                "#eval",
+                "'a'",
+                "Type*",
+                "sorry",
+                "`Nat.succ",
+            ],
+        );
+        let want = [
+            "keyword.other.lean4",
+            "comment.block.documentation.lean4",
+            "comment.block.documentation.lean4",
+            "entity.other.attribute-name.lean4",
+            "storage.modifier.lean4",
+            "keyword.other.declaration.lean4",
+            "entity.name.function.lean4",
+            "keyword.control.lean4",
+            "source.lean4",
+            "punctuation.definition.comment.lean4",
+            "entity.name.function.lean4",
+            "storage.type.string.lean4",
+            "string.interpolated.lean4",
+            "meta.interpolation.lean4",
+            "string.interpolated.lean4",
+            "entity.name.type.lean4",
+            "constant.numeric.lean4",
+            "keyword.other.command.lean4",
+            "constant.character.lean4",
+            "storage.type.lean4",
+            "keyword.other.sorry.lean4",
+            "constant.other.symbol.lean4",
+        ];
+        assert_eq!(got, want);
     }
 
     /// One test for the one global: a theme switch reaches a highlighter

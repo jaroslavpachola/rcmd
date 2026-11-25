@@ -1,0 +1,220 @@
+%YAML 1.2
+---
+# Lean 4, built into rcmd. Written for rcmd after the token rules of
+# Lean's own lexer (identifiers, nested comments, string forms); a
+# `.sublime-syntax` for `.lean` in ~/.config/rcmd/syntax/ wins over it.
+name: Lean 4
+file_extensions: [lean]
+scope: source.lean4
+
+variables:
+  # Lean's identifier letters: any letter but λ Π Σ, which are syntax
+  idstart: '(?:(?![λΠΣ])[\p{L}_])'
+  idrest: '(?:(?![λΠΣ])[\p{L}\p{N}_''!?])'
+  atom: '(?:{{idstart}}{{idrest}}*|«[^»]*»)'
+  ident: '(?:{{atom}}(?:\.{{atom}})*)'
+  # a word that is not part of a longer name, nor a field after a dot
+  before: '(?<![\p{L}\p{N}_''!?.])'
+  after: '(?!{{idrest}})'
+
+contexts:
+  main:
+    - include: comments
+    - include: expressions
+
+  comments:
+    - match: '/--'
+      scope: punctuation.definition.comment.begin.lean4
+      push: [doc-comment-body]
+    - match: '/-!'
+      scope: punctuation.definition.comment.begin.lean4
+      push: [doc-comment-body]
+    - match: '/-'
+      scope: punctuation.definition.comment.begin.lean4
+      push: [block-comment-body]
+    - match: '--'
+      scope: punctuation.definition.comment.lean4
+      push: line-comment-body
+
+  line-comment-body:
+    - meta_scope: comment.line.double-dash.lean4
+    - match: '$\n?'
+      pop: true
+
+  doc-comment-body:
+    - meta_scope: comment.block.documentation.lean4
+    - include: comment-nesting
+
+  block-comment-body:
+    - meta_scope: comment.block.lean4
+    - include: comment-nesting
+
+  # Lean's block comments nest: /- /- -/ still a comment -/
+  comment-nesting:
+    - match: '-/'
+      scope: punctuation.definition.comment.end.lean4
+      pop: true
+    - match: '/-'
+      push: comment-nested
+
+  comment-nested:
+    - match: '-/'
+      pop: true
+    - match: '/-'
+      push: comment-nested
+
+  expressions:
+    - include: comments
+    - include: attributes
+    - include: strings
+    - include: declarations
+    - include: keywords
+    - include: names
+    - include: numbers
+    - include: operators
+
+  attributes:
+    - match: '@\['
+      scope: punctuation.definition.attribute.begin.lean4
+      push: attribute-body
+
+  attribute-body:
+    - meta_scope: meta.attribute.lean4
+    - match: '\]'
+      scope: punctuation.definition.attribute.end.lean4
+      pop: true
+    - match: '\['
+      push: attribute-bracket
+    - include: comments
+    - include: strings
+    - include: numbers
+    - match: '{{before}}(local|scoped){{after}}'
+      scope: storage.modifier.lean4
+    - match: '{{ident}}'
+      scope: entity.other.attribute-name.lean4
+
+  attribute-bracket:
+    - match: '\]'
+      pop: true
+    - include: attribute-body
+
+  strings:
+    # s!"..{x}..", m!, f!: interpolated
+    - match: '{{before}}([smf]!)(")'
+      captures:
+        1: storage.type.string.lean4
+        2: punctuation.definition.string.begin.lean4
+      push: interpolated-string
+    # r"...", r#"..."#: raw, no escapes
+    - match: '{{before}}(r)(#*)(")'
+      captures:
+        1: storage.type.string.lean4
+        3: punctuation.definition.string.begin.lean4
+      push: raw-string
+    - match: '"'
+      scope: punctuation.definition.string.begin.lean4
+      push: string
+    - match: '{{before}}''(?:\\(?:[\\"''nrt]|x\h\h|u\h{4})|[^\\''\n])'''
+      scope: constant.character.lean4
+
+  string:
+    - meta_scope: string.quoted.double.lean4
+    - match: '"'
+      scope: punctuation.definition.string.end.lean4
+      pop: true
+    - include: string-escapes
+
+  interpolated-string:
+    - meta_scope: string.interpolated.lean4
+    - match: '"'
+      scope: punctuation.definition.string.end.lean4
+      pop: true
+    - match: '\\[{}]'
+      scope: constant.character.escape.lean4
+    - include: string-escapes
+    - match: '\{'
+      scope: punctuation.section.interpolation.begin.lean4
+      push: interpolation
+
+  interpolation:
+    - clear_scopes: 1
+    - meta_scope: meta.interpolation.lean4
+    - match: '\}'
+      scope: punctuation.section.interpolation.end.lean4
+      pop: true
+    - match: '\{'
+      push: interpolation-braces
+    - include: expressions
+
+  interpolation-braces:
+    - match: '\}'
+      pop: true
+    - match: '\{'
+      push: interpolation-braces
+    - include: expressions
+
+  raw-string:
+    - meta_scope: string.quoted.raw.lean4
+    - match: '"\2'
+      scope: punctuation.definition.string.end.lean4
+      pop: true
+
+  string-escapes:
+    - match: '\\(?:[\\"''nrt]|x\h\h|u\h{4}|\n)'
+      scope: constant.character.escape.lean4
+    - match: '\\.'
+      scope: invalid.illegal.escape.lean4
+
+  declarations:
+    # deriving instance Repr for Foo: no name follows
+    - match: '{{before}}(deriving)\s+(instance){{after}}'
+      captures:
+        1: keyword.other.lean4
+        2: keyword.other.lean4
+    - match: '{{before}}(class)\s+(inductive)\s+({{ident}})'
+      captures:
+        1: keyword.other.declaration.lean4
+        2: keyword.other.declaration.lean4
+        3: entity.name.type.lean4
+    - match: '{{before}}(structure|class|inductive|coinductive){{after}}(?:\s+({{ident}}))?'
+      captures:
+        1: keyword.other.declaration.lean4
+        2: entity.name.type.lean4
+    - match: '{{before}}(def|theorem|lemma|abbrev|instance|opaque|axiom|irreducible_def){{after}}(?:\s+({{ident}}))?'
+      captures:
+        1: keyword.other.declaration.lean4
+        2: entity.name.function.lean4
+
+  keywords:
+    - match: '{{before}}(private|protected|public|noncomputable|partial|unsafe|nonrec|local|scoped){{after}}'
+      scope: storage.modifier.lean4
+    - match: '{{before}}(if|then|else|match|with|do|for|in|return|unless|try|catch|finally|break|continue|mut|fun|let|have|show|from|by|at|calc|suffices|obtain|nomatch|nofun|forall|termination_by|decreasing_by){{after}}'
+      scope: keyword.control.lean4
+    - match: 'λ'
+      scope: keyword.control.lean4
+    - match: '{{before}}(example|namespace|section|end|open|export|import|variable|universe|universes|mutual|extends|deriving|renaming|hiding|set_option|attribute|notation|infix|infixl|infixr|prefix|postfix|macro|macro_rules|syntax|elab|elab_rules|declare_syntax_cat|initialize|builtin_initialize|omit|include|where){{after}}'
+      scope: keyword.other.lean4
+    - match: '{{before}}#[a-z_]+{{after}}'
+      scope: keyword.other.command.lean4
+    - match: '{{before}}(sorry|admit){{after}}'
+      scope: keyword.other.sorry.lean4
+    - match: '{{before}}(Type|Sort|Prop){{after}}\*?'
+      scope: storage.type.lean4
+    - match: '{{before}}(True|False|true|false){{after}}'
+      scope: constant.language.lean4
+
+  names:
+    # `foo and ``foo: a name as data
+    - match: '``?{{ident}}'
+      scope: constant.other.symbol.lean4
+    # anything else that is a name: taken whole, so nothing inside it
+    # (a keyword, a number) is mistaken for itself
+    - match: '{{ident}}'
+
+  numbers:
+    - match: '{{before}}(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|[0-9][0-9_]*(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?){{after}}'
+      scope: constant.numeric.lean4
+
+  operators:
+    - match: ':=|=>|←|→|↔|<->|->|<-|∀|∃|Π|Σ|<;>|\|>\.|\|>|<\||\$|∘|×|¬|∧|∨|≠|≤|≥|≈|∣|∈|∉|⊆|⊂|∪|∩|·|•'
+      scope: keyword.operator.lean4

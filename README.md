@@ -1430,8 +1430,10 @@ run = "git status | less"
 ### Syntax files
 
 The editor highlights with syntect, which speaks **`.sublime-syntax`**.
+Besides syntect's own languages rcmd carries **Lean 4** (`.lean`).
 Drop your own into `~/.config/rcmd/syntax/` and they join the built-in
-list - by extension, and in F9 > Options > Syntax inside the editor.
+list - by extension, and in F9 > Options > Syntax inside the editor;
+one for an extension rcmd already knows wins over rcmd's.
 A file that will not parse costs itself and a note on the editor's
 status line, never the highlighting of everything else. (mc's own
 syntax format is a different language and is not read.)

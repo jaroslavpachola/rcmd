@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.70.0 - 2026-11-25
+
+- **Lean 4 is highlighted.** A `.lean` file is coloured in the viewer
+  and the editor, and Lean 4 is in F9 > Options > Syntax: keywords and
+  declarations with their names, `@[attributes]`, comments that nest
+  (`/- /- -/ -/`) and doc comments, strings with their escapes,
+  `s!"{interpolation}"` and raw `r#"..."#` strings, characters, numbers,
+  `` `names ``, `Type`/`Sort`/`Prop`, `sorry`, `#eval` and its kin, and
+  identifiers as Lean writes them (`x₁`, `h'`, `get!`, `«any name»`).
+  Tactics are not told apart from other names. syntect has no Lean, so
+  rcmd carries its own syntax, in a set of its own looked in after
+  syntect's: adding to syntect's set rebuilds all of it, a fifth of a
+  second before the first file is coloured, and a file syntect knows
+  never waits for Lean's to be read. A `.sublime-syntax` of the user's
+  for `.lean` wins over it.
+
 ## 4.69.0 - 2026-10-05
 
 - **Enter runs a program.** An executable file no `[[open]]` rule

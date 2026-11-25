@@ -6031,8 +6031,11 @@ def test_editmenu():
     # Options > Syntax picks the highlighting by hand
     s.send(b"\x1b[20~", wait=STEP)          # F9
     s.send(b"oy", wait=STEP * 2)            # Options > Syntax...
+    # the list names every syntax, so its first opening reads rcmd's
+    # own (Lean) too: wait for the screen
+    shown = wait_for(s, "Plain text")
     scr = s.screen()
-    check("editmenu: the syntax list", "Syntax" in scr and "Plain text" in scr, scr)
+    check("editmenu: the syntax list", shown and "Syntax" in scr, scr)
     s.send(b"\x1b[H", wait=STEP)            # Home -> plain text
     s.send(b"\r", wait=STEP * 2)
     check("editmenu: the choice is named back",
@@ -7347,6 +7350,46 @@ def test_usersyntax():
     shutil.rmtree(root)
 
 
+def test_leansyntax():
+    """Lean 4 is built in: a .lean file is coloured with no syntax files
+    of the user's, with some (one set of everything then), and a .lean
+    syntax of the user's own takes it over."""
+    root, play, home = sandbox()
+    open(os.path.join(play, "proof.lean"), "w").write(
+        "/-- doc -/\ntheorem two : 1 + 1 = 2 := by\n  rfl -- by computation\n")
+
+    def colours():
+        s = Session(play, home)
+        s.send(b"\x13proof\r", wait=STEP)     # quick search -> proof.lean
+        mark = len(s.buf)
+        s.send(F3, wait=STEP * 2)
+        shown = wait_for(s, "by computation")
+        coloured = b"[38;2;" in s.buf[mark:]
+        s.send(b"q")
+        s.quit()
+        return shown, coloured
+
+    shown, coloured = colours()
+    check("leansyntax: the viewer shows the file", shown)
+    check("leansyntax: built in, a .lean file is coloured", coloured)
+
+    syntax = os.path.join(home, ".config", "rcmd", "syntax")
+    os.makedirs(syntax)
+    open(os.path.join(syntax, "Widget.sublime-syntax"), "w").write(
+        "%YAML 1.2\n---\nname: Widget\nfile_extensions: [widget]\n"
+        "scope: source.widget\ncontexts:\n  main: []\n")
+    shown, coloured = colours()
+    check("leansyntax: still coloured beside the user's syntaxes", shown and coloured)
+
+    # a user's Lean that colours nothing proves theirs is the one used
+    open(os.path.join(syntax, "MyLean.sublime-syntax"), "w").write(
+        "%YAML 1.2\n---\nname: My Lean\nfile_extensions: [lean]\n"
+        "scope: source.mylean\ncontexts:\n  main: []\n")
+    shown, coloured = colours()
+    check("leansyntax: the user's own .lean syntax wins", shown and not coloured)
+    shutil.rmtree(root)
+
+
 def test_dialogkeys():
     """PLAN4 S8: dialog fields remember what was typed into them
     (M-p / M-n), and [keys.dialog] rebinds OK / Cancel / next-field."""
@@ -8019,6 +8062,7 @@ def main():
         test_cli,
         test_dialogmanners,
         test_usersyntax,
+        test_leansyntax,
         test_dialogkeys,
         test_learnkeys,
         test_usermenu,
